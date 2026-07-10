@@ -1,0 +1,126 @@
+import SwiftUI
+import DetachKit
+
+struct SidebarView: View {
+    let store: SessionStore
+    @Binding var selectedID: String?
+    @State private var showNewSession = false
+
+    private func sessions(in section: SessionSection) -> [Session] {
+        store.sessions.filter { $0.section == section }
+    }
+
+    var body: some View {
+        List(selection: $selectedID) {
+            ForEach(SessionSection.allCases, id: \.self) { section in
+                let items = sessions(in: section)
+                if !items.isEmpty {
+                    Section("\(section.rawValue) · \(items.count)") {
+                        ForEach(items) { session in
+                            SessionRow(session: session).tag(session.id)
+                        }
+                    }
+                }
+            }
+        }
+        .overlay {
+            if store.sessions.isEmpty && store.state == .ok {
+                ContentUnavailableView(
+                    "Нет сессий",
+                    systemImage: "moon.zzz",
+                    description: Text("Запусти detach claude в проекте или нажми ＋"))
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            StatusBar(store: store)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showNewSession = true
+                } label: {
+                    Label("Новая сессия", systemImage: "plus")
+                }
+            }
+        }
+        .sheet(isPresented: $showNewSession) {
+            NewSessionSheet()
+        }
+        .navigationSplitViewColumnWidth(min: 230, ideal: 260)
+    }
+}
+
+struct SessionRow: View {
+    let session: Session
+
+    private var dotColor: Color {
+        switch session.effectiveStatus {
+        case .running, .starting, .recovering: .green
+        case .completed, .stopped: .secondary.opacity(0.6)
+        case .failed, .interrupted: .red
+        case .recoverable, .orphaned, .corrupt, .collision, .unknown: .orange
+        }
+    }
+
+    private var isCustomName: Bool {
+        // Default names end with the 8-hex project-dir digest; custom ones don't.
+        session.name.range(of: "-[0-9a-f]{8}$", options: .regularExpression) == nil
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        if isCustomName { parts.append(session.name) }
+        parts.append(session.effectiveStatus.rawValue)
+        if let exit = session.exitStatus { parts.append("exit \(exit)") }
+        if let created = session.createdAt {
+            parts.append(created.formatted(.relative(presentation: .named)))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(dotColor).frame(width: 9, height: 9)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(session.displayTitle).font(.body.weight(.semibold)).lineLimit(1)
+                    Text(session.provider.rawValue)
+                        .font(.caption2)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.quaternary))
+                }
+                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct StatusBar: View {
+    let store: SessionStore
+
+    var body: some View {
+        HStack(spacing: 6) {
+            switch store.state {
+            case .ok:
+                if let updated = store.lastUpdated {
+                    Text("Обновлено \(updated.formatted(date: .omitted, time: .standard))")
+                }
+            case .incompatible:
+                Label("Несовместимая версия CLI — обнови detach", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            case .cliMissing:
+                Label("detach недоступен", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+            case .error(let message):
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.bar)
+    }
+}
