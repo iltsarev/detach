@@ -39,6 +39,34 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertTrue(result.hadInvalidLines)
     }
 
+    func testModelAndContextFieldsDecode() throws {
+        let line = running.replacingOccurrences(
+            of: "\"finished_at\":null",
+            with: "\"finished_at\":null,\"model\":\"claude-fable-5\",\"context_used_tokens\":90000,\"context_window\":200000")
+        let s = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+        XCTAssertEqual(s.model, "claude-fable-5")
+        XCTAssertEqual(s.contextUsedTokens, 90000)
+        XCTAssertEqual(s.contextWindow, 200000)
+        XCTAssertEqual(s.contextFraction.map { ($0 * 100).rounded() }, 45)
+        XCTAssertEqual(s.contextSummary, "90k · 55% свободно")
+    }
+
+    func testContextSummaryWithoutWindow() throws {
+        let line = running.replacingOccurrences(
+            of: "\"finished_at\":null",
+            with: "\"finished_at\":null,\"model\":\"claude-fable-5\",\"context_used_tokens\":361000,\"context_window\":null")
+        let s = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+        XCTAssertNil(s.contextFraction)
+        XCTAssertEqual(s.contextSummary, "361k токенов")
+    }
+
+    func testMissingModelFieldsDecodeAsNil() throws {
+        let s = try XCTUnwrap(SessionListParser.parse(running).sessions.first)
+        XCTAssertNil(s.model)
+        XCTAssertNil(s.contextUsedTokens)
+        XCTAssertNil(s.contextSummary)
+    }
+
     func testWrongSchemaIsFlagged() {
         let line = running.replacingOccurrences(of: "\"schema\":1", with: "\"schema\":2")
         let result = SessionListParser.parse(line)

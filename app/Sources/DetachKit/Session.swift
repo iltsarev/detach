@@ -30,11 +30,14 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
     public var lastCheckpointAt: Date?
     public var exitStatus: Int?
     public var finishedAt: Date?
+    public var model: String?
+    public var contextUsedTokens: Int?
+    public var contextWindow: Int?
 
     public var id: String { sessionName }
 
     enum CodingKeys: String, CodingKey {
-        case schema, provider, name
+        case schema, provider, name, model
         case sessionName = "session_name"
         case effectiveStatus = "effective_status"
         case metaStatus = "meta_status"
@@ -44,6 +47,8 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
         case lastCheckpointAt = "last_checkpoint_at"
         case exitStatus = "exit_status"
         case finishedAt = "finished_at"
+        case contextUsedTokens = "context_used_tokens"
+        case contextWindow = "context_window"
     }
 }
 

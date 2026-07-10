@@ -48,6 +48,10 @@ struct SessionDetailView: View {
         }
     }
 
+    private var providerTint: Color {
+        Brand.tint(for: session.provider)
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
             Text(session.displayTitle).font(.title2.weight(.bold))
@@ -55,6 +59,16 @@ struct SessionDetailView: View {
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 7).padding(.vertical, 2)
                 .background(Capsule().fill(.quaternary))
+            if let model = session.model {
+                Text(model)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Capsule().fill(providerTint.opacity(0.16)))
+                    .foregroundStyle(providerTint)
+            }
+            if session.contextSummary != nil {
+                ContextGauge(session: session)
+            }
             Spacer()
         }
     }
@@ -89,24 +103,27 @@ struct SessionDetailView: View {
         }
     }
 
-    private var logView: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                Text((logPoller?.errorText).map { "⚠︎ \($0)" }
-                     ?? (logPoller?.lines.joined(separator: "\n") ?? "…"))
-                    .font(.system(size: 11, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .id("log-bottom")
-            }
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.85)))
-            .foregroundStyle(Color.green.opacity(0.9))
-            .onChange(of: logPoller?.lines) {
-                proxy.scrollTo("log-bottom", anchor: .bottom)
-            }
+    private static let placeholderAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+        .foregroundColor: NSColor(white: 0.85, alpha: 1),
+    ]
+
+    private var logContent: NSAttributedString {
+        if let error = logPoller?.errorText {
+            var attributes = Self.placeholderAttributes
+            attributes[.foregroundColor] = NSColor.systemOrange
+            return NSAttributedString(string: "⚠︎ \(error)", attributes: attributes)
         }
-        .frame(maxHeight: .infinity)
+        if let attributed = logPoller?.attributed, attributed.length > 0 {
+            return attributed
+        }
+        return NSAttributedString(string: "…", attributes: Self.placeholderAttributes)
+    }
+
+    private var logView: some View {
+        LogTextView(text: logContent)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .frame(maxHeight: .infinity)
     }
 
     private var actionBar: some View {
@@ -129,6 +146,7 @@ struct SessionDetailView: View {
             Button("Открыть в терминале") { openInTerminal(TerminalCommand.attach(detachPath: detachPath, session: session)) }
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
+                .tint(Brand.indigo)
         case .resume:
             Button("Resume в терминале") {
                 if let command = TerminalCommand.resume(detachPath: detachPath, session: session) {
@@ -136,9 +154,11 @@ struct SessionDetailView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+            .tint(Brand.indigo)
         case .recover:
             Button("Recover в терминале") { openInTerminal(TerminalCommand.recover(detachPath: detachPath, session: session)) }
                 .buttonStyle(.borderedProminent)
+                .tint(Brand.indigo)
         case .stop:
             Button("Stop", role: .destructive) { run(.stop) }
         case .delete:
@@ -162,6 +182,32 @@ struct SessionDetailView: View {
                 actionError = message
             }
         }
+    }
+}
+
+struct ContextGauge: View {
+    let session: Session
+
+    private var gaugeColor: Color {
+        guard let fraction = session.contextFraction else { return .secondary }
+        if fraction < 0.7 { return Brand.teal }
+        if fraction < 0.9 { return .orange }
+        return .red
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let fraction = session.contextFraction {
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary).frame(width: 56, height: 6)
+                    Capsule().fill(gaugeColor).frame(width: max(4, 56 * fraction), height: 6)
+                }
+            }
+            if let summary = session.contextSummary {
+                Text(summary).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .help("Занятый контекст модели")
     }
 }
 

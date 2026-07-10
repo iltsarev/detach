@@ -40,4 +40,20 @@ public extension Session {
         }
         return name
     }
+
+    /// 0...1 share of the context window in use, when the window size is known.
+    var contextFraction: Double? {
+        guard let used = contextUsedTokens, let window = contextWindow, window > 0 else { return nil }
+        return min(1.0, Double(used) / Double(window))
+    }
+
+    /// "91k · 74% свободно" when the window is known, "361k токенов" otherwise.
+    var contextSummary: String? {
+        guard let used = contextUsedTokens else { return nil }
+        let usedText = "\(Int((Double(used) / 1000).rounded()))k"
+        if let fraction = contextFraction {
+            return "\(usedText) · \(Int(((1 - fraction) * 100).rounded()))% свободно"
+        }
+        return "\(usedText) токенов"
+    }
 }
