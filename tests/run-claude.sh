@@ -224,4 +224,16 @@ if "$SCRIPT" claude recover --detach integration; then
 fi
 grep -Fx 'outside sentinel' "$outside" >/dev/null
 
+# delete kills a retained pane and removes the session state.
+export FAKE_CLAUDE_SLEEP=1
+export FAKE_CLAUDE_EXIT=0
+"$SCRIPT" claude --name integration --detach -- 'delete coverage'
+sleep 3
+tmux -L "$SOCKET" has-session -t "=$session"
+pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @codex_detached_pane_id)"
+[ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "1" ]
+"$SCRIPT" claude delete --force integration
+[ ! -d "$CLAUDE_DETACHED_STATE_ROOT/sessions/$session" ]
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+
 printf 'Claude detach integration tests passed\n'

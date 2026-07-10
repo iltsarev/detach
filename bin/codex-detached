@@ -111,6 +111,7 @@ usage() {
     "  $PROGRAM logs [NAME]" \
     "  $PROGRAM stop [NAME]" \
     "  $PROGRAM recover [NAME]" \
+    "  $PROGRAM delete [--force] [NAME]" \
     '' \
     'With no NAME, the session is derived from the current Git repository (or cwd).' \
     "A default start creates a new $PROVIDER_LABEL session; use attach or resume explicitly."
@@ -2506,6 +2507,56 @@ stop_session() {
   printf 'Stopped %s\n' "$session"
 }
 
+delete_session() {
+  local session="$1"
+  local force="${2:-0}"
+  local dir
+  local answer
+
+  dir="$(session_dir "$session")"
+  if ! tmux_has_session "$session" && [ ! -d "$dir" ]; then
+    die "no saved state for '$session'"
+  fi
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || die "refusing to delete unmanaged tmux session '$session'"
+    if [ "$(tmux_pane_dead "$session")" = "0" ]; then
+      die "session '$session' is still running; stop it first"
+    fi
+  fi
+  if [ "$force" -ne 1 ]; then
+    [ -t 0 ] || die "refusing to delete without --force when stdin is not a terminal"
+    printf 'Delete saved state for %s? [y/N] ' "$session"
+    read -r answer || die "aborted"
+    case "$answer" in
+      y|Y|yes|YES) ;;
+      *) die "aborted" ;;
+    esac
+  fi
+  "$LOCKF_BIN" -k -t 10 "$(checkpoint_lock_path "$session")" \
+    "$SELF" __delete_locked "$session"
+}
+
+delete_locked() {
+  local session="$1"
+  local dir
+  local run_token
+
+  dir="$(session_dir "$session")"
+  # Re-check under the lock: a concurrent start may have revived the session.
+  if tmux_has_session "$session" && [ "$(tmux_pane_dead "$session")" = "0" ]; then
+    die "session '$session' is running again; aborting delete"
+  fi
+  run_token="$(read_meta_field "$session" '.run_token // empty' 2>/dev/null || true)"
+  if tmux_has_session "$session"; then
+    "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove tmux session '$session'"
+  fi
+  rm -rf "$dir"
+  if [ -n "$run_token" ]; then
+    rm -f "$(amphetamine_lease_path "$run_token")"
+  fi
+  printf 'Deleted %s\n' "$session"
+}
+
 restore_rollout_if_needed() {
   local session="$1"
   local meta
@@ -2645,11 +2696,12 @@ main() {
   local cwd
   local resume_id=""
   local list_json=0
+  local force=0
 
   validate_runtime_config
 
   case "${1:-}" in
-    start|resume|attach|list|status|logs|stop|recover)
+    start|resume|attach|list|status|logs|stop|recover|delete)
       action="$1"
       shift
       ;;
@@ -2715,6 +2767,11 @@ main() {
         detach=1
         shift
         ;;
+      -f|--force)
+        [ "$action" = "delete" ] || die "unexpected option for $action: $1"
+        force=1
+        shift
+        ;;
     esac
     if [ "$#" -gt 0 ]; then
       positional_name="$1"
@@ -2762,6 +2819,10 @@ main() {
       require_start_dependencies
       recover_session "$session" "$detach"
       ;;
+    delete)
+      require_file_or_command "$LOCKF_BIN" "lockf"
+      delete_session "$session" "$force"
+      ;;
   esac
 }
 
@@ -2781,6 +2842,10 @@ case "${1:-}" in
   __checkpoint_once_locked)
     shift
     checkpoint_once_locked "$@"
+    ;;
+  __delete_locked)
+    shift
+    delete_locked "$@"
     ;;
   __write_initial_meta)
     shift

@@ -183,4 +183,18 @@ json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$SESSION\"")"
 printf '%s' "$json_line" | jq -e '
   .effective_status == "stopped" and .meta_status == "stopped"' >/dev/null
 
+# delete refuses a live session and removes a stopped one.
+"$SCRIPT" --name integration --detach -- 'delete refusal coverage'
+sleep 1
+if "$SCRIPT" delete --force integration; then
+  printf 'delete unexpectedly removed a running session\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" has-session -t "=$SESSION"
+"$SCRIPT" stop integration
+"$SCRIPT" delete --force integration
+[ ! -d "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION" ]
+! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
+! "$SCRIPT" list --json | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
+
 printf 'codex-detached integration tests passed\n'
