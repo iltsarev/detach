@@ -108,7 +108,7 @@ usage() {
     "  $PROGRAM attach [NAME]" \
     "  $PROGRAM list [--json]" \
     "  $PROGRAM status [NAME]" \
-    "  $PROGRAM logs [NAME]" \
+    "  $PROGRAM logs [--ansi] [NAME]" \
     "  $PROGRAM stop [NAME]" \
     "  $PROGRAM recover [NAME]" \
     "  $PROGRAM delete [--force] [NAME]" \
@@ -437,6 +437,7 @@ write_initial_meta() {
       "$dir/checkpoint/claude-session.tar" \
       "$dir/checkpoint/codex-state.sqlite" \
       "$dir/checkpoint/pane.txt" \
+      "$dir/checkpoint/pane-ansi.txt" \
       "$dir/checkpoint/worktree-status.txt" \
       "$dir/exit-status"
     rm -rf \
@@ -1291,6 +1292,13 @@ checkpoint_pane() {
     return 1
   }
   mv -f "$tmp" "$checkpoint_dir/pane.txt"
+
+  tmp="$checkpoint_dir/pane-ansi.txt.tmp.$$"
+  if "${TMUX_CMD[@]}" capture-pane -p -e -J -S "-$HISTORY_LIMIT" -t "$pane" >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$checkpoint_dir/pane-ansi.txt"
+  else
+    rm -f "$tmp"
+  fi
 }
 
 checkpoint_worktree() {
@@ -2265,11 +2273,51 @@ resume_agent_session() {
   [ "$detach" -eq 1 ] || attach_session "$session"
 }
 
+transcript_model_context() {
+  local transcript="$1"
+  local tail_data
+  local line
+
+  TRANSCRIPT_MODEL=""
+  TRANSCRIPT_CTX_USED=""
+  TRANSCRIPT_CTX_WINDOW=""
+  [ -n "$transcript" ] && [ -f "$transcript" ] || return 0
+  tail_data="$(tail -c 262144 "$transcript" 2>/dev/null)" || return 0
+  [ -n "$tail_data" ] || return 0
+  if [ "$PROVIDER" = "claude" ]; then
+    line="$(printf '%s\n' "$tail_data" | "$JQ_BIN" -Rr '
+      fromjson? | select(.type? == "assistant") |
+      [(.message.model // ""),
+       ((.message.usage.input_tokens // 0) +
+        (.message.usage.cache_read_input_tokens // 0) +
+        (.message.usage.cache_creation_input_tokens // 0))] | @tsv' 2>/dev/null | tail -1)"
+    if [ -n "$line" ]; then
+      TRANSCRIPT_MODEL="${line%%$'\t'*}"
+      TRANSCRIPT_CTX_USED="${line##*$'\t'}"
+    fi
+  else
+    TRANSCRIPT_MODEL="$(printf '%s\n' "$tail_data" | "$JQ_BIN" -Rr '
+      fromjson? | .payload.model? // empty' 2>/dev/null | tail -1)"
+    line="$(printf '%s\n' "$tail_data" | "$JQ_BIN" -Rr '
+      fromjson? | select(.payload.type? == "token_count") |
+      [((.payload.info.last_token_usage.input_tokens // 0) +
+        (.payload.info.last_token_usage.output_tokens // 0)),
+       (.payload.info.model_context_window // 0)] | @tsv' 2>/dev/null | tail -1)"
+    if [ -n "$line" ]; then
+      TRANSCRIPT_CTX_USED="${line%%$'\t'*}"
+      TRANSCRIPT_CTX_WINDOW="${line##*$'\t'}"
+    fi
+  fi
+}
+
 emit_list_json() {
   local session="$1" effective="$2" meta_status="$3" id="$4" checkpoint="$5"
   local cwd="$6" created="$7" exit_json="$8" finished="$9"
+  local model="${10:-}" ctx_used="${11:-}" ctx_window="${12:-}"
 
   [ -n "$exit_json" ] || exit_json="null"
+  [ -n "$ctx_used" ] || ctx_used="null"
+  [ -n "$ctx_window" ] || ctx_window="null"
   "$JQ_BIN" -n -c \
     --arg provider "$PROVIDER" \
     --arg session_name "$session" \
@@ -2282,6 +2330,9 @@ emit_list_json() {
     --arg created "$created" \
     --argjson exit_status "$exit_json" \
     --arg finished "$finished" \
+    --arg model "$model" \
+    --argjson ctx_used "$ctx_used" \
+    --argjson ctx_window "$ctx_window" \
     'def opt(v): if v == "" or v == "-" or v == "?" then null else v end;
      {schema: 1,
       provider: $provider,
@@ -2294,7 +2345,10 @@ emit_list_json() {
       created_at: opt($created),
       last_checkpoint_at: opt($checkpoint),
       exit_status: $exit_status,
-      finished_at: opt($finished)}'
+      finished_at: opt($finished),
+      model: opt($model),
+      context_used_tokens: (if $ctx_used == 0 then null else $ctx_used end),
+      context_window: (if $ctx_window == 0 then null else $ctx_window end)}'
 }
 
 list_sessions() {
@@ -2340,7 +2394,7 @@ list_sessions() {
         fi
       fi
       if [ "$json_mode" = "1" ]; then
-        emit_list_json "$session" "$live" "" "-" "-" "${cwd:-?}" "" "null" ""
+        emit_list_json "$session" "$live" "" "-" "-" "${cwd:-?}" "" "null" "" "" "null" "null"
       else
         printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
           "$PROVIDER" "$session" "$live" '-' '-' "${cwd:-?}"
@@ -2355,6 +2409,7 @@ list_sessions() {
     created="$(read_meta_field "$session" '.created_at // empty' 2>/dev/null || true)"
     finished="$(read_meta_field "$session" '.finished_at // empty' 2>/dev/null || true)"
     exit_json="$(read_meta_field "$session" '(.exit_status // null) | tojson' 2>/dev/null || printf 'null')"
+    transcript_model_context "$(read_meta_field "$session" '.transcript_path // .rollout_path // empty' 2>/dev/null || true)"
     live=""
     if tmux_has_session "$session"; then
       if ! tmux_is_managed "$session"; then
@@ -2389,7 +2444,8 @@ list_sessions() {
       live="$status"
     fi
     if [ "$json_mode" = "1" ]; then
-      emit_list_json "$session" "$live" "$status" "$id" "$checkpoint" "$cwd" "$created" "$exit_json" "$finished"
+      emit_list_json "$session" "$live" "$status" "$id" "$checkpoint" "$cwd" "$created" "$exit_json" "$finished" \
+        "$TRANSCRIPT_MODEL" "$TRANSCRIPT_CTX_USED" "$TRANSCRIPT_CTX_WINDOW"
     else
       printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
         "$PROVIDER" "$session" "$live" "$id" "$checkpoint" "$cwd"
@@ -2435,16 +2491,24 @@ show_status() {
 
 show_logs() {
   local session="$1"
+  local ansi="${2:-0}"
   local pane_file
+  local ansi_file
   local pane
+  local capture_args=( -p -J )
 
+  [ "$ansi" != "1" ] || capture_args=( -p -e -J )
   if tmux_has_session "$session"; then
     tmux_is_managed "$session" || die "refusing to read unmanaged tmux session '$session'"
     pane="$(tmux_pane_id "$session")"
-    "${TMUX_CMD[@]}" capture-pane -p -J -S "-$HISTORY_LIMIT" -t "$pane"
+    "${TMUX_CMD[@]}" capture-pane "${capture_args[@]}" -S "-$HISTORY_LIMIT" -t "$pane"
     return
   fi
   pane_file="$(session_dir "$session")/checkpoint/pane.txt"
+  ansi_file="$(session_dir "$session")/checkpoint/pane-ansi.txt"
+  if [ "$ansi" = "1" ] && [ -f "$ansi_file" ]; then
+    pane_file="$ansi_file"
+  fi
   [ -f "$pane_file" ] || die "no logs found for '$session'"
   cat "$pane_file"
 }
@@ -2700,6 +2764,7 @@ main() {
   local resume_id=""
   local list_json=0
   local force=0
+  local ansi=0
 
   validate_runtime_config
 
@@ -2775,6 +2840,11 @@ main() {
         force=1
         shift
         ;;
+      --ansi)
+        [ "$action" = "logs" ] || die "unexpected option for $action: $1"
+        ansi=1
+        shift
+        ;;
     esac
     if [ "$#" -gt 0 ]; then
       positional_name="$1"
@@ -2813,7 +2883,7 @@ main() {
       show_status "$session"
       ;;
     logs)
-      show_logs "$session"
+      show_logs "$session" "$ansi"
       ;;
     stop)
       stop_session "$session"

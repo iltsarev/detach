@@ -176,7 +176,8 @@ json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$SESSION\"")"
 printf '%s' "$json_line" | jq -e '
   .schema == 1 and .provider == "codex" and .name == "integration"
   and .effective_status == "running" and (.project_dir | type == "string")
-  and (.created_at | type == "string") and .exit_status == null' >/dev/null
+  and (.created_at | type == "string") and .exit_status == null
+  and has("model") and has("context_used_tokens") and has("context_window")' >/dev/null
 "$SCRIPT" list --json | jq -es 'length > 0 and all(.schema == 1)' | grep -qx true
 "$SCRIPT" stop integration
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$SESSION\"")"

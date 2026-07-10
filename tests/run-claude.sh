@@ -78,7 +78,8 @@ tmux -L "$SOCKET" has-session -t "=$session"
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
 printf '%s' "$json_line" | jq -e --arg id "$session_id" '
   .schema == 1 and .provider == "claude" and .effective_status == "running"
-  and .agent_session_id == $id and (.project_dir | type == "string")' >/dev/null
+  and .agent_session_id == $id and (.project_dir | type == "string")
+  and has("model") and has("context_used_tokens") and has("context_window")' >/dev/null
 if "$SCRIPT" codex --name cross-provider --detach -- 'must not run beside Claude'; then
   printf 'Codex unexpectedly started beside a running Claude task\n' >&2
   exit 1
