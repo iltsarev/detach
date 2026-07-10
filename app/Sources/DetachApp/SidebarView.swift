@@ -25,10 +25,15 @@ struct SidebarView: View {
         }
         .overlay {
             if store.sessions.isEmpty && store.state == .ok {
-                ContentUnavailableView(
-                    "Нет сессий",
-                    systemImage: "moon.zzz",
-                    description: Text("Запусти detach claude в проекте или нажми ＋"))
+                ContentUnavailableView {
+                    Label {
+                        Text("Нет сессий")
+                    } icon: {
+                        Image(systemName: "moon.zzz").foregroundStyle(Brand.gradient)
+                    }
+                } description: {
+                    Text("Запусти detach claude в проекте или нажми ＋")
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -40,6 +45,7 @@ struct SidebarView: View {
                     showNewSession = true
                 } label: {
                     Label("Новая сессия", systemImage: "plus")
+                        .foregroundStyle(Brand.indigo)
                 }
             }
         }
@@ -55,7 +61,7 @@ struct SessionRow: View {
 
     private var dotColor: Color {
         switch session.effectiveStatus {
-        case .running, .starting, .recovering: .green
+        case .running, .starting, .recovering: Brand.teal
         case .completed, .stopped: .secondary.opacity(0.6)
         case .failed, .interrupted: .red
         case .recoverable, .orphaned, .corrupt, .collision, .unknown: .orange
@@ -86,8 +92,10 @@ struct SessionRow: View {
                     Text(session.displayTitle).font(.body.weight(.semibold)).lineLimit(1)
                     Text(session.provider.rawValue)
                         .font(.caption2)
+                        .foregroundStyle(Brand.tint(for: session.provider))
                         .padding(.horizontal, 4).padding(.vertical, 1)
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.quaternary))
+                        .overlay(RoundedRectangle(cornerRadius: 4)
+                            .strokeBorder(Brand.tint(for: session.provider).opacity(0.35)))
                 }
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }

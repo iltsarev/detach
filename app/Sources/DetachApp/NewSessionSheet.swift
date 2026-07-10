@@ -55,6 +55,7 @@ struct NewSessionSheet: View {
                 Button("Отмена") { dismiss() }
                 Button("Запустить в терминале") { launch() }
                     .buttonStyle(.borderedProminent)
+                    .tint(Brand.indigo)
                     .disabled(projectDir == nil)
             }
         }

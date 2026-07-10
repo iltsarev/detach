@@ -32,10 +32,15 @@ struct RootView: View {
                         SessionDetailView(session: session, store: store, detachPath: detachPath)
                             .id(session.id)
                     } else {
-                        ContentUnavailableView(
-                            "Выбери сессию",
-                            systemImage: "terminal",
-                            description: Text("Слева — все detach-сессии обоих провайдеров"))
+                        ContentUnavailableView {
+                            Label {
+                                Text("Выбери сессию")
+                            } icon: {
+                                Image(systemName: "terminal").foregroundStyle(Brand.gradient)
+                            }
+                        } description: {
+                            Text("Слева — все detach-сессии обоих провайдеров")
+                        }
                     }
                 }
             }
