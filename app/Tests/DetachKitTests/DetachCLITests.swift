@@ -27,6 +27,24 @@ final class DetachCLITests: XCTestCase {
         XCTAssertEqual(result.stdout.count, 512 * 1024)
     }
 
+    func testAddsCommonExecutablePathsToSparseGUIEnvironment() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-cli-home-\(UUID().uuidString)")
+        let bin = home.appendingPathComponent(".local/bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let helper = bin.appendingPathComponent("gui-path-helper")
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+
+        let cli = ProcessDetachCLI(
+            executable: try fixture("command -v gui-path-helper"),
+            environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"])
+        let result = try await cli.run(arguments: [], timeout: 5)
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), helper.path)
+    }
+
     func testTimeoutTerminatesProcess() async throws {
         let cli = ProcessDetachCLI(executable: try fixture("sleep 30"))
         let start = Date()

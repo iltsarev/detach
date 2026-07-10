@@ -41,7 +41,7 @@ struct RootView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 440)
-        .task { store.startPolling(interval: pollInterval) }
+        .task(id: pollInterval) { store.startPolling(interval: pollInterval) }
         .onDisappear { store.stopPolling() }
     }
 }

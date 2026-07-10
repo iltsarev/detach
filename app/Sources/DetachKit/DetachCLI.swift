@@ -20,15 +20,38 @@ public protocol DetachCLIRunning: Sendable {
 
 public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
     public let executable: URL
+    private let environment: [String: String]
 
-    public init(executable: URL) {
+    public init(executable: URL, environment: [String: String]? = nil) {
         self.executable = executable
+        self.environment = Self.runtimeEnvironment(
+            environment ?? ProcessInfo.processInfo.environment)
+    }
+
+    static func runtimeEnvironment(_ base: [String: String]) -> [String: String] {
+        var environment = base
+        var paths = (base["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .map(String.init)
+        let home = base["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let commonPaths = [
+            "\(home)/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/opt/local/bin",
+        ]
+        for path in commonPaths where !paths.contains(path) {
+            paths.append(path)
+        }
+        environment["PATH"] = paths.joined(separator: ":")
+        return environment
     }
 
     public func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        process.environment = environment
         process.standardInput = FileHandle.nullDevice
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -48,14 +71,18 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
         // Poll for exit: no terminationHandler, no continuation races.
         var timedOut = false
         let deadline = Date().addingTimeInterval(timeout)
+        var killDeadline: Date?
         while process.isRunning {
-            if !timedOut && Date() > deadline {
+            let now = Date()
+            if !timedOut && now > deadline {
                 timedOut = true
                 process.terminate()
-                Task.detached { [pid = process.processIdentifier] in
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    kill(pid, SIGKILL)
-                }
+                killDeadline = now.addingTimeInterval(2)
+            } else if let forcedKillAt = killDeadline, now > forcedKillAt {
+                // Kill only while this Process instance still reports its child
+                // alive; do not leave a delayed task that can target a reused PID.
+                kill(process.processIdentifier, SIGKILL)
+                killDeadline = nil
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }

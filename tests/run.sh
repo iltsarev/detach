@@ -197,4 +197,29 @@ tmux -L "$SOCKET" has-session -t "=$SESSION"
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 ! "$SCRIPT" list --json | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
 
+# The destructive phase must repeat the ownership check under its lock. An
+# unmanaged retained pane that appears after the outer check must survive.
+mkdir -p "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION"
+printf 'foreign sentinel\n' >"$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/sentinel"
+foreign_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' -s "$SESSION" -n foreign)"
+tmux -L "$SOCKET" set-option -q -w -t "$foreign_pane" remain-on-exit on
+tmux -L "$SOCKET" send-keys -t "$foreign_pane" 'exit' Enter
+attempts=0
+while [ "$(tmux -L "$SOCKET" display-message -p -t "$foreign_pane" '#{pane_dead}')" != "1" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 40 ] || {
+    printf 'unmanaged test pane did not exit\n' >&2
+    exit 1
+  }
+  sleep 0.05
+done
+if "$SCRIPT" __delete_locked "$SESSION"; then
+  printf 'locked delete unexpectedly removed an unmanaged tmux session\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" has-session -t "=$SESSION"
+grep -Fx 'foreign sentinel' "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/sentinel" >/dev/null
+tmux -L "$SOCKET" kill-session -t "=$SESSION"
+rm -rf "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION"
+
 printf 'codex-detached integration tests passed\n'

@@ -19,14 +19,18 @@ struct SessionDetailView: View {
             actionBar
         }
         .padding(16)
-        .task(id: session.id) {
+        .task(id: session.effectiveStatus) {
             let poller = LogPoller(
                 cli: ProcessDetachCLI(executable: URL(fileURLWithPath: detachPath)),
                 provider: session.provider, sessionName: session.sessionName)
             logPoller = poller
             await poller.fetchOnce()
             while !Task.isCancelled && session.section == .active {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    return
+                }
                 await poller.fetchOnce()
             }
         }

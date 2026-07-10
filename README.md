@@ -207,3 +207,6 @@ open app/build/Detach.app
 
 The app talks to the CLI only (`detach list --json`, `detach <provider> ...`);
 point it at a different binary in Settings.
+
+Future UI features and their acceptance criteria are tracked in
+[`docs/backlog.md`](docs/backlog.md).
