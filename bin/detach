@@ -1,0 +1,246 @@
+#!/bin/bash
+
+set -u
+set -o pipefail
+
+PROGRAM="detach"
+
+error() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+}
+
+die() {
+  error "$*"
+  exit 1
+}
+
+usage() {
+  printf '%s\n' \
+    'Usage:' \
+    '  detach codex [COMMAND] [ARGS...]' \
+    '  detach claude [COMMAND] [ARGS...]' \
+    '  detach list' \
+    '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
+    '' \
+    'Use an explicit provider to start or run provider-specific management commands.' \
+    'The shared list includes both providers; resume detects the provider by UUID.' \
+    'Run "detach codex --help" or "detach claude --help" for provider commands.'
+}
+
+resolve_self() {
+  local source_path="$0"
+  local source_dir
+  local link_target
+
+  while [ -h "$source_path" ]; do
+    source_dir="$(cd -P "$(dirname "$source_path")" >/dev/null 2>&1 && pwd)" || exit 1
+    link_target="$(readlink "$source_path")" || exit 1
+    case "$link_target" in
+      /*) source_path="$link_target" ;;
+      *) source_path="$source_dir/$link_target" ;;
+    esac
+  done
+
+  source_dir="$(cd -P "$(dirname "$source_path")" >/dev/null 2>&1 && pwd)" || exit 1
+  printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
+}
+
+SELF="$(resolve_self)"
+CORE="$(dirname "$SELF")/codex-detached"
+JQ_BIN="${DETACH_JQ_BIN:-${CODEX_DETACHED_JQ_BIN:-$(command -v jq 2>/dev/null || true)}}"
+
+require_core() {
+  [ -x "$CORE" ] || die "core executable not found: $CORE"
+}
+
+configure_common_tmux() {
+  local codex_socket="${CODEX_DETACHED_TMUX_SOCKET:-}"
+  local claude_socket="${CLAUDE_DETACHED_TMUX_SOCKET:-}"
+  local codex_config="${CODEX_DETACHED_TMUX_CONFIG:-}"
+  local claude_config="${CLAUDE_DETACHED_TMUX_CONFIG:-}"
+
+  if [ -z "${DETACH_TMUX_SOCKET:-}" ]; then
+    if [ -n "$codex_socket" ] && [ -n "$claude_socket" ] && [ "$codex_socket" != "$claude_socket" ]; then
+      die "Codex and Claude tmux sockets differ; set DETACH_TMUX_SOCKET to one shared socket"
+    fi
+    DETACH_TMUX_SOCKET="${codex_socket:-$claude_socket}"
+  fi
+  if [ -z "${DETACH_TMUX_CONFIG:-}" ]; then
+    if [ -n "$codex_config" ] && [ -n "$claude_config" ] && [ "$codex_config" != "$claude_config" ]; then
+      die "Codex and Claude tmux configs differ; set DETACH_TMUX_CONFIG to one shared config"
+    fi
+    DETACH_TMUX_CONFIG="${codex_config:-$claude_config}"
+  fi
+  export DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG
+}
+
+run_provider() {
+  local provider="$1"
+  shift
+
+  require_core
+  DETACH_PROVIDER="$provider" \
+    DETACH_PROGRAM="$PROGRAM $provider" \
+    "$CORE" "$@"
+}
+
+exec_provider() {
+  local provider="$1"
+  shift
+
+  require_core
+  DETACH_PROVIDER="$provider" \
+    DETACH_PROGRAM="$PROGRAM $provider" \
+    exec "$CORE" "$@"
+}
+
+list_all() {
+  local status=0
+  local provider_status
+
+  DETACH_LIST_HEADER=1 run_provider codex list || status=$?
+  DETACH_LIST_HEADER=0 run_provider claude list || {
+    provider_status=$?
+    [ "$status" -ne 0 ] || status="$provider_status"
+  }
+  return "$status"
+}
+
+resume_auto() {
+  local session_id=""
+  local codex_match=0
+  local claude_match=0
+  local arg
+  local expect_name=0
+  local after_options=0
+  local has_name=0
+  local detach_requested=0
+  local provider=""
+  local context
+  local session_name
+  local project_dir
+  local live
+  local resume_args=( "$@" )
+
+  [ "$#" -gt 0 ] || die "resume requires a session UUID"
+
+  for arg in "$@"; do
+    if [ "$expect_name" -eq 1 ]; then
+      expect_name=0
+      continue
+    fi
+    if [ "$after_options" -eq 1 ]; then
+      session_id="$arg"
+      break
+    fi
+
+    case "$arg" in
+      -n|--name)
+        expect_name=1
+        has_name=1
+        ;;
+      --name=*)
+        has_name=1
+        ;;
+      -d|--detach)
+        detach_requested=1
+        ;;
+      --)
+        after_options=1
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      -*)
+        die "unknown resume option: $arg"
+        ;;
+      *)
+        session_id="$arg"
+        break
+        ;;
+    esac
+  done
+
+  [ "$expect_name" -eq 0 ] || die "resume option requires a name"
+  [ -n "$session_id" ] || die "resume requires a session UUID"
+
+  if run_provider codex __has_session_id "$session_id" >/dev/null 2>&1; then
+    codex_match=1
+  fi
+  if run_provider claude __has_session_id "$session_id" >/dev/null 2>&1; then
+    claude_match=1
+  fi
+
+  if [ "$codex_match" -eq 1 ] && [ "$claude_match" -eq 1 ]; then
+    die "session UUID is ambiguous across providers: $session_id"
+  fi
+  if [ "$codex_match" -eq 1 ]; then
+    provider="codex"
+  fi
+  if [ "$claude_match" -eq 1 ]; then
+    provider="claude"
+  fi
+  [ -n "$provider" ] || die "session UUID not found: $session_id"
+
+  [ -x "$JQ_BIN" ] || die "jq is required to resolve the session context"
+  context="$(run_provider "$provider" __session_context "$session_id")" || \
+    die "could not resolve project context for session UUID: $session_id"
+  session_name="$(printf '%s' "$context" | "$JQ_BIN" -r '.session_name // empty')"
+  project_dir="$(printf '%s' "$context" | "$JQ_BIN" -r '.project_dir // empty')"
+  live="$(printf '%s' "$context" | "$JQ_BIN" -r '.live // false')"
+
+  if [ "$live" = "true" ] && [ -n "$session_name" ]; then
+    if [ "$detach_requested" -eq 1 ]; then
+      printf 'Already running: %s (%s)\n' "$session_name" "$provider"
+      return 0
+    fi
+    exec_provider "$provider" attach "$session_name"
+  fi
+
+  [ -n "$project_dir" ] && [ -d "$project_dir" ] || \
+    die "saved project directory is unavailable: ${project_dir:-unknown}"
+  cd -P "$project_dir" >/dev/null 2>&1 || die "could not enter saved project directory: $project_dir"
+  if [ "$has_name" -eq 0 ] && [ -n "$session_name" ]; then
+    exec_provider "$provider" resume --name "$session_name" "${resume_args[@]}"
+  fi
+  exec_provider "$provider" resume "${resume_args[@]}"
+
+  die "could not resume session UUID: $session_id"
+}
+
+main() {
+  local command="${1:-}"
+
+  configure_common_tmux
+
+  case "$command" in
+    codex|claude)
+      shift
+      exec_provider "$command" "$@"
+      ;;
+    list)
+      shift
+      [ "$#" -eq 0 ] || die "list does not accept arguments"
+      list_all
+      ;;
+    resume)
+      shift
+      resume_auto "$@"
+      ;;
+    help|-h|--help)
+      shift
+      [ "$#" -eq 0 ] || die "help does not accept arguments"
+      usage
+      ;;
+    '')
+      usage >&2
+      exit 1
+      ;;
+    *)
+      die "unknown command: $command"
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,148 @@
+#!/bin/bash
+
+set -u
+
+if [ "${1:-}" = "--version" ]; then
+  printf 'Claude Code fake-1.0\n'
+  exit 0
+fi
+
+args_file="${FAKE_CLAUDE_ARGS_FILE:?}"
+claude_config_dir="${CLAUDE_CONFIG_DIR:?}"
+mode="start"
+session_id=""
+
+printf '%s\n' "$@" >"$args_file"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --session-id)
+      [ "$#" -ge 2 ] || {
+        printf 'fake Claude: --session-id requires a value\n' >&2
+        exit 2
+      }
+      session_id="$2"
+      shift 2
+      ;;
+    --session-id=*)
+      session_id="${1#--session-id=}"
+      shift
+      ;;
+    --resume)
+      [ "$#" -ge 2 ] || {
+        printf 'fake Claude: --resume requires a value\n' >&2
+        exit 2
+      }
+      mode="resume"
+      session_id="$2"
+      shift 2
+      ;;
+    --resume=*)
+      mode="resume"
+      session_id="${1#--resume=}"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if ! [[ "$session_id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+  printf 'fake Claude: expected a UUID in --session-id or --resume, got %q\n' "$session_id" >&2
+  exit 2
+fi
+
+sleep "${FAKE_CLAUDE_INIT_DELAY:-0}"
+
+project_dir="$claude_config_dir/projects/fake"
+transcript="$project_dir/$session_id.jsonl"
+companion_dir="$project_dir/$session_id"
+short_id="${session_id:0:8}"
+if [ "$mode" = "resume" ] && [ "${FAKE_CLAUDE_EXPECT_RESTORED:-0}" = "1" ]; then
+  jq -e -c . "$transcript" >/dev/null 2>&1 || {
+    printf 'fake Claude: transcript was not restored before resume\n' >&2
+    exit 9
+  }
+  jq -e -c . "$companion_dir/subagents/agent-fake.jsonl" >/dev/null 2>&1 && \
+    [ -d "$companion_dir/tool-results" ] && \
+    grep -Fx 'fake file-history checkpoint' "$claude_config_dir/file-history/$session_id/fake-file@v1" >/dev/null 2>&1 && \
+    grep -Fx "FAKE_CLAUDE_SESSION=$session_id" "$claude_config_dir/session-env/$session_id/environment" >/dev/null 2>&1 && \
+    jq -e '.task == "full-id"' "$claude_config_dir/tasks/$session_id/task.json" >/dev/null 2>&1 && \
+    jq -e '.task == "short-id"' "$claude_config_dir/tasks/session-$short_id/task.json" >/dev/null 2>&1 && \
+    jq -e --arg id "$session_id" '.leadSessionId == $id' \
+      "$claude_config_dir/teams/session-$short_id/config.json" >/dev/null 2>&1 || {
+      printf 'fake Claude: companion artifacts were not restored before resume\n' >&2
+      exit 9
+    }
+fi
+mkdir -p \
+  "$companion_dir/subagents" \
+  "$companion_dir/tool-results" \
+  "$claude_config_dir/file-history/$session_id" \
+  "$claude_config_dir/session-env/$session_id" \
+  "$claude_config_dir/tasks/$session_id" \
+  "$claude_config_dir/tasks/session-$short_id" \
+  "$claude_config_dir/teams/session-$short_id"
+printf 'fake file-history checkpoint\n' >"$claude_config_dir/file-history/$session_id/fake-file@v1"
+printf 'FAKE_CLAUDE_SESSION=%s\n' "$session_id" >"$claude_config_dir/session-env/$session_id/environment"
+printf '{"task":"full-id"}\n' >"$claude_config_dir/tasks/$session_id/task.json"
+printf '{"task":"short-id"}\n' >"$claude_config_dir/tasks/session-$short_id/task.json"
+jq -cn --arg id "$session_id" '{leadSessionId: $id}' >"$claude_config_dir/teams/session-$short_id/config.json"
+
+record_type="user"
+if [ "$mode" = "resume" ]; then
+  record_type="assistant"
+fi
+
+jq -cn \
+  --arg cwd "$PWD" \
+  --arg session_id "$session_id" \
+  --arg type "$record_type" \
+  --arg mode "$mode" \
+  '{
+    parentUuid: null,
+    isSidechain: false,
+    userType: "external",
+    cwd: $cwd,
+    sessionId: $session_id,
+    version: "fake-1.0",
+    gitBranch: "",
+    type: $type,
+    message: {role: $type, content: ("fake Claude " + $mode)},
+    uuid: $session_id,
+    timestamp: "2099-01-01T00:00:00.000Z"
+  }' >>"$transcript"
+
+jq -cn \
+  --arg cwd "$PWD" \
+  --arg session_id "$session_id" \
+  '{
+    parentUuid: null,
+    isSidechain: true,
+    cwd: $cwd,
+    sessionId: $session_id,
+    type: "assistant",
+    message: {role: "assistant", content: "fake subagent checkpoint"},
+    uuid: $session_id,
+    timestamp: "2099-01-01T00:00:01.000Z"
+  }' >"$companion_dir/subagents/agent-fake.jsonl"
+
+printf 'fake Claude started in %s\n' "$PWD"
+printf 'mode=%s id=%s\n' "$mode" "$session_id"
+sleep "${FAKE_CLAUDE_SLEEP:-4}"
+jq -cn \
+  --arg cwd "$PWD" \
+  --arg session_id "$session_id" \
+  '{
+    parentUuid: null,
+    isSidechain: false,
+    cwd: $cwd,
+    sessionId: $session_id,
+    type: "assistant",
+    message: {role: "assistant", content: "checkpoint me"},
+    uuid: $session_id,
+    timestamp: "2099-01-01T00:05:00.000Z"
+  }' >>"$transcript"
+printf 'fake Claude finished\n'
+exit "${FAKE_CLAUDE_EXIT:-7}"

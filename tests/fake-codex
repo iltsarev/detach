@@ -1,0 +1,72 @@
+#!/bin/bash
+
+set -u
+
+if [ "${1:-}" = "--version" ]; then
+  printf 'codex-cli fake-1.0\n'
+  exit 0
+fi
+
+cwd="$PWD"
+mode="start"
+resume_id=""
+args_file="${FAKE_CODEX_ARGS_FILE:?}"
+codex_home="${CODEX_HOME:?}"
+
+printf '%s\n' "$@" >"$args_file"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C|--cd)
+      cwd="$2"
+      shift 2
+      ;;
+    resume)
+      mode="resume"
+      resume_id="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+mkdir -p "$codex_home/sessions/2099/01/01"
+db="$codex_home/state_5.sqlite"
+now_ms="$(printf '%s000' "$(date '+%s')")"
+sqlite3 "$db" 'CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at_ms INTEGER, updated_at_ms INTEGER, source TEXT, thread_source TEXT, cwd TEXT);'
+
+if [ "${FAKE_CODEX_FOREIGN_FIRST:-0}" = "1" ]; then
+  foreign_id="ffffffff-ffff-4fff-8fff-ffffffffffff"
+  foreign_rollout="$codex_home/sessions/2099/01/01/rollout-foreign-$foreign_id.jsonl"
+  printf '{"timestamp":"2099-01-01T00:00:00Z","type":"session_meta","payload":{"id":"%s","cwd":"%s","originator":"codex_cli_rs"}}\n' \
+    "$foreign_id" "$cwd" >"$foreign_rollout"
+  escaped_foreign_rollout="${foreign_rollout//\'/\'\'}"
+  escaped_foreign_cwd="${cwd//\'/\'\'}"
+  sqlite3 "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) VALUES ('$foreign_id', '$escaped_foreign_rollout', $now_ms, $now_ms, 'cli', 'user', '$escaped_foreign_cwd');"
+fi
+
+sleep "${FAKE_CODEX_INIT_DELAY:-0}"
+
+if [ "$mode" = "resume" ] && [ -n "$resume_id" ] && [ "$resume_id" != "--last" ]; then
+  id="$resume_id"
+else
+  id="00000000-0000-7000-8000-$(printf '%012d' $$)"
+fi
+
+rollout="$codex_home/sessions/2099/01/01/rollout-test-$id.jsonl"
+originator="${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-codex_cli_rs}"
+printf '{"timestamp":"2099-01-01T00:00:00Z","type":"session_meta","payload":{"id":"%s","cwd":"%s","originator":"%s"}}\n' \
+  "$id" "$cwd" "$originator" >"$rollout"
+
+escaped_cwd="${cwd//\'/\'\'}"
+escaped_rollout="${rollout//\'/\'\'}"
+sqlite3 "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) VALUES ('$id', '$escaped_rollout', $now_ms, $now_ms, 'cli', 'user', '$escaped_cwd');"
+
+printf 'fake Codex started in %s\n' "$cwd"
+printf 'mode=%s id=%s\n' "$mode" "$id"
+sleep "${FAKE_CODEX_SLEEP:-4}"
+printf '{"timestamp":"2099-01-01T00:05:00Z","type":"event_msg","payload":{"type":"agent_message","message":"checkpoint me"}}\n' >>"$rollout"
+printf 'fake Codex finished\n'
+exit "${FAKE_CODEX_EXIT:-7}"

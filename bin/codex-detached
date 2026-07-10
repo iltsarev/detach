@@ -1,0 +1,2756 @@
+#!/bin/bash
+
+set -u
+set -o pipefail
+
+umask 077
+
+PROVIDER="${DETACH_PROVIDER:-codex}"
+case "$PROVIDER" in
+  codex|claude) ;;
+  *)
+    printf 'codex-detached: unsupported provider: %s\n' "$PROVIDER" >&2
+    exit 2
+    ;;
+esac
+
+PROVIDER_LABEL="Codex"
+PROVIDER_ARGS_LABEL="CODEX_ARGS"
+if [ "$PROVIDER" = "claude" ]; then
+  PROVIDER_LABEL="Claude"
+  PROVIDER_ARGS_LABEL="CLAUDE_ARGS"
+fi
+PROGRAM="${DETACH_PROGRAM:-codex-detached}"
+AMPHETAMINE_ID="com.if.Amphetamine"
+DEFAULT_CHECKPOINT_INTERVAL=300
+DEFAULT_HISTORY_LIMIT=50000
+
+error() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+}
+
+die() {
+  error "$*"
+  exit 1
+}
+
+resolve_self() {
+  local source_path="$0"
+  local source_dir
+  local link_target
+
+  while [ -h "$source_path" ]; do
+    source_dir="$(cd -P "$(dirname "$source_path")" >/dev/null 2>&1 && pwd)" || exit 1
+    link_target="$(readlink "$source_path")" || exit 1
+    case "$link_target" in
+      /*) source_path="$link_target" ;;
+      *) source_path="$source_dir/$link_target" ;;
+    esac
+  done
+
+  source_dir="$(cd -P "$(dirname "$source_path")" >/dev/null 2>&1 && pwd)" || exit 1
+  printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
+}
+
+SELF="$(resolve_self)"
+if [ "$PROVIDER" = "codex" ]; then
+  STATE_ROOT="${CODEX_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-detached}"
+  CHECKPOINT_INTERVAL="${CODEX_DETACHED_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
+  HISTORY_LIMIT="${CODEX_DETACHED_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
+  AMPHETAMINE_ENABLED="${CODEX_DETACHED_AMPHETAMINE:-1}"
+  SYNC_ENABLED="${CODEX_DETACHED_SYNC:-1}"
+  TMUX_SOCKET="${DETACH_TMUX_SOCKET:-${CODEX_DETACHED_TMUX_SOCKET:-}}"
+  TMUX_CONFIG="${DETACH_TMUX_CONFIG:-${CODEX_DETACHED_TMUX_CONFIG:-}}"
+else
+  STATE_ROOT="${CLAUDE_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-detached}"
+  CHECKPOINT_INTERVAL="${CLAUDE_DETACHED_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
+  HISTORY_LIMIT="${CLAUDE_DETACHED_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
+  AMPHETAMINE_ENABLED="${CLAUDE_DETACHED_AMPHETAMINE:-1}"
+  SYNC_ENABLED="${CLAUDE_DETACHED_SYNC:-1}"
+  TMUX_SOCKET="${DETACH_TMUX_SOCKET:-${CLAUDE_DETACHED_TMUX_SOCKET:-}}"
+  TMUX_CONFIG="${DETACH_TMUX_CONFIG:-${CLAUDE_DETACHED_TMUX_CONFIG:-}}"
+fi
+SESSIONS_ROOT="$STATE_ROOT/sessions"
+LOCKS_ROOT="${DETACH_LOCKS_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/llm-detached/locks}"
+AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-${CODEX_DETACHED_AMPHETAMINE_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-detached-amphetamine}}"
+AMPHETAMINE_LEASES="$AMPHETAMINE_ROOT/leases"
+AMPHETAMINE_OWNER="$AMPHETAMINE_ROOT/owner.json"
+AMPHETAMINE_LOCK="$AMPHETAMINE_ROOT/lock"
+INSIDE_TMUX="${TMUX:-}"
+
+TMUX_BIN="${DETACH_TMUX_BIN:-${CODEX_DETACHED_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}}"
+JQ_BIN="${DETACH_JQ_BIN:-${CODEX_DETACHED_JQ_BIN:-$(command -v jq 2>/dev/null || true)}}"
+SQLITE_BIN="${DETACH_SQLITE_BIN:-${CODEX_DETACHED_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}}"
+TAR_BIN="${DETACH_TAR_BIN:-/usr/bin/tar}"
+CODEX_BIN_DEFAULT="${CODEX_DETACHED_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+CLAUDE_BIN_DEFAULT="${CLAUDE_DETACHED_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
+AGENT_BIN_DEFAULT="$CODEX_BIN_DEFAULT"
+[ "$PROVIDER" = "codex" ] || AGENT_BIN_DEFAULT="$CLAUDE_BIN_DEFAULT"
+OSASCRIPT_BIN="${DETACH_OSASCRIPT_BIN:-${CODEX_DETACHED_OSASCRIPT_BIN:-/usr/bin/osascript}}"
+CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-${CODEX_DETACHED_CAFFEINATE_BIN:-/usr/bin/caffeinate}}"
+PMSET_BIN="${DETACH_PMSET_BIN:-${CODEX_DETACHED_PMSET_BIN:-/usr/bin/pmset}}"
+LOCKF_BIN="${DETACH_LOCKF_BIN:-${CODEX_DETACHED_LOCKF_BIN:-/usr/bin/lockf}}"
+SUDO_BIN="${DETACH_SUDO_BIN:-${CODEX_DETACHED_SUDO_BIN:-/usr/bin/sudo}}"
+
+TMUX_CMD=("$TMUX_BIN")
+if [ -n "$TMUX_SOCKET" ]; then
+  TMUX_CMD+=( -L "$TMUX_SOCKET" )
+fi
+if [ -n "$TMUX_CONFIG" ]; then
+  TMUX_CMD+=( -f "$TMUX_CONFIG" )
+fi
+
+usage() {
+  printf '%s\n' \
+    'Usage:' \
+    "  $PROGRAM [start] [--name NAME] [--detach] [--] [$PROVIDER_ARGS_LABEL...]" \
+    "  $PROGRAM resume [--name NAME] [--detach] SESSION_ID [$PROVIDER_ARGS_LABEL...]" \
+    "  $PROGRAM attach [NAME]" \
+    "  $PROGRAM list" \
+    "  $PROGRAM status [NAME]" \
+    "  $PROGRAM logs [NAME]" \
+    "  $PROGRAM stop [NAME]" \
+    "  $PROGRAM recover [NAME]" \
+    '' \
+    'With no NAME, the session is derived from the current Git repository (or cwd).' \
+    "A default start creates a new $PROVIDER_LABEL session; use attach or resume explicitly."
+
+  if [ "$PROVIDER" = "codex" ]; then
+    printf '%s\n' \
+      '' \
+      'Codex defaults to:' \
+      '  --sandbox workspace-write --no-alt-screen' \
+      '  approval=never, unless managed policy requires its configured reviewer' \
+      '' \
+      'Pass explicit Codex flags to override approval or sandbox defaults.'
+  else
+    printf '%s\n' \
+      '' \
+      'Claude defaults to --permission-mode auto unless explicitly overridden.' \
+      'The harness owns --session-id/--resume/--background and disables the alternate screen.'
+  fi
+}
+
+require_file_or_command() {
+  local path="$1"
+  local label="$2"
+  [ -n "$path" ] && [ -x "$path" ] || die "$label is required"
+}
+
+validate_runtime_config() {
+  case "$CHECKPOINT_INTERVAL" in
+    ''|*[!0-9]*) die "checkpoint interval must be a positive integer" ;;
+  esac
+  [ "$CHECKPOINT_INTERVAL" -gt 0 ] || die "checkpoint interval must be greater than zero"
+
+  case "$HISTORY_LIMIT" in
+    ''|*[!0-9]*) die "history limit must be a positive integer" ;;
+  esac
+  [ "$HISTORY_LIMIT" -gt 0 ] || die "history limit must be greater than zero"
+}
+
+managed_requirements_toml() {
+  local override="${CODEX_DETACHED_REQUIREMENTS_FILE:-}"
+  local managed_user="${USER:-}"
+  local plist
+  local encoded
+
+  if [ -n "$override" ]; then
+    [ -f "$override" ] || return 1
+    cat "$override"
+    return
+  fi
+  [ -n "$managed_user" ] || managed_user="$(id -un 2>/dev/null || true)"
+  for plist in \
+    "/Library/Managed Preferences/$managed_user/com.openai.codex.plist" \
+    "/Library/Managed Preferences/com.openai.codex.plist"; do
+    [ -r "$plist" ] || continue
+    encoded="$(/usr/bin/plutil -extract requirements_toml_base64 raw -o - "$plist" 2>/dev/null || true)"
+    [ -n "$encoded" ] || continue
+    printf '%s' "$encoded" | /usr/bin/base64 -D 2>/dev/null && return
+  done
+  return 1
+}
+
+managed_policy_disallows_never() {
+  local requirements
+  local allowed_block
+
+  requirements="$(managed_requirements_toml)" || return 1
+  allowed_block="$(printf '%s\n' "$requirements" | awk '
+    /^[[:space:]]*allowed_approval_policies[[:space:]]*=/ { capture = 1 }
+    capture { print }
+    capture && /]/ { exit }
+  ')"
+  [ -n "$allowed_block" ] || return 1
+  ! printf '%s\n' "$allowed_block" | grep -Eq '"never"'
+}
+
+require_common_dependencies() {
+  require_file_or_command "$TMUX_BIN" "tmux"
+  require_file_or_command "$JQ_BIN" "jq"
+}
+
+require_start_dependencies() {
+  require_common_dependencies
+  if [ "$PROVIDER" = "codex" ]; then
+    require_file_or_command "$SQLITE_BIN" "sqlite3"
+  else
+    require_file_or_command "$TAR_BIN" "tar"
+  fi
+  require_file_or_command "$AGENT_BIN_DEFAULT" "$PROVIDER"
+  require_file_or_command "$CAFFEINATE_BIN" "caffeinate"
+  require_file_or_command "$LOCKF_BIN" "lockf"
+
+  if [ "$AMPHETAMINE_ENABLED" != "0" ]; then
+    require_file_or_command "$OSASCRIPT_BIN" "osascript"
+    require_file_or_command "$PMSET_BIN" "pmset"
+    require_file_or_command "$SUDO_BIN" "sudo"
+    [ -d /Applications/Amphetamine.app ] || die "Amphetamine.app is not installed in /Applications"
+    [ -f "$HOME/Library/Application Scripts/$AMPHETAMINE_ID/powerProtect.scpt" ] || \
+      die "Amphetamine Power Protect is not installed"
+  fi
+}
+
+ensure_state_dirs() {
+  mkdir -p "$SESSIONS_ROOT" "$LOCKS_ROOT" "$AMPHETAMINE_LEASES" || die "cannot create state directory: $STATE_ROOT"
+}
+
+now_iso() {
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+now_ms() {
+  printf '%s000\n' "$(date '+%s')"
+}
+
+new_run_token() {
+  uuidgen | tr '[:upper:]' '[:lower:]'
+}
+
+canonical_project_dir_for() {
+  local input_dir="$1"
+  local git_root
+
+  [ -d "$input_dir" ] || return 1
+  git_root="$(git -C "$input_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$git_root" ] && [ -d "$git_root" ]; then
+    cd -P "$git_root" >/dev/null 2>&1 && pwd
+  else
+    cd -P "$input_dir" >/dev/null 2>&1 && pwd
+  fi
+}
+
+canonical_project_dir() {
+  canonical_project_dir_for "$PWD"
+}
+
+validate_short_name() {
+  local name="$1"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$ ]] || \
+    die "invalid name '$name' (use 1-48 letters, digits, underscores, or hyphens)"
+}
+
+default_session_name() {
+  local cwd="$1"
+  local slug
+  local digest
+
+  slug="$(basename "$cwd" | LC_ALL=C tr -cs 'A-Za-z0-9_-' '-' | sed 's/^-*//; s/-*$//')"
+  [ -n "$slug" ] || slug="project"
+  slug="${slug:0:24}"
+  digest="$(printf '%s' "$cwd" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"
+  printf '%s-detached-%s-%s\n' "$PROVIDER" "$slug" "$digest"
+}
+
+project_lock_path() {
+  local cwd="$1"
+  local digest
+
+  digest="$(printf '%s' "$cwd" | shasum -a 256 | awk '{print substr($1, 1, 16)}')"
+  printf '%s/project-%s.lock\n' "$LOCKS_ROOT" "$digest"
+}
+
+normalize_session_name() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    default_session_name "$(canonical_project_dir)"
+    return
+  fi
+
+  case "$name" in
+    "$PROVIDER"-detached-*)
+      name="${name#"$PROVIDER-detached-"}"
+      validate_short_name "$name"
+      printf '%s-detached-%s\n' "$PROVIDER" "$name"
+      ;;
+    *)
+      validate_short_name "$name"
+      printf '%s-detached-%s\n' "$PROVIDER" "$name"
+      ;;
+  esac
+}
+
+session_dir() {
+  printf '%s/%s\n' "$SESSIONS_ROOT" "$1"
+}
+
+session_meta() {
+  printf '%s/meta.json\n' "$(session_dir "$1")"
+}
+
+usable_meta_path() {
+  local session="$1"
+  local primary
+  local checkpoint
+  local candidate
+
+  primary="$(session_meta "$session")"
+  checkpoint="$(session_dir "$session")/checkpoint/meta.json"
+  for candidate in "$primary" "$checkpoint"; do
+    [ -f "$candidate" ] || continue
+    if "$JQ_BIN" -e \
+      --arg session "$session" \
+      '.schema == 1 and .session_name == $session and (.project_dir | type == "string")' \
+      "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+tmux_has_session() {
+  "${TMUX_CMD[@]}" has-session -t "=$1" 2>/dev/null
+}
+
+tmux_is_any_managed() {
+  [ "$(tmux_option "$1" '@codex_detached')" = "1" ]
+}
+
+tmux_is_managed() {
+  local stored_provider
+
+  tmux_is_any_managed "$1" || return 1
+  stored_provider="$(tmux_option "$1" '@codex_detached_provider')"
+  if [ -z "$stored_provider" ]; then
+    [ "$PROVIDER" = "codex" ]
+  else
+    [ "$stored_provider" = "$PROVIDER" ]
+  fi
+}
+
+tmux_pane_id() {
+  local pane
+
+  pane="$(tmux_option "$1" '@codex_detached_pane_id')"
+  if [ -n "$pane" ]; then
+    printf '%s\n' "$pane"
+  else
+    "${TMUX_CMD[@]}" display-message -p -t "=$1" '#{pane_id}' 2>/dev/null
+  fi
+}
+
+tmux_pane_dead() {
+  local pane
+
+  pane="$(tmux_pane_id "$1" 2>/dev/null || true)"
+  [ -n "$pane" ] || {
+    printf '1\n'
+    return
+  }
+  "${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null || printf '1\n'
+}
+
+tmux_session_running() {
+  tmux_has_session "$1" && [ "$(tmux_pane_dead "$1")" = "0" ]
+}
+
+tmux_option() {
+  "${TMUX_CMD[@]}" show-options -qv -t "=$1:" "$2" 2>/dev/null || true
+}
+
+attach_session() {
+  local session="$1"
+
+  tmux_has_session "$session" || die "tmux session '$session' is not running"
+  tmux_is_managed "$session" || die "refusing to attach to unmanaged tmux session '$session'"
+  if [ -n "$INSIDE_TMUX" ]; then
+    exec "${TMUX_CMD[@]}" switch-client -t "=$session"
+  else
+    exec "${TMUX_CMD[@]}" attach-session -t "=$session"
+  fi
+}
+
+json_update_meta() {
+  local session="$1"
+  local filter="$2"
+  shift 2
+  local meta
+  local tmp
+
+  meta="$(session_meta "$session")"
+  [ -f "$meta" ] || return 1
+  tmp="$meta.tmp.$$"
+  "$JQ_BIN" "$@" "$filter" "$meta" >"$tmp" && mv -f "$tmp" "$meta"
+  local result=$?
+  rm -f "$tmp"
+  return "$result"
+}
+
+json_update_meta_for_run() {
+  local session="$1"
+  local run_token="$2"
+  local filter="$3"
+  shift 3
+  local guarded_filter
+
+  guarded_filter="if .run_token == \$run_token then ($filter) else error(\"stale run token\") end"
+  json_update_meta "$session" "$guarded_filter" --arg run_token "$run_token" "$@"
+}
+
+write_initial_meta() {
+  local session="$1"
+  local cwd="$2"
+  local start_ms="$3"
+  local agent_bin="$4"
+  local recovery_id="${5:-}"
+  local recovery_transcript="${6:-}"
+  local run_token="$7"
+  local preserve_checkpoint="${8:-0}"
+  local dir
+  local meta
+  local tmp
+  local agent_version
+
+  dir="$(session_dir "$session")"
+  meta="$dir/meta.json"
+  tmp="$meta.tmp.$$"
+  mkdir -p "$dir/checkpoint"
+  if [ "$preserve_checkpoint" != "1" ]; then
+    rm -f \
+      "$dir/checkpoint/meta.json" \
+      "$dir/checkpoint/rollout.jsonl" \
+      "$dir/checkpoint/transcript.jsonl" \
+      "$dir/checkpoint/claude-session.tar" \
+      "$dir/checkpoint/codex-state.sqlite" \
+      "$dir/checkpoint/pane.txt" \
+      "$dir/checkpoint/worktree-status.txt" \
+      "$dir/exit-status"
+    rm -rf \
+      "$dir/checkpoint/claude-session" \
+      "$dir/checkpoint/claude-file-history" \
+      "$dir/checkpoint/claude-session-env"
+    : >"$dir/checkpoint.log"
+  fi
+  agent_version="$("$agent_bin" --version 2>/dev/null || printf 'unknown')"
+
+  "$JQ_BIN" -n \
+    --arg session_name "$session" \
+    --arg project_dir "$cwd" \
+    --arg created_at "$(now_iso)" \
+    --argjson created_at_ms "$start_ms" \
+    --arg status "starting" \
+    --arg provider "$PROVIDER" \
+    --arg agent_bin "$agent_bin" \
+    --arg agent_version "$agent_version" \
+    --arg agent_session_id "$recovery_id" \
+    --arg transcript_path "$recovery_transcript" \
+    --arg run_token "$run_token" \
+    --argjson checkpoint_interval "$CHECKPOINT_INTERVAL" \
+    '{
+      schema: 1,
+      session_name: $session_name,
+      project_dir: $project_dir,
+      created_at: $created_at,
+      created_at_ms: $created_at_ms,
+      status: $status,
+      run_token: $run_token,
+      provider: $provider,
+      agent_bin: $agent_bin,
+      agent_version: $agent_version,
+      agent_session_id: (if $agent_session_id == "" then null else $agent_session_id end),
+      transcript_path: (if $transcript_path == "" then null else $transcript_path end),
+      codex_bin: (if $provider == "codex" then $agent_bin else null end),
+      codex_version: (if $provider == "codex" then $agent_version else null end),
+      codex_session_id: (if $provider == "codex" and $agent_session_id != "" then $agent_session_id else null end),
+      rollout_path: (if $provider == "codex" and $transcript_path != "" then $transcript_path else null end),
+      checkpoint_interval_seconds: $checkpoint_interval,
+      last_checkpoint_at: null,
+      exit_status: null
+    }' >"$tmp" || return 1
+  mv -f "$tmp" "$meta"
+}
+
+claude_home() {
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+}
+
+safe_claude_transcript_path() {
+  local path="$1"
+  local id="$2"
+  local projects
+  local relative
+  local project_name
+  local projects_real
+  local parent_real
+  local parent
+
+  projects="$(claude_home)/projects"
+  [ -d "$projects" ] && [ ! -L "$path" ] || return 1
+  case "$path" in
+    "$projects"/*/"$id.jsonl") ;;
+    *) return 1 ;;
+  esac
+  relative="${path#"$projects"/}"
+  project_name="${relative%/"$id.jsonl"}"
+  [ -n "$project_name" ] || return 1
+  case "$project_name" in */*) return 1 ;; esac
+  projects_real="$(cd -P "$projects" >/dev/null 2>&1 && pwd)" || return 1
+  parent="$(dirname "$path")"
+  [ ! -L "$parent" ] || return 1
+  if [ -d "$parent" ]; then
+    parent_real="$(cd -P "$parent" >/dev/null 2>&1 && pwd)" || return 1
+    [ "$(dirname "$parent_real")" = "$projects_real" ]
+  else
+    [ ! -e "$parent" ] || return 1
+    parent_real="$(cd -P "$(dirname "$parent")" >/dev/null 2>&1 && pwd)" || return 1
+    [ "$parent_real" = "$projects_real" ]
+  fi
+}
+
+claude_transcript_candidates() {
+  local id="$1"
+  local projects
+
+  projects="$(claude_home)/projects"
+  [ -d "$projects" ] || return 1
+  find "$projects" -mindepth 2 -maxdepth 2 -type f -name "$id.jsonl" -print 2>/dev/null
+}
+
+claude_transcript_for_id() {
+  local id="$1"
+  local candidate
+  local found=""
+
+  while IFS= read -r candidate; do
+    [ -f "$candidate" ] || continue
+    safe_claude_transcript_path "$candidate" "$id" || continue
+    valid_claude_transcript "$candidate" "$id" || continue
+    [ -z "$found" ] || return 2
+    found="$candidate"
+  done < <(claude_transcript_candidates "$id" || true)
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
+valid_claude_transcript_stream() {
+  local expected_id="$1"
+
+  "$JQ_BIN" -Rr --arg id "$expected_id" '
+    select(length > 0)
+    | fromjson
+    | if type != "object" then error("non-object transcript record")
+      elif ((.sessionId? // $id) != $id) then error("foreign session id")
+      else ((.sessionId? // "") == $id)
+      end
+  ' 2>/dev/null | \
+    awk '$0 == "true" { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
+valid_claude_transcript() {
+  local path="$1"
+  local expected_id="$2"
+
+  [ -s "$path" ] || return 1
+  valid_claude_transcript_stream "$expected_id" <"$path"
+}
+
+valid_claude_checkpoint_archive() {
+  local archive="$1"
+  local expected_id="$2"
+
+  [ -s "$archive" ] || return 1
+  "$TAR_BIN" -xOf "$archive" ./transcript.jsonl 2>/dev/null | \
+    valid_claude_transcript_stream "$expected_id"
+}
+
+codex_home() {
+  printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"
+}
+
+safe_codex_rollout_path() {
+  local path="$1"
+  local sessions
+  local sessions_real
+  local parent_real
+  local relative
+  local ancestor
+
+  sessions="$(codex_home)/sessions"
+  [ -d "$sessions" ] && [ ! -L "$path" ] || return 1
+  case "$path" in
+    "$sessions"/*) ;;
+    *) return 1 ;;
+  esac
+  relative="${path#"$sessions"/}"
+  case "/$relative/" in
+    */../*|*/./*) return 1 ;;
+  esac
+  sessions_real="$(cd -P "$sessions" >/dev/null 2>&1 && pwd)" || return 1
+  ancestor="$(dirname "$path")"
+  while [ ! -e "$ancestor" ]; do
+    [ "$ancestor" != "/" ] || return 1
+    ancestor="$(dirname "$ancestor")"
+  done
+  [ -d "$ancestor" ] && [ ! -L "$ancestor" ] || return 1
+  parent_real="$(cd -P "$ancestor" >/dev/null 2>&1 && pwd)" || return 1
+  case "$parent_real/" in
+    "$sessions_real/"|"$sessions_real"/*) return 0 ;;
+  esac
+  return 1
+}
+
+codex_state_db() {
+  local home
+  local newest=""
+  local candidate
+
+  home="$(codex_home)"
+  if [ -f "$home/state_5.sqlite" ]; then
+    printf '%s\n' "$home/state_5.sqlite"
+    return 0
+  fi
+  for candidate in "$home"/state_*.sqlite; do
+    [ -f "$candidate" ] || continue
+    if [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; then
+      newest="$candidate"
+    fi
+  done
+  printf '%s\n' "$newest"
+}
+
+sql_escape() {
+  printf '%s' "${1//\'/\'\'}"
+}
+
+snapshot_known_threads() {
+  local session="$1"
+  local cwd="$2"
+  local db
+  local cwd_sql
+  local output
+
+  output="$(session_dir "$session")/known-thread-ids.txt"
+  if [ "$PROVIDER" = "claude" ]; then
+    : >"$output"
+    return 0
+  fi
+  db="$(codex_state_db)"
+  if [ -z "$db" ] || [ ! -f "$db" ]; then
+    : >"$output"
+    return 0
+  fi
+  cwd_sql="$(sql_escape "$cwd")"
+  "$SQLITE_BIN" -noheader -cmd '.timeout 5000' "$db" \
+    "SELECT id FROM threads
+     WHERE source = 'cli'
+       AND COALESCE(thread_source, 'user') = 'user'
+       AND cwd = '$cwd_sql'
+     ORDER BY id;" >"$output"
+}
+
+write_resume_args() {
+  local session="$1"
+  shift
+  local output
+  local tmp
+  local arg
+
+  output="$(session_dir "$session")/resume-args.bin"
+  tmp="$output.tmp.$$"
+  : >"$tmp"
+  if [ "$PROVIDER" = "claude" ]; then
+    while [ "$#" -gt 0 ]; do
+      arg="$1"
+      shift
+      case "$arg" in
+        --session-id|-r|--resume|-c|--continue|--fork-session|--bg|--background)
+          case "$arg" in
+            --session-id|-r|--resume) [ "$#" -eq 0 ] || shift ;;
+          esac
+          ;;
+        --allowedTools|--allowed-tools|--betas|--disallowedTools|--disallowed-tools|\
+        --file|--mcp-config|--tools|--add-dir)
+          printf '%s\0' "$arg" >>"$tmp"
+          while [ "$#" -gt 0 ]; do
+            case "$1" in -*) break ;; esac
+            printf '%s\0' "$1" >>"$tmp"
+            shift
+          done
+          ;;
+        --agent|--agents|--append-system-prompt|--debug-file|--effort|\
+        --model|-n|--name|--permission-mode|--plugin-dir|\
+        --plugin-url|--remote-control-session-name-prefix|--setting-sources|\
+        --settings|--system-prompt)
+          [ "$#" -gt 0 ] || continue
+          printf '%s\0%s\0' "$arg" "$1" >>"$tmp"
+          shift
+          ;;
+        --agent=*|--agents=*|--allowedTools=*|--allowed-tools=*|--betas=*|\
+        --append-system-prompt=*|--disallowedTools=*|--disallowed-tools=*|\
+        --debug=*|--debug-file=*|--effort=*|--file=*|--from-pr=*|\
+        --mcp-config=*|--model=*|--name=*|--permission-mode=*|\
+        --plugin-dir=*|--plugin-url=*|--prompt-suggestions=*|--remote-control=*|\
+        --remote-control-session-name-prefix=*|--setting-sources=*|--settings=*|\
+        --system-prompt=*|--tools=*|--add-dir=*)
+          printf '%s\0' "$arg" >>"$tmp"
+          ;;
+        --allow-dangerously-skip-permissions|--dangerously-skip-permissions|\
+        --bare|--brief|--chrome|--no-chrome|--disable-slash-commands|\
+        --exclude-dynamic-system-prompt-sections|--ide|--safe-mode|\
+        --strict-mcp-config|--verbose)
+          printf '%s\0' "$arg" >>"$tmp"
+          ;;
+      esac
+    done
+    mv -f "$tmp" "$output"
+    return
+  fi
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    shift
+    case "$arg" in
+      -c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|\
+      --add-dir|--enable|--disable|--local-provider|--remote|--remote-auth-token-env|\
+      -i|--image)
+        [ "$#" -gt 0 ] || continue
+        printf '%s\0%s\0' "$arg" "$1" >>"$tmp"
+        shift
+        ;;
+      --config=*|--model=*|--profile=*|--sandbox=*|--ask-for-approval=*|\
+      --add-dir=*|--enable=*|--disable=*|--local-provider=*|--remote=*|\
+      --remote-auth-token-env=*|--image=*)
+        printf '%s\0' "$arg" >>"$tmp"
+        ;;
+      --search|--oss|--strict-config|--no-alt-screen|\
+      --dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust)
+        printf '%s\0' "$arg" >>"$tmp"
+        ;;
+    esac
+  done
+  mv -f "$tmp" "$output"
+}
+
+discover_codex_session() {
+  local session="$1"
+  local run_token="${2:-}"
+  local meta
+  local existing_id
+  local cwd
+  local db
+  local cwd_sql
+  local rows
+  local known
+  local candidate_ids
+  local candidate_count
+  local id
+  local rollout
+  local candidate
+  local candidate_rollout
+  local candidate_originator
+  local expected_originator
+
+  meta="$(session_meta "$session")"
+  [ -f "$meta" ] || return 1
+  if [ -n "$run_token" ] && [ "$($JQ_BIN -r '.run_token // empty' "$meta")" != "$run_token" ]; then
+    return 1
+  fi
+  existing_id="$($JQ_BIN -r '.agent_session_id // .codex_session_id // empty' "$meta")"
+  if [ "$PROVIDER" = "claude" ]; then
+    [ -n "$existing_id" ] || return 1
+    rollout="$($JQ_BIN -r '.transcript_path // empty' "$meta")"
+    if [ -z "$rollout" ] || \
+       ! safe_claude_transcript_path "$rollout" "$existing_id" || \
+       ! valid_claude_transcript "$rollout" "$existing_id"; then
+      rollout="$(claude_transcript_for_id "$existing_id" 2>/dev/null || true)"
+    fi
+    [ -n "$rollout" ] && valid_claude_transcript "$rollout" "$existing_id" || return 1
+    if [ -n "$run_token" ]; then
+      json_update_meta_for_run "$session" "$run_token" \
+        '.agent_session_id = $id | .transcript_path = $transcript' \
+        --arg id "$existing_id" --arg transcript "$rollout"
+    else
+      json_update_meta "$session" \
+        '.agent_session_id = $id | .transcript_path = $transcript' \
+        --arg id "$existing_id" --arg transcript "$rollout"
+    fi
+    return
+  fi
+  [ -z "$existing_id" ] || return 0
+
+  cwd="$($JQ_BIN -r '.project_dir' "$meta")"
+  db="$(codex_state_db)"
+  [ -n "$db" ] && [ -f "$db" ] || return 1
+  known="$(session_dir "$session")/known-thread-ids.txt"
+  [ -f "$known" ] || return 1
+
+  cwd_sql="$(sql_escape "$cwd")"
+  rows="$($SQLITE_BIN -json -cmd '.timeout 5000' "$db" \
+    "SELECT id, rollout_path FROM threads
+     WHERE source = 'cli'
+       AND COALESCE(thread_source, 'user') = 'user'
+       AND cwd = '$cwd_sql'
+     ORDER BY created_at_ms ASC, id ASC;" 2>/dev/null || true)"
+
+  [ -n "$run_token" ] || return 1
+  expected_originator="codex_detached_$run_token"
+  candidate_ids="$(printf '%s' "$rows" | "$JQ_BIN" -r '.[] | [.id, .rollout_path] | @tsv' 2>/dev/null | \
+    while IFS=$'\t' read -r candidate candidate_rollout; do
+      grep -Fqx "$candidate" "$known" && continue
+      [ -f "$candidate_rollout" ] || continue
+      candidate_originator="$(sed -n '1p' "$candidate_rollout" | \
+        "$JQ_BIN" -r '.payload.originator // empty' 2>/dev/null || true)"
+      [ "$candidate_originator" = "$expected_originator" ] && printf '%s\n' "$candidate"
+    done)"
+  candidate_count="$(printf '%s\n' "$candidate_ids" | sed '/^$/d' | wc -l | tr -d ' ')"
+  [ "$candidate_count" = "1" ] || {
+    [ "$candidate_count" -lt 2 ] || checkpoint_log "$session" "ambiguous Codex session discovery: $candidate_count new root threads"
+    return 1
+  }
+  id="$(printf '%s\n' "$candidate_ids" | sed -n '1p')"
+  rollout="$(printf '%s' "$rows" | "$JQ_BIN" -r --arg id "$id" '.[] | select(.id == $id) | .rollout_path' 2>/dev/null || true)"
+  [ -n "$id" ] && [ -n "$rollout" ] || return 1
+
+  safe_codex_rollout_path "$rollout" || return 1
+  valid_jsonl "$rollout" "$id" || return 1
+
+  if [ -n "$run_token" ]; then
+    json_update_meta_for_run "$session" "$run_token" \
+      '.agent_session_id = $id | .transcript_path = $rollout | .codex_session_id = $id | .rollout_path = $rollout' \
+      --arg id "$id" --arg rollout "$rollout"
+  else
+    json_update_meta "$session" \
+      '.agent_session_id = $id | .transcript_path = $rollout | .codex_session_id = $id | .rollout_path = $rollout' \
+      --arg id "$id" --arg rollout "$rollout"
+  fi
+}
+
+valid_jsonl() {
+  local path="$1"
+  local expected_id="${2:-}"
+  local actual_id
+
+  [ -s "$path" ] && "$JQ_BIN" -e -c . "$path" >/dev/null 2>&1 || return 1
+  [ -z "$expected_id" ] && return 0
+  actual_id="$(sed -n '1p' "$path" | "$JQ_BIN" -r '.payload.id // .payload.session_id // empty' 2>/dev/null || true)"
+  [ "$actual_id" = "$expected_id" ]
+}
+
+restore_matching_rollout_checkpoint() {
+  local session="$1"
+  local id="$2"
+  local rollout="$3"
+  local backup
+  local tmp
+  local restore=0
+
+  safe_codex_rollout_path "$rollout" || return 1
+  backup="$(session_dir "$session")/checkpoint/rollout.jsonl"
+  [ -f "$backup" ] || return 0
+  valid_jsonl "$backup" "$id" || return 0
+  if ! valid_jsonl "$rollout" "$id"; then
+    restore=1
+  elif [ "$(stat -f '%z' "$rollout")" -lt "$(stat -f '%z' "$backup")" ]; then
+    restore=1
+  fi
+  [ "$restore" -eq 1 ] || return 0
+
+  mkdir -p "$(dirname "$rollout")"
+  tmp="$rollout.codex-detached.tmp.$$"
+  cp -p "$backup" "$tmp" || return 1
+  valid_jsonl "$tmp" "$id" || {
+    rm -f "$tmp"
+    return 1
+  }
+  mv -f "$tmp" "$rollout" || return 1
+  [ "$SYNC_ENABLED" = "0" ] || /bin/sync
+  error "restored Codex rollout from the matching checkpoint before resume"
+}
+
+restore_directory_checkpoint() {
+  local backup="$1"
+  local destination="$2"
+  local tmp="$destination.claude-detached.tmp.$$"
+
+  [ -d "$backup" ] || return 0
+  mkdir -p "$(dirname "$destination")" || return 1
+  rm -rf "$tmp"
+  cp -R "$backup" "$tmp" || {
+    rm -rf "$tmp"
+    return 1
+  }
+  rm -rf "$destination"
+  mv "$tmp" "$destination"
+}
+
+restore_missing_checkpoint_files() {
+  local backup="$1"
+  local destination="$2"
+  local source
+  local relative
+  local target
+
+  RESTORE_MISSING_CHANGED=0
+  [ -d "$backup" ] || return 0
+  mkdir -p "$destination" || return 1
+  while IFS= read -r -d '' source; do
+    relative="${source#"$backup"/}"
+    target="$destination/$relative"
+    if [ -d "$source" ]; then
+      if [ ! -d "$target" ]; then
+        mkdir -p "$target" || return 1
+        RESTORE_MISSING_CHANGED=1
+      fi
+    elif [ ! -e "$target" ] && [ ! -L "$target" ]; then
+      mkdir -p "$(dirname "$target")" || return 1
+      cp -pR "$source" "$target" || return 1
+      RESTORE_MISSING_CHANGED=1
+    fi
+  done < <(find "$backup" -mindepth 1 -print0)
+}
+
+restore_matching_claude_checkpoint() {
+  local session="$1"
+  local id="$2"
+  local transcript="$3"
+  local force_checkpoint="${4:-0}"
+  local checkpoint_dir
+  local backup
+  local tmp
+  local restore=0
+  local home
+  local archive
+  local stage=""
+  local changed=0
+  local force_directories=0
+  local source
+  local destination
+  local item
+  local live_valid=0
+
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  safe_claude_transcript_path "$transcript" "$id" || return 1
+  if [ -n "$transcript" ] && valid_claude_transcript "$transcript" "$id"; then
+    live_valid=1
+  fi
+  archive="$checkpoint_dir/claude-session.tar"
+  if [ -f "$archive" ]; then
+    stage="$checkpoint_dir/claude-restore.$$"
+    rm -rf "$stage"
+    mkdir -p "$stage" || return 1
+    "$TAR_BIN" -tf "$archive" 2>/dev/null | \
+      awk '
+        /^\// { unsafe = 1 }
+        /(^|\/)\.\.($|\/)/ { unsafe = 1 }
+        END { exit(unsafe ? 1 : 0) }
+      ' || {
+        rm -rf "$stage"
+        return 1
+      }
+    "$TAR_BIN" -xf "$archive" -C "$stage" >/dev/null 2>&1 || {
+      rm -rf "$stage"
+      if [ "$live_valid" -eq 1 ]; then
+        checkpoint_log "$session" "ignored unreadable Claude checkpoint for valid live session $id"
+        return 0
+      fi
+      return 1
+    }
+    if [ -n "$(find "$stage" -type l -print -quit 2>/dev/null)" ]; then
+      rm -rf "$stage"
+      return 1
+    fi
+    backup="$stage/transcript.jsonl"
+  else
+    backup="$checkpoint_dir/transcript.jsonl"
+  fi
+  [ -f "$backup" ] || {
+    [ -z "$stage" ] || rm -rf "$stage"
+    return 0
+  }
+  valid_claude_transcript "$backup" "$id" || {
+    [ -z "$stage" ] || rm -rf "$stage"
+    if [ "$live_valid" -eq 1 ]; then
+      checkpoint_log "$session" "ignored stale or mismatched Claude checkpoint for valid live session $id"
+      return 0
+    fi
+    return 1
+  }
+  [ -n "$transcript" ] || {
+    [ -z "$stage" ] || rm -rf "$stage"
+    return 1
+  }
+
+  if ! valid_claude_transcript "$transcript" "$id"; then
+    restore=1
+  elif [ "$(stat -f '%z' "$transcript")" -lt "$(stat -f '%z' "$backup")" ]; then
+    restore=1
+  fi
+  [ "$force_checkpoint" -eq 0 ] || restore=1
+  if [ "$restore" -eq 1 ]; then
+    mkdir -p "$(dirname "$transcript")" || {
+      [ -z "$stage" ] || rm -rf "$stage"
+      return 1
+    }
+    tmp="$transcript.claude-detached.tmp.$$"
+    cp -p "$backup" "$tmp" || {
+      [ -z "$stage" ] || rm -rf "$stage"
+      return 1
+    }
+    valid_claude_transcript "$tmp" "$id" || {
+      rm -f "$tmp"
+      [ -z "$stage" ] || rm -rf "$stage"
+      return 1
+    }
+    mv -f "$tmp" "$transcript" || {
+      [ -z "$stage" ] || rm -rf "$stage"
+      return 1
+    }
+    changed=1
+    force_directories=1
+  fi
+
+  home="$(claude_home)"
+  if [ -n "$stage" ]; then
+    for source in \
+      "$stage/project-session" \
+      "$stage/file-history" \
+      "$stage/session-env"; do
+      case "$source" in
+        "$stage/project-session") destination="${transcript%.jsonl}" ;;
+        "$stage/file-history") destination="$home/file-history/$id" ;;
+        *) destination="$home/session-env/$id" ;;
+      esac
+      [ -d "$source" ] || continue
+      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
+        restore_directory_checkpoint "$source" "$destination" || {
+          rm -rf "$stage"
+          return 1
+        }
+        changed=1
+      else
+        restore_missing_checkpoint_files "$source" "$destination" || {
+          rm -rf "$stage"
+          return 1
+        }
+        [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
+      fi
+    done
+    for source in "$stage"/tasks/*; do
+      [ -d "$source" ] || continue
+      destination="$home/tasks/$(basename "$source")"
+      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
+        restore_directory_checkpoint "$source" "$destination" || {
+          rm -rf "$stage"
+          return 1
+        }
+        changed=1
+      else
+        restore_missing_checkpoint_files "$source" "$destination" || {
+          rm -rf "$stage"
+          return 1
+        }
+        [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
+      fi
+    done
+    for source in "$stage"/teams/*; do
+      [ -d "$source" ] || continue
+      destination="$home/teams/$(basename "$source")"
+      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
+        restore_directory_checkpoint "$source" "$destination" || {
+          rm -rf "$stage"
+          return 1
+        }
+        changed=1
+      else
+        restore_missing_checkpoint_files "$source" "$destination" || {
+          rm -rf "$stage"
+          return 1
+        }
+        [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
+      fi
+    done
+  else
+    for item in \
+      "claude-session|${transcript%.jsonl}" \
+      "claude-file-history|$home/file-history/$id" \
+      "claude-session-env|$home/session-env/$id"; do
+      source="$checkpoint_dir/${item%%|*}"
+      destination="${item#*|}"
+      [ -d "$source" ] || continue
+      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
+        restore_directory_checkpoint "$source" "$destination" || return 1
+        changed=1
+      else
+        restore_missing_checkpoint_files "$source" "$destination" || return 1
+        [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
+      fi
+    done
+  fi
+  [ -z "$stage" ] || rm -rf "$stage"
+  if [ "$changed" -eq 1 ]; then
+    [ "$SYNC_ENABLED" = "0" ] || /bin/sync
+    error "restored Claude session artifacts from the matching checkpoint before resume"
+  fi
+}
+
+checkpoint_log() {
+  local session="$1"
+  shift
+  printf '%s %s\n' "$(now_iso)" "$*" >>"$(session_dir "$session")/checkpoint.log"
+}
+
+checkpoint_rollout() {
+  local session="$1"
+  local rollout="$2"
+  local expected_id="$3"
+  local checkpoint_dir
+  local tmp
+  local attempt
+
+  [ -f "$rollout" ] && safe_codex_rollout_path "$rollout" || return 1
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  tmp="$checkpoint_dir/rollout.jsonl.tmp.$$"
+
+  for attempt in 1 2 3; do
+    cp -p "$rollout" "$tmp" 2>/dev/null || true
+    if valid_jsonl "$tmp" "$expected_id"; then
+      mv -f "$tmp" "$checkpoint_dir/rollout.jsonl"
+      return 0
+    fi
+    rm -f "$tmp"
+    sleep 1
+  done
+
+  checkpoint_log "$session" "rollout snapshot skipped because the source was mid-write"
+  return 1
+}
+
+copy_checkpoint_directory() {
+  local source="$1"
+  local destination="$2"
+
+  [ -d "$source" ] || return 0
+  mkdir -p "$(dirname "$destination")" || return 1
+  cp -R "$source" "$destination"
+}
+
+checkpoint_claude_artifacts() {
+  local session="$1"
+  local transcript="$2"
+  local id="$3"
+  local checkpoint_dir
+  local tmp
+  local home
+  local stage
+  local archive_tmp
+  local task
+  local config
+  local team
+  local short_id
+
+  [ -f "$transcript" ] && safe_claude_transcript_path "$transcript" "$id" || return 1
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  stage="$checkpoint_dir/claude-stage.$$"
+  archive_tmp="$checkpoint_dir/claude-session.tar.tmp.$$"
+  rm -rf "$stage"
+  rm -f "$archive_tmp"
+  mkdir -p "$stage" || return 1
+
+  cp -p "$transcript" "$stage/transcript.jsonl" 2>/dev/null || {
+    rm -rf "$stage"
+    return 1
+  }
+  if ! valid_claude_transcript "$stage/transcript.jsonl" "$id"; then
+    rm -rf "$stage"
+    checkpoint_log "$session" "Claude transcript snapshot skipped because the source was mid-write"
+    return 1
+  fi
+
+  home="$(claude_home)"
+  short_id="${id:0:8}"
+  copy_checkpoint_directory "${transcript%.jsonl}" "$stage/project-session" || {
+    rm -rf "$stage"
+    return 1
+  }
+  copy_checkpoint_directory "$home/file-history/$id" "$stage/file-history" || {
+    rm -rf "$stage"
+    return 1
+  }
+  copy_checkpoint_directory "$home/session-env/$id" "$stage/session-env" || {
+    rm -rf "$stage"
+    return 1
+  }
+  for task in "$home/tasks/$id" "$home/tasks/session-$short_id"; do
+    [ -d "$task" ] || continue
+    copy_checkpoint_directory "$task" "$stage/tasks/$(basename "$task")" || {
+      rm -rf "$stage"
+      return 1
+    }
+  done
+  for config in "$home"/teams/*/config.json; do
+    [ -f "$config" ] || continue
+    "$JQ_BIN" -e --arg id "$id" '(.leadSessionId // "") == $id' "$config" >/dev/null 2>&1 || continue
+    team="$(dirname "$config")"
+    copy_checkpoint_directory "$team" "$stage/teams/$(basename "$team")" || {
+      rm -rf "$stage"
+      return 1
+    }
+  done
+
+  if [ -n "$(find "$stage" -type l -print -quit 2>/dev/null)" ]; then
+    rm -rf "$stage"
+    checkpoint_log "$session" "Claude checkpoint skipped because a companion artifact is a symlink"
+    return 1
+  fi
+
+  "$TAR_BIN" -cf "$archive_tmp" -C "$stage" . >/dev/null 2>&1 || {
+    rm -rf "$stage"
+    rm -f "$archive_tmp"
+    return 1
+  }
+  "$TAR_BIN" -tf "$archive_tmp" >/dev/null 2>&1 || {
+    rm -rf "$stage"
+    rm -f "$archive_tmp"
+    return 1
+  }
+  mv -f "$archive_tmp" "$checkpoint_dir/claude-session.tar" || {
+    rm -rf "$stage"
+    return 1
+  }
+
+  tmp="$checkpoint_dir/transcript.jsonl.tmp.$$"
+  if ! cp -p "$stage/transcript.jsonl" "$tmp" || \
+     ! mv -f "$tmp" "$checkpoint_dir/transcript.jsonl"; then
+    checkpoint_log "$session" "standalone Claude transcript copy failed; atomic archive remains valid"
+  fi
+  rm -f "$tmp"
+  rm -rf \
+    "$checkpoint_dir/claude-session" \
+    "$checkpoint_dir/claude-file-history" \
+    "$checkpoint_dir/claude-session-env" \
+    "$stage"
+}
+
+checkpoint_database() {
+  local session="$1"
+  local db
+  local checkpoint_dir
+  local tmp
+
+  [ "$PROVIDER" = "codex" ] || return 0
+  db="$(codex_state_db)"
+  [ -n "$db" ] && [ -f "$db" ] || return 1
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  tmp="$checkpoint_dir/codex-state.sqlite.tmp.$$"
+  rm -f "$tmp"
+
+  "$SQLITE_BIN" -cmd '.timeout 5000' "$db" ".backup \"$tmp\"" >/dev/null 2>&1 || {
+    rm -f "$tmp"
+    checkpoint_log "$session" "Codex SQLite backup failed"
+    return 1
+  }
+  [ "$($SQLITE_BIN "$tmp" 'PRAGMA quick_check;' 2>/dev/null)" = "ok" ] || {
+    rm -f "$tmp"
+    checkpoint_log "$session" "Codex SQLite backup failed quick_check"
+    return 1
+  }
+  mv -f "$tmp" "$checkpoint_dir/codex-state.sqlite"
+}
+
+checkpoint_pane() {
+  local session="$1"
+  local checkpoint_dir
+  local tmp
+  local pane
+
+  tmux_has_session "$session" || return 1
+  pane="$(tmux_pane_id "$session" 2>/dev/null || true)"
+  [ -n "$pane" ] || {
+    checkpoint_log "$session" "pane snapshot failed: pane id is unavailable (socket=$TMUX_SOCKET, tmux_tmpdir=${TMUX_TMPDIR:-unset})"
+    "${TMUX_CMD[@]}" list-sessions -F 'tmux session: #{session_name}' >>"$(session_dir "$session")/checkpoint.log" 2>&1 || true
+    return 1
+  }
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  tmp="$checkpoint_dir/pane.txt.tmp.$$"
+  "${TMUX_CMD[@]}" capture-pane -p -J -S "-$HISTORY_LIMIT" -t "$pane" >"$tmp" 2>>"$(session_dir "$session")/checkpoint.log" || {
+    checkpoint_log "$session" "pane snapshot failed for $pane"
+    rm -f "$tmp"
+    return 1
+  }
+  mv -f "$tmp" "$checkpoint_dir/pane.txt"
+}
+
+checkpoint_worktree() {
+  local session="$1"
+  local cwd="$2"
+  local checkpoint_dir
+  local tmp
+
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  tmp="$checkpoint_dir/worktree-status.txt.tmp.$$"
+  if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$cwd" status --short --branch --untracked-files=normal >"$tmp" 2>&1 || true
+  else
+    printf 'Not a Git worktree: %s\n' "$cwd" >"$tmp"
+  fi
+  mv -f "$tmp" "$checkpoint_dir/worktree-status.txt"
+}
+
+checkpoint_lock_path() {
+  printf '%s/checkpoint-%s.lock\n' "$LOCKS_ROOT" "$1"
+}
+
+checkpoint_once() {
+  local session="$1"
+
+  ensure_state_dirs
+  "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+    "$SELF" __checkpoint_once_locked "$@"
+}
+
+checkpoint_once_locked() {
+  local session="$1"
+  local run_token="${2:-}"
+  local meta
+  local cwd
+  local id
+  local rollout
+  local checkpoint_dir
+  local checkpoint_time
+  local tmp
+  local publish=0
+
+  meta="$(session_meta "$session")"
+  [ -f "$meta" ] || return 1
+  if [ -n "$run_token" ] && [ "$($JQ_BIN -r '.run_token // empty' "$meta")" != "$run_token" ]; then
+    return 1
+  fi
+  mkdir -p "$(session_dir "$session")/checkpoint"
+
+  discover_codex_session "$session" "$run_token" >/dev/null 2>&1 || true
+  cwd="$($JQ_BIN -r '.project_dir' "$meta")"
+  id="$($JQ_BIN -r '.agent_session_id // .codex_session_id // empty' "$meta")"
+  rollout="$($JQ_BIN -r '.transcript_path // .rollout_path // empty' "$meta")"
+
+  if [ -n "$id" ] && [ -n "$rollout" ]; then
+    if [ "$PROVIDER" = "claude" ]; then
+      checkpoint_claude_artifacts "$session" "$rollout" "$id" && publish=1
+    elif checkpoint_rollout "$session" "$rollout" "$id"; then
+      publish=1
+    fi
+  fi
+  checkpoint_database "$session" || true
+  checkpoint_pane "$session" || true
+  checkpoint_worktree "$session" "$cwd"
+
+  if [ "$publish" -eq 1 ]; then
+    checkpoint_time="$(now_iso)"
+    if [ -n "$run_token" ]; then
+      json_update_meta_for_run "$session" "$run_token" '.last_checkpoint_at = $time' --arg time "$checkpoint_time" || true
+    else
+      json_update_meta "$session" '.last_checkpoint_at = $time' --arg time "$checkpoint_time" || true
+    fi
+    checkpoint_dir="$(session_dir "$session")/checkpoint"
+    tmp="$checkpoint_dir/meta.json.tmp.$$"
+    cp -p "$meta" "$tmp" && mv -f "$tmp" "$checkpoint_dir/meta.json"
+    rm -f "$tmp"
+  fi
+
+  if [ "$SYNC_ENABLED" != "0" ]; then
+    /bin/sync
+  fi
+}
+
+checkpoint_loop() {
+  local session="$1"
+  local run_token="$2"
+  local worker_pid="$3"
+  local attempts=0
+  local sleep_pid=""
+
+  checkpoint_loop_cleanup() {
+    if [ -n "$sleep_pid" ]; then
+      kill "$sleep_pid" 2>/dev/null || true
+      wait "$sleep_pid" 2>/dev/null || true
+    fi
+  }
+  trap checkpoint_loop_cleanup EXIT
+  trap 'exit 0' HUP INT TERM
+
+  while kill -0 "$worker_pid" 2>/dev/null && [ "$attempts" -lt 60 ]; do
+    if discover_codex_session "$session" "$run_token" >/dev/null 2>&1; then
+      break
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+
+  checkpoint_once "$session" "$run_token" || true
+  while kill -0 "$worker_pid" 2>/dev/null; do
+    sleep "$CHECKPOINT_INTERVAL" &
+    sleep_pid=$!
+    wait "$sleep_pid" || exit 0
+    sleep_pid=""
+    kill -0 "$worker_pid" 2>/dev/null || break
+    checkpoint_once "$session" "$run_token" || true
+  done
+}
+
+amphetamine_script() {
+  "$OSASCRIPT_BIN" -e "tell application id \"$AMPHETAMINE_ID\" to $1" 2>/dev/null
+}
+
+amphetamine_active() {
+  [ "$(amphetamine_script 'session is active' || true)" = "true" ]
+}
+
+amphetamine_cdm_enabled() {
+  [ "$(amphetamine_script 'closed display mode enabled' || true)" = "true" ]
+}
+
+amphetamine_trigger_session() {
+  [ "$(amphetamine_script 'session is Trigger' || true)" = "true" ]
+}
+
+amphetamine_infinite_session() {
+  [ "$(amphetamine_script 'session time remaining' || true)" = "0" ]
+}
+
+amphetamine_display_sleep_allowed() {
+  [ "$(amphetamine_script 'display sleep allowed' || true)" = "true" ]
+}
+
+system_sleep_disabled() {
+  "$PMSET_BIN" -g live 2>/dev/null | \
+    grep -Eq 'SleepDisabled"?[[:space:]]*(=[[:space:]]*)?(Yes|1)([[:space:]]|$)'
+}
+
+low_battery_guard_active() {
+  local enabled
+  local threshold
+  local power
+  local percent
+
+  enabled="$(defaults read "$AMPHETAMINE_ID" 'End Session On Low Battery' 2>/dev/null || printf '0')"
+  [ "$enabled" = "1" ] || return 1
+  threshold="$(defaults read "$AMPHETAMINE_ID" 'Low Battery Percent' 2>/dev/null || printf '10')"
+  case "$threshold" in
+    ''|*[!0-9]*) threshold=10 ;;
+  esac
+  power="$("$PMSET_BIN" -g batt 2>/dev/null | sed -n "1{s/.*'\([^']*\)'.*/\1/p;}")"
+  [ "$power" = "Battery Power" ] || return 1
+  percent="$("$PMSET_BIN" -g batt 2>/dev/null | awk -F '\t' 'NR > 1 { split($2, value, "%"); gsub(/[^0-9]/, "", value[1]); if (value[1] != "") { print value[1]; exit } }')"
+  case "$percent" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$percent" -le "$threshold" ]
+}
+
+verify_amphetamine_session() {
+  local attempts=0
+
+  while [ "$attempts" -lt 8 ]; do
+    if amphetamine_active && \
+       amphetamine_cdm_enabled && \
+       amphetamine_infinite_session && \
+       ! amphetamine_trigger_session && \
+       amphetamine_display_sleep_allowed && \
+       system_sleep_disabled; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  return 1
+}
+
+lease_is_live() {
+  local lease="$1"
+  local session
+  local run_token
+  local socket
+  local socket_path
+  local pane
+  local modified
+  local age
+  local lease_tmux=("$TMUX_BIN")
+
+  session="$($JQ_BIN -r '.session // empty' "$lease" 2>/dev/null || true)"
+  run_token="$($JQ_BIN -r '.run_token // empty' "$lease" 2>/dev/null || true)"
+  socket="$($JQ_BIN -r '.tmux_socket // empty' "$lease" 2>/dev/null || true)"
+  socket_path="$($JQ_BIN -r '.tmux_socket_path // empty' "$lease" 2>/dev/null || true)"
+  if [ -n "$socket_path" ]; then
+    lease_tmux+=( -S "$socket_path" )
+  elif [ -n "$socket" ]; then
+    lease_tmux+=( -L "$socket" )
+  fi
+
+  if [ -n "$session" ] && [ -n "$run_token" ] && \
+     "${lease_tmux[@]}" has-session -t "=$session" 2>/dev/null && \
+     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached 2>/dev/null || true)" = "1" ] && \
+     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached_run_token 2>/dev/null || true)" = "$run_token" ] && \
+     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached_running 2>/dev/null || true)" = "1" ]; then
+    pane="$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached_pane_id 2>/dev/null || true)"
+    if [ -n "$pane" ] && [ "$("${lease_tmux[@]}" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null || printf '1')" = "0" ]; then
+      return 0
+    fi
+  fi
+
+  modified="$(stat -f '%m' "$lease" 2>/dev/null || printf '0')"
+  age=$(($(date '+%s') - modified))
+  [ "$age" -lt 30 ]
+}
+
+amphetamine_lease_path() {
+  printf '%s/%s.json\n' "$AMPHETAMINE_LEASES" "$1"
+}
+
+clean_stale_leases() {
+  local lease
+
+  for lease in "$AMPHETAMINE_LEASES"/*; do
+    [ -f "$lease" ] || continue
+    lease_is_live "$lease" || rm -f "$lease"
+  done
+}
+
+lease_count() {
+  local count=0
+  local lease
+
+  for lease in "$AMPHETAMINE_LEASES"/*; do
+    [ -f "$lease" ] || continue
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
+write_amphetamine_owner() {
+  local owned="$1"
+  local pending="${2:-false}"
+  local tmp="$AMPHETAMINE_OWNER.tmp.$$"
+
+  "$JQ_BIN" -n \
+    --argjson owned "$owned" \
+    --argjson pending "$pending" \
+    --arg started_at "$(now_iso)" \
+    '{owned: $owned, pending: $pending, started_at: $started_at, fingerprint: {duration: "infinite", trigger: false, closed_display: true, display_sleep_allowed: true}}' \
+    >"$tmp" && mv -f "$tmp" "$AMPHETAMINE_OWNER"
+}
+
+amphetamine_start_owned_session() {
+  amphetamine_script 'start new session with options {duration:0, interval:0, displaySleepAllowed:true}' >/dev/null || return 1
+  amphetamine_script 'enable closed display mode' >/dev/null || return 1
+  verify_amphetamine_session
+}
+
+amphetamine_stop_owned_session() {
+  local attempts=0
+
+  if amphetamine_active; then
+    amphetamine_script 'end session' >/dev/null || return 1
+  elif system_sleep_disabled; then
+    "$SUDO_BIN" -n "$PMSET_BIN" -a disablesleep 0 >/dev/null 2>&1 || return 1
+  fi
+  while [ "$attempts" -lt 8 ]; do
+    if ! amphetamine_active && ! system_sleep_disabled; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  if system_sleep_disabled && "$SUDO_BIN" -n "$PMSET_BIN" -a disablesleep 0 >/dev/null 2>&1; then
+    attempts=0
+    while [ "$attempts" -lt 4 ]; do
+      system_sleep_disabled || return 0
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+  fi
+  return 1
+}
+
+amphetamine_acquire_locked() {
+  local session="$1"
+  local run_token="$2"
+  local leases
+  local previous_owned="false"
+  local mutation_started=0
+  local committed=0
+  local lease
+  local socket_path
+  local tmp
+
+  rollback_amphetamine_acquire() {
+    local status=$?
+    trap - EXIT HUP INT TERM
+    if [ "$mutation_started" -eq 1 ] && [ "$committed" -eq 0 ]; then
+      amphetamine_stop_owned_session || error "Amphetamine rollback did not restore system sleep"
+      rm -f "$AMPHETAMINE_OWNER"
+    fi
+    exit "$status"
+  }
+  trap rollback_amphetamine_acquire EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  ensure_state_dirs
+  clean_stale_leases
+  leases="$(lease_count)"
+  lease="$(amphetamine_lease_path "$run_token")"
+  if [ -f "$AMPHETAMINE_OWNER" ]; then
+    previous_owned="$($JQ_BIN -r '.owned // false' "$AMPHETAMINE_OWNER" 2>/dev/null || printf 'false')"
+  fi
+
+  if ! amphetamine_active && low_battery_guard_active; then
+    if [ -f "$lease" ]; then
+      if system_sleep_disabled; then
+        amphetamine_stop_owned_session || die "could not restore system sleep at the low-battery threshold"
+      fi
+      trap - EXIT HUP INT TERM
+      return 0
+    fi
+    die "battery is at or below Amphetamine's low-battery threshold"
+  fi
+
+  if [ "$leases" -eq 0 ]; then
+    if amphetamine_active; then
+      verify_amphetamine_session || die "Amphetamine is active, but not as an infinite Closed-Display session with display sleep allowed"
+      if [ "$previous_owned" = "true" ]; then
+        write_amphetamine_owner true false || die "cannot reclaim Amphetamine ownership"
+      else
+        write_amphetamine_owner false false || die "cannot record borrowed Amphetamine session"
+      fi
+    else
+      if [ "$previous_owned" = "true" ] && system_sleep_disabled; then
+        amphetamine_stop_owned_session || die "could not repair stale Power Protect state"
+      fi
+      write_amphetamine_owner true true || die "cannot record pending Amphetamine ownership"
+      mutation_started=1
+      if ! amphetamine_start_owned_session; then
+        die "could not start and verify Amphetamine Closed-Display Mode"
+      fi
+      write_amphetamine_owner true false || die "cannot record Amphetamine ownership"
+    fi
+  else
+    if ! amphetamine_active; then
+      write_amphetamine_owner true true || die "cannot record pending Amphetamine ownership"
+      mutation_started=1
+      if ! amphetamine_start_owned_session; then
+        die "Amphetamine stopped while detached sessions were active"
+      fi
+      write_amphetamine_owner true false || die "cannot record Amphetamine ownership"
+    else
+      verify_amphetamine_session || die "Amphetamine Closed-Display Mode is not healthy"
+      [ -f "$AMPHETAMINE_OWNER" ] || write_amphetamine_owner false false || die "cannot record borrowed Amphetamine session"
+    fi
+  fi
+
+  tmp="$lease.tmp.$$"
+  socket_path="$("${TMUX_CMD[@]}" display-message -p -t "=$session" '#{socket_path}' 2>/dev/null || true)"
+  "$JQ_BIN" -n \
+    --arg session "$session" \
+    --arg run_token "$run_token" \
+    --arg tmux_socket "$TMUX_SOCKET" \
+    --arg tmux_socket_path "$socket_path" \
+    --arg created_at "$(now_iso)" \
+    '{session: $session, run_token: $run_token, tmux_socket: $tmux_socket, tmux_socket_path: $tmux_socket_path, created_at: $created_at}' \
+    >"$tmp" && mv -f "$tmp" "$lease" || die "cannot record Amphetamine lease"
+  committed=1
+  trap - EXIT HUP INT TERM
+}
+
+amphetamine_release_locked() {
+  local session="$1"
+  local run_token="$2"
+  local owned="false"
+
+  ensure_state_dirs
+  rm -f "$(amphetamine_lease_path "$run_token")"
+  clean_stale_leases
+  [ "$(lease_count)" -eq 0 ] || return 0
+
+  if [ -f "$AMPHETAMINE_OWNER" ]; then
+    owned="$($JQ_BIN -r '.owned // false' "$AMPHETAMINE_OWNER" 2>/dev/null || printf 'false')"
+  fi
+
+  if [ "$owned" = "true" ] && amphetamine_active; then
+    if verify_amphetamine_session; then
+      if ! amphetamine_stop_owned_session; then
+        error "could not end the owned Amphetamine session or restore system sleep"
+        return 1
+      fi
+    else
+      error "Amphetamine session changed while detached agents were running; leaving it untouched"
+    fi
+  elif [ "$owned" = "true" ] && system_sleep_disabled; then
+    if ! amphetamine_stop_owned_session; then
+      error "Amphetamine is inactive and system sleep could not be restored"
+      return 1
+    fi
+  fi
+  rm -f "$AMPHETAMINE_OWNER"
+}
+
+amphetamine_acquire() {
+  local session="$1"
+  local run_token="$2"
+  [ "$AMPHETAMINE_ENABLED" = "0" ] && return 0
+  ensure_state_dirs
+  "$LOCKF_BIN" -k -t 20 "$AMPHETAMINE_LOCK" "$SELF" __amphetamine_acquire_locked "$session" "$run_token"
+}
+
+amphetamine_release() {
+  local session="$1"
+  local run_token="$2"
+  [ "$AMPHETAMINE_ENABLED" = "0" ] && return 0
+  ensure_state_dirs
+  "$LOCKF_BIN" -k -t 20 "$AMPHETAMINE_LOCK" "$SELF" __amphetamine_release_locked "$session" "$run_token"
+}
+
+amphetamine_reconcile() {
+  [ "$AMPHETAMINE_ENABLED" = "0" ] && return 0
+  ensure_state_dirs
+  "$LOCKF_BIN" -k -t 20 "$AMPHETAMINE_LOCK" "$SELF" __amphetamine_reconcile_locked
+}
+
+amphetamine_reconcile_locked() {
+  local lease
+  local session
+  local run_token
+
+  ensure_state_dirs
+  clean_stale_leases
+  for lease in "$AMPHETAMINE_LEASES"/*; do
+    [ -f "$lease" ] || continue
+  session="$("$JQ_BIN" -r '.session // empty' "$lease" 2>/dev/null || true)"
+    run_token="$("$JQ_BIN" -r '.run_token // empty' "$lease" 2>/dev/null || true)"
+    if [ -n "$session" ] && [ -n "$run_token" ]; then
+      amphetamine_acquire_locked "$session" "$run_token"
+      return
+    fi
+    rm -f "$lease"
+  done
+  amphetamine_release_locked __reconcile__ __reconcile__
+}
+
+warn_power_configuration() {
+  local low_battery
+  local power
+
+  [ "$AMPHETAMINE_ENABLED" = "0" ] && return 0
+  low_battery="$(defaults read "$AMPHETAMINE_ID" 'End Session On Low Battery' 2>/dev/null || printf '0')"
+  power="$($PMSET_BIN -g batt 2>/dev/null | sed -n "1{s/.*'\([^']*\)'.*/\1/p;}")"
+  if [ "$low_battery" != "1" ]; then
+    error "warning: Amphetamine low-battery auto-end is disabled; keep the Mac connected to power"
+  fi
+  if [ "$power" = "Battery Power" ]; then
+    error "warning: Mac is running on battery"
+  fi
+}
+
+worker_main() {
+  local session="$1"
+  local cwd="$2"
+  local start_ms="$3"
+  local run_token="$4"
+  local agent_bin="$5"
+  shift 5
+  local checkpoint_pid=""
+  local cleanup_done=0
+  local exit_status=1
+  local status_label="failed"
+  local arg
+  local has_approval=0
+  local has_sandbox=0
+  local has_cd=0
+  local has_no_alt=0
+  local codex_args=()
+  local claude_args=()
+  local agent_session_id=""
+  local claude_resume=0
+  local has_claude_permission=0
+
+  worker_cleanup() {
+    local cleanup_status=$?
+    [ "$cleanup_done" -eq 0 ] || return 0
+    cleanup_done=1
+    trap - EXIT HUP INT TERM
+
+    if [ -n "$checkpoint_pid" ]; then
+      kill "$checkpoint_pid" 2>/dev/null || true
+      wait "$checkpoint_pid" 2>/dev/null || true
+    fi
+    checkpoint_once "$session" "$run_token" || true
+
+    if [ "$exit_status" -eq 0 ]; then
+      status_label="completed"
+    elif [ "$cleanup_status" -ge 128 ]; then
+      status_label="interrupted"
+      exit_status="$cleanup_status"
+    fi
+
+    json_update_meta_for_run "$session" "$run_token" \
+      '.status = $status | .exit_status = $exit_status | .finished_at = $finished_at' \
+      --arg status "$status_label" \
+      --argjson exit_status "$exit_status" \
+      --arg finished_at "$(now_iso)" || true
+    printf '%s\n' "$exit_status" >"$(session_dir "$session")/exit-status"
+    if [ "$(tmux_option "$session" '@codex_detached_run_token')" = "$run_token" ]; then
+      "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_running 0 2>/dev/null || true
+    fi
+    amphetamine_release "$session" "$run_token" || true
+  }
+
+  trap worker_cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  json_update_meta_for_run "$session" "$run_token" \
+    '.status = "running" | .worker_started_at = $time' --arg time "$(now_iso)" || true
+  if [ "$(tmux_option "$session" '@codex_detached_run_token')" = "$run_token" ]; then
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_running 1 2>/dev/null || true
+  fi
+
+  if [ "$PROVIDER" = "claude" ]; then
+    agent_session_id="$(read_meta_field "$session" '.agent_session_id // empty')"
+    [ -n "$agent_session_id" ] || die "Claude session UUID is missing from metadata"
+    if [ "${1:-}" = "resume" ]; then
+      [ "$#" -ge 2 ] || die "internal Claude resume UUID is missing"
+      [ "$2" = "$agent_session_id" ] || die "internal Claude resume UUID does not match metadata"
+      claude_resume=1
+      shift 2
+    fi
+    for arg in "$@"; do
+      case "$arg" in
+        --session-id|--session-id=*|-r|--resume|--resume=*|-c|--continue|\
+        --fork-session|--bg|--background|--background=*|--tmux|--tmux=*|\
+        -w|--worktree|--worktree=*)
+          die "the harness owns Claude session and background flags; use '$PROGRAM resume SESSION_ID'"
+          ;;
+        --permission-mode|--permission-mode=*|--dangerously-skip-permissions)
+          has_claude_permission=1
+          ;;
+      esac
+    done
+    [ "$has_claude_permission" -eq 1 ] || claude_args+=( --permission-mode auto )
+    if [ "$claude_resume" -eq 1 ]; then
+      claude_args+=( --resume "$agent_session_id" )
+    else
+      claude_args+=( --session-id "$agent_session_id" )
+    fi
+    claude_args+=( "$@" )
+    export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1
+  else
+    for arg in "$@"; do
+      case "$arg" in
+        -a|--ask-for-approval|--ask-for-approval=*) has_approval=1 ;;
+        -s|--sandbox|--sandbox=*) has_sandbox=1 ;;
+        --dangerously-bypass-approvals-and-sandbox)
+          has_sandbox=1
+          has_approval=1
+          ;;
+        -C|--cd|--cd=*) has_cd=1 ;;
+        --no-alt-screen) has_no_alt=1 ;;
+      esac
+    done
+
+    [ "$has_cd" -eq 0 ] || die "do not pass -C/--cd; start $PROGRAM from the target project"
+    if [ "$has_approval" -eq 0 ]; then
+      if managed_policy_disallows_never; then
+        error "managed policy disallows approval=never; inheriting its approval policy and auto-reviewer"
+      else
+        codex_args+=( --ask-for-approval never )
+      fi
+    fi
+    [ "$has_sandbox" -eq 1 ] || codex_args+=( --sandbox workspace-write )
+    [ "$has_no_alt" -eq 1 ] || codex_args+=( --no-alt-screen )
+    codex_args+=( -C "$cwd" )
+    codex_args+=( "$@" )
+    export CODEX_INTERNAL_ORIGINATOR_OVERRIDE="codex_detached_$run_token"
+  fi
+
+  "$SELF" __checkpoint_loop "$session" "$run_token" "$$" &
+  checkpoint_pid=$!
+
+  set +e
+  if [ "$PROVIDER" = "claude" ]; then
+    "$CAFFEINATE_BIN" -s "$agent_bin" "${claude_args[@]}"
+  else
+    "$CAFFEINATE_BIN" -s "$agent_bin" "${codex_args[@]}"
+  fi
+  exit_status=$?
+
+  printf '\n[%s] %s exited with status %s.\n' "$PROGRAM" "$PROVIDER_LABEL" "$exit_status"
+  exit "$exit_status"
+}
+
+tmux_environment_args() {
+  local name
+  local value
+
+  for name in PATH HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL LC_CTYPE \
+              NODE_EXTRA_CA_CERTS HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+              http_proxy https_proxy all_proxy no_proxy OPENAI_API_KEY ANTHROPIC_API_KEY \
+              SSL_CERT_FILE SSL_CERT_DIR CODEX_HOME CLAUDE_CONFIG_DIR \
+              DETACH_PROVIDER DETACH_PROGRAM DETACH_LOCKS_ROOT \
+              DETACH_AMPHETAMINE_STATE_ROOT DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG \
+              DETACH_TMUX_BIN DETACH_JQ_BIN \
+              DETACH_SQLITE_BIN DETACH_TAR_BIN DETACH_OSASCRIPT_BIN DETACH_CAFFEINATE_BIN \
+              DETACH_PMSET_BIN DETACH_LOCKF_BIN DETACH_SUDO_BIN \
+              CODEX_DETACHED_STATE_ROOT CODEX_DETACHED_CHECKPOINT_INTERVAL \
+              CODEX_DETACHED_HISTORY_LIMIT CODEX_DETACHED_AMPHETAMINE \
+              CODEX_DETACHED_REQUIREMENTS_FILE \
+              CODEX_DETACHED_AMPHETAMINE_STATE_ROOT \
+              CODEX_DETACHED_SYNC CODEX_DETACHED_TMUX_SOCKET \
+              CODEX_DETACHED_TMUX_CONFIG \
+              CODEX_DETACHED_TMUX_BIN CODEX_DETACHED_JQ_BIN \
+              CODEX_DETACHED_SQLITE_BIN CODEX_DETACHED_CODEX_BIN \
+              CODEX_DETACHED_OSASCRIPT_BIN CODEX_DETACHED_CAFFEINATE_BIN \
+              CODEX_DETACHED_PMSET_BIN CODEX_DETACHED_LOCKF_BIN \
+              CLAUDE_DETACHED_STATE_ROOT CLAUDE_DETACHED_CHECKPOINT_INTERVAL \
+              CLAUDE_DETACHED_HISTORY_LIMIT CLAUDE_DETACHED_AMPHETAMINE \
+              CLAUDE_DETACHED_SYNC CLAUDE_DETACHED_TMUX_SOCKET \
+              CLAUDE_DETACHED_TMUX_CONFIG CLAUDE_DETACHED_CLAUDE_BIN \
+              CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN; do
+    value="${!name-}"
+    [ -n "$value" ] || continue
+    printf '%s\0%s=%s\0' '-e' "$name" "$value"
+  done
+}
+
+start_tmux_session() {
+  local session="$1"
+  local cwd="$2"
+  local detach="$3"
+  local recovery_id="$4"
+  local recovery_rollout="$5"
+  local preserve_checkpoint="$6"
+  shift 6
+  local start_ms
+  local agent_bin="$AGENT_BIN_DEFAULT"
+  local run_token
+  local created=0
+  local leased=0
+  local started=0
+  local pane_id=""
+  local env_file
+  local env_args=()
+
+  start_ms="$(now_ms)"
+  run_token="$(new_run_token)"
+  if [ "$PROVIDER" = "claude" ] && [ -z "$recovery_id" ]; then
+    recovery_id="$(new_run_token)"
+  fi
+  ensure_state_dirs
+
+  if tmux_has_session "$session"; then
+    die "tmux session '$session' appeared while starting"
+  fi
+
+  partial_cleanup() {
+    local cleanup_status=$?
+    trap - EXIT HUP INT TERM
+    if [ "$started" -eq 0 ]; then
+      [ "$created" -eq 0 ] || "${TMUX_CMD[@]}" kill-session -t "=$session" 2>/dev/null || true
+      [ "$leased" -eq 0 ] || amphetamine_release "$session" "$run_token" || true
+      json_update_meta_for_run "$session" "$run_token" \
+        '.status = "start_failed" | .finished_at = $time' --arg time "$(now_iso)" || true
+    fi
+    exit "$cleanup_status"
+  }
+  trap partial_cleanup EXIT HUP INT TERM
+
+  pane_id="$("${TMUX_CMD[@]}" new-session -d -P -F '#{pane_id}' -s "$session" -c "$cwd" -n "$PROVIDER")" || \
+    die "could not create tmux session"
+  [ -n "$pane_id" ] || die "tmux did not return a pane id"
+  created=1
+  "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+    "$SELF" __write_initial_meta "$session" "$cwd" "$start_ms" "$agent_bin" \
+      "$recovery_id" "$recovery_rollout" "$run_token" "$preserve_checkpoint" || \
+    die "could not initialize session metadata"
+  snapshot_known_threads "$session" "$cwd" || die "could not snapshot existing $PROVIDER_LABEL sessions"
+  write_resume_args "$session" "$@" || die "could not save $PROVIDER_LABEL resume options"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_provider "$PROVIDER"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_cwd "$cwd"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_running 0
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_pane_id "$pane_id"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_run_token "$run_token"
+  "${TMUX_CMD[@]}" set-option -q -w -t "$pane_id" remain-on-exit on
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" history-limit "$HISTORY_LIMIT"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse on
+
+  leased=1
+  amphetamine_acquire "$session" "$run_token" || die "could not acquire Amphetamine Closed-Display Mode"
+  warn_power_configuration
+
+  env_file="$(session_dir "$session")/tmux-environment.bin"
+  tmux_environment_args >"$env_file"
+  while IFS= read -r -d '' arg; do
+    env_args+=( "$arg" )
+  done <"$env_file"
+  rm -f "$env_file"
+
+  "${TMUX_CMD[@]}" respawn-pane -k \
+    -t "$pane_id" \
+    -c "$cwd" \
+    "${env_args[@]}" \
+    "$SELF" __worker "$session" "$cwd" "$start_ms" "$run_token" "$agent_bin" "$@" || \
+      die "could not start $PROVIDER_LABEL in tmux"
+
+  started=1
+  trap - EXIT HUP INT TERM
+  printf 'Started %s in %s\n' "$session" "$cwd"
+  printf 'Checkpoint interval: %s seconds\n' "$CHECKPOINT_INTERVAL"
+
+  if [ "$detach" -eq 0 ]; then
+    attach_session "$session"
+  fi
+}
+
+running_session_for_project() {
+  local cwd="$1"
+  local excluded_session="${2:-}"
+  local candidate
+
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    [ "$candidate" = "$excluded_session" ] && continue
+    tmux_is_any_managed "$candidate" || continue
+    tmux_session_running "$candidate" || continue
+    [ "$(tmux_option "$candidate" '@codex_detached_cwd')" = "$cwd" ] || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done < <("${TMUX_CMD[@]}" list-sessions -F '#{session_name}' 2>/dev/null || true)
+  return 1
+}
+
+start_tmux_session_locked() {
+  local session="$1"
+  local cwd="$2"
+  local recovery_id="$3"
+  local recovery_rollout="$4"
+  local preserve_checkpoint="$5"
+  shift 5
+  local existing
+  local old_run_token
+
+  old_run_token="$(read_meta_field "$session" '.run_token // empty' 2>/dev/null || true)"
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || die "refusing to use unmanaged tmux session '$session'"
+    tmux_session_running "$session" && \
+      die "a detached task is already running; use '$PROGRAM attach $session' or '$PROGRAM stop $session' first"
+    "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove completed tmux session '$session'"
+  fi
+  [ -z "$old_run_token" ] || amphetamine_release "$session" "$old_run_token" || true
+  existing="$(running_session_for_project "$cwd" "$session" || true)"
+  [ -z "$existing" ] || die "project already has a running detached session: $existing"
+  start_tmux_session "$session" "$cwd" 1 "$recovery_id" "$recovery_rollout" "$preserve_checkpoint" "$@"
+}
+
+start_under_project_lock() {
+  local session="$1"
+  local cwd="$2"
+  local recovery_id="$3"
+  local recovery_rollout="$4"
+  local preserve_checkpoint="$5"
+  shift 5
+  local lock
+
+  lock="$(project_lock_path "$cwd")"
+  "$LOCKF_BIN" -k -t 30 "$lock" "$SELF" __start_tmux_session_locked \
+    "$session" "$cwd" "$recovery_id" "$recovery_rollout" "$preserve_checkpoint" "$@"
+}
+
+read_meta_field() {
+  local session="$1"
+  local expression="$2"
+  local meta
+
+  meta="$(usable_meta_path "$session")" || return 1
+  "$JQ_BIN" -r "$expression" "$meta"
+}
+
+provider_has_session_id() {
+  local id="$1"
+  local dir
+  local candidate
+  local db
+  local id_sql
+  local found
+
+  [[ "$id" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || return 1
+  id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+
+  for dir in "$SESSIONS_ROOT"/*; do
+    [ -d "$dir" ] || continue
+    for candidate in "$dir/meta.json" "$dir/checkpoint/meta.json"; do
+      [ -f "$candidate" ] || continue
+      "$JQ_BIN" -e --arg provider "$PROVIDER" --arg id "$id" \
+        '(.provider // "codex") == $provider and ((.agent_session_id // .codex_session_id // "") | ascii_downcase) == $id' \
+        "$candidate" >/dev/null 2>&1 && return 0
+    done
+  done
+
+  if [ "$PROVIDER" = "claude" ]; then
+    candidate="$(claude_transcript_candidates "$id" 2>/dev/null | sed -n '1p')"
+    [ -n "$candidate" ]
+    return
+  fi
+
+  db="$(codex_state_db)"
+  [ -n "$db" ] && [ -f "$db" ] && [ -x "$SQLITE_BIN" ] || return 1
+  id_sql="$(sql_escape "$id")"
+  found="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+    "SELECT 1 FROM threads WHERE lower(id) = '$id_sql' LIMIT 1;" 2>/dev/null || true)"
+  [ "$found" = "1" ]
+}
+
+provider_session_context() {
+  local id="$1"
+  local dir
+  local meta
+  local session=""
+  local project=""
+  local live=false
+  local db
+  local id_sql
+  local transcript
+  local transcript_status
+  local fallback_session=""
+  local fallback_project=""
+  local fallback_created=0
+  local created
+
+  [[ "$id" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || return 1
+  id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+
+  for dir in "$SESSIONS_ROOT"/*; do
+    [ -d "$dir" ] || continue
+    session="$(basename "$dir")"
+    meta="$(usable_meta_path "$session" 2>/dev/null || true)"
+    [ -n "$meta" ] || continue
+    "$JQ_BIN" -e --arg provider "$PROVIDER" --arg id "$id" \
+      '(.provider // "codex") == $provider and ((.agent_session_id // .codex_session_id // "") | ascii_downcase) == $id' \
+      "$meta" >/dev/null 2>&1 || continue
+    project="$($JQ_BIN -r '.project_dir // empty' "$meta")"
+    live=false
+    if tmux_has_session "$session" && tmux_is_managed "$session" && tmux_session_running "$session"; then
+      live=true
+    fi
+    if [ "$live" = "true" ]; then
+      "$JQ_BIN" -n \
+        --arg session_name "$session" \
+        --arg project_dir "$project" \
+        '{session_name: $session_name, project_dir: $project_dir, live: true}'
+      return 0
+    fi
+    created="$($JQ_BIN -r '.created_at_ms // 0' "$meta" 2>/dev/null || printf '0')"
+    case "$created" in ''|*[!0-9]*) created=0 ;; esac
+    if [ -z "$fallback_session" ] || [ "$created" -gt "$fallback_created" ]; then
+      fallback_session="$session"
+      fallback_project="$project"
+      fallback_created="$created"
+    fi
+  done
+
+  if [ -n "$fallback_session" ]; then
+    "$JQ_BIN" -n \
+      --arg session_name "$fallback_session" \
+      --arg project_dir "$fallback_project" \
+      '{session_name: $session_name, project_dir: $project_dir, live: false}'
+    return 0
+  fi
+
+  session=""
+  if [ "$PROVIDER" = "claude" ]; then
+    transcript="$(claude_transcript_for_id "$id" 2>/dev/null)"
+    transcript_status=$?
+    if [ "$transcript_status" -eq 2 ]; then
+      error "multiple valid Claude transcripts were found for session '$id'"
+      return 2
+    fi
+    [ "$transcript_status" -eq 0 ] && [ -n "$transcript" ] || return 1
+    project="$($JQ_BIN -r 'select((.cwd // "") != "") | .cwd' "$transcript" 2>/dev/null | sed -n '1p')"
+  else
+    db="$(codex_state_db)"
+    [ -n "$db" ] && [ -f "$db" ] || return 1
+    id_sql="$(sql_escape "$id")"
+    project="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+      "SELECT cwd FROM threads WHERE lower(id) = '$id_sql' LIMIT 1;" 2>/dev/null || true)"
+  fi
+  [ -n "$project" ] || return 1
+  "$JQ_BIN" -n \
+    --arg session_name "" \
+    --arg project_dir "$project" \
+    '{session_name: $session_name, project_dir: $project_dir, live: false}'
+}
+
+resume_agent_session() {
+  local session="$1"
+  local cwd="$2"
+  local detach="$3"
+  local id="$4"
+  shift 4
+  local db
+  local id_sql
+  local rows
+  local rollout
+
+  [[ "$id" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
+    die "resume requires an exact session UUID"
+  id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  if [ "$PROVIDER" = "claude" ]; then
+    local saved_id
+    local resolved_status
+    saved_id="$(read_meta_field "$session" '.agent_session_id // empty' 2>/dev/null || true)"
+    saved_id="$(printf '%s' "$saved_id" | tr '[:upper:]' '[:lower:]')"
+    if [ "$saved_id" = "$id" ]; then
+      rollout="$(read_meta_field "$session" '.transcript_path // empty' 2>/dev/null || true)"
+    fi
+    if [ -z "$rollout" ] || \
+       ! safe_claude_transcript_path "$rollout" "$id" || \
+       ! valid_claude_transcript "$rollout" "$id"; then
+      local saved_rollout="$rollout"
+      rollout="$(claude_transcript_for_id "$id" 2>/dev/null)"
+      resolved_status=$?
+      if [ "$resolved_status" -eq 2 ]; then
+        die "multiple valid Claude transcripts were found for session '$id'"
+      fi
+      if [ "$resolved_status" -ne 0 ]; then
+        rollout="$saved_rollout"
+      fi
+    fi
+    [ -n "$rollout" ] || die "Claude session '$id' was not found"
+    restore_matching_claude_checkpoint "$session" "$id" "$rollout" || \
+      die "could not restore the matching Claude checkpoint"
+    valid_claude_transcript "$rollout" "$id" || die "Claude transcript for '$id' is missing or invalid"
+    start_under_project_lock "$session" "$cwd" "$id" "$rollout" 0 resume "$id" "$@" || \
+      die "could not start Claude resume session"
+    [ "$detach" -eq 1 ] || attach_session "$session"
+    return
+  fi
+  db="$(codex_state_db)"
+  [ -n "$db" ] && [ -f "$db" ] || die "Codex state database was not found"
+  id_sql="$(sql_escape "$id")"
+  rows="$($SQLITE_BIN -json -cmd '.timeout 5000' "$db" \
+    "SELECT rollout_path FROM threads WHERE id = '$id_sql' LIMIT 1;" 2>/dev/null)" || \
+      die "could not query the Codex state database"
+  [ "$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null || printf '0')" = "1" ] || \
+    die "Codex session '$id' was not found"
+  rollout="$(printf '%s' "$rows" | "$JQ_BIN" -r '.[0].rollout_path // empty')"
+  [ -n "$rollout" ] || die "Codex session '$id' has no rollout path"
+  restore_matching_rollout_checkpoint "$session" "$id" "$rollout" || \
+    die "could not restore the matching rollout checkpoint"
+  valid_jsonl "$rollout" "$id" || die "Codex rollout for '$id' is missing or invalid"
+
+  start_under_project_lock "$session" "$cwd" "$id" "$rollout" 0 resume "$id" "$@" || \
+    die "could not start Codex resume session"
+  [ "$detach" -eq 1 ] || attach_session "$session"
+}
+
+list_sessions() {
+  local dir
+  local session
+  local status
+  local cwd
+  local checkpoint
+  local live
+  local id
+  local meta
+  local recoverable=0
+  local transcript_path
+
+  ensure_state_dirs
+  if [ "${DETACH_LIST_HEADER:-1}" != "0" ]; then
+    printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
+      'PROVIDER' 'SESSION' 'STATUS' 'AGENT_ID' 'CHECKPOINT' 'PROJECT'
+  fi
+  for dir in "$SESSIONS_ROOT"/*; do
+    [ -d "$dir" ] || continue
+    session="$(basename "$dir")"
+    meta="$(usable_meta_path "$session" 2>/dev/null || true)"
+    if [ -z "$meta" ]; then
+      cwd="?"
+      live="corrupt"
+      if tmux_has_session "$session"; then
+        if tmux_is_managed "$session"; then
+          cwd="$(tmux_option "$session" '@codex_detached_cwd')"
+          if tmux_session_running "$session"; then
+            live="running"
+          else
+            live="corrupt"
+          fi
+        else
+          live="collision"
+        fi
+      fi
+      printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
+        "$PROVIDER" "$session" "$live" '-' '-' "${cwd:-?}"
+      continue
+    fi
+    status="$(read_meta_field "$session" '.status // "unknown"' 2>/dev/null || printf 'unknown')"
+    cwd="$(read_meta_field "$session" '.project_dir // "?"' 2>/dev/null || printf '?')"
+    checkpoint="$(read_meta_field "$session" '.last_checkpoint_at // "-"' 2>/dev/null || printf '-')"
+    id="$(read_meta_field "$session" '.agent_session_id // .codex_session_id // "-"' 2>/dev/null || printf '-')"
+    [ -n "$id" ] || id="-"
+    live=""
+    if tmux_has_session "$session"; then
+      if ! tmux_is_managed "$session"; then
+        live="collision"
+      elif tmux_session_running "$session"; then
+        live="running"
+      else
+        live="$status"
+      fi
+    elif [ "$status" = "running" ] || [ "$status" = "starting" ] || [ "$status" = "recovering" ]; then
+      recoverable=0
+      if [ "$id" != "-" ]; then
+        transcript_path="$(read_meta_field "$session" '.transcript_path // .rollout_path // empty' 2>/dev/null || true)"
+        if [ "$PROVIDER" = "claude" ] && \
+           safe_claude_transcript_path "$transcript_path" "$id"; then
+          if valid_claude_checkpoint_archive "$dir/checkpoint/claude-session.tar" "$id" || \
+             valid_claude_transcript "$dir/checkpoint/transcript.jsonl" "$id"; then
+            recoverable=1
+          fi
+        elif [ "$PROVIDER" = "codex" ] && \
+             safe_codex_rollout_path "$transcript_path" && \
+             valid_jsonl "$dir/checkpoint/rollout.jsonl" "$id"; then
+          recoverable=1
+        fi
+      fi
+      if [ "$recoverable" -eq 1 ]; then
+        live="recoverable"
+      else
+        live="orphaned"
+      fi
+    else
+      live="$status"
+    fi
+    printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
+      "$PROVIDER" "$session" "$live" "$id" "$checkpoint" "$cwd"
+  done
+}
+
+show_status() {
+  local session="$1"
+  local meta
+  local tmux_state="not running"
+  local amp_state="disabled"
+
+  meta="$(usable_meta_path "$session")" || die "no valid saved state for '$session'"
+  if tmux_has_session "$session"; then
+    if tmux_session_running "$session"; then
+      tmux_state="running"
+    else
+      tmux_state="completed (pane retained)"
+    fi
+  fi
+  if [ "$AMPHETAMINE_ENABLED" != "0" ]; then
+    if amphetamine_active; then
+      amp_state="active, CDM=$(amphetamine_script 'closed display mode enabled' || printf 'unknown')"
+    else
+      amp_state="inactive"
+    fi
+  fi
+
+  "$JQ_BIN" -r '
+    "Provider:       \(.provider // "codex")",
+    "Session:        \(.session_name)",
+    "Project:        \(.project_dir)",
+    "Agent session:  \(.agent_session_id // .codex_session_id // "not discovered")",
+    "Status:         \(.status)",
+    "Last checkpoint:\(.last_checkpoint_at // " none")",
+    "Exit status:    \(.exit_status // "-")"
+  ' "$meta"
+  printf 'tmux:          %s\n' "$tmux_state"
+  printf 'Amphetamine:   %s\n' "$amp_state"
+  printf 'State:         %s\n' "$(session_dir "$session")"
+}
+
+show_logs() {
+  local session="$1"
+  local pane_file
+  local pane
+
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || die "refusing to read unmanaged tmux session '$session'"
+    pane="$(tmux_pane_id "$session")"
+    "${TMUX_CMD[@]}" capture-pane -p -J -S "-$HISTORY_LIMIT" -t "$pane"
+    return
+  fi
+  pane_file="$(session_dir "$session")/checkpoint/pane.txt"
+  [ -f "$pane_file" ] || die "no logs found for '$session'"
+  cat "$pane_file"
+}
+
+stop_session() {
+  local session="$1"
+  local run_token
+  local lease
+  local attempts=0
+  local pane
+  local pane_pid
+  local pgid
+
+  run_token="$(read_meta_field "$session" '.run_token // empty' 2>/dev/null || true)"
+  lease="$(amphetamine_lease_path "$run_token")"
+
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || die "refusing to stop unmanaged tmux session '$session'"
+    pane="$(tmux_pane_id "$session" 2>/dev/null || true)"
+    pane_pid=""
+    pgid=""
+    if [ -n "$pane" ] && [ "$(tmux_pane_dead "$session")" = "0" ]; then
+      pane_pid="$("${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
+      if [ -n "$pane_pid" ]; then
+        pgid="$(ps -o pgid= -p "$pane_pid" 2>/dev/null | tr -d '[:space:]')"
+      fi
+      if [ -n "$pgid" ]; then
+        kill -TERM -- "-$pgid" 2>/dev/null || true
+      elif [ -n "$pane_pid" ]; then
+        kill -TERM "$pane_pid" 2>/dev/null || true
+      fi
+
+      while [ "$(tmux_pane_dead "$session")" = "0" ] && [ "$attempts" -lt 60 ]; do
+        attempts=$((attempts + 1))
+        sleep 0.25
+      done
+      if [ "$(tmux_pane_dead "$session")" = "0" ]; then
+        error "$PROVIDER_LABEL did not stop after 15 seconds; sending KILL"
+        if [ -n "$pgid" ]; then
+          kill -KILL -- "-$pgid" 2>/dev/null || true
+        elif [ -n "$pane_pid" ]; then
+          kill -KILL "$pane_pid" 2>/dev/null || true
+        fi
+      fi
+    fi
+
+    attempts=0
+    while [ -f "$lease" ] && [ "$attempts" -lt 40 ]; do
+      attempts=$((attempts + 1))
+      sleep 0.25
+    done
+    "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove tmux session '$session'"
+  fi
+  if [ -n "$run_token" ]; then
+    amphetamine_release "$session" "$run_token" || true
+  fi
+  json_update_meta "$session" \
+    '.status = "stopped" | .stopped_at = $time' --arg time "$(now_iso)" || \
+      die "tmux was stopped, but session metadata could not be updated"
+  printf 'Stopped %s\n' "$session"
+}
+
+restore_rollout_if_needed() {
+  local session="$1"
+  local meta
+  local rollout
+  local backup
+  local id
+  local restore=0
+  local tmp
+
+  meta="$(usable_meta_path "$session")" || die "no valid saved state for '$session'"
+  rollout="$($JQ_BIN -r '.transcript_path // .rollout_path // empty' "$meta")"
+  id="$($JQ_BIN -r '.agent_session_id // .codex_session_id // empty' "$meta")"
+  if [ "$PROVIDER" = "claude" ]; then
+    [ -n "$id" ] || die "no Claude session UUID was checkpointed"
+    if [ -z "$rollout" ]; then
+      rollout="$(claude_transcript_for_id "$id" 2>/dev/null || true)"
+    fi
+    [ -n "$rollout" ] || die "no Claude transcript path was checkpointed"
+    restore_matching_claude_checkpoint "$session" "$id" "$rollout" 1 || \
+      die "could not restore Claude session artifacts"
+    valid_claude_transcript "$rollout" "$id" || die "Claude transcript is missing or invalid"
+    return
+  fi
+  backup="$(session_dir "$session")/checkpoint/rollout.jsonl"
+  safe_codex_rollout_path "$rollout" || die "refusing unsafe Codex rollout path"
+  [ -n "$rollout" ] && [ -n "$id" ] && [ -f "$backup" ] || return 0
+  valid_jsonl "$backup" "$id" || die "saved rollout checkpoint is invalid"
+
+  if ! valid_jsonl "$rollout" "$id"; then
+    restore=1
+  elif [ "$(stat -f '%z' "$rollout")" -lt "$(stat -f '%z' "$backup")" ]; then
+    restore=1
+  fi
+
+  if [ "$restore" -eq 1 ]; then
+    mkdir -p "$(dirname "$rollout")"
+    tmp="$rollout.codex-detached.tmp.$$"
+    cp -p "$backup" "$tmp" || die "could not copy rollout checkpoint"
+    valid_jsonl "$tmp" "$id" || {
+      rm -f "$tmp"
+      die "copied rollout checkpoint failed validation"
+    }
+    mv -f "$tmp" "$rollout" || die "could not restore rollout from checkpoint"
+    [ "$SYNC_ENABLED" = "0" ] || /bin/sync
+    error "restored damaged Codex rollout from the last checkpoint"
+  fi
+}
+
+recover_session() {
+  local session="$1"
+  local detach="$2"
+  local meta
+  local cwd
+  local id
+  local rollout
+  local backup
+  local db
+  local id_sql
+  local primary
+  local tmp
+  local resume_args=()
+  local arg
+
+  meta="$(usable_meta_path "$session")" || die "no valid saved state for '$session'"
+  primary="$(session_meta "$session")"
+  if [ "$meta" != "$primary" ]; then
+    tmp="$primary.recover.tmp.$$"
+    cp -p "$meta" "$tmp" && mv -f "$tmp" "$primary" || die "could not restore checkpoint metadata"
+    meta="$primary"
+  fi
+
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || die "refusing to recover over unmanaged tmux session '$session'"
+    if tmux_session_running "$session"; then
+      [ "$detach" -eq 1 ] && return 0
+      attach_session "$session"
+    fi
+    "${TMUX_CMD[@]}" kill-session -t "=$session" >/dev/null 2>&1 || true
+  fi
+
+  cwd="$($JQ_BIN -r '.project_dir' "$meta")"
+  id="$($JQ_BIN -r '.agent_session_id // .codex_session_id // empty' "$meta")"
+  rollout="$($JQ_BIN -r '.transcript_path // .rollout_path // empty' "$meta")"
+
+  if [ -z "$id" ]; then
+    if [ "$PROVIDER" = "claude" ]; then
+      backup="$(session_dir "$session")/checkpoint/transcript.jsonl"
+    else
+      backup="$(session_dir "$session")/checkpoint/rollout.jsonl"
+    fi
+    if [ -f "$backup" ]; then
+      if [ "$PROVIDER" = "claude" ]; then
+        id="$($JQ_BIN -r '.sessionId // empty' "$backup" 2>/dev/null | sed -n '1p')"
+      else
+        id="$(sed -n '1p' "$backup" | "$JQ_BIN" -r '.payload.id // .payload.session_id // empty' 2>/dev/null || true)"
+        db="$(codex_state_db)"
+        if [ -n "$id" ] && [ -n "$db" ] && [ -f "$db" ]; then
+          id_sql="$(sql_escape "$id")"
+          rollout="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+            "SELECT rollout_path FROM threads WHERE id = '$id_sql' LIMIT 1;" 2>/dev/null || true)"
+        fi
+      fi
+    fi
+  fi
+  [ -n "$id" ] && [ -n "$rollout" ] || die "no unambiguous $PROVIDER_LABEL session UUID was checkpointed"
+  if [ "$PROVIDER" = "claude" ]; then
+    json_update_meta "$session" \
+      '.agent_session_id = $id | .transcript_path = $transcript' \
+      --arg id "$id" --arg transcript "$rollout" || die "could not repair recovery metadata"
+  else
+    json_update_meta "$session" \
+      '.agent_session_id = $id | .transcript_path = $rollout | .codex_session_id = $id | .rollout_path = $rollout' \
+      --arg id "$id" --arg rollout "$rollout" || die "could not repair recovery metadata"
+  fi
+  restore_rollout_if_needed "$session"
+  if [ -f "$(session_dir "$session")/resume-args.bin" ]; then
+    while IFS= read -r -d '' arg; do
+      resume_args+=( "$arg" )
+    done <"$(session_dir "$session")/resume-args.bin"
+  fi
+  if [ "${#resume_args[@]}" -gt 0 ]; then
+    start_under_project_lock "$session" "$cwd" "$id" "$rollout" 1 resume "$id" "${resume_args[@]}" || \
+      die "could not start checkpoint recovery"
+  else
+    start_under_project_lock "$session" "$cwd" "$id" "$rollout" 1 resume "$id" || \
+      die "could not start checkpoint recovery"
+  fi
+  [ "$detach" -eq 1 ] || attach_session "$session"
+}
+
+main() {
+  local action="start"
+  local custom_name=""
+  local detach=0
+  local positional_name=""
+  local session
+  local cwd
+  local resume_id=""
+
+  validate_runtime_config
+
+  case "${1:-}" in
+    start|resume|attach|list|status|logs|stop|recover)
+      action="$1"
+      shift
+      ;;
+    help|-h|--help)
+      usage
+      exit 0
+      ;;
+  esac
+
+  if [ "$action" = "start" ] || [ "$action" = "resume" ]; then
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -n|--name)
+          [ "$#" -ge 2 ] || die "$1 requires a name"
+          custom_name="$2"
+          shift 2
+          ;;
+        --name=*)
+          custom_name="${1#*=}"
+          shift
+          ;;
+        -d|--detach)
+          detach=1
+          shift
+          ;;
+        --)
+          shift
+          break
+          ;;
+        -h|--help)
+          usage
+          exit 0
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
+    if [ "$action" = "resume" ]; then
+      [ "$#" -gt 0 ] || die "resume requires a session UUID"
+      resume_id="$1"
+      shift
+    fi
+  else
+    case "${1:-}" in
+      -d|--detach)
+        detach=1
+        shift
+        ;;
+    esac
+    if [ "$#" -gt 0 ]; then
+      positional_name="$1"
+      shift
+    fi
+    [ "$#" -eq 0 ] || die "unexpected arguments for $action"
+    custom_name="$positional_name"
+  fi
+
+  require_common_dependencies
+  ensure_state_dirs
+
+  if [ "$action" = "list" ]; then
+    list_sessions
+    exit 0
+  fi
+
+  session="$(normalize_session_name "$custom_name")" || exit 1
+  cwd="$(canonical_project_dir)" || die "could not resolve the current project directory"
+
+  case "$action" in
+    start)
+      require_start_dependencies
+      start_under_project_lock "$session" "$cwd" "" "" 0 "$@" || \
+        die "could not start a new detached $PROVIDER_LABEL session"
+      [ "$detach" -eq 1 ] || attach_session "$session"
+      ;;
+    resume)
+      require_start_dependencies
+      resume_agent_session "$session" "$cwd" "$detach" "$resume_id" "$@"
+      ;;
+    attach)
+      attach_session "$session"
+      ;;
+    status)
+      show_status "$session"
+      ;;
+    logs)
+      show_logs "$session"
+      ;;
+    stop)
+      stop_session "$session"
+      ;;
+    recover)
+      require_start_dependencies
+      recover_session "$session" "$detach"
+      ;;
+  esac
+}
+
+case "${1:-}" in
+  __worker)
+    shift
+    worker_main "$@"
+    ;;
+  __checkpoint_loop)
+    shift
+    checkpoint_loop "$@"
+    ;;
+  __checkpoint_once)
+    shift
+    checkpoint_once "$@"
+    ;;
+  __checkpoint_once_locked)
+    shift
+    checkpoint_once_locked "$@"
+    ;;
+  __write_initial_meta)
+    shift
+    write_initial_meta "$@"
+    ;;
+  __has_session_id)
+    shift
+    [ "$#" -eq 1 ] || exit 1
+    provider_has_session_id "$1"
+    ;;
+  __session_context)
+    shift
+    [ "$#" -eq 1 ] || exit 1
+    provider_session_context "$1"
+    ;;
+  __start_tmux_session_locked)
+    shift
+    start_tmux_session_locked "$@"
+    ;;
+  __amphetamine_acquire_locked)
+    shift
+    amphetamine_acquire_locked "$@"
+    ;;
+  __amphetamine_release_locked)
+    shift
+    amphetamine_release_locked "$@"
+    ;;
+  __amphetamine_reconcile_locked)
+    shift
+    amphetamine_reconcile_locked
+    ;;
+  __reconcile_amphetamine)
+    shift
+    amphetamine_reconcile
+    ;;
+  *)
+    main "$@"
+    ;;
+esac
