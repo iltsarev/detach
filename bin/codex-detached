@@ -106,7 +106,7 @@ usage() {
     "  $PROGRAM [start] [--name NAME] [--detach] [--] [$PROVIDER_ARGS_LABEL...]" \
     "  $PROGRAM resume [--name NAME] [--detach] SESSION_ID [$PROVIDER_ARGS_LABEL...]" \
     "  $PROGRAM attach [NAME]" \
-    "  $PROGRAM list" \
+    "  $PROGRAM list [--json]" \
     "  $PROGRAM status [NAME]" \
     "  $PROGRAM logs [NAME]" \
     "  $PROGRAM stop [NAME]" \
@@ -2264,7 +2264,40 @@ resume_agent_session() {
   [ "$detach" -eq 1 ] || attach_session "$session"
 }
 
+emit_list_json() {
+  local session="$1" effective="$2" meta_status="$3" id="$4" checkpoint="$5"
+  local cwd="$6" created="$7" exit_json="$8" finished="$9"
+
+  [ -n "$exit_json" ] || exit_json="null"
+  "$JQ_BIN" -n -c \
+    --arg provider "$PROVIDER" \
+    --arg session_name "$session" \
+    --arg name "${session#"$PROVIDER-detached-"}" \
+    --arg effective "$effective" \
+    --arg meta_status "$meta_status" \
+    --arg id "$id" \
+    --arg checkpoint "$checkpoint" \
+    --arg cwd "$cwd" \
+    --arg created "$created" \
+    --argjson exit_status "$exit_json" \
+    --arg finished "$finished" \
+    'def opt(v): if v == "" or v == "-" or v == "?" then null else v end;
+     {schema: 1,
+      provider: $provider,
+      session_name: $session_name,
+      name: $name,
+      effective_status: $effective,
+      meta_status: opt($meta_status),
+      agent_session_id: opt($id),
+      project_dir: opt($cwd),
+      created_at: opt($created),
+      last_checkpoint_at: opt($checkpoint),
+      exit_status: $exit_status,
+      finished_at: opt($finished)}'
+}
+
 list_sessions() {
+  local json_mode="${1:-0}"
   local dir
   local session
   local status
@@ -2275,11 +2308,16 @@ list_sessions() {
   local meta
   local recoverable=0
   local transcript_path
+  local created
+  local finished
+  local exit_json
 
   ensure_state_dirs
-  if [ "${DETACH_LIST_HEADER:-1}" != "0" ]; then
-    printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
-      'PROVIDER' 'SESSION' 'STATUS' 'AGENT_ID' 'CHECKPOINT' 'PROJECT'
+  if [ "$json_mode" != "1" ]; then
+    if [ "${DETACH_LIST_HEADER:-1}" != "0" ]; then
+      printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
+        'PROVIDER' 'SESSION' 'STATUS' 'AGENT_ID' 'CHECKPOINT' 'PROJECT'
+    fi
   fi
   for dir in "$SESSIONS_ROOT"/*; do
     [ -d "$dir" ] || continue
@@ -2300,8 +2338,12 @@ list_sessions() {
           live="collision"
         fi
       fi
-      printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
-        "$PROVIDER" "$session" "$live" '-' '-' "${cwd:-?}"
+      if [ "$json_mode" = "1" ]; then
+        emit_list_json "$session" "$live" "" "-" "-" "${cwd:-?}" "" "null" ""
+      else
+        printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
+          "$PROVIDER" "$session" "$live" '-' '-' "${cwd:-?}"
+      fi
       continue
     fi
     status="$(read_meta_field "$session" '.status // "unknown"' 2>/dev/null || printf 'unknown')"
@@ -2309,6 +2351,9 @@ list_sessions() {
     checkpoint="$(read_meta_field "$session" '.last_checkpoint_at // "-"' 2>/dev/null || printf '-')"
     id="$(read_meta_field "$session" '.agent_session_id // .codex_session_id // "-"' 2>/dev/null || printf '-')"
     [ -n "$id" ] || id="-"
+    created="$(read_meta_field "$session" '.created_at // empty' 2>/dev/null || true)"
+    finished="$(read_meta_field "$session" '.finished_at // empty' 2>/dev/null || true)"
+    exit_json="$(read_meta_field "$session" '(.exit_status // null) | tojson' 2>/dev/null || printf 'null')"
     live=""
     if tmux_has_session "$session"; then
       if ! tmux_is_managed "$session"; then
@@ -2342,8 +2387,12 @@ list_sessions() {
     else
       live="$status"
     fi
-    printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
-      "$PROVIDER" "$session" "$live" "$id" "$checkpoint" "$cwd"
+    if [ "$json_mode" = "1" ]; then
+      emit_list_json "$session" "$live" "$status" "$id" "$checkpoint" "$cwd" "$created" "$exit_json" "$finished"
+    else
+      printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
+        "$PROVIDER" "$session" "$live" "$id" "$checkpoint" "$cwd"
+    fi
   done
 }
 
@@ -2595,6 +2644,7 @@ main() {
   local session
   local cwd
   local resume_id=""
+  local list_json=0
 
   validate_runtime_config
 
@@ -2643,6 +2693,22 @@ main() {
       resume_id="$1"
       shift
     fi
+  elif [ "$action" = "list" ]; then
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --json)
+          list_json=1
+          shift
+          ;;
+        -h|--help)
+          usage
+          exit 0
+          ;;
+        *)
+          die "unknown list option: $1"
+          ;;
+      esac
+    done
   else
     case "${1:-}" in
       -d|--detach)
@@ -2662,7 +2728,7 @@ main() {
   ensure_state_dirs
 
   if [ "$action" = "list" ]; then
-    list_sessions
+    list_sessions "$list_json"
     exit 0
   fi
 

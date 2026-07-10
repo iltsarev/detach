@@ -166,4 +166,21 @@ pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_pa
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "0" ]
 "$SCRIPT" stop integration
 
+# list --json exposes machine-readable session state.
+export FAKE_CODEX_INIT_DELAY=0
+export FAKE_CODEX_SLEEP=20
+export FAKE_CODEX_EXIT=0
+"$SCRIPT" --name integration --detach -- 'json coverage'
+sleep 1
+json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$SESSION\"")"
+printf '%s' "$json_line" | jq -e '
+  .schema == 1 and .provider == "codex" and .name == "integration"
+  and .effective_status == "running" and (.project_dir | type == "string")
+  and (.created_at | type == "string") and .exit_status == null' >/dev/null
+"$SCRIPT" list --json | jq -es 'length > 0 and all(.schema == 1)' | grep -qx true
+"$SCRIPT" stop integration
+json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$SESSION\"")"
+printf '%s' "$json_line" | jq -e '
+  .effective_status == "stopped" and .meta_status == "stopped"' >/dev/null
+
 printf 'codex-detached integration tests passed\n'
