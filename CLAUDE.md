@@ -13,7 +13,10 @@ A macOS harness that runs Codex or Claude Code detached inside a persistent tmux
 - `CODEX_DETACHED_TEST_KEEP=1 tests/run.sh` — preserve the temp state and tmux server after a run for inspection.
 - `tests/amphetamine-smoke.sh` — optional system smoke test that enables REAL Amphetamine Closed-Display Mode and toggles real system sleep via Power Protect. Do not run it as routine verification.
 
-There is no separate unit-test runner or linter; `run.sh` / `run-claude.sh` are the verification path for any change to `bin/`.
+- `cd app && swift test` — unit tests for the Detach.app library (`DetachKit`).
+- `app/scripts/make-app.sh` — build the `Detach.app` bundle (release build, ad-hoc codesign) into `app/build/`.
+
+There is no separate linter; `run.sh` / `run-claude.sh` are the verification path for any change to `bin/`, `swift test` for `app/`.
 
 The repo copies are not what runs on the machine: stable copies are installed to `~/.local/bin`, and the watchdog LaunchAgent references absolute `/Users/example/.local/bin` paths. Edits to `bin/` or the plist take effect only after re-running the install block in README.md.
 
@@ -43,9 +46,15 @@ Checkpoints (every `*_CHECKPOINT_INTERVAL`, default 300s, under a per-session `l
 
 Resume: only flags on the allowlist in `write_resume_args` are persisted to `resume-args.bin` and replayed by `resume`/`recover` — a new provider flag that should survive resume must be added there.
 
+`list --json` emits one JSON object per session (JSONL, `schema: 1`, derived `effective_status`) for scripting and the Detach.app UI. `delete [--force]` removes a stopped session's state dir, retained pane, and stale lease; its destructive part runs under the session checkpoint lock via `__delete_locked` and never touches the provider stores.
+
 ### Amphetamine keep-awake
 
 Reference-counted lease files under `~/.local/state/codex-detached-amphetamine` (name kept for backward compatibility; shared by both providers). The first session starts one infinite Closed-Display-Mode Amphetamine session and records ownership in `owner.json`; the last owned lease ends it only if the observable session properties are unchanged, and a pre-existing user session is never replaced or ended. `launchagents/dev.tsarev.codex-detached-watchdog.plist` runs `codex-detached __reconcile_amphetamine` every 60s to expire stale leases after crashes and to leave Amphetamine off at/below the low-battery threshold.
+
+### Detach.app (`app/`)
+
+A SwiftPM package: `DetachKit` (tested logic — JSONL parsing, status→section/action mapping, async Process CLI client, Terminal command composition with shell quoting) plus `DetachApp` (thin SwiftUI layer, macOS 14+). It consumes only the CLI surface — `list --json`, `logs`, `stop`, `delete --force`, and `attach`/`resume`/`recover` composed into Terminal.app via AppleScript — never the state dirs. On partially invalid `list --json` output the store keeps the last good list and shows an incompatible-CLI banner; keep `emit_list_json` and `Session` in sync when changing either side.
 
 ### Backward-compatibility constraints
 

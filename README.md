@@ -66,6 +66,16 @@ detach resume SESSION_UUID
 detach resume --name migration --detach SESSION_UUID
 ```
 
+`list --json` prints one JSON object per session (both providers) for
+scripting and the Detach.app UI. `delete` removes a session's saved state
+(checkpoints and metadata) after it stopped; provider transcripts in
+`~/.claude` and `~/.codex` are never touched:
+
+```sh
+detach list --json
+detach claude delete migration
+```
+
 Other management commands keep the provider explicit:
 
 ```sh
@@ -183,3 +193,17 @@ system sleep:
 ```sh
 tests/amphetamine-smoke.sh
 ```
+
+## Detach.app
+
+A SwiftUI companion app (`app/`) that lists all detach sessions with statuses
+and log previews, opens them in Terminal.app, and drives stop/resume/recover/
+delete/new-session through the CLI:
+
+```sh
+app/scripts/make-app.sh
+open app/build/Detach.app
+```
+
+The app talks to the CLI only (`detach list --json`, `detach <provider> ...`);
+point it at a different binary in Settings.
