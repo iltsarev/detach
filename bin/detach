@@ -19,7 +19,7 @@ usage() {
     'Usage:' \
     '  detach codex [COMMAND] [ARGS...]' \
     '  detach claude [COMMAND] [ARGS...]' \
-    '  detach list' \
+    '  detach list [--json]' \
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
     '' \
     'Use an explicit provider to start or run provider-specific management commands.' \
@@ -98,8 +98,8 @@ list_all() {
   local status=0
   local provider_status
 
-  DETACH_LIST_HEADER=1 run_provider codex list || status=$?
-  DETACH_LIST_HEADER=0 run_provider claude list || {
+  DETACH_LIST_HEADER=1 run_provider codex list "$@" || status=$?
+  DETACH_LIST_HEADER=0 run_provider claude list "$@" || {
     provider_status=$?
     [ "$status" -ne 0 ] || status="$provider_status"
   }
@@ -221,8 +221,18 @@ main() {
       ;;
     list)
       shift
-      [ "$#" -eq 0 ] || die "list does not accept arguments"
-      list_all
+      case "${1:-}" in
+        '')
+          list_all
+          ;;
+        --json)
+          [ "$#" -eq 1 ] || die "list accepts only --json"
+          list_all --json
+          ;;
+        *)
+          die "unknown list option: $1"
+          ;;
+      esac
       ;;
     resume)
       shift
