@@ -1,4 +1,6 @@
 // Renders the Detach app icon into an .iconset directory.
+// Design: clean white plate, gradient chevron (teal → indigo → coral),
+// gray ghost "detached" pane, coral cursor underscore.
 // Usage: swift render-icon.swift <output.iconset>
 
 import AppKit
@@ -11,6 +13,10 @@ let variants: [(pixels: Int, name: String)] = [
     (512, "icon_512x512"), (1024, "icon_512x512@2x"),
 ]
 
+let teal = NSColor(srgbRed: 0.05, green: 0.72, blue: 0.62, alpha: 1)
+let indigo = NSColor(srgbRed: 0.33, green: 0.36, blue: 0.88, alpha: 1)
+let coral = NSColor(srgbRed: 1.00, green: 0.45, blue: 0.30, alpha: 1)
+
 func draw(size: Int) -> NSBitmapImageRep {
     let rep = NSBitmapImageRep(
         bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
@@ -22,58 +28,70 @@ func draw(size: Int) -> NSBitmapImageRep {
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     let s = CGFloat(size) / 1024.0
 
-    // Squircle plate with a soft shadow, macOS-style margins.
+    // White squircle plate with a soft shadow, macOS-style margins.
     let plateRect = NSRect(x: 100 * s, y: 100 * s, width: 824 * s, height: 824 * s)
     let plate = NSBezierPath(roundedRect: plateRect, xRadius: 184 * s, yRadius: 184 * s)
 
     let shadow = NSShadow()
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
-    shadow.shadowOffset = NSSize(width: 0, height: -8 * s)
-    shadow.shadowBlurRadius = 22 * s
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
+    shadow.shadowOffset = NSSize(width: 0, height: -10 * s)
+    shadow.shadowBlurRadius = 24 * s
     NSGraphicsContext.current?.saveGraphicsState()
     shadow.set()
-    NSColor(srgbRed: 0.07, green: 0.08, blue: 0.10, alpha: 1).setFill()
+    NSColor.white.setFill()
     plate.fill()
     NSGraphicsContext.current?.restoreGraphicsState()
 
-    let gradient = NSGradient(
-        starting: NSColor(srgbRed: 0.132, green: 0.149, blue: 0.188, alpha: 1),
-        ending: NSColor(srgbRed: 0.047, green: 0.055, blue: 0.075, alpha: 1))!
-    gradient.draw(in: plate, angle: -90)
+    // Barely-there vertical tint so white does not look flat.
+    NSGradient(starting: NSColor.white,
+               ending: NSColor(srgbRed: 0.945, green: 0.953, blue: 0.969, alpha: 1))!
+        .draw(in: plate, angle: -90)
 
-    // Subtle top rim highlight.
-    let rim = NSBezierPath(roundedRect: plateRect.insetBy(dx: 3 * s, dy: 3 * s),
-                           xRadius: 181 * s, yRadius: 181 * s)
-    rim.lineWidth = 4 * s
-    NSColor.white.withAlphaComponent(0.06).setStroke()
-    rim.stroke()
+    // Hairline border.
+    let border = NSBezierPath(roundedRect: plateRect.insetBy(dx: 2 * s, dy: 2 * s),
+                              xRadius: 182 * s, yRadius: 182 * s)
+    border.lineWidth = 4 * s
+    NSColor.black.withAlphaComponent(0.08).setStroke()
+    border.stroke()
 
-    // Ghost "detached" pane, top-right.
+    // Ghost "detached" pane.
     let ghost = NSBezierPath(roundedRect: NSRect(x: 596 * s, y: 608 * s,
                                                  width: 224 * s, height: 148 * s),
                              xRadius: 30 * s, yRadius: 30 * s)
-    ghost.lineWidth = 13 * s
-    NSColor.white.withAlphaComponent(0.30).setStroke()
+    ghost.lineWidth = 14 * s
+    NSColor.black.withAlphaComponent(0.16).setStroke()
     ghost.stroke()
 
-    let green = NSColor(srgbRed: 0.188, green: 0.820, blue: 0.345, alpha: 1)
-
-    // Prompt chevron.
+    // Gradient chevron: clip to the stroked path, then pour a linear gradient.
     let chevron = NSBezierPath()
-    chevron.lineWidth = 96 * s
-    chevron.lineCapStyle = .round
-    chevron.lineJoinStyle = .round
     chevron.move(to: NSPoint(x: 342 * s, y: 668 * s))
     chevron.line(to: NSPoint(x: 540 * s, y: 508 * s))
     chevron.line(to: NSPoint(x: 342 * s, y: 348 * s))
-    green.setStroke()
-    chevron.stroke()
 
-    // Cursor underscore.
+    let ctx = NSGraphicsContext.current!.cgContext
+    ctx.saveGState()
+    ctx.addPath(chevron.cgPath)
+    ctx.setLineWidth(100 * s)
+    ctx.setLineCap(.round)
+    ctx.setLineJoin(.round)
+    ctx.replacePathWithStrokedPath()
+    ctx.clip()
+    let gradient = CGGradient(
+        colorsSpace: CGColorSpaceCreateDeviceRGB(),
+        colors: [teal.cgColor, indigo.cgColor, coral.cgColor] as CFArray,
+        locations: [0, 0.55, 1])!
+    ctx.drawLinearGradient(
+        gradient,
+        start: CGPoint(x: 292 * s, y: 700 * s),
+        end: CGPoint(x: 590 * s, y: 320 * s),
+        options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+    ctx.restoreGState()
+
+    // Cursor underscore — coral.
     let cursor = NSBezierPath(roundedRect: NSRect(x: 612 * s, y: 324 * s,
-                                                  width: 178 * s, height: 50 * s),
-                              xRadius: 25 * s, yRadius: 25 * s)
-    green.withAlphaComponent(0.60).setFill()
+                                                  width: 178 * s, height: 52 * s),
+                              xRadius: 26 * s, yRadius: 26 * s)
+    coral.setFill()
     cursor.fill()
 
     NSGraphicsContext.restoreGraphicsState()
