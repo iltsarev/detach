@@ -46,7 +46,7 @@ resolve_self() {
 }
 
 SELF="$(resolve_self)"
-CORE="$(dirname "$SELF")/codex-detached"
+CORE="$(dirname "$SELF")/detach-core"
 JQ_BIN="${DETACH_JQ_BIN:-${CODEX_DETACHED_JQ_BIN:-$(command -v jq 2>/dev/null || true)}}"
 
 require_core() {
@@ -79,7 +79,8 @@ run_provider() {
   shift
 
   require_core
-  DETACH_PROVIDER="$provider" \
+  DETACH_CORE_ENTRYPOINT=1 \
+    DETACH_PROVIDER="$provider" \
     DETACH_PROGRAM="$PROGRAM $provider" \
     "$CORE" "$@"
 }
@@ -89,7 +90,8 @@ exec_provider() {
   shift
 
   require_core
-  DETACH_PROVIDER="$provider" \
+  DETACH_CORE_ENTRYPOINT=1 \
+    DETACH_PROVIDER="$provider" \
     DETACH_PROGRAM="$PROGRAM $provider" \
     exec "$CORE" "$@"
 }
@@ -237,6 +239,11 @@ main() {
     resume)
       shift
       resume_auto "$@"
+      ;;
+    __reconcile_amphetamine)
+      shift
+      [ "$#" -eq 0 ] || die "__reconcile_amphetamine does not accept arguments"
+      exec_provider codex __reconcile_amphetamine
       ;;
     help|-h|--help)
       shift

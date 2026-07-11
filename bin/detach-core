@@ -5,11 +5,16 @@ set -o pipefail
 
 umask 077
 
+if [ "${DETACH_CORE_ENTRYPOINT:-}" != "1" ]; then
+  printf 'detach-core: internal executable; use detach instead\n' >&2
+  exit 2
+fi
+
 PROVIDER="${DETACH_PROVIDER:-codex}"
 case "$PROVIDER" in
   codex|claude) ;;
   *)
-    printf 'codex-detached: unsupported provider: %s\n' "$PROVIDER" >&2
+    printf 'detach-core: unsupported provider: %s\n' "$PROVIDER" >&2
     exit 2
     ;;
 esac
@@ -20,7 +25,7 @@ if [ "$PROVIDER" = "claude" ]; then
   PROVIDER_LABEL="Claude"
   PROVIDER_ARGS_LABEL="CLAUDE_ARGS"
 fi
-PROGRAM="${DETACH_PROGRAM:-codex-detached}"
+PROGRAM="${DETACH_PROGRAM:-detach}"
 AMPHETAMINE_ID="com.if.Amphetamine"
 DEFAULT_CHECKPOINT_INTERVAL=300
 DEFAULT_HISTORY_LIMIT=50000
@@ -1916,7 +1921,7 @@ tmux_environment_args() {
               NODE_EXTRA_CA_CERTS HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
               http_proxy https_proxy all_proxy no_proxy OPENAI_API_KEY ANTHROPIC_API_KEY \
               SSL_CERT_FILE SSL_CERT_DIR CODEX_HOME CLAUDE_CONFIG_DIR \
-              DETACH_PROVIDER DETACH_PROGRAM DETACH_LOCKS_ROOT \
+              DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM DETACH_LOCKS_ROOT \
               DETACH_AMPHETAMINE_STATE_ROOT DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG \
               DETACH_TMUX_BIN DETACH_JQ_BIN \
               DETACH_SQLITE_BIN DETACH_TAR_BIN DETACH_OSASCRIPT_BIN DETACH_CAFFEINATE_BIN \

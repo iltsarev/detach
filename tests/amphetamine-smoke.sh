@@ -4,11 +4,15 @@ set -eu
 set -o pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-SCRIPT="$ROOT/bin/codex-detached"
+SCRIPT="$ROOT/bin/detach"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-detached-amphetamine.XXXXXX")"
 TMUX_TMPDIR="/tmp/cdt-amp-tmux-$$"
 SOCKET="codex-detached-amp-$$"
 SESSION="codex-detached-amphetamine-smoke"
+
+run_codex() {
+  "$SCRIPT" codex "$@"
+}
 
 export CODEX_DETACHED_STATE_ROOT="$TMP_ROOT/state"
 export DETACH_LOCKS_ROOT="$TMP_ROOT/locks"
@@ -24,8 +28,8 @@ export FAKE_CODEX_EXIT=0
 export TMUX_TMPDIR
 
 cleanup() {
-  "$SCRIPT" stop amphetamine-smoke >/dev/null 2>&1 || true
-  "$SCRIPT" stop amphetamine-reconcile >/dev/null 2>&1 || true
+  run_codex stop amphetamine-smoke >/dev/null 2>&1 || true
+  run_codex stop amphetamine-reconcile >/dev/null 2>&1 || true
   tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   rm -rf "$TMUX_TMPDIR" "$TMP_ROOT"
 }
@@ -38,7 +42,7 @@ fi
 
 mkdir -p "$TMUX_TMPDIR" "$CODEX_HOME"
 
-"$SCRIPT" --name amphetamine-smoke --detach -- 'Amphetamine smoke test'
+run_codex --name amphetamine-smoke --detach -- 'Amphetamine smoke test'
 sleep 2
 
 [ "$(osascript -e 'tell application id "com.if.Amphetamine" to session is active')" = "true" ]
@@ -53,12 +57,12 @@ sleep 5
 jq -n '{owned: true, pending: false}' >"$CODEX_DETACHED_AMPHETAMINE_STATE_ROOT/owner.json"
 sudo -n pmset -a disablesleep 1
 pmset -g live | grep -Eq 'SleepDisabled"?[[:space:]]*(=[[:space:]]*)?(Yes|1)([[:space:]]|$)'
-"$SCRIPT" __reconcile_amphetamine
+run_codex __reconcile_amphetamine
 [ ! -e "$CODEX_DETACHED_AMPHETAMINE_STATE_ROOT/owner.json" ]
 ! pmset -g live | grep -Eq 'SleepDisabled"?[[:space:]]*(=[[:space:]]*)?(Yes|1)([[:space:]]|$)'
 
 tmux -L "$SOCKET" set-environment -g FAKE_CODEX_SLEEP 20
-"$SCRIPT" --name amphetamine-reconcile --detach -- 'Amphetamine reconcile test'
+run_codex --name amphetamine-reconcile --detach -- 'Amphetamine reconcile test'
 sleep 2
 [ "$(osascript -e 'tell application id "com.if.Amphetamine" to session is active')" = "true" ]
 jq -e '.tmux_socket_path | startswith("/")' "$CODEX_DETACHED_AMPHETAMINE_STATE_ROOT/leases/"*.json >/dev/null
@@ -76,7 +80,7 @@ env -u TMUX_TMPDIR "$SCRIPT" __reconcile_amphetamine
 [ "$(osascript -e 'tell application id "com.if.Amphetamine" to closed display mode enabled')" = "true" ]
 pmset -g live | grep -Eq 'SleepDisabled"?[[:space:]]*(=[[:space:]]*)?(Yes|1)([[:space:]]|$)'
 
-"$SCRIPT" stop amphetamine-reconcile >/dev/null
+run_codex stop amphetamine-reconcile >/dev/null
 [ "$(osascript -e 'tell application id "com.if.Amphetamine" to session is active')" = "false" ]
 ! pmset -g live | grep -Eq 'SleepDisabled"?[[:space:]]*(=[[:space:]]*)?(Yes|1)([[:space:]]|$)'
 

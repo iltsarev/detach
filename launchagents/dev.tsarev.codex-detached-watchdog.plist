@@ -6,7 +6,7 @@
   <string>dev.tsarev.codex-detached-watchdog</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/example/.local/bin/codex-detached</string>
+    <string>/Users/example/.local/bin/detach</string>
     <string>__reconcile_amphetamine</string>
   </array>
   <key>EnvironmentVariables</key>

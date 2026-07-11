@@ -22,10 +22,10 @@ The repo copies are not what runs on the machine: stable copies are installed to
 
 ## Architecture
 
-Two executables that must live side by side (`detach` resolves the core as its sibling after following symlinks):
+Two internal executables that must live side by side (`detach` resolves the core as its sibling after following symlinks). Only `detach` is exposed on `PATH`; installation puts both files under `~/.local/libexec/detach` and symlinks the frontend into `~/.local/bin`:
 
 - **`bin/detach`** — thin provider multiplexer. Sets `DETACH_PROVIDER=codex|claude` and execs the core. Owns only the cross-provider commands: `list` (concatenates both providers) and `resume` (detects a UUID's provider via the core's `__has_session_id` / `__session_context` internal calls; refuses ambiguous UUIDs).
-- **`bin/codex-detached`** — the core (~2800 lines; also the backward-compatible standalone CLI, defaulting to codex). All logic lives here, parameterized by `$PROVIDER`; provider differences (session identity, checkpoint artifacts, resume-flag allowlists, policy defaults) are gated inline, not split into adapter files.
+- **`bin/detach-core`** — the internal core (~2800 lines). It rejects direct invocation unless the frontend marks the call with `DETACH_CORE_ENTRYPOINT=1`; that marker is propagated into tmux for self-reinvocation. All logic lives here, parameterized by `$PROVIDER`; provider differences (session identity, checkpoint artifacts, resume-flag allowlists, policy defaults) are gated inline, not split into adapter files.
 
 ### Core patterns
 
@@ -50,7 +50,7 @@ Resume: only flags on the allowlist in `write_resume_args` are persisted to `res
 
 ### Amphetamine keep-awake
 
-Reference-counted lease files under `~/.local/state/codex-detached-amphetamine` (name kept for backward compatibility; shared by both providers). The first session starts one infinite Closed-Display-Mode Amphetamine session and records ownership in `owner.json`; the last owned lease ends it only if the observable session properties are unchanged, and a pre-existing user session is never replaced or ended. `launchagents/dev.tsarev.codex-detached-watchdog.plist` runs `codex-detached __reconcile_amphetamine` every 60s to expire stale leases after crashes and to leave Amphetamine off at/below the low-battery threshold.
+Reference-counted lease files under `~/.local/state/codex-detached-amphetamine` (name kept for backward compatibility; shared by both providers). The first session starts one infinite Closed-Display-Mode Amphetamine session and records ownership in `owner.json`; the last owned lease ends it only if the observable session properties are unchanged, and a pre-existing user session is never replaced or ended. `launchagents/dev.tsarev.codex-detached-watchdog.plist` runs `detach __reconcile_amphetamine` every 60s to expire stale leases after crashes and to leave Amphetamine off at/below the low-battery threshold.
 
 ### Detach.app (`app/`)
 
@@ -58,4 +58,4 @@ A SwiftPM package: `DetachKit` (tested logic — JSONL parsing, status→section
 
 ### Backward-compatibility constraints
 
-Load-bearing names that must not be renamed: the `codex-detached` CLI itself, `@codex_detached*` tmux session options (used for both providers), `CODEX_DETACHED_*` env fallbacks, and the `codex-detached-amphetamine` state directory.
+Load-bearing legacy names that must not be renamed without a migration: `@codex_detached*` tmux session options (used for both providers), `CODEX_DETACHED_*` env fallbacks, the Codex state/session names, and the `codex-detached-amphetamine` state directory. `detach-core` is internal; `detach` is the sole public CLI.

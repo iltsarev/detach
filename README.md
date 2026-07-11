@@ -3,8 +3,8 @@
 `detach` runs Codex or Claude Code inside a persistent tmux session and keeps a
 MacBook awake through Amphetamine Closed-Display Mode. Both providers share the
 same lifecycle commands; provider-specific session storage is handled by
-adapters. The original `codex-detached` command remains available for backward
-compatibility.
+adapters. `detach` is the only public command; its `detach-core` executable is
+an internal implementation detail and is not installed on `PATH`.
 
 ## Install
 
@@ -12,10 +12,11 @@ The current LaunchAgent is configured for `/Users/example`. Install a stable
 copy of the wrapper and load the watchdog:
 
 ```sh
-install -d ~/.local/bin ~/Library/LaunchAgents
+install -d ~/.local/bin ~/.local/libexec/detach ~/Library/LaunchAgents
 install -d -m 0700 ~/.local/state/codex-detached-amphetamine
-install -m 0755 bin/codex-detached ~/.local/bin/codex-detached
-install -m 0755 bin/detach ~/.local/bin/detach
+install -m 0755 bin/detach bin/detach-core ~/.local/libexec/detach/
+ln -sfn ../libexec/detach/detach ~/.local/bin/detach
+rm -f ~/.local/bin/codex-detached
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist 2>/dev/null || true
 install -m 0644 launchagents/dev.tsarev.codex-detached-watchdog.plist ~/Library/LaunchAgents/
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist
@@ -23,7 +24,7 @@ launchctl kickstart -k "gui/$(id -u)/dev.tsarev.codex-detached-watchdog"
 ```
 
 `~/.local/bin` must be on `PATH`. Check the installation with
-`command -v detach`, `command -v codex-detached`, and
+`command -v detach`, `[ ! -e ~/.local/bin/codex-detached ]`, and
 `launchctl print "gui/$(id -u)/dev.tsarev.codex-detached-watchdog"`.
 
 ## Usage
@@ -113,7 +114,7 @@ shared database automatically.
 Change the interval for testing or special cases:
 
 ```sh
-CODEX_DETACHED_CHECKPOINT_INTERVAL=600 codex-detached
+CODEX_DETACHED_CHECKPOINT_INTERVAL=600 detach codex
 CLAUDE_DETACHED_CHECKPOINT_INTERVAL=600 detach claude
 ```
 
