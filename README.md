@@ -75,6 +75,15 @@ anything missing.
    then return to Detach.
 4. Choose **＋**, select a project and provider, and start the session.
 
+Or start from your own Terminal after setup:
+
+```bash
+cd ~/my/repo
+detach codex
+# or
+detach claude
+```
+
 Detach finds compatible terminal apps already installed on your Mac. Choose
 one in Settings; start, attach, resume, and recover open there. The main app
 does not need Terminal Automation access. Settings also offers optional
