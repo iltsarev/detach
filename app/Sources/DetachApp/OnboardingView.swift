@@ -57,9 +57,14 @@ struct OnboardingView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
-        } else if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+        } else if case .installAmphetamine(let prerequisites) = blocker {
+            Label(
+                amphetamineStatusText(prerequisites),
+                systemImage: "bolt.heart")
+                .foregroundStyle(.secondary)
+        } else if store.watchdogStatus == .requiresApproval {
             Label {
-                Text("Это нужно только для надёжной работы keep-awake при закрытой крышке.")
+                Text("Фоновая служба обязательна: она восстанавливает keep-awake после сбоев, даже когда Detach.app закрыт.")
             } icon: {
                 Image(systemName: "gearshape.2")
             }
@@ -91,12 +96,33 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
-            } else if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+            } else if case .installAmphetamine(let prerequisites) = blocker {
+                VStack(alignment: .leading, spacing: 10) {
+                    if prerequisites.contains(.app) {
+                        Button("Открыть Amphetamine в Mac App Store") {
+                            openWebPage("https://apps.apple.com/app/amphetamine/id937984704")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.indigo)
+                    }
+                    if prerequisites.contains(.powerProtect) {
+                        Button("Открыть официальную страницу Power Protect") {
+                            openWebPage("https://x74353.github.io/Amphetamine-Power-Protect/")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.indigo)
+                    }
+                    Button("Перепроверить") { Task { await store.refreshContext() } }
+                        .buttonStyle(.bordered)
+                }
+            } else if store.watchdogStatus == .requiresApproval {
                 Button("Открыть системные настройки") { store.openLoginItemsSettings() }
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.indigo)
             } else {
                 switch blocker {
+                case .installAmphetamine:
+                    EmptyView()
                 case .installTools(let tools):
                     if let brewPath {
                         Button("Установить \(tools.joined(separator: " и "))") {
@@ -191,7 +217,8 @@ struct OnboardingView: View {
     private var headerTitle: String {
         if store.isBusy { return "Настраиваем Detach…" }
         if !store.isStableApplicationLocation { return "Переместите Detach в Applications" }
-        if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+        if case .installAmphetamine = blocker { return "Установите Amphetamine и Power Protect" }
+        if store.watchdogStatus == .requiresApproval {
             return "Разрешите фоновую работу"
         }
         if case .installTools = blocker { return "Установите необходимые компоненты" }
@@ -205,7 +232,10 @@ struct OnboardingView: View {
         if !store.isStableApplicationLocation {
             return "Detach должен находиться в /Applications, чтобы обновляться и работать в фоне."
         }
-        if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+        if case .installAmphetamine = blocker {
+            return "Detach использует оба компонента для надёжной работы агентов при закрытой крышке."
+        }
+        if store.watchdogStatus == .requiresApproval {
             return "macOS просит один раз подтвердить работу Detach в фоне."
         }
         if case .installTools = blocker {
@@ -220,7 +250,8 @@ struct OnboardingView: View {
     private var headerIcon: String {
         if store.isBusy { return "shippingbox.and.arrow.backward" }
         if !store.isStableApplicationLocation { return "folder.badge.plus" }
-        if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+        if case .installAmphetamine = blocker { return "bolt.heart" }
+        if store.watchdogStatus == .requiresApproval {
             return "person.badge.key"
         }
         return "wrench.and.screwdriver"
@@ -294,8 +325,27 @@ struct OnboardingView: View {
             "Добавьте ~/.local/bin в PATH интерактивного shell."
         case "app_location":
             "Запуск из DMG или временной копии ненадёжен."
+        case "amphetamine_app":
+            "Установите Amphetamine из Mac App Store."
+        case "amphetamine_power_protect":
+            "После Amphetamine установите Power Protect с официального сайта."
         default:
             nil
+        }
+    }
+
+    private func amphetamineStatusText(
+        _ prerequisites: [AmphetaminePrerequisite]
+    ) -> String {
+        switch (prerequisites.contains(.app), prerequisites.contains(.powerProtect)) {
+        case (true, true):
+            "Нужны два обязательных компонента: Amphetamine.app и Amphetamine Power Protect."
+        case (true, false):
+            "Нужен обязательный Amphetamine.app."
+        case (false, true):
+            "Нужен обязательный Amphetamine Power Protect."
+        case (false, false):
+            "Нужны обязательные компоненты Amphetamine."
         }
     }
 }

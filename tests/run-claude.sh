@@ -5,11 +5,11 @@ set -o pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/detach"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/claude-detached-test.XXXXXX")"
-SOCKET="claude-detached-test-$$"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-claude-test.XXXXXX")"
+SOCKET="detach-claude-test-$$"
 
 cleanup() {
-  if [ "${CLAUDE_DETACHED_TEST_KEEP:-0}" = "1" ]; then
+  if [ "${DETACH_CLAUDE_TEST_KEEP:-0}" = "1" ]; then
     printf 'Preserved test state: %s (socket=%s, tmux_tmpdir=%s)\n' "$TMP_ROOT" "$SOCKET" "$TMUX_TMPDIR" >&2
   else
     tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
@@ -19,16 +19,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export CLAUDE_DETACHED_STATE_ROOT="$TMP_ROOT/state"
-export CODEX_DETACHED_STATE_ROOT="$TMP_ROOT/codex-state"
+export DETACH_STATE_ROOT="$TMP_ROOT/detach-state"
+export DETACH_CLAUDE_STATE_ROOT="$TMP_ROOT/state"
+export DETACH_CODEX_STATE_ROOT="$TMP_ROOT/codex-state"
 export DETACH_TMUX_SOCKET="$SOCKET"
 export DETACH_TMUX_CONFIG="$TMP_ROOT/tmux.conf"
-export CLAUDE_DETACHED_CLAUDE_BIN="$ROOT/tests/fake-claude"
-export CODEX_DETACHED_CODEX_BIN="$ROOT/tests/fake-codex"
-export CLAUDE_DETACHED_AMPHETAMINE=0
-export CODEX_DETACHED_AMPHETAMINE=0
-export CLAUDE_DETACHED_CHECKPOINT_INTERVAL=1
-export CLAUDE_DETACHED_SYNC=0
+export DETACH_CLAUDE_BIN="$ROOT/tests/fake-claude"
+export DETACH_CODEX_BIN="$ROOT/tests/fake-codex"
+export DETACH_AMPHETAMINE=0
+export DETACH_CLAUDE_CHECKPOINT_INTERVAL=1
+export DETACH_CLAUDE_SYNC=0
 export DETACH_LOCKS_ROOT="$TMP_ROOT/locks"
 export DETACH_INSTALL_STATE_ROOT="$TMP_ROOT/install-state"
 export DETACH_AMPHETAMINE_STATE_ROOT="$TMP_ROOT/amphetamine-state"
@@ -38,7 +38,7 @@ export FAKE_CLAUDE_ARGS_FILE="$TMP_ROOT/args.txt"
 export FAKE_CODEX_ARGS_FILE="$TMP_ROOT/codex-args.txt"
 export FAKE_CLAUDE_SLEEP=4
 export FAKE_CLAUDE_EXIT=7
-export TMUX_TMPDIR="/tmp/claude-detached-tmux-$$"
+export TMUX_TMPDIR="/tmp/detach-claude-tmux-$$"
 unset TMUX TMUX_PANE DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM
 mkdir -p "$TMUX_TMPDIR" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
 printf '%s\n' 'set -g base-index 1' 'set -g pane-base-index 1' >"$DETACH_TMUX_CONFIG"
@@ -68,15 +68,18 @@ grep -Fx -- 'auto' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 session_id="$(awk 'previous == "--session-id" { print; exit } { previous = $0 }' "$FAKE_CLAUDE_ARGS_FILE")"
 [[ "$session_id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]
 
-meta_files=("$CLAUDE_DETACHED_STATE_ROOT"/sessions/*/meta.json)
+meta_files=("$DETACH_CLAUDE_STATE_ROOT"/sessions/*/meta.json)
 [ "${#meta_files[@]}" -eq 1 ]
 [ -f "${meta_files[0]}" ]
 meta="${meta_files[0]}"
 session="$(jq -r '.session_name' "$meta")"
+[ "$session" = "detach-claude-integration" ]
 session_dir="$(dirname "$meta")"
 checkpoint="$session_dir/checkpoint"
 
 tmux -L "$SOCKET" has-session -t "=$session"
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach)" = "1" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_provider)" = "claude" ]
 "$SCRIPT" list | grep -F 'claude' | grep -F "$session" | grep -F "$session_id" >/dev/null
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
 printf '%s' "$json_line" | jq -e --arg id "$session_id" '
@@ -258,10 +261,10 @@ export FAKE_CLAUDE_EXIT=0
 "$SCRIPT" claude --name integration --detach -- 'delete coverage'
 sleep 3
 tmux -L "$SOCKET" has-session -t "=$session"
-pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @codex_detached_pane_id)"
+pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "1" ]
 "$SCRIPT" claude delete --force integration
-[ ! -d "$CLAUDE_DETACHED_STATE_ROOT/sessions/$session" ]
+[ ! -d "$DETACH_CLAUDE_STATE_ROOT/sessions/$session" ]
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
 
 printf 'Claude detach integration tests passed\n'

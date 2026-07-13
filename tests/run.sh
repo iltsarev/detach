@@ -6,16 +6,16 @@ set -o pipefail
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/detach"
 DETACH="$ROOT/bin/detach"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-detached-test.XXXXXX")"
-SOCKET="codex-detached-test-$$"
-SESSION="codex-detached-integration"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-codex-test.XXXXXX")"
+SOCKET="detach-codex-test-$$"
+SESSION="detach-codex-integration"
 
 run_codex() {
   "$SCRIPT" codex "$@"
 }
 
 cleanup() {
-  if [ "${CODEX_DETACHED_TEST_KEEP:-0}" = "1" ]; then
+  if [ "${DETACH_CODEX_TEST_KEEP:-0}" = "1" ]; then
     printf 'Preserved test state: %s (socket=%s, tmux_tmpdir=%s)\n' "$TMP_ROOT" "$SOCKET" "$TMUX_TMPDIR" >&2
   else
     tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
@@ -39,32 +39,33 @@ wait_for_process_group_exit() {
   ! process_group_exists "$pgid"
 }
 
-export CODEX_DETACHED_STATE_ROOT="$TMP_ROOT/state"
+export DETACH_STATE_ROOT="$TMP_ROOT/detach-state"
+export DETACH_CODEX_STATE_ROOT="$TMP_ROOT/state"
 export DETACH_LOCKS_ROOT="$TMP_ROOT/locks"
 export DETACH_INSTALL_STATE_ROOT="$TMP_ROOT/install-state"
 export DETACH_AMPHETAMINE_STATE_ROOT="$TMP_ROOT/amphetamine-state"
-export CODEX_DETACHED_TMUX_SOCKET="$SOCKET"
-export CODEX_DETACHED_TMUX_CONFIG="$TMP_ROOT/tmux.conf"
-export CODEX_DETACHED_CODEX_BIN="$ROOT/tests/fake-codex"
-export CODEX_DETACHED_AMPHETAMINE=0
-export CODEX_DETACHED_CHECKPOINT_INTERVAL=1
-export CODEX_DETACHED_SYNC=0
-export CODEX_DETACHED_REQUIREMENTS_FILE="$TMP_ROOT/requirements.toml"
+export DETACH_TMUX_SOCKET="$SOCKET"
+export DETACH_TMUX_CONFIG="$TMP_ROOT/tmux.conf"
+export DETACH_CODEX_BIN="$ROOT/tests/fake-codex"
+export DETACH_AMPHETAMINE=0
+export DETACH_CODEX_CHECKPOINT_INTERVAL=1
+export DETACH_CODEX_SYNC=0
+export DETACH_CODEX_REQUIREMENTS_FILE="$TMP_ROOT/requirements.toml"
 export CODEX_HOME="$TMP_ROOT/codex-home"
 export CLAUDE_CONFIG_DIR="$TMP_ROOT/claude-home"
-export CLAUDE_DETACHED_STATE_ROOT="$TMP_ROOT/claude-state"
+export DETACH_CLAUDE_STATE_ROOT="$TMP_ROOT/claude-state"
 export FAKE_CODEX_ARGS_FILE="$TMP_ROOT/args.txt"
 export FAKE_CODEX_SLEEP=4
 export FAKE_CODEX_EXIT=7
 export FAKE_CODEX_FOREIGN_FIRST=1
 export FAKE_CODEX_INIT_DELAY=1
-export TMUX_TMPDIR="/tmp/cdt-tmux-$$"
+export TMUX_TMPDIR="/tmp/detach-codex-tmux-$$"
 # The test owns a private tmux server. An outer Detach/tmux context must not
 # influence how tmux resolves -L or make attach semantics switch clients.
 unset TMUX TMUX_PANE DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM
 mkdir -p "$TMUX_TMPDIR" "$CODEX_HOME"
-printf '%s\n' 'set -g base-index 1' 'set -g pane-base-index 1' >"$CODEX_DETACHED_TMUX_CONFIG"
-printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request"]' >"$CODEX_DETACHED_REQUIREMENTS_FILE"
+printf '%s\n' 'set -g base-index 1' 'set -g pane-base-index 1' >"$DETACH_TMUX_CONFIG"
+printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request"]' >"$DETACH_CODEX_REQUIREMENTS_FILE"
 
 bash -n "$SCRIPT"
 bash -n "$ROOT/bin/detach-core"
@@ -97,9 +98,11 @@ run_codex --name integration --detach -- "$literal_prompt"
 sleep 2
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 "$DETACH" list | grep -F 'codex' | grep -F "$SESSION" >/dev/null
-pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_pane_id)"
-[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_cli_version)" = "$installed_version" ]
-[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_core_path)" = "$installed_core" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach)" = "1" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_provider)" = "codex" ]
+pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_cli_version)" = "$installed_version" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_core_path)" = "$installed_core" ]
 first_worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
 first_worker_pgid="$(ps -o pgid= -p "$first_worker_pid" | tr -d '[:space:]')"
 grep -F -- "$literal_prompt" "$FAKE_CODEX_ARGS_FILE" >/dev/null
@@ -116,20 +119,22 @@ printf '%s\n' "$upgraded_version" >"$upgraded_payload/VERSION"
 ln -s "$upgraded_payload/detach" "$install_root/bin/.detach-upgrade"
 mv -f "$install_root/bin/.detach-upgrade" "$install_root/bin/detach"
 [ "$("$SCRIPT" __version)" = "$upgraded_version" ]
-[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_core_path)" = "$installed_core" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_core_path)" = "$installed_core" ]
 
-meta="$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/meta.json"
-checkpoint="$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/checkpoint"
+meta="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/meta.json"
+checkpoint="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint"
 jq -e '.codex_session_id != null' "$meta" >/dev/null
 expected_id="$(jq -r '.codex_session_id' "$meta")"
 [ "$expected_id" != "ffffffff-ffff-4fff-8fff-ffffffffffff" ]
+rollout="$(jq -r '.rollout_path' "$meta")"
+[ "$(sed -n '1p' "$rollout" | jq -r '.payload.originator')" = "detach_$(jq -r '.run_token' "$meta")" ]
 "$DETACH" list | grep -F 'codex' | grep -F "$SESSION" | grep -F "$expected_id" >/dev/null
 [ -s "$checkpoint/rollout.jsonl" ]
 [ -s "$checkpoint/codex-state.sqlite" ]
 
 sleep 4
 [ -f "$checkpoint/pane.txt" ]
-pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_pane_id)"
+pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "1" ]
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead_status}')" = "7" ]
 wait_for_process_group_exit "$first_worker_pgid"
@@ -154,7 +159,7 @@ run_codex recover --detach integration
 sleep 1
 grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
-pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_pane_id)"
+pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
 worker_pgid="$(ps -o pgid= -p "$worker_pid" | tr -d '[:space:]')"
 
@@ -166,10 +171,10 @@ jq -e '.status == "stopped" and .stopped_at != null' "$meta" >/dev/null
 # A fresh run with the same name must never inherit the previous run's UUID.
 [ -s "$checkpoint/rollout.jsonl" ]
 export FAKE_CODEX_INIT_DELAY=5
-printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request", "never"]' >"$CODEX_DETACHED_REQUIREMENTS_FILE"
+printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request", "never"]' >"$DETACH_CODEX_REQUIREMENTS_FILE"
 run_codex --name integration --detach -- 'start a new thread'
 sleep 1
-[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_cli_version)" = "$upgraded_version" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_cli_version)" = "$upgraded_version" ]
 [ "$(grep -Fxc -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ "$(grep -Fxc -- 'never' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ ! -e "$checkpoint/rollout.jsonl" ]
@@ -197,7 +202,7 @@ grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 jq -e --arg id "$expected_id" '.codex_session_id == $id' "$meta" >/dev/null
 completed_run_token="$(jq -r '.run_token' "$meta")"
-pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_pane_id)"
+pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "1" ]
 
 # A normal start replaces a completed retained pane with a fresh Codex thread.
@@ -207,7 +212,7 @@ sleep 1
 [ "$(jq -r '.run_token' "$meta")" != "$completed_run_token" ]
 grep -Fx 'replace the completed thread' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 ! grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
-pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_pane_id)"
+pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "0" ]
 run_codex stop integration
 
@@ -249,14 +254,14 @@ fi
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 run_codex stop integration
 run_codex delete --force integration
-[ ! -d "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION" ]
+[ ! -d "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION" ]
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 ! run_codex list --json | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
 
 # The destructive phase must repeat the ownership check under its lock. An
 # unmanaged retained pane that appears after the outer check must survive.
-mkdir -p "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION"
-printf 'foreign sentinel\n' >"$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/sentinel"
+mkdir -p "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION"
+printf 'foreign sentinel\n' >"$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/sentinel"
 foreign_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' -s "$SESSION" -n foreign)"
 tmux -L "$SOCKET" set-option -q -w -t "$foreign_pane" remain-on-exit on
 tmux -L "$SOCKET" send-keys -t "$foreign_pane" 'exit' Enter
@@ -274,8 +279,8 @@ if run_codex __delete_locked "$SESSION"; then
   exit 1
 fi
 tmux -L "$SOCKET" has-session -t "=$SESSION"
-grep -Fx 'foreign sentinel' "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/sentinel" >/dev/null
+grep -Fx 'foreign sentinel' "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/sentinel" >/dev/null
 tmux -L "$SOCKET" kill-session -t "=$SESSION"
-rm -rf "$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION"
+rm -rf "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION"
 
 printf 'Codex detach integration tests passed\n'

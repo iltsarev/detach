@@ -48,7 +48,9 @@ struct RootView: View {
                         detachPath: detachPath,
                         selectedID: $selectedID)
                 } detail: {
-                    if let session = selectedSession {
+                    if store.sessions.isEmpty && store.state == .ok {
+                        EmptySessionsView(detachPath: detachPath)
+                    } else if let session = selectedSession {
                         SessionDetailView(session: session, store: store, detachPath: detachPath)
                             .id(session.id)
                     } else {

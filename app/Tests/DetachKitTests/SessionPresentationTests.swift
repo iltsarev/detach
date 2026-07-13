@@ -10,7 +10,7 @@ final class SessionPresentationTests: XCTestCase {
     ) -> Session {
         let turnStateJSON = turnState.map { "\"\($0.rawValue)\"" } ?? "null"
         let json = """
-        {"schema":1,"provider":"claude","session_name":"claude-detached-proj-abcd1234","name":"proj-abcd1234","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(uuid.map { "\"\($0)\"" } ?? "null"),"project_dir":\(project.map { "\"\($0)\"" } ?? "null"),"created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"agent_turn_state":\(turnStateJSON),"agent_turn_id":"turn"}
+        {"schema":1,"provider":"claude","session_name":"detach-claude-proj-abcd1234","name":"proj-abcd1234","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(uuid.map { "\"\($0)\"" } ?? "null"),"project_dir":\(project.map { "\"\($0)\"" } ?? "null"),"created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"agent_turn_state":\(turnStateJSON),"agent_turn_id":"turn"}
         """
         return SessionListParser.parse(json).sessions[0]
     }

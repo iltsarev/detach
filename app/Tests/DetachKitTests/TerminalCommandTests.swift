@@ -6,7 +6,7 @@ final class TerminalCommandTests: XCTestCase {
 
     func session(_ status: EffectiveStatus = .running, uuid: String? = "1111-2222") -> Session {
         SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"codex-detached-proj-abcd1234","name":"proj-abcd1234","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(uuid.map { "\"\($0)\"" } ?? "null"),"project_dir":"/tmp/p","created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        {"schema":1,"provider":"codex","session_name":"detach-codex-proj-abcd1234","name":"proj-abcd1234","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(uuid.map { "\"\($0)\"" } ?? "null"),"project_dir":"/tmp/p","created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
         """).sessions[0]
     }
 
@@ -17,7 +17,7 @@ final class TerminalCommandTests: XCTestCase {
     func testAttach() {
         XCTAssertEqual(
             TerminalCommand.attach(detachPath: detach, session: session()),
-            "exec '/Users/me/.local/bin/detach' codex attach 'codex-detached-proj-abcd1234'")
+            "exec '/Users/me/.local/bin/detach' codex attach 'detach-codex-proj-abcd1234'")
     }
 
     func testResumeNeedsUUID() {
@@ -30,7 +30,7 @@ final class TerminalCommandTests: XCTestCase {
     func testRecover() {
         XCTAssertEqual(
             TerminalCommand.recover(detachPath: detach, session: session(.recoverable)),
-            "exec '/Users/me/.local/bin/detach' codex recover 'codex-detached-proj-abcd1234'")
+            "exec '/Users/me/.local/bin/detach' codex recover 'detach-codex-proj-abcd1234'")
     }
 
     func testStartComposesAllParts() {

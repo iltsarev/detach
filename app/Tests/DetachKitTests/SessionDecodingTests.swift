@@ -3,10 +3,10 @@ import XCTest
 
 final class SessionDecodingTests: XCTestCase {
     let running = """
-    {"schema":1,"provider":"claude","session_name":"claude-detached-harness-a1b2c3d4","name":"harness-a1b2c3d4","effective_status":"running","meta_status":"running","agent_session_id":"11111111-2222-4333-8444-555555555555","project_dir":"/Users/me/dev/harness","created_at":"2026-07-10T18:20:00Z","last_checkpoint_at":"2026-07-10T18:25:00Z","exit_status":null,"finished_at":null}
+    {"schema":1,"provider":"claude","session_name":"detach-claude-harness-a1b2c3d4","name":"harness-a1b2c3d4","effective_status":"running","meta_status":"running","agent_session_id":"11111111-2222-4333-8444-555555555555","project_dir":"/Users/me/dev/harness","created_at":"2026-07-10T18:20:00Z","last_checkpoint_at":"2026-07-10T18:25:00Z","exit_status":null,"finished_at":null}
     """
     let corrupt = """
-    {"schema":1,"provider":"codex","session_name":"codex-detached-x-ffffffff","name":"x-ffffffff","effective_status":"corrupt","meta_status":null,"agent_session_id":null,"project_dir":null,"created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+    {"schema":1,"provider":"codex","session_name":"detach-codex-x-ffffffff","name":"x-ffffffff","effective_status":"corrupt","meta_status":null,"agent_session_id":null,"project_dir":null,"created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
     """
 
     func testDecodesRunningSession() throws {
@@ -19,7 +19,7 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertEqual(s.name, "harness-a1b2c3d4")
         XCTAssertEqual(s.exitStatus, nil)
         XCTAssertNotNil(s.createdAt)
-        XCTAssertEqual(s.id, "claude-detached-harness-a1b2c3d4")
+        XCTAssertEqual(s.id, "detach-claude-harness-a1b2c3d4")
     }
 
     func testNullFieldsDecode() {

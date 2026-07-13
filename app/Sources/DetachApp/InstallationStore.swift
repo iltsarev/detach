@@ -23,7 +23,6 @@ final class InstallationStore {
     private(set) var watchdogStatus: WatchdogStatus = .unavailable
     private(set) var watchdogError: String?
     private(set) var lastInstallMessage: String?
-    private(set) var keepAwakeEnabled: Bool
     private(set) var distributionMatchesBundle = false
 
     private let detachPath: String
@@ -35,7 +34,6 @@ final class InstallationStore {
     init(detachPath: String, bundle: Bundle = .main) {
         self.detachPath = detachPath
         bundleURL = bundle.bundleURL.standardizedFileURL
-        keepAwakeEnabled = Self.readKeepAwakeSetting()
         let candidate = bundle.bundleURL
             .appendingPathComponent("Contents/Resources/DetachCLI", isDirectory: true)
         payloadDirectory = FileManager.default.fileExists(atPath: candidate.path)
@@ -101,25 +99,22 @@ final class InstallationStore {
         case .enabled:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base, label: "Фоновая служба",
-                required: keepAwakeEnabled, status: .ok, path: nil,
+                required: true, status: .ok, path: nil,
                 summary: "Фоновая проверка включена")
         case .requiresApproval:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base, label: "Фоновая служба",
-                required: keepAwakeEnabled,
-                status: keepAwakeEnabled ? .error : .warning, path: nil,
+                required: true, status: .error, path: nil,
                 summary: "macOS ожидает разрешение на фоновую работу")
         case .notRegistered:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base, label: "Фоновая служба",
-                required: keepAwakeEnabled,
-                status: keepAwakeEnabled ? .error : .warning, path: nil,
+                required: true, status: .error, path: nil,
                 summary: "Фоновая проверка пока не включена")
         case .unavailable:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base, label: "Фоновая служба",
-                required: keepAwakeEnabled,
-                status: keepAwakeEnabled ? .error : .warning, path: nil,
+                required: true, status: .error, path: nil,
                 summary: "macOS пока не зарегистрировала фоновую проверку")
         }
         return [locationCheck, distributionCheck, watchdogCheck, watchdogHeartbeatCheck]
@@ -127,15 +122,15 @@ final class InstallationStore {
 
     private var watchdogHeartbeatCheck: DiagnosticCheck {
         struct Heartbeat: Decodable { let state: String }
-        let statusURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/state/codex-detached-amphetamine/watchdog-status.json")
+        let statusURL = Self.amphetamineStateRoot
+            .appendingPathComponent("watchdog-status.json")
         let attributes = try? FileManager.default.attributesOfItem(atPath: statusURL.path)
         let modified = attributes?[.modificationDate] as? Date
         let fresh = modified.map { Date().timeIntervalSince($0) < 180 } ?? false
         let heartbeat = (try? Data(contentsOf: statusURL))
             .flatMap { try? JSONDecoder().decode(Heartbeat.self, from: $0) }
         let healthy = fresh && heartbeat?.state == "ok"
-        let expected = watchdogStatus == .enabled && keepAwakeEnabled
+        let expected = watchdogStatus == .enabled
         return DiagnosticCheck(
             id: "watchdog_heartbeat", section: .base, label: "Запуск фоновой службы",
             required: false,
@@ -143,7 +138,31 @@ final class InstallationStore {
             summary: healthy
                 ? "Фоновая служба запускалась в последние три минуты"
                 : (expected ? "Фоновая служба запускается или требует внимания"
-                            : "Проверяется только при включённом keep-awake"))
+                            : "Обязательная фоновая служба ещё не запущена"))
+    }
+
+    private static var amphetamineStateRoot: URL {
+        let environment = ProcessInfo.processInfo.environment
+        func path(_ key: String) -> String? {
+            guard let value = environment[key], !value.isEmpty else { return nil }
+            return value
+        }
+        if let explicit = path("DETACH_AMPHETAMINE_STATE_ROOT") {
+            return URL(fileURLWithPath: explicit, isDirectory: true)
+        }
+        let base: URL
+        if let explicit = path("DETACH_STATE_ROOT") {
+            base = URL(fileURLWithPath: explicit, isDirectory: true)
+        } else if let xdgStateHome = path("XDG_STATE_HOME") {
+            base = URL(fileURLWithPath: xdgStateHome, isDirectory: true)
+                .appendingPathComponent("detach", isDirectory: true)
+        } else {
+            let home = path("HOME").map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            } ?? FileManager.default.homeDirectoryForCurrentUser
+            base = home.appendingPathComponent(".local/state/detach", isDirectory: true)
+        }
+        return base.appendingPathComponent("amphetamine", isDirectory: true)
     }
 
     func refreshContext() async {
@@ -155,7 +174,7 @@ final class InstallationStore {
         let wasReady = phase == .ready
         if !wasReady { phase = .syncing }
         watchdogStatus = watchdog.status
-        if keepAwakeEnabled && distributionMatchesBundle {
+        if distributionMatchesBundle {
             do {
                 try await watchdog.reconcileAfterAppUpdate()
                 watchdogError = nil
@@ -173,35 +192,6 @@ final class InstallationStore {
             await refreshDoctor()
         } else {
             updatePhase()
-        }
-    }
-
-    func setKeepAwakeEnabled(_ enabled: Bool) async {
-        guard !isBusy else { return }
-        phase = .syncing
-        do {
-            try Self.writeKeepAwakeSetting(enabled)
-            keepAwakeEnabled = enabled
-            if enabled {
-                watchdogError = nil
-                do {
-                    try await watchdog.enable()
-                } catch {
-                    watchdogError = error.localizedDescription
-                }
-                watchdogStatus = watchdog.status
-            } else {
-                do {
-                    try await watchdog.disable()
-                    watchdogError = nil
-                } catch {
-                    watchdogError = error.localizedDescription
-                }
-                watchdogStatus = watchdog.status
-            }
-            await refreshDoctor()
-        } catch {
-            phase = .failed("Не удалось сохранить настройку keep-awake: \(error.localizedDescription)")
         }
     }
 
@@ -252,7 +242,6 @@ final class InstallationStore {
             versionFile: versionURL)
         do {
             lastInstallMessage = try await client.synchronize(repair: repair)
-            keepAwakeEnabled = Self.readKeepAwakeSetting()
             report = try await client.doctor()
             guard let bundledMetadata,
                   report?.matches(version: bundledMetadata.version,
@@ -269,16 +258,11 @@ final class InstallationStore {
             return
         }
 
-        // The helper exists only for optional keep-awake cleanup. Register it
-        // just in time when that feature is enabled; otherwise retire any
-        // legacy/app service left by an older installation.
+        // Keep-awake is a core prerequisite. The helper must stay registered so
+        // it can reconcile stale Amphetamine leases even when the app is closed.
         watchdogError = nil
         do {
-            if keepAwakeEnabled {
-                try await watchdog.reconcileAfterAppUpdate()
-            } else {
-                try await watchdog.disable()
-            }
+            try await watchdog.reconcileAfterAppUpdate()
         } catch {
             watchdogError = error.localizedDescription
         }
@@ -316,43 +300,7 @@ final class InstallationStore {
         let baseHealthy = report.checks
             .filter { $0.required && $0.id != "watchdog" && $0.id != "cli_path" }
             .allSatisfy { $0.status == .ok }
-        let backgroundHealthy = !keepAwakeEnabled || watchdogStatus == .enabled
+        let backgroundHealthy = watchdogStatus == .enabled
         phase = baseHealthy && backgroundHealthy ? .ready : .actionRequired
-    }
-
-    private static var configURL: URL {
-        let environment = ProcessInfo.processInfo.environment
-        if let root = environment["DETACH_CONFIG_ROOT"] {
-            return URL(fileURLWithPath: root).appendingPathComponent("config")
-        }
-        if let root = environment["XDG_CONFIG_HOME"] {
-            return URL(fileURLWithPath: root).appendingPathComponent("detach/config")
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/detach/config")
-    }
-
-    private static func readKeepAwakeSetting() -> Bool {
-        guard let text = try? String(contentsOf: configURL, encoding: .utf8) else {
-            return false
-        }
-        return text.split(separator: "\n").contains { $0 == "AMPHETAMINE=1" }
-    }
-
-    private static func writeKeepAwakeSetting(_ enabled: Bool) throws {
-        let fileManager = FileManager.default
-        let directory = configURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
-                                        attributes: [.posixPermissions: 0o700])
-        let existing = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
-        var lines = existing.split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
-            .filter { !$0.hasPrefix("AMPHETAMINE=") }
-        while lines.last == "" { lines.removeLast() }
-        lines.append("AMPHETAMINE=\(enabled ? 1 : 0)")
-        try (lines.joined(separator: "\n") + "\n")
-            .write(to: configURL, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o600],
-                                      ofItemAtPath: configURL.path)
     }
 }

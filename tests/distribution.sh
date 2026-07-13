@@ -19,7 +19,16 @@ mkdir -p "$TEST_HOME" "$PAYLOADS" "$TMP_ROOT/bin"
 cat >"$TMP_ROOT/bin/fake-launchctl" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >>"${FAKE_LAUNCHCTL_LOG:?}"
-case "${1:-}" in print) exit 1 ;; esac
+case "${1:-}" in
+  print)
+    case "${2:-}" in
+      */dev.tsarev.detach.watchdog)
+        [ "${FAKE_APP_WATCHDOG:-0}" = 1 ] && exit 0
+        ;;
+    esac
+    exit 1
+    ;;
+esac
 exit 0
 SH
 
@@ -31,8 +40,8 @@ case "${1:-}" in
     ;;
   show-options)
     case "${*: -1}" in
-      @codex_detached) printf '%s\n' 1 ;;
-      @codex_detached_pane_id) printf '%s\n' %1 ;;
+      @detach) printf '%s\n' 1 ;;
+      @detach_pane_id) printf '%s\n' %1 ;;
     esac
     ;;
   display-message) printf '%s\n' 0 ;;
@@ -43,12 +52,16 @@ chmod 0755 "$TMP_ROOT/bin/fake-launchctl" "$TMP_ROOT/bin/fake-tmux"
 export HOME="$TEST_HOME"
 export DETACH_INSTALL_BIN_DIR="$TEST_HOME/.local/bin"
 export DETACH_INSTALL_LIBEXEC_ROOT="$TEST_HOME/.local/libexec/detach"
-export DETACH_INSTALL_STATE_ROOT="$TEST_HOME/.local/state/detach"
+export DETACH_STATE_ROOT="$TEST_HOME/.local/state/detach"
+export DETACH_INSTALL_STATE_ROOT="$DETACH_STATE_ROOT"
 export DETACH_CONFIG_ROOT="$TEST_HOME/.config/detach"
-export CODEX_DETACHED_STATE_ROOT="$TEST_HOME/.local/state/codex-detached"
-export CLAUDE_DETACHED_STATE_ROOT="$TEST_HOME/.local/state/claude-detached"
-export DETACH_AMPHETAMINE_STATE_ROOT="$TEST_HOME/.local/state/codex-detached-amphetamine"
-export DETACH_LEGACY_PLIST_DEST="$TEST_HOME/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist"
+export DETACH_CODEX_STATE_ROOT="$DETACH_STATE_ROOT/codex"
+export DETACH_CLAUDE_STATE_ROOT="$DETACH_STATE_ROOT/claude"
+export DETACH_AMPHETAMINE_STATE_ROOT="$DETACH_STATE_ROOT/amphetamine"
+export DETACH_AMPHETAMINE=0
+export DETACH_AMPHETAMINE_APP_PATH="$TMP_ROOT/prerequisites/Amphetamine.app"
+export DETACH_AMPHETAMINE_POWER_PROTECT_PATH="$TMP_ROOT/prerequisites/powerProtect.scpt"
+export DETACH_CLI_WATCHDOG_PLIST_DEST="$TEST_HOME/Library/LaunchAgents/dev.tsarev.detach.cli-watchdog.plist"
 export DETACH_LAUNCHCTL_BIN="$TMP_ROOT/bin/fake-launchctl"
 export DETACH_TMUX_BIN="$TMP_ROOT/bin/fake-tmux"
 export FAKE_LAUNCHCTL_LOG="$LAUNCHCTL_LOG"
@@ -75,14 +88,19 @@ payload_v1="$(make_payload v1 0.1.0)"
 plutil -extract schema raw -o - "$DETACH_INSTALL_STATE_ROOT/install.json" | grep -qx 1
 plutil -extract version raw -o - "$DETACH_INSTALL_STATE_ROOT/install.json" | grep -qx 0.1.0
 plutil -extract source raw -o - "$DETACH_INSTALL_STATE_ROOT/install.json" | grep -qx app
-grep -Fx AMPHETAMINE=0 "$DETACH_CONFIG_ROOT/config" >/dev/null
+grep -Fx AMPHETAMINE=1 "$DETACH_CONFIG_ROOT/config" >/dev/null
 version_count="$(find "$DETACH_INSTALL_LIBEXEC_ROOT/versions" -mindepth 1 -maxdepth 1 -type d ! -name '.incoming-*' | wc -l | tr -d ' ')"
 [ "$version_count" = 1 ]
 
 # Idempotent sync reuses the immutable payload.
+printf '%s\n' '# Detach settings' 'CUSTOM_SETTING=kept' 'AMPHETAMINE=0' \
+  >"$DETACH_CONFIG_ROOT/config"
 "$payload_v1/detach-install" install --source app --payload-dir "$payload_v1" \
   --version-file "$payload_v1/VERSION" --no-launch-agent
 [ "$(find "$DETACH_INSTALL_LIBEXEC_ROOT/versions" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 1 ]
+grep -Fx AMPHETAMINE=1 "$DETACH_CONFIG_ROOT/config" >/dev/null
+grep -Fx CUSTOM_SETTING=kept "$DETACH_CONFIG_ROOT/config" >/dev/null
+! grep -Fx AMPHETAMINE=0 "$DETACH_CONFIG_ROOT/config" >/dev/null
 
 # A malformed payload fails before the public symlink changes.
 old_target="$(readlink "$DETACH_INSTALL_BIN_DIR/detach")"
@@ -133,13 +151,47 @@ doctor_json="$TMP_ROOT/doctor.json"
 PATH="/usr/bin:/bin" "$DETACH_INSTALL_BIN_DIR/detach" doctor --json >"$doctor_json" || true
 plutil -extract schema raw -o - "$doctor_json" | grep -qx 1
 plutil -extract checks.1.id raw -o - "$doctor_json" | grep -qx cli
-watchdog_index="$(plutil -p "$doctor_json" | awk '
+doctor_check_index() {
+  local report="$1" id="$2"
+  plutil -p "$report" | awk -v wanted="$id" '
   $1 ~ /^[0-9]+$/ && $2 == "=>" && $3 == "{" { idx = $1 }
-  /"id" => "watchdog"/ { print idx; exit }
-')"
+  $2 == "=>" && $3 == "\"" wanted "\"" { print idx; exit }
+'
+}
+watchdog_index="$(doctor_check_index "$doctor_json" watchdog)"
 [ -n "$watchdog_index" ]
-plutil -extract "checks.$watchdog_index.required" raw -o - "$doctor_json" | grep -qx false
-plutil -extract "checks.$watchdog_index.status" raw -o - "$doctor_json" | grep -qx warning
+plutil -extract "checks.$watchdog_index.required" raw -o - "$doctor_json" | grep -qx true
+plutil -extract "checks.$watchdog_index.status" raw -o - "$doctor_json" | grep -qx error
+for id in amphetamine_app amphetamine_power_protect; do
+  prerequisite_index="$(doctor_check_index "$doctor_json" "$id")"
+  [ -n "$prerequisite_index" ]
+  plutil -extract "checks.$prerequisite_index.section" raw -o - "$doctor_json" | grep -qx base
+  plutil -extract "checks.$prerequisite_index.required" raw -o - "$doctor_json" | grep -qx true
+  plutil -extract "checks.$prerequisite_index.status" raw -o - "$doctor_json" | grep -qx error
+done
+
+# The two required prerequisite checks become healthy independently of the
+# hermetic runtime override that disables real Amphetamine automation.
+mkdir -p "$DETACH_AMPHETAMINE_APP_PATH"
+: >"$DETACH_AMPHETAMINE_POWER_PROTECT_PATH"
+prerequisites_json="$TMP_ROOT/doctor-prerequisites.json"
+PATH="/usr/bin:/bin" "$DETACH_INSTALL_BIN_DIR/detach" doctor --json \
+  >"$prerequisites_json" || true
+for id in amphetamine_app amphetamine_power_protect; do
+  prerequisite_index="$(doctor_check_index "$prerequisites_json" "$id")"
+  plutil -extract "checks.$prerequisite_index.status" raw -o - \
+    "$prerequisites_json" | grep -qx ok
+done
+
+# Direct CLI uninstall must not strand the app-owned SMAppService without its
+# executable. Detach.app unregisters the helper before invoking the installer.
+export FAKE_APP_WATCHDOG=1
+if "$DETACH_INSTALL_BIN_DIR/detach" uninstall --keep-state; then
+  printf 'uninstall unexpectedly ignored the app-owned watchdog\n' >&2
+  exit 1
+fi
+[ -L "$DETACH_INSTALL_BIN_DIR/detach" ]
+unset FAKE_APP_WATCHDOG
 
 # Uninstall is all-or-nothing while a managed pane is alive.
 export FAKE_TMUX_BUSY=1
@@ -150,34 +202,49 @@ fi
 [ -L "$DETACH_INSTALL_BIN_DIR/detach" ]
 unset FAKE_TMUX_BUSY
 
-mkdir -p "$CODEX_DETACHED_STATE_ROOT/sessions/kept"
-printf '%s\n' sentinel >"$CODEX_DETACHED_STATE_ROOT/sessions/kept/value"
+mkdir -p "$DETACH_CODEX_STATE_ROOT/sessions/kept"
+printf '%s\n' sentinel >"$DETACH_CODEX_STATE_ROOT/sessions/kept/value"
 "$DETACH_INSTALL_BIN_DIR/detach" uninstall --keep-state
 [ ! -e "$DETACH_INSTALL_BIN_DIR/detach" ]
-grep -Fx sentinel "$CODEX_DETACHED_STATE_ROOT/sessions/kept/value" >/dev/null
+grep -Fx sentinel "$DETACH_CODEX_STATE_ROOT/sessions/kept/value" >/dev/null
 ! grep -F 'bootout' "$LAUNCHCTL_LOG" >/dev/null
 
-# CLI-only installation owns a portable legacy plist and reloads it only when changed.
+# CLI-only installation owns its portable watchdog and reloads it only when changed.
 : >"$LAUNCHCTL_LOG"
 rm -f "$DETACH_CONFIG_ROOT/config"
 "$payload_v2/detach-install" install --source install.sh --payload-dir "$payload_v2" \
   --version-file "$payload_v2/VERSION" \
-  --launch-agent-plist "$ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist"
-[ -f "$DETACH_LEGACY_PLIST_DEST" ]
-grep -Fx AMPHETAMINE=1 "$DETACH_CONFIG_ROOT/config" >/dev/null # preserve legacy default
+  --launch-agent-plist "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist"
+[ -f "$DETACH_CLI_WATCHDOG_PLIST_DEST" ]
+plutil -extract Label raw -o - "$DETACH_CLI_WATCHDOG_PLIST_DEST" | \
+  grep -qx dev.tsarev.detach.cli-watchdog
+watchdog_command="$(plutil -extract ProgramArguments.2 raw -o - "$DETACH_CLI_WATCHDOG_PLIST_DEST")"
+for expected_root in \
+  "DETACH_STATE_ROOT='$DETACH_STATE_ROOT'" \
+  "DETACH_INSTALL_STATE_ROOT='$DETACH_INSTALL_STATE_ROOT'" \
+  "DETACH_AMPHETAMINE_STATE_ROOT='$DETACH_AMPHETAMINE_STATE_ROOT'"; do
+  case "$watchdog_command" in
+    *"$expected_root"*) ;;
+    *)
+      printf 'portable watchdog did not receive %s\n' "$expected_root" >&2
+      exit 1
+      ;;
+  esac
+done
+grep -Fx AMPHETAMINE=1 "$DETACH_CONFIG_ROOT/config" >/dev/null
 [ "$(grep -Fc 'bootstrap' "$LAUNCHCTL_LOG")" = 1 ]
 "$payload_v2/detach-install" install --source install.sh --payload-dir "$payload_v2" \
   --version-file "$payload_v2/VERSION" \
-  --launch-agent-plist "$ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist"
+  --launch-agent-plist "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist"
 [ "$(grep -Fc 'bootstrap' "$LAUNCHCTL_LOG")" = 1 ]
 mkdir -p "$HOME/.codex"
 printf '%s\n' provider-sentinel >"$HOME/.codex/must-survive"
-CODEX_DETACHED_STATE_ROOT="$HOME/.local/state/../../.codex" \
+DETACH_CODEX_STATE_ROOT="$HOME/.local/state/../../.codex" \
   "$DETACH_INSTALL_BIN_DIR/detach" uninstall --purge-state
 grep -Fx provider-sentinel "$HOME/.codex/must-survive" >/dev/null
 grep -F 'bootout' "$LAUNCHCTL_LOG" >/dev/null
 
-! rg -n '<string>/Users/[^<]+/' "$ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
-plutil -lint "$ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
+! rg -n '<string>/Users/[^<]+/' "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
+plutil -lint "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
 
 printf 'Detach distribution tests passed\n'

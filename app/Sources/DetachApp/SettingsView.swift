@@ -269,16 +269,33 @@ struct SettingsView: View {
 
     private var keepAwakeSection: some View {
         SettingsSectionView("Keep-awake", systemImage: "moon.stars") {
-            Toggle("Amphetamine Closed-Display Mode", isOn: Binding(
-                get: { installation.keepAwakeEnabled },
-                set: { value in
-                    Task { await installation.setKeepAwakeEnabled(value) }
-                }))
-                .disabled(installation.isBusy)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Опционально. Без этой настройки Detach продолжает использовать tmux, чекпойнты и caffeinate при открытой крышке.")
+            requiredComponentStatus(id: "amphetamine_app", label: "Amphetamine.app")
+            requiredComponentStatus(
+                id: "amphetamine_power_protect",
+                label: "Amphetamine Power Protect")
+            requiredComponentStatus(
+                label: "Фоновая служба Detach",
+                status: installation.watchdogStatus == .enabled ? .ok : .error)
+            Text("Amphetamine.app, Power Protect и фоновая служба — обязательные компоненты. Detach автоматически начинает keep-awake для активных сессий и останавливает его после последней.")
                 .settingsMessage()
         }
+    }
+
+    private func requiredComponentStatus(id: String, label: String) -> some View {
+        let status = installation.report?.checks.first { $0.id == id }?.status ?? .unknown
+        return requiredComponentStatus(label: label, status: status)
+    }
+
+    private func requiredComponentStatus(
+        label: String,
+        status: DiagnosticCheck.Status
+    ) -> some View {
+        let healthy = status == .ok
+        return Label(
+            "\(label): \(healthy ? "готов" : "требует внимания")",
+            systemImage: healthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            .foregroundStyle(healthy ? Brand.teal : Color.orange)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var updatesSection: some View {

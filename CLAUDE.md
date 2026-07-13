@@ -32,8 +32,8 @@ including this file, must not contain private context.
 - `tests/run.sh` — integration test for the Codex adapter. Hermetic: fake provider binary (`tests/fake-codex`), private tmux server (own `-L` socket and `TMUX_TMPDIR`), temp state roots, Amphetamine disabled.
 - `tests/run-claude.sh` — the same for the Claude adapter (`tests/fake-claude`).
 - `tests/distribution.sh` — hermetic versioned install/upgrade/doctor/uninstall
-  and portable legacy LaunchAgent coverage (fake tmux/launchctl, temp HOME).
-- `CODEX_DETACHED_TEST_KEEP=1 tests/run.sh` — preserve the temp state and tmux server after a run for inspection.
+  and portable CLI LaunchAgent coverage (fake tmux/launchctl, temp HOME).
+- `DETACH_CODEX_TEST_KEEP=1 tests/run.sh` — preserve the temp state and tmux server after a run for inspection (`DETACH_CLAUDE_TEST_KEEP=1` does the same for `run-claude.sh`).
 - `tests/amphetamine-smoke.sh` — optional system smoke test that enables REAL Amphetamine Closed-Display Mode and toggles real system sleep via Power Protect. Do not run it as routine verification.
 
 - `cd app && swift test` — unit tests for `DetachKit` and the app-side updater
@@ -65,7 +65,7 @@ Two internal executables that must live side by side (`detach` resolves the core
 ### Core patterns
 
 - **Self-reinvocation dispatch.** The `case` at the bottom of the core routes `__`-prefixed internal commands (`__worker`, `__checkpoint_once_locked`, `__amphetamine_acquire_locked`, `__reconcile_amphetamine`, ...) back into the same script. Critical sections run as `lockf <lockfile> "$SELF" __something_locked ...` so the lock brackets the whole child process. New shared-state mutations should follow this pattern.
-- **Everything is env-injectable.** Every external binary (tmux, jq, sqlite3, tar, osascript, provider CLIs, ...) and every state path has a `DETACH_*` override with `CODEX_DETACHED_*` / `CLAUDE_DETACHED_*` fallbacks. This is what makes the tests hermetic — any new external dependency or path must get the same treatment.
+- **Everything is env-injectable.** Every external binary (tmux, jq, sqlite3, tar, osascript, provider CLIs, ...) and every state path has a canonical `DETACH_*` override. Provider-specific overrides use `DETACH_CODEX_*` or `DETACH_CLAUDE_*`. This is what makes the tests hermetic — any new external dependency or path must get the same treatment.
 - **Distribution is immutable and locked.** `VERSION` is the logical app/CLI
   version; `scripts/install.sh` computes a payload hash, stages beside the
   target, validates frontend/core/version/hashes, atomically switches the
@@ -76,16 +76,16 @@ Two internal executables that must live side by side (`detach` resolves the core
   reuse active bytes as a Repair source, or ignore `BUILD` on downgrade checks.
 - **Guarded metadata.** Per-session `meta.json` (schema 1) is updated only via jq through `json_update_meta_for_run`, guarded by a `run_token`, so a stale worker or checkpoint loop from a replaced session cannot clobber the current one.
 - **Validate before restore.** Anything that writes into a provider's own store (`~/.claude/projects/...`, `~/.codex/sessions/...`) goes through `safe_*_path` (symlink/traversal rejection) and `valid_*` (session-id match, parseable JSONL) checks, writes to a tmp file, validates, then `mv -f`. A checkpoint never overwrites a valid live transcript that is newer/larger, and the Codex shared SQLite is backed up but never restored automatically.
-- **State is private.** `umask 077`; checkpoints under `~/.local/state/{codex,claude}-detached/sessions/<name>/` contain full conversation data.
+- **State is private.** `umask 077`; checkpoints under `~/.local/state/detach/{codex,claude}/sessions/<name>/` contain full conversation data.
 - Error handling is explicit `die`-based with `set -u` and `pipefail`; the `bin/` scripts deliberately do not use `set -e` (tests do use `set -eu`).
 
 ### Lifecycle
 
-`start` takes the per-project lock (`DETACH_LOCKS_ROOT` is shared across providers — one detached agent per project root, total), creates a tmux session named `<provider>-detached-<slug>-<8-hex sha256 of project dir>` with `remain-on-exit on`, and runs `__worker` in the pane. The worker starts the checkpoint loop, runs the provider under `caffeinate -s`, and on exit records status into meta/`exit-status`, takes a final checkpoint, and releases the Amphetamine lease. The retained pane keeps `logs`/`status` useful; a new `start` replaces a completed retained pane but refuses a live one.
+`start` takes the per-project lock (`DETACH_LOCKS_ROOT` is shared across providers — one detached agent per project root, total), creates a tmux session named `detach-<provider>-<slug>-<8-hex sha256 of project dir>` with `remain-on-exit on`, and runs `__worker` in the pane. The worker starts the checkpoint loop, runs the provider under `caffeinate -s`, and on exit records status into meta/`exit-status`, takes a final checkpoint, and releases the Amphetamine lease. The retained pane keeps `logs`/`status` useful; a new `start` replaces a completed retained pane but refuses a live one.
 
-Session identity: Claude gets a preassigned UUID via wrapper-owned `--session-id`; Codex is discovered after launch by matching the `codex_detached_<run_token>` originator (injected via `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`) in rollout files against `~/.codex` SQLite threads, refusing ambiguity. The worker `die`s if user args include wrapper-owned flags (Claude: `--session-id/--resume/--continue/--fork-session/--background/--tmux/--worktree`; Codex: `-C/--cd`), and applies policy defaults only when the user did not pass their own (Codex approval/sandbox, Claude `--permission-mode auto`).
+Session identity: Claude gets a preassigned UUID via wrapper-owned `--session-id`; Codex is discovered after launch by matching the `detach_<run_token>` originator (injected via `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`) in rollout files against `~/.codex` SQLite threads, refusing ambiguity. The worker `die`s if user args include wrapper-owned flags (Claude: `--session-id/--resume/--continue/--fork-session/--background/--tmux/--worktree`; Codex: `-C/--cd`), and applies policy defaults only when the user did not pass their own (Codex approval/sandbox, Claude `--permission-mode auto`).
 
-Checkpoints (every `*_CHECKPOINT_INTERVAL`, default 300s, under a per-session `lockf`): meta, transcript/rollout JSONL, tmux pane capture, git worktree status, plus per provider — Codex SQLite `.backup`; Claude companion dirs (project session dir, file-history, session-env, tasks, teams) packed atomically into `claude-session.tar`. A `/bin/sync` follows unless `*_SYNC=0`.
+Checkpoints (every `DETACH_<PROVIDER>_CHECKPOINT_INTERVAL`, default 300s, under a per-session `lockf`): meta, transcript/rollout JSONL, tmux pane capture, git worktree status, plus per provider — Codex SQLite `.backup`; Claude companion dirs (project session dir, file-history, session-env, tasks, teams) packed atomically into `claude-session.tar`. A `/bin/sync` follows unless `DETACH_<PROVIDER>_SYNC=0`.
 
 Resume: only flags on the allowlist in `write_resume_args` are persisted to `resume-args.bin` and replayed by `resume`/`recover` — a new provider flag that should survive resume must be added there.
 
@@ -93,22 +93,29 @@ Resume: only flags on the allowlist in `write_resume_args` are persisted to `res
 
 ### Amphetamine keep-awake
 
-Reference-counted lease files under `~/.local/state/codex-detached-amphetamine` (name kept for backward compatibility; shared by both providers). The first session starts one infinite Closed-Display-Mode Amphetamine session and records ownership in `owner.json`; the last owned lease ends it only if the observable session properties are unchanged, and a pre-existing user session is never replaced or ended. `launchagents/dev.tsarev.codex-detached-watchdog.plist` runs `detach __reconcile_amphetamine` every 60s to expire stale leases after crashes and to leave Amphetamine off at/below the low-battery threshold.
+Amphetamine.app, Amphetamine Power Protect, and a registered background
+watchdog are required prerequisites. `detach doctor` reports the app and Power
+Protect script as two separate required base checks; their paths are injectable
+through `DETACH_AMPHETAMINE_APP_PATH` and
+`DETACH_AMPHETAMINE_POWER_PROTECT_PATH`. Installs canonicalize the config to
+`AMPHETAMINE=1`. `DETACH_AMPHETAMINE=0` exists for hermetic integration tests;
+do not use it to build a user-facing optional mode.
+
+Reference-counted lease files under `~/.local/state/detach/amphetamine` are shared by both providers. The first session starts one infinite Closed-Display-Mode Amphetamine session and records ownership in `owner.json`; the last owned lease ends it only if the observable session properties are unchanged, and a pre-existing user session is never replaced or ended. `launchagents/dev.tsarev.detach.cli-watchdog.plist` runs `detach __reconcile_amphetamine` every 60s to expire stale leases after crashes and to leave Amphetamine off at/below the low-battery threshold.
 
 ### Detach.app (`app/`)
 
 A SwiftPM package: `DetachKit` (tested parsing/process/distribution clients),
 `DetachApp` (SwiftUI, macOS 14+), and the small `DetachWatchdog` helper. The app
-bundles `DetachCLI`, syncs it on bootstrap, renders `doctor --json`, and
-registers its static bundled LaunchAgent via `SMAppService` only when optional
-keep-awake is enabled. The helper resolves
+bundles `DetachCLI`, syncs it on bootstrap, renders `doctor --json`, and always
+registers its required static bundled LaunchAgent via `SMAppService`. Missing
+Amphetamine or Power Protect and an unapproved background helper all block
+onboarding readiness. The helper resolves
 the stable per-user CLI at runtime and writes a heartbeat; never put user paths
 into the signed plist. Its signed-service label `dev.tsarev.detach.watchdog`
-is intentionally distinct from the CLI-only legacy label
-`dev.tsarev.codex-detached-watchdog`; both definitions remain bundled so direct
-updates can unregister the old SMAppService, but new code never registers the
-old definition. Enable the new service before removing the old registration
-(or remove both when keep-awake is off). The standalone helper must retain its embedded
+is intentionally distinct from the CLI-only label
+`dev.tsarev.detach.cli-watchdog`, so the signed helper and portable script agent
+cannot collide in BackgroundTaskManagement. The standalone helper must retain its embedded
 `__TEXT,__info_plist`. Distribution bootstrap is allowed only from
 `/Applications`, not a DMG/App Translocation path.
 When helper/plist bytes change, await unregister completion before registering
@@ -116,7 +123,7 @@ again and use the bounded retry for macOS' transient SMAppService Code=1 race.
 The selected terminal is stored by bundle identifier. Interactive actions write
 a private, self-deleting `.command` file and open it in the selected installed
 terminal through `NSWorkspace`; terminal actions must not use Apple Events.
-Both the app and `DetachWatchdog` retain Automation solely for optional
+Both the app and `DetachWatchdog` retain Automation solely for required
 Amphetamine coordination: app-launched CLI stop/delete paths may release the
 final lease, while the helper reconciles leases in the background. Session
 operations still consume only the public CLI surface. App notifications are
@@ -142,4 +149,14 @@ then activates its immutable CLI payload without changing live sessions.
 
 ### Backward-compatibility constraints
 
-Load-bearing legacy names that must not be renamed without a migration: `@codex_detached*` tmux session options (used for both providers), `CODEX_DETACHED_*` env fallbacks, the Codex state/session names, and the `codex-detached-amphetamine` state directory. `detach-core` is internal; `detach` is the sole public CLI.
+There are no compatibility aliases or migrations for pre-release names. The
+canonical wrapper-owned names are `detach`, `detach-core`, `detach-<provider>-*`
+tmux sessions, `@detach*` tmux options, `DETACH_*` environment variables
+(`DETACH_CODEX_*` / `DETACH_CLAUDE_*` when provider-specific), and state under
+`~/.local/state/detach/`. Do not reintroduce removed pre-release wrapper
+aliases, provider-first `*_DETACHED_*` environment families, old tmux option
+prefixes, or migration-only service definitions without an explicit migration
+decision.
+Provider-owned names such as `~/.codex`,
+`CODEX_HOME`, and `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` remain provider-specific.
+`detach-core` is internal; `detach` is the sole public CLI.

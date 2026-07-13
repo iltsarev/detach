@@ -29,12 +29,12 @@ struct SidebarView: View {
             if store.sessions.isEmpty && store.state == .ok {
                 ContentUnavailableView {
                     Label {
-                        Text("Нет сессий")
+                        Text("Сессий пока нет")
                     } icon: {
-                        Image(systemName: "moon.zzz").foregroundStyle(Brand.gradient)
+                        Image(systemName: "terminal").foregroundStyle(Brand.gradient)
                     }
                 } description: {
-                    Text("Запусти detach claude в проекте или нажми ＋")
+                    Text("Запусти Codex или Claude в терминале")
                 }
             }
         }

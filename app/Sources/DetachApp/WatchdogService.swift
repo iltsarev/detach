@@ -1,4 +1,3 @@
-import AppKit
 import CryptoKit
 import Foundation
 import ServiceManagement
@@ -73,55 +72,35 @@ enum WatchdogServiceError: LocalizedError {
 
 @MainActor
 final class WatchdogService {
-    // The signed SMAppService must not reuse the legacy script agent's label.
-    // BackgroundTaskManagement otherwise treats both definitions as one item
-    // and refuses to replace the unsigned script with the bundled helper.
     static let plistName = "dev.tsarev.detach.watchdog.plist"
-    static let label = "dev.tsarev.detach.watchdog"
-    static let legacyPlistName = "dev.tsarev.codex-detached-watchdog.plist"
-    static let legacyLabel = "dev.tsarev.codex-detached-watchdog"
 
     private let backend: any WatchdogRegistrationBackend
-    private let legacyBackend: (any WatchdogRegistrationBackend)?
     private let defaults: UserDefaults
-    private let homeDirectory: URL
     private let digestProvider: () -> String?
     private let sleep: (UInt64) async throws -> Void
-    private let launchctl: ([String]) -> Int32
 
-    private let digestKey = "watchdogDefinitionDigest.v2"
-    private let pendingDigestKey = "watchdogDefinitionReconcilePending.v2"
-    private let oldDigestKey = "watchdogDefinitionDigest"
-    private let oldPendingDigestKey = "watchdogDefinitionReconcilePending"
+    private let digestKey = "watchdogDefinitionDigest"
+    private let pendingDigestKey = "watchdogDefinitionReconcilePending"
 
     init() {
         backend = SystemWatchdogRegistrationBackend(plistName: Self.plistName)
-        legacyBackend = SystemWatchdogRegistrationBackend(plistName: Self.legacyPlistName)
         defaults = .standard
-        homeDirectory = FileManager.default.homeDirectoryForCurrentUser
         digestProvider = Self.bundleDefinitionDigest
         sleep = { try await Task.sleep(nanoseconds: $0) }
-        launchctl = Self.runLaunchctl
     }
 
     init(
         backend: any WatchdogRegistrationBackend,
-        legacyBackend: (any WatchdogRegistrationBackend)? = nil,
         defaults: UserDefaults,
-        homeDirectory: URL,
         digestProvider: @escaping () -> String?,
         sleep: @escaping (UInt64) async throws -> Void = {
             try await Task.sleep(nanoseconds: $0)
-        },
-        launchctl: @escaping ([String]) -> Int32 = { _ in 0 }
+        }
     ) {
         self.backend = backend
-        self.legacyBackend = legacyBackend
         self.defaults = defaults
-        self.homeDirectory = homeDirectory
         self.digestProvider = digestProvider
         self.sleep = sleep
-        self.launchctl = launchctl
     }
 
     var status: WatchdogStatus { backend.status }
@@ -158,7 +137,6 @@ final class WatchdogService {
         switch status {
         case .enabled:
             rememberDefinition(digest)
-            await retireLegacyService()
         case .requiresApproval:
             // Registration is complete. The remaining action belongs to the
             // user in macOS Login Items and must not trigger re-registration.
@@ -182,11 +160,8 @@ final class WatchdogService {
                 unregisterError = error
             }
         }
-        await retireLegacyService()
         defaults.removeObject(forKey: digestKey)
         defaults.removeObject(forKey: pendingDigestKey)
-        defaults.removeObject(forKey: oldDigestKey)
-        defaults.removeObject(forKey: oldPendingDigestKey)
         if let unregisterError { throw unregisterError }
     }
 
@@ -229,8 +204,6 @@ final class WatchdogService {
     private func rememberDefinition(_ digest: String) {
         defaults.set(digest, forKey: digestKey)
         defaults.set(false, forKey: pendingDigestKey)
-        defaults.removeObject(forKey: oldDigestKey)
-        defaults.removeObject(forKey: oldPendingDigestKey)
     }
 
     private static func bundleDefinitionDigest() -> String? {
@@ -244,46 +217,5 @@ final class WatchdogService {
         data.append(plist)
         data.append(helper)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func retireLegacyService() async {
-        if let legacyBackend,
-           legacyBackend.status != .notRegistered && legacyBackend.status != .unavailable {
-            // The old plist remains bundled solely so direct updates from
-            // 0.1.0 can address and unregister that SMAppService. Cleanup is
-            // best-effort because the same label may also have a legacy BTM
-            // record; the replacement is already enabled before we get here.
-            try? await legacyBackend.unregister()
-        }
-        removeLegacyAgent()
-    }
-
-    private func removeLegacyAgent() {
-        let launchAgents = homeDirectory
-            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
-        let original = launchAgents.appendingPathComponent(Self.legacyPlistName)
-        let backup = original.appendingPathExtension("detach-backup")
-        let hasOriginal = FileManager.default.fileExists(atPath: original.path)
-        let hasBackup = FileManager.default.fileExists(atPath: backup.path)
-        guard legacyBackend != nil || hasOriginal || hasBackup else { return }
-
-        if launchctl(["bootout", "gui/\(getuid())/\(Self.legacyLabel)"]) != 0,
-           hasOriginal {
-            _ = launchctl(["bootout", "gui/\(getuid())", original.path])
-        }
-        try? FileManager.default.removeItem(at: original)
-        try? FileManager.default.removeItem(at: backup)
-    }
-
-    @discardableResult
-    private static func runLaunchctl(_ arguments: [String]) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do { try process.run(); process.waitUntilExit(); return process.terminationStatus }
-        catch { return -1 }
     }
 }

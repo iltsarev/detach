@@ -37,7 +37,8 @@ useful logs after the process exits, and puts the whole session lifecycle in a
 native Mac app. A bundled CLI is there when you want it.
 
 Close Terminal and attach later. Run without a window. Recover after an abrupt
-shutdown. Optionally keep the session alive with the lid closed.
+shutdown. Keep the session alive with the lid closed through the required
+Amphetamine integration.
 
 Download the DMG, move Detach.app to Applications, and open it. Guided setup
 installs the bundled CLI, checks everything Detach needs, and helps resolve
@@ -56,7 +57,7 @@ anything missing.
   </tr>
   <tr>
     <td width="50%"><strong>Ready as a Mac app</strong><br>Guided setup, dependency checks, CLI repair, updates, and session controls come in one download.</td>
-    <td width="50%"><strong>Work with the lid closed</strong><br>Optional Amphetamine + Power Protect integration safely shares one Closed-Display session.</td>
+    <td width="50%"><strong>Work with the lid closed</strong><br>Required Amphetamine + Power Protect integration safely shares one Closed-Display session.</td>
   </tr>
 </table>
 
@@ -65,8 +66,10 @@ anything missing.
 1. Download the current **DMG** from
    [GitHub Releases](https://github.com/iltsarev/detach/releases/latest), move
    **Detach.app** to `/Applications`, and open it.
-2. Follow the guided setup. Detach checks the few tools it needs and offers one
-   clear action when something is missing.
+2. Follow the guided setup. Detach requires
+   [Amphetamine](https://apps.apple.com/app/amphetamine/id937984704) and
+   [Amphetamine Power Protect](https://x74353.github.io/Amphetamine-Power-Protect/),
+   checks them separately, and opens each official installer when needed.
 3. If needed, install and sign in to [Codex CLI](https://github.com/openai/codex)
    or [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview),
    then return to Detach.
@@ -77,9 +80,9 @@ one in Settings; start, attach, resume, and recover open there. The main app
 does not need Terminal Automation access. Settings also offers optional
 notifications when an agent finishes a turn and waits for you, or when a
 session finishes, fails, or becomes recoverable. Text size is an exact 11–22 pt
-setting (14 pt by default). Optional
-keep-awake support stays off until you enable it; macOS may then ask Detach for
-permission to control Amphetamine.
+setting (14 pt by default). Keep-awake is part of the standard setup: Detach
+starts it automatically for active sessions, and macOS may ask once for
+permission to control Amphetamine and run the background helper.
 
 ## Use the app
 
@@ -91,7 +94,7 @@ permission to control Amphetamine.
 - **Return:** open a live session in your selected terminal, resume a saved
   conversation, or recover the last successful checkpoint after an interruption.
 - **Control:** stop or delete sessions, repair the CLI, manage updates, and
-  enable optional closed-lid work from one place.
+  inspect the required closed-lid components from one place.
 
 Detach.app does not need to stay open. The managed agent session continues in
 tmux, and the dashboard catches up when you come back.
@@ -138,7 +141,7 @@ detach resume --name migration --detach SESSION_UUID
 | `detach <provider> stop [name]` | Stop a running managed session. |
 | `detach <provider> recover [name]` | Run checkpoint recovery and resume after an interruption. |
 | `detach <provider> delete [name]` | Delete stopped Detach state; leave provider stores untouched. |
-| `detach doctor` | Check the installation, dependencies, providers, and optional keep-awake setup. |
+| `detach doctor` | Check the installation, dependencies, providers, Amphetamine, Power Protect, and the background service. |
 
 A normal start always creates a new Codex or Claude session. Use `attach` for a
 live session and `resume` for an existing provider session. Detach allows one
@@ -210,16 +213,16 @@ restored over Codex's shared database automatically.
 Change the interval for special cases:
 
 ```bash
-CODEX_DETACHED_CHECKPOINT_INTERVAL=600 detach codex
-CLAUDE_DETACHED_CHECKPOINT_INTERVAL=600 detach claude
+DETACH_CODEX_CHECKPOINT_INTERVAL=600 detach codex
+DETACH_CLAUDE_CHECKPOINT_INTERVAL=600 detach claude
 ```
 
 Checkpoint directories contain full conversation data and use private file
 permissions:
 
 ```text
-~/.local/state/codex-detached/sessions/
-~/.local/state/claude-detached/sessions/
+~/.local/state/detach/codex/sessions/
+~/.local/state/detach/claude/sessions/
 ```
 
 `delete` and uninstall remove only Detach-owned state. They do not remove
@@ -227,13 +230,15 @@ transcripts from `~/.codex` or `~/.claude`.
 
 </details>
 
-## Optional closed-lid work
+## Required keep-awake setup
 
-Without any extra app, Detach still provides tmux persistence, checkpoints,
-and `caffeinate` while the lid is open. For work with the display closed,
-install [Amphetamine](https://apps.apple.com/app/amphetamine/id937984704) and
-its Power Protect component, then enable **Amphetamine Closed-Display Mode** in
-Detach Settings.
+Detach requires [Amphetamine](https://apps.apple.com/app/amphetamine/id937984704)
+and its official
+[Power Protect component](https://x74353.github.io/Amphetamine-Power-Protect/).
+Guided setup stays open until both are installed and the Detach background
+service is enabled. There is no keep-awake toggle: every managed session uses
+the integration automatically, while tmux and checkpoints continue to protect
+the agent lifecycle independently.
 
 > [!CAUTION]
 > Closed-lid sessions may cool less effectively during sustained CPU load, and
@@ -251,7 +256,7 @@ sessions share it. The last session ends it only if Detach created it and
 its observable properties have not changed. A compatible session you started
 yourself is borrowed, never replaced or ended.
 
-The optional per-user helper reconciles stale leases after crashes and at
+The required per-user helper reconciles stale leases after crashes and at
 login. If Amphetamine's own low-battery auto-end setting is enabled, Detach
 honors its configured threshold and will not start a new closed-lid task at or
 below it. Detach warns when that protection is disabled; it does not change the
@@ -305,7 +310,7 @@ detach repair
 detach uninstall --keep-state
 ```
 
-Prefer uninstalling from Detach Settings so macOS can unregister the optional
+Prefer uninstalling from Detach Settings so macOS can unregister the required
 background helper before removing the CLI. Keeping state preserves recovery
 checkpoints for a future reinstall.
 
@@ -328,7 +333,7 @@ to run while a managed session is alive.
 | A Mac | macOS 14 or newer; Apple silicon and Intel are supported |
 | Codex CLI or Claude Code | At least one installed and authenticated provider; setup points you to the official installer |
 | `tmux` and `jq` | Checked during guided setup, with a ready next step if either is missing |
-| Amphetamine + Power Protect | Optional Closed-Display Mode only |
+| Amphetamine + Power Protect | Required keep-awake and Closed-Display Mode integration |
 
 ---
 

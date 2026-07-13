@@ -13,6 +13,24 @@ final class SetupGuidanceTests: XCTestCase {
         XCTAssertEqual(blocker(checks: [check("provider")]), .chooseProvider)
     }
 
+    func testMissingAmphetaminePrerequisitesGetOfficialInstallGuidance() {
+        XCTAssertEqual(
+            blocker(checks: [
+                check("amphetamine_app"),
+                check("amphetamine_power_protect"),
+            ]),
+            .installAmphetamine([.app, .powerProtect]))
+        XCTAssertEqual(
+            blocker(checks: [check("amphetamine_power_protect")]),
+            .installAmphetamine([.powerProtect]))
+    }
+
+    func testAmphetaminePrerequisitesTakePriorityOverOtherExternalTools() {
+        XCTAssertEqual(
+            blocker(checks: [check("tmux"), check("amphetamine_app")]),
+            .installAmphetamine([.app]))
+    }
+
     func testOwnedIntegrityFailureOffersRepair() {
         XCTAssertEqual(blocker(checks: [check("integrity")]), .repairInstallation)
         XCTAssertEqual(blocker(checks: [check("manifest")]), .repairInstallation)

@@ -56,21 +56,24 @@ VERSION_FILE="$SELF_DIR/VERSION"
 [ -f "$VERSION_FILE" ] || VERSION_FILE="$SELF_DIR/../VERSION"
 INSTALLER="$SELF_DIR/detach-install"
 [ -x "$INSTALLER" ] || INSTALLER="$SELF_DIR/../scripts/install.sh"
-JQ_BIN="${DETACH_JQ_BIN:-${CODEX_DETACHED_JQ_BIN:-$(command -v jq 2>/dev/null || true)}}"
-TMUX_BIN="${DETACH_TMUX_BIN:-${CODEX_DETACHED_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}}"
-SQLITE_BIN="${DETACH_SQLITE_BIN:-${CODEX_DETACHED_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}}"
+JQ_BIN="${DETACH_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
+TMUX_BIN="${DETACH_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}"
+SQLITE_BIN="${DETACH_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}"
 TAR_BIN="${DETACH_TAR_BIN:-/usr/bin/tar}"
-CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-${CODEX_DETACHED_CAFFEINATE_BIN:-/usr/bin/caffeinate}}"
-LOCKF_BIN="${DETACH_LOCKF_BIN:-${CODEX_DETACHED_LOCKF_BIN:-/usr/bin/lockf}}"
-CODEX_BIN="${CODEX_DETACHED_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
-CLAUDE_BIN="${CLAUDE_DETACHED_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
+CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-/usr/bin/caffeinate}"
+LOCKF_BIN="${DETACH_LOCKF_BIN:-/usr/bin/lockf}"
+CODEX_BIN="${DETACH_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+CLAUDE_BIN="${DETACH_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
 SHASUM_BIN="${DETACH_SHASUM_BIN:-/usr/bin/shasum}"
 PLUTIL_BIN="${DETACH_PLUTIL_BIN:-/usr/bin/plutil}"
 LAUNCHCTL_BIN="${DETACH_LAUNCHCTL_BIN:-/bin/launchctl}"
 INSTALL_BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
-INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+STATE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_ROOT}"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
-LEGACY_WATCHDOG_LABEL="${DETACH_LEGACY_WATCHDOG_LABEL:-dev.tsarev.codex-detached-watchdog}"
+AMPHETAMINE_APP_PATH="${DETACH_AMPHETAMINE_APP_PATH:-/Applications/Amphetamine.app}"
+AMPHETAMINE_POWER_PROTECT_PATH="${DETACH_AMPHETAMINE_POWER_PROTECT_PATH:-$HOME/Library/Application Scripts/com.if.Amphetamine/powerProtect.scpt}"
+CLI_WATCHDOG_LABEL="${DETACH_CLI_WATCHDOG_LABEL:-dev.tsarev.detach.cli-watchdog}"
 APP_WATCHDOG_LABEL="${DETACH_APP_WATCHDOG_LABEL:-dev.tsarev.detach.watchdog}"
 
 release_version() {
@@ -135,21 +138,11 @@ doctor_command() {
   fi
 }
 
-doctor_config_value() {
-  local key="$1" config="$CONFIG_ROOT/config" line
-  [ -f "$config" ] && [ ! -L "$config" ] || return 1
-  while IFS= read -r line; do
-    case "$line" in "$key="*) printf '%s\n' "${line#*=}"; return 0 ;; esac
-  done <"$config"
-  return 1
-}
-
 doctor_report() {
   local json="$1" version build payload_id expected resolved path_command path_resolved
   local manifest_version manifest_build manifest_path manifest_payload payload_file
   local detach_hash core_hash installer_hash calculated_payload integrity_status
-  local codex_path claude_path keep_awake amphetamine_path power_protect
-  local watchdog_label watchdog_required watchdog_missing_status
+  local codex_path claude_path watchdog_label
   local index comma required path
 
   version="$(release_version 2>/dev/null || printf 'unknown')"
@@ -225,16 +218,9 @@ doctor_report() {
   doctor_command caffeinate caffeinate "$CAFFEINATE_BIN" true
   doctor_command lockf lockf "$LOCKF_BIN" true
 
-  keep_awake="${DETACH_AMPHETAMINE:-$(doctor_config_value AMPHETAMINE 2>/dev/null || printf '1')}"
-  watchdog_required=false
-  watchdog_missing_status=warning
-  if [ "$keep_awake" != "0" ]; then
-    watchdog_required=true
-    watchdog_missing_status=error
-  fi
   watchdog_label=""
   if [ -x "$LAUNCHCTL_BIN" ]; then
-    for path in "$APP_WATCHDOG_LABEL" "$LEGACY_WATCHDOG_LABEL"; do
+    for path in "$APP_WATCHDOG_LABEL" "$CLI_WATCHDOG_LABEL"; do
       if "$LAUNCHCTL_BIN" print "gui/$(id -u)/$path" >/dev/null 2>&1; then
         watchdog_label="$path"
         break
@@ -242,24 +228,26 @@ doctor_report() {
     done
   fi
   if [ -n "$watchdog_label" ]; then
-    doctor_add watchdog base "Фоновая служба" "$watchdog_required" ok \
+    doctor_add watchdog base "Фоновая служба Detach" true ok \
       "$watchdog_label" "Фоновая проверка активна"
   else
-    doctor_add watchdog base "Фоновая служба" "$watchdog_required" \
-      "$watchdog_missing_status" "$APP_WATCHDOG_LABEL" \
-      "Фоновая проверка не зарегистрирована или требует разрешения"
+    doctor_add watchdog base "Фоновая служба Detach" true error \
+      "$APP_WATCHDOG_LABEL" "Обязательная фоновая проверка не зарегистрирована или требует разрешения"
   fi
 
-  if [ "$keep_awake" = "0" ]; then
-    doctor_add keep_awake keepAwake "Keep-awake" false ok "" "Опциональная функция выключена"
+  if [ -d "$AMPHETAMINE_APP_PATH" ]; then
+    doctor_add amphetamine_app base "Amphetamine.app" true ok \
+      "$AMPHETAMINE_APP_PATH" "Amphetamine установлен в Applications"
   else
-    amphetamine_path="/Applications/Amphetamine.app"
-    power_protect="$HOME/Library/Application Scripts/com.if.Amphetamine/powerProtect.scpt"
-    if [ -d "$amphetamine_path" ] && [ -f "$power_protect" ]; then
-      doctor_add keep_awake keepAwake "Keep-awake" false ok "$amphetamine_path" "Amphetamine и Power Protect найдены"
-    else
-      doctor_add keep_awake keepAwake "Keep-awake" false warning "$amphetamine_path" "Для Closed-Display Mode нужны Amphetamine и Power Protect"
-    fi
+    doctor_add amphetamine_app base "Amphetamine.app" true error \
+      "$AMPHETAMINE_APP_PATH" "Установите Amphetamine из Mac App Store в Applications"
+  fi
+  if [ -f "$AMPHETAMINE_POWER_PROTECT_PATH" ]; then
+    doctor_add amphetamine_power_protect base "Amphetamine Power Protect" true ok \
+      "$AMPHETAMINE_POWER_PROTECT_PATH" "Power Protect установлен"
+  else
+    doctor_add amphetamine_power_protect base "Amphetamine Power Protect" true error \
+      "$AMPHETAMINE_POWER_PROTECT_PATH" "Установите Power Protect с официального сайта Amphetamine"
   fi
 
   if [ "$json" -eq 1 ]; then
@@ -324,27 +312,6 @@ repair_source() {
 
 require_core() {
   [ -x "$CORE" ] || die "core executable not found: $CORE"
-}
-
-configure_common_tmux() {
-  local codex_socket="${CODEX_DETACHED_TMUX_SOCKET:-}"
-  local claude_socket="${CLAUDE_DETACHED_TMUX_SOCKET:-}"
-  local codex_config="${CODEX_DETACHED_TMUX_CONFIG:-}"
-  local claude_config="${CLAUDE_DETACHED_TMUX_CONFIG:-}"
-
-  if [ -z "${DETACH_TMUX_SOCKET:-}" ]; then
-    if [ -n "$codex_socket" ] && [ -n "$claude_socket" ] && [ "$codex_socket" != "$claude_socket" ]; then
-      die "Codex and Claude tmux sockets differ; set DETACH_TMUX_SOCKET to one shared socket"
-    fi
-    DETACH_TMUX_SOCKET="${codex_socket:-$claude_socket}"
-  fi
-  if [ -z "${DETACH_TMUX_CONFIG:-}" ]; then
-    if [ -n "$codex_config" ] && [ -n "$claude_config" ] && [ "$codex_config" != "$claude_config" ]; then
-      die "Codex and Claude tmux configs differ; set DETACH_TMUX_CONFIG to one shared config"
-    fi
-    DETACH_TMUX_CONFIG="${codex_config:-$claude_config}"
-  fi
-  export DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG
 }
 
 run_provider() {
@@ -488,8 +455,6 @@ main() {
   local command="${1:-}"
   local repair_metadata="" local_repair_source="" local_repair_version=""
   local local_repair_installer=""
-
-  configure_common_tmux
 
   case "$command" in
     --version|version|__version)

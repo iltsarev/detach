@@ -26,13 +26,15 @@ TMUX_BIN="${DETACH_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}"
 
 BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 LIBEXEC_ROOT="${DETACH_INSTALL_LIBEXEC_ROOT:-$HOME/.local/libexec/detach}"
-INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+STATE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_ROOT}"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
-CODEX_STATE_ROOT="${CODEX_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-detached}"
-CLAUDE_STATE_ROOT="${CLAUDE_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-detached}"
-AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-detached-amphetamine}"
-LEGACY_PLIST_DEST="${DETACH_LEGACY_PLIST_DEST:-$HOME/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist}"
-WATCHDOG_LABEL="dev.tsarev.codex-detached-watchdog"
+CODEX_STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_ROOT/codex}"
+CLAUDE_STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_ROOT/claude}"
+AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-$STATE_ROOT/amphetamine}"
+CLI_WATCHDOG_PLIST_DEST="${DETACH_CLI_WATCHDOG_PLIST_DEST:-$HOME/Library/LaunchAgents/dev.tsarev.detach.cli-watchdog.plist}"
+CLI_WATCHDOG_LABEL="dev.tsarev.detach.cli-watchdog"
+APP_WATCHDOG_LABEL="dev.tsarev.detach.watchdog"
 
 error() {
   printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -95,18 +97,10 @@ resolve_path() {
   printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
 }
 
-looks_like_legacy_detach() {
-  local candidate core
-  candidate="$(resolve_path "$1" 2>/dev/null)" || return 1
-  core="$(dirname "$candidate")/detach-core"
-  [ -f "$candidate" ] && [ -x "$core" ] || return 1
-  grep -q 'DETACH_PROVIDER' "$candidate" 2>/dev/null && \
-    grep -q 'CODEX_DETACHED' "$core" 2>/dev/null
-}
-
 validate_managed_paths() {
   local path
-  for path in "$BIN_DIR" "$LIBEXEC_ROOT" "$INSTALL_STATE_ROOT" "$CONFIG_ROOT" "$LEGACY_PLIST_DEST"; do
+  for path in "$BIN_DIR" "$LIBEXEC_ROOT" "$INSTALL_STATE_ROOT" "$CONFIG_ROOT" \
+              "$CLI_WATCHDOG_PLIST_DEST"; do
     case "$path" in
       /*) ;;
       *) die "managed path must be absolute: $path" ;;
@@ -194,11 +188,12 @@ manifest_field() {
 }
 
 active_payload_dir() {
-  local resolved
+  local resolved versions_root
   [ -L "$BIN_DIR/detach" ] || return 1
   resolved="$(resolve_path "$BIN_DIR/detach" 2>/dev/null)" || return 1
+  versions_root="$(cd -P "$LIBEXEC_ROOT/versions" 2>/dev/null && pwd)" || return 1
   case "$resolved" in
-    "$LIBEXEC_ROOT"/versions/*/detach) dirname "$resolved" ;;
+    "$versions_root"/*/detach) dirname "$resolved" ;;
     *) return 1 ;;
   esac
 }
@@ -218,9 +213,9 @@ managed_sessions_running_on() {
   fi
   while IFS= read -r session; do
     [ -n "$session" ] || continue
-    managed="$("${command[@]}" show-options -qv -t "=$session:" @codex_detached 2>/dev/null || true)"
+    managed="$("${command[@]}" show-options -qv -t "=$session:" @detach 2>/dev/null || true)"
     [ "$managed" = "1" ] || continue
-    pane="$("${command[@]}" show-options -qv -t "=$session:" @codex_detached_pane_id 2>/dev/null || true)"
+    pane="$("${command[@]}" show-options -qv -t "=$session:" @detach_pane_id 2>/dev/null || true)"
     [ -n "$pane" ] || return 0
     dead="$("${command[@]}" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null || true)"
     [ "$dead" = "1" ] || return 0
@@ -229,23 +224,8 @@ managed_sessions_running_on() {
 }
 
 managed_sessions_running() {
-  local socket config key seen='|'
-  local sockets=("${DETACH_TMUX_SOCKET:-}" "${CODEX_DETACHED_TMUX_SOCKET:-}" \
-                 "${CLAUDE_DETACHED_TMUX_SOCKET:-}")
-  local configs=("${DETACH_TMUX_CONFIG:-}" "${CODEX_DETACHED_TMUX_CONFIG:-}" \
-                 "${CLAUDE_DETACHED_TMUX_CONFIG:-}")
-  local index
-
   require_executable "$TMUX_BIN" tmux
-  for index in "${!sockets[@]}"; do
-    socket="${sockets[$index]}"
-    config="${configs[$index]}"
-    key="$socket:$config"
-    case "$seen" in *"|$key|"*) continue ;; esac
-    seen="$seen$key|"
-    managed_sessions_running_on "$socket" "$config" && return 0
-  done
-  return 1
+  managed_sessions_running_on "${DETACH_TMUX_SOCKET:-}" "${DETACH_TMUX_CONFIG:-}"
 }
 
 write_manifest() {
@@ -272,21 +252,37 @@ write_manifest() {
   "$MV_BIN" -f "$tmp" "$INSTALL_STATE_ROOT/install.json"
 }
 
-write_default_config() {
-  local initialize="$1"
+write_required_config() {
   local config="$CONFIG_ROOT/config"
-  local amphetamine=0
-  [ -e "$config" ] && return 0
-  [ "$initialize" -eq 1 ] || amphetamine=1
+  local tmp="$CONFIG_ROOT/config.tmp.$$"
+  local line found=0
   "$MKDIR_BIN" -p "$CONFIG_ROOT" || return 1
   chmod 0700 "$CONFIG_ROOT" || return 1
-  printf '%s\n' \
-    '# Detach settings. Environment variables override these values.' \
-    "AMPHETAMINE=$amphetamine" >"$config" || return 1
-  chmod 0600 "$config"
+  if [ -e "$config" ]; then
+    [ -f "$config" ] && [ ! -L "$config" ] || return 1
+    : >"$tmp" || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        AMPHETAMINE=*)
+          if [ "$found" -eq 0 ]; then
+            printf '%s\n' 'AMPHETAMINE=1' >>"$tmp" || return 1
+            found=1
+          fi
+          ;;
+        *) printf '%s\n' "$line" >>"$tmp" || return 1 ;;
+      esac
+    done <"$config"
+    [ "$found" -eq 1 ] || printf '%s\n' 'AMPHETAMINE=1' >>"$tmp" || return 1
+  else
+    printf '%s\n' \
+      '# Detach settings. Environment variables override these values.' \
+      'AMPHETAMINE=1' >"$tmp" || return 1
+  fi
+  chmod 0600 "$tmp" || return 1
+  "$MV_BIN" -f "$tmp" "$config"
 }
 
-install_legacy_launch_agent() {
+install_cli_watchdog() {
   local source_plist="$1"
   local destination_dir
   local rendered="$INSTALL_STATE_ROOT/watchdog.plist.tmp.$$"
@@ -294,39 +290,39 @@ install_legacy_launch_agent() {
   local command
   [ -f "$source_plist" ] || die "LaunchAgent plist not found: $source_plist"
   require_executable "$PLUTIL_BIN" plutil
-  destination_dir="$(dirname "$LEGACY_PLIST_DEST")"
+  destination_dir="$(dirname "$CLI_WATCHDOG_PLIST_DEST")"
   "$INSTALL_BIN" -d -m 0755 "$destination_dir" || die "cannot create $destination_dir"
   "$INSTALL_BIN" -m 0600 "$source_plist" "$rendered" || die "cannot render LaunchAgent"
-  command="/bin/mkdir -p $(shell_quote "$AMPHETAMINE_ROOT") && exec /usr/bin/env DETACH_CONFIG_ROOT=$(shell_quote "$CONFIG_ROOT") DETACH_AMPHETAMINE_STATE_ROOT=$(shell_quote "$AMPHETAMINE_ROOT") $(shell_quote "$BIN_DIR/detach") __reconcile_amphetamine >>$(shell_quote "$AMPHETAMINE_ROOT/watchdog.log") 2>&1"
+  command="/bin/mkdir -p $(shell_quote "$AMPHETAMINE_ROOT") && exec /usr/bin/env DETACH_CONFIG_ROOT=$(shell_quote "$CONFIG_ROOT") DETACH_STATE_ROOT=$(shell_quote "$STATE_ROOT") DETACH_INSTALL_STATE_ROOT=$(shell_quote "$INSTALL_STATE_ROOT") DETACH_AMPHETAMINE_STATE_ROOT=$(shell_quote "$AMPHETAMINE_ROOT") $(shell_quote "$BIN_DIR/detach") __reconcile_amphetamine >>$(shell_quote "$AMPHETAMINE_ROOT/watchdog.log") 2>&1"
   "$PLUTIL_BIN" -replace ProgramArguments.2 -string "$command" "$rendered" || \
     die "cannot set LaunchAgent command"
   "$PLUTIL_BIN" -lint "$rendered" >/dev/null || die "rendered LaunchAgent is invalid"
 
-  if [ -f "$LEGACY_PLIST_DEST" ] && cmp -s "$rendered" "$LEGACY_PLIST_DEST"; then
+  if [ -f "$CLI_WATCHDOG_PLIST_DEST" ] && cmp -s "$rendered" "$CLI_WATCHDOG_PLIST_DEST"; then
     "$RM_BIN" -f "$rendered"
     return 0
   fi
-  destination_tmp="$LEGACY_PLIST_DEST.tmp.$$"
+  destination_tmp="$CLI_WATCHDOG_PLIST_DEST.tmp.$$"
   backup="$INSTALL_STATE_ROOT/watchdog.plist.backup.$$"
   "$RM_BIN" -f "$destination_tmp" "$backup"
-  if [ -f "$LEGACY_PLIST_DEST" ]; then
-    "$INSTALL_BIN" -m 0644 "$LEGACY_PLIST_DEST" "$backup" || die "cannot back up LaunchAgent"
+  if [ -f "$CLI_WATCHDOG_PLIST_DEST" ]; then
+    "$INSTALL_BIN" -m 0644 "$CLI_WATCHDOG_PLIST_DEST" "$backup" || die "cannot back up LaunchAgent"
   fi
   "$INSTALL_BIN" -m 0644 "$rendered" "$destination_tmp" || die "cannot stage LaunchAgent"
-  "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$WATCHDOG_LABEL" >/dev/null 2>&1 || true
-  "$MV_BIN" -f "$destination_tmp" "$LEGACY_PLIST_DEST" || die "cannot install LaunchAgent"
+  "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
+  "$MV_BIN" -f "$destination_tmp" "$CLI_WATCHDOG_PLIST_DEST" || die "cannot install LaunchAgent"
   "$RM_BIN" -f "$rendered"
-  if ! "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$LEGACY_PLIST_DEST"; then
+  if ! "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$CLI_WATCHDOG_PLIST_DEST"; then
     if [ -f "$backup" ]; then
-      "$MV_BIN" -f "$backup" "$LEGACY_PLIST_DEST" || true
-      "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$LEGACY_PLIST_DEST" >/dev/null 2>&1 || true
+      "$MV_BIN" -f "$backup" "$CLI_WATCHDOG_PLIST_DEST" || true
+      "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$CLI_WATCHDOG_PLIST_DEST" >/dev/null 2>&1 || true
     else
-      "$RM_BIN" -f "$LEGACY_PLIST_DEST"
+      "$RM_BIN" -f "$CLI_WATCHDOG_PLIST_DEST"
     fi
     die "cannot register LaunchAgent; previous definition was restored"
   fi
   "$RM_BIN" -f "$backup"
-  "$LAUNCHCTL_BIN" kickstart -k "gui/$(id -u)/$WATCHDOG_LABEL" >/dev/null 2>&1 || true
+  "$LAUNCHCTL_BIN" kickstart -k "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
 }
 
 install_locked() {
@@ -340,7 +336,6 @@ install_locked() {
   local version build detach_hash core_hash installer_hash payload_id target
   local installed_version installed_build installed_payload comparison stage link_tmp current
   local active_dir manifest_version manifest_build manifest_payload manifest_executable
-  local initialize_config=1 existing_destination=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -372,10 +367,10 @@ install_locked() {
     if [ -f "$payload_dir/VERSION" ]; then version_file="$payload_dir/VERSION"; else version_file="$REPO_ROOT/VERSION"; fi
   fi
   if [ -z "$launch_agent_plist" ]; then
-    if [ -f "$payload_dir/dev.tsarev.codex-detached-watchdog.plist" ]; then
-      launch_agent_plist="$payload_dir/dev.tsarev.codex-detached-watchdog.plist"
+    if [ -f "$payload_dir/dev.tsarev.detach.cli-watchdog.plist" ]; then
+      launch_agent_plist="$payload_dir/dev.tsarev.detach.cli-watchdog.plist"
     else
-      launch_agent_plist="$REPO_ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist"
+      launch_agent_plist="$REPO_ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist"
     fi
   fi
 
@@ -406,25 +401,15 @@ install_locked() {
   target="$LIBEXEC_ROOT/versions/$version-${payload_id:0:12}"
 
   if [ -e "$BIN_DIR/detach" ] || [ -L "$BIN_DIR/detach" ]; then
-    existing_destination=1
     if [ ! -L "$BIN_DIR/detach" ]; then
       die "refusing to replace an unmanaged file: $BIN_DIR/detach"
     fi
     active_dir="$(active_payload_dir 2>/dev/null || true)"
-    if [ -z "$active_dir" ] && ! looks_like_legacy_detach "$BIN_DIR/detach"; then
+    if [ -z "$active_dir" ]; then
       die "refusing to replace an unmanaged detach symlink: $BIN_DIR/detach"
     fi
   else
     active_dir=""
-  fi
-
-  if [ -e "$LIBEXEC_ROOT/detach" ] || [ -e "$LIBEXEC_ROOT/detach-core" ] || \
-     [ -f "$LEGACY_PLIST_DEST" ] || [ -d "$CODEX_STATE_ROOT/sessions" ] || \
-     [ -d "$CLAUDE_STATE_ROOT/sessions" ]; then
-    existing_destination=1
-  fi
-  if [ "$existing_destination" -eq 1 ] && [ ! -f "$INSTALL_STATE_ROOT/install.json" ]; then
-    initialize_config=0
   fi
 
   installed_version=""
@@ -526,16 +511,13 @@ install_locked() {
   "$RM_BIN" -f "$link_tmp"
   "$LN_BIN" -s "$target/detach" "$link_tmp" || die "cannot create CLI symlink"
   "$MV_BIN" -f "$link_tmp" "$BIN_DIR/detach" || die "cannot switch CLI symlink"
-  if [ -L "$BIN_DIR/codex-detached" ] && looks_like_legacy_detach "$BIN_DIR/codex-detached"; then
-    "$RM_BIN" -f "$BIN_DIR/codex-detached"
-  fi
   write_manifest "$version" "$build" "$payload_id" "$source" "$target" \
     "$payload_dir" "$version_file" "$SELF" || die "cannot write install manifest"
-  write_default_config "$initialize_config" || die "cannot initialize Detach config"
+  write_required_config || die "cannot configure required Amphetamine integration"
 
   if [ "$install_launch_agent" -eq 1 ]; then
     require_executable "$LAUNCHCTL_BIN" launchctl
-    install_legacy_launch_agent "$launch_agent_plist"
+    install_cli_watchdog "$launch_agent_plist"
   fi
 
   current="$("$BIN_DIR/detach" __version 2>/dev/null || true)"
@@ -579,8 +561,8 @@ uninstall_locked() {
 
   managed_sessions_running && die "cannot uninstall while a detach session is running; stop it first"
 
-  if [ ! -f "$LEGACY_PLIST_DEST" ] && [ -x "$LAUNCHCTL_BIN" ] && \
-     "$LAUNCHCTL_BIN" print "gui/$(id -u)/$WATCHDOG_LABEL" >/dev/null 2>&1; then
+  if [ -x "$LAUNCHCTL_BIN" ] && \
+     "$LAUNCHCTL_BIN" print "gui/$(id -u)/$APP_WATCHDOG_LABEL" >/dev/null 2>&1; then
     die "watchdog is managed by Detach.app; uninstall it from the app so SMAppService can unregister cleanly"
   fi
 
@@ -604,9 +586,9 @@ uninstall_locked() {
     die "refusing to remove an unmanaged file: $BIN_DIR/detach"
   fi
 
-  if [ -f "$LEGACY_PLIST_DEST" ]; then
-    "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$WATCHDOG_LABEL" >/dev/null 2>&1 || true
-    "$RM_BIN" -f "$LEGACY_PLIST_DEST"
+  if [ -f "$CLI_WATCHDOG_PLIST_DEST" ]; then
+    "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
+    "$RM_BIN" -f "$CLI_WATCHDOG_PLIST_DEST"
   fi
   "$RM_BIN" -rf "$LIBEXEC_ROOT/versions"
   "$RM_BIN" -f "$INSTALL_STATE_ROOT/install.json"

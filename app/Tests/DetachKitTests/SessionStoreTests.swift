@@ -20,7 +20,7 @@ struct FakeError: Error {}
 @MainActor
 final class SessionStoreTests: XCTestCase {
     let line = """
-    {"schema":1,"provider":"codex","session_name":"codex-detached-p-1","name":"p-1","effective_status":"running","meta_status":"running","agent_session_id":"u1","project_dir":"/tmp/p","created_at":"2026-07-10T10:00:00Z","last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+    {"schema":1,"provider":"codex","session_name":"detach-codex-p-1","name":"p-1","effective_status":"running","meta_status":"running","agent_session_id":"u1","project_dir":"/tmp/p","created_at":"2026-07-10T10:00:00Z","last_checkpoint_at":null,"exit_status":null,"finished_at":null}
     """
 
     func ok(_ stdout: String) -> Result<CLIResult, Error> {
@@ -82,7 +82,7 @@ final class SessionStoreTests: XCTestCase {
         await store.refresh()
         let error = await store.perform(.stop, on: store.sessions[0])
         XCTAssertNil(error)
-        XCTAssertTrue(cli.calls.contains(["codex", "stop", "codex-detached-p-1"]))
+        XCTAssertTrue(cli.calls.contains(["codex", "stop", "detach-codex-p-1"]))
     }
 
     func testDeleteUsesForce() async {
@@ -91,13 +91,13 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(cli: cli)
         await store.refresh()
         _ = await store.perform(.delete, on: store.sessions[0])
-        XCTAssertTrue(cli.calls.contains(["codex", "delete", "--force", "codex-detached-p-1"]))
+        XCTAssertTrue(cli.calls.contains(["codex", "delete", "--force", "detach-codex-p-1"]))
     }
 
     func testFailedMutationReturnsStderr() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line)
-        cli.responses["codex stop codex-detached-p-1"] =
+        cli.responses["codex stop detach-codex-p-1"] =
             .success(CLIResult(exitCode: 1, stdout: "", stderr: "still busy", timedOut: false))
         let store = SessionStore(cli: cli)
         await store.refresh()

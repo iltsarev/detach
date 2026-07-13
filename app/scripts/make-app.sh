@@ -61,9 +61,10 @@ if [ "$RELEASE_BUILD" = 1 ] && [ "$IDENTITY" = "-" ]; then
 fi
 
 # SwiftPM's standalone launch-agent executable needs an embedded Info.plist.
-# Use a versioned generated path so a version/build change invalidates the
-# linker command instead of accidentally reusing a cached helper binary.
-WATCHDOG_INFO_PLIST="$APP_ROOT/.build/DetachWatchdog-Info-$VERSION-$BUILD_VERSION.plist"
+# Include the source plist digest in the generated path so any metadata change
+# invalidates SwiftPM's linker command, even while iterating on one build number.
+WATCHDOG_INFO_DIGEST="$(shasum -a 256 "$APP_ROOT/Resources/DetachWatchdog-Info.plist" | awk '{print substr($1, 1, 12)}')"
+WATCHDOG_INFO_PLIST="$APP_ROOT/.build/DetachWatchdog-Info-$VERSION-$BUILD_VERSION-$WATCHDOG_INFO_DIGEST.plist"
 cp "$APP_ROOT/Resources/DetachWatchdog-Info.plist" "$WATCHDOG_INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$WATCHDOG_INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$WATCHDOG_INFO_PLIST"
@@ -199,8 +200,6 @@ cp "$APP_ROOT/Resources/Detach.icns" "$APP/Contents/Resources/Detach.icns"
 cp "$APP_ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$APP_ROOT/Resources/dev.tsarev.detach.watchdog.plist" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist"
-cp "$APP_ROOT/Resources/dev.tsarev.codex-detached-watchdog.plist" \
-  "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$APP/Contents/Info.plist"
 if [ -n "$SPARKLE_FEED_URL" ]; then
@@ -216,8 +215,8 @@ install -m 0755 "$REPO_ROOT/bin/detach-core" "$PAYLOAD/detach-core"
 install -m 0755 "$REPO_ROOT/scripts/install.sh" "$PAYLOAD/detach-install"
 printf '%s\n' "$VERSION" >"$PAYLOAD/VERSION"
 chmod 0644 "$PAYLOAD/VERSION"
-install -m 0644 "$REPO_ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist" \
-  "$PAYLOAD/dev.tsarev.codex-detached-watchdog.plist"
+install -m 0644 "$REPO_ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" \
+  "$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist"
 printf '%s\n' "$BUILD_VERSION" >"$PAYLOAD/BUILD"
 
 detach_hash="$(shasum -a 256 "$PAYLOAD/detach" | awk '{print $1}')"
@@ -238,7 +237,7 @@ chmod 0755 "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"
 /usr/bin/strip -S "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"
 plutil -lint "$APP/Contents/Info.plist" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist" \
-  "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
+  "$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
 
 codesign_args=(--force --options runtime --sign "$IDENTITY")
 if [ "$IDENTITY" != "-" ]; then

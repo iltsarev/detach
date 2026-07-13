@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>dev.tsarev.codex-detached-watchdog</string>
+  <string>dev.tsarev.detach.cli-watchdog</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>mkdir -p "$HOME/.local/state/codex-detached-amphetamine" &amp;&amp; exec "$HOME/.local/bin/detach" __reconcile_amphetamine &gt;&gt;"$HOME/.local/state/codex-detached-amphetamine/watchdog.log" 2&gt;&amp;1</string>
+    <string>mkdir -p "$HOME/.local/state/detach/amphetamine" &amp;&amp; exec "$HOME/.local/bin/detach" __reconcile_amphetamine &gt;&gt;"$HOME/.local/state/detach/amphetamine/watchdog.log" 2&gt;&amp;1</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

@@ -70,9 +70,10 @@ release_version() {
   printf '%s\n' "$version"
 }
 
+STATE_BASE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
 CONFIG_FILE="$CONFIG_ROOT/config"
-INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_BASE_ROOT}"
 INSTALL_LOCK="$INSTALL_STATE_ROOT/install.lock"
 
 config_value() {
@@ -90,46 +91,46 @@ config_value() {
 CONFIG_AMPHETAMINE="$(config_value AMPHETAMINE 2>/dev/null || true)"
 case "$CONFIG_AMPHETAMINE" in 0|1|'') ;; *) CONFIG_AMPHETAMINE="" ;; esac
 if [ "$PROVIDER" = "codex" ]; then
-  STATE_ROOT="${CODEX_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-detached}"
-  CHECKPOINT_INTERVAL="${CODEX_DETACHED_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
-  HISTORY_LIMIT="${CODEX_DETACHED_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
-  AMPHETAMINE_ENABLED="${CODEX_DETACHED_AMPHETAMINE:-${DETACH_AMPHETAMINE:-${CONFIG_AMPHETAMINE:-1}}}"
-  SYNC_ENABLED="${CODEX_DETACHED_SYNC:-1}"
-  TMUX_SOCKET="${DETACH_TMUX_SOCKET:-${CODEX_DETACHED_TMUX_SOCKET:-}}"
-  TMUX_CONFIG="${DETACH_TMUX_CONFIG:-${CODEX_DETACHED_TMUX_CONFIG:-}}"
+  STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_BASE_ROOT/codex}"
+  CHECKPOINT_INTERVAL="${DETACH_CODEX_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
+  HISTORY_LIMIT="${DETACH_CODEX_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
+  SYNC_ENABLED="${DETACH_CODEX_SYNC:-1}"
 else
-  STATE_ROOT="${CLAUDE_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-detached}"
-  CHECKPOINT_INTERVAL="${CLAUDE_DETACHED_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
-  HISTORY_LIMIT="${CLAUDE_DETACHED_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
-  AMPHETAMINE_ENABLED="${CLAUDE_DETACHED_AMPHETAMINE:-${DETACH_AMPHETAMINE:-${CONFIG_AMPHETAMINE:-1}}}"
-  SYNC_ENABLED="${CLAUDE_DETACHED_SYNC:-1}"
-  TMUX_SOCKET="${DETACH_TMUX_SOCKET:-${CLAUDE_DETACHED_TMUX_SOCKET:-}}"
-  TMUX_CONFIG="${DETACH_TMUX_CONFIG:-${CLAUDE_DETACHED_TMUX_CONFIG:-}}"
+  STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_BASE_ROOT/claude}"
+  CHECKPOINT_INTERVAL="${DETACH_CLAUDE_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
+  HISTORY_LIMIT="${DETACH_CLAUDE_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
+  SYNC_ENABLED="${DETACH_CLAUDE_SYNC:-1}"
 fi
+AMPHETAMINE_ENABLED="${DETACH_AMPHETAMINE:-${CONFIG_AMPHETAMINE:-1}}"
+AMPHETAMINE_APP_PATH="${DETACH_AMPHETAMINE_APP_PATH:-/Applications/Amphetamine.app}"
+AMPHETAMINE_POWER_PROTECT_PATH="${DETACH_AMPHETAMINE_POWER_PROTECT_PATH:-$HOME/Library/Application Scripts/$AMPHETAMINE_ID/powerProtect.scpt}"
+TMUX_SOCKET="${DETACH_TMUX_SOCKET:-}"
+TMUX_CONFIG="${DETACH_TMUX_CONFIG:-}"
 SESSIONS_ROOT="$STATE_ROOT/sessions"
-LOCKS_ROOT="${DETACH_LOCKS_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/llm-detached/locks}"
-AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-${CODEX_DETACHED_AMPHETAMINE_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-detached-amphetamine}}"
+LOCKS_ROOT="${DETACH_LOCKS_ROOT:-$STATE_BASE_ROOT/locks}"
+AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-$STATE_BASE_ROOT/amphetamine}"
 AMPHETAMINE_LEASES="$AMPHETAMINE_ROOT/leases"
 AMPHETAMINE_OWNER="$AMPHETAMINE_ROOT/owner.json"
 AMPHETAMINE_LOCK="$AMPHETAMINE_ROOT/lock"
 INSIDE_TMUX="${TMUX:-}"
 DETACH_CONFIG_ROOT="$CONFIG_ROOT"
+DETACH_STATE_ROOT="$STATE_BASE_ROOT"
 DETACH_AMPHETAMINE_STATE_ROOT="$AMPHETAMINE_ROOT"
-export DETACH_CONFIG_ROOT DETACH_AMPHETAMINE_STATE_ROOT DETACH_INSTALL_STATE_ROOT
+export DETACH_CONFIG_ROOT DETACH_STATE_ROOT DETACH_AMPHETAMINE_STATE_ROOT DETACH_INSTALL_STATE_ROOT
 
-TMUX_BIN="${DETACH_TMUX_BIN:-${CODEX_DETACHED_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}}"
-JQ_BIN="${DETACH_JQ_BIN:-${CODEX_DETACHED_JQ_BIN:-$(command -v jq 2>/dev/null || true)}}"
-SQLITE_BIN="${DETACH_SQLITE_BIN:-${CODEX_DETACHED_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}}"
+TMUX_BIN="${DETACH_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}"
+JQ_BIN="${DETACH_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
+SQLITE_BIN="${DETACH_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}"
 TAR_BIN="${DETACH_TAR_BIN:-/usr/bin/tar}"
-CODEX_BIN_DEFAULT="${CODEX_DETACHED_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
-CLAUDE_BIN_DEFAULT="${CLAUDE_DETACHED_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
+CODEX_BIN_DEFAULT="${DETACH_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+CLAUDE_BIN_DEFAULT="${DETACH_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
 AGENT_BIN_DEFAULT="$CODEX_BIN_DEFAULT"
 [ "$PROVIDER" = "codex" ] || AGENT_BIN_DEFAULT="$CLAUDE_BIN_DEFAULT"
-OSASCRIPT_BIN="${DETACH_OSASCRIPT_BIN:-${CODEX_DETACHED_OSASCRIPT_BIN:-/usr/bin/osascript}}"
-CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-${CODEX_DETACHED_CAFFEINATE_BIN:-/usr/bin/caffeinate}}"
-PMSET_BIN="${DETACH_PMSET_BIN:-${CODEX_DETACHED_PMSET_BIN:-/usr/bin/pmset}}"
-LOCKF_BIN="${DETACH_LOCKF_BIN:-${CODEX_DETACHED_LOCKF_BIN:-/usr/bin/lockf}}"
-SUDO_BIN="${DETACH_SUDO_BIN:-${CODEX_DETACHED_SUDO_BIN:-/usr/bin/sudo}}"
+OSASCRIPT_BIN="${DETACH_OSASCRIPT_BIN:-/usr/bin/osascript}"
+CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-/usr/bin/caffeinate}"
+PMSET_BIN="${DETACH_PMSET_BIN:-/usr/bin/pmset}"
+LOCKF_BIN="${DETACH_LOCKF_BIN:-/usr/bin/lockf}"
+SUDO_BIN="${DETACH_SUDO_BIN:-/usr/bin/sudo}"
 
 TMUX_CMD=("$TMUX_BIN")
 if [ -n "$TMUX_SOCKET" ]; then
@@ -190,7 +191,7 @@ validate_runtime_config() {
 }
 
 managed_requirements_toml() {
-  local override="${CODEX_DETACHED_REQUIREMENTS_FILE:-}"
+  local override="${DETACH_CODEX_REQUIREMENTS_FILE:-}"
   local managed_user="${USER:-}"
   local plist
   local encoded
@@ -246,8 +247,8 @@ require_start_dependencies() {
     require_file_or_command "$OSASCRIPT_BIN" "osascript"
     require_file_or_command "$PMSET_BIN" "pmset"
     require_file_or_command "$SUDO_BIN" "sudo"
-    [ -d /Applications/Amphetamine.app ] || die "Amphetamine.app is not installed in /Applications"
-    [ -f "$HOME/Library/Application Scripts/$AMPHETAMINE_ID/powerProtect.scpt" ] || \
+    [ -d "$AMPHETAMINE_APP_PATH" ] || die "Amphetamine.app is not installed in /Applications"
+    [ -f "$AMPHETAMINE_POWER_PROTECT_PATH" ] || \
       die "Amphetamine Power Protect is not installed"
   fi
 }
@@ -301,7 +302,7 @@ default_session_name() {
   [ -n "$slug" ] || slug="project"
   slug="${slug:0:24}"
   digest="$(printf '%s' "$cwd" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"
-  printf '%s-detached-%s-%s\n' "$PROVIDER" "$slug" "$digest"
+  printf 'detach-%s-%s-%s\n' "$PROVIDER" "$slug" "$digest"
 }
 
 project_lock_path() {
@@ -321,14 +322,14 @@ normalize_session_name() {
   fi
 
   case "$name" in
-    "$PROVIDER"-detached-*)
-      name="${name#"$PROVIDER-detached-"}"
+    detach-"$PROVIDER"-*)
+      name="${name#"detach-$PROVIDER-"}"
       validate_short_name "$name"
-      printf '%s-detached-%s\n' "$PROVIDER" "$name"
+      printf 'detach-%s-%s\n' "$PROVIDER" "$name"
       ;;
     *)
       validate_short_name "$name"
-      printf '%s-detached-%s\n' "$PROVIDER" "$name"
+      printf 'detach-%s-%s\n' "$PROVIDER" "$name"
       ;;
   esac
 }
@@ -367,25 +368,21 @@ tmux_has_session() {
 }
 
 tmux_is_any_managed() {
-  [ "$(tmux_option "$1" '@codex_detached')" = "1" ]
+  [ "$(tmux_option "$1" '@detach')" = "1" ]
 }
 
 tmux_is_managed() {
   local stored_provider
 
   tmux_is_any_managed "$1" || return 1
-  stored_provider="$(tmux_option "$1" '@codex_detached_provider')"
-  if [ -z "$stored_provider" ]; then
-    [ "$PROVIDER" = "codex" ]
-  else
-    [ "$stored_provider" = "$PROVIDER" ]
-  fi
+  stored_provider="$(tmux_option "$1" '@detach_provider')"
+  [ "$stored_provider" = "$PROVIDER" ]
 }
 
 tmux_pane_id() {
   local pane
 
-  pane="$(tmux_option "$1" '@codex_detached_pane_id')"
+  pane="$(tmux_option "$1" '@detach_pane_id')"
   if [ -n "$pane" ]; then
     printf '%s\n' "$pane"
   else
@@ -847,7 +844,7 @@ discover_codex_session() {
      ORDER BY created_at_ms ASC, id ASC;" 2>/dev/null || true)"
 
   [ -n "$run_token" ] || return 1
-  expected_originator="codex_detached_$run_token"
+  expected_originator="detach_$run_token"
   candidate_ids="$(printf '%s' "$rows" | "$JQ_BIN" -r '.[] | [.id, .rollout_path] | @tsv' 2>/dev/null | \
     while IFS=$'\t' read -r candidate candidate_rollout; do
       grep -Fqx "$candidate" "$known" && continue
@@ -910,7 +907,7 @@ restore_matching_rollout_checkpoint() {
   [ "$restore" -eq 1 ] || return 0
 
   mkdir -p "$(dirname "$rollout")"
-  tmp="$rollout.codex-detached.tmp.$$"
+  tmp="$rollout.detach.tmp.$$"
   cp -p "$backup" "$tmp" || return 1
   valid_jsonl "$tmp" "$id" || {
     rm -f "$tmp"
@@ -924,7 +921,7 @@ restore_matching_rollout_checkpoint() {
 restore_directory_checkpoint() {
   local backup="$1"
   local destination="$2"
-  local tmp="$destination.claude-detached.tmp.$$"
+  local tmp="$destination.detach.tmp.$$"
 
   [ -d "$backup" ] || return 0
   mkdir -p "$(dirname "$destination")" || return 1
@@ -1045,7 +1042,7 @@ restore_matching_claude_checkpoint() {
       [ -z "$stage" ] || rm -rf "$stage"
       return 1
     }
-    tmp="$transcript.claude-detached.tmp.$$"
+    tmp="$transcript.detach.tmp.$$"
     cp -p "$backup" "$tmp" || {
       [ -z "$stage" ] || rm -rf "$stage"
       return 1
@@ -1548,10 +1545,10 @@ lease_is_live() {
 
   if [ -n "$session" ] && [ -n "$run_token" ] && \
      "${lease_tmux[@]}" has-session -t "=$session" 2>/dev/null && \
-     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached 2>/dev/null || true)" = "1" ] && \
-     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached_run_token 2>/dev/null || true)" = "$run_token" ] && \
-     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached_running 2>/dev/null || true)" = "1" ]; then
-    pane="$("${lease_tmux[@]}" show-options -qv -t "=$session:" @codex_detached_pane_id 2>/dev/null || true)"
+     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @detach 2>/dev/null || true)" = "1" ] && \
+     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @detach_run_token 2>/dev/null || true)" = "$run_token" ] && \
+     [ "$("${lease_tmux[@]}" show-options -qv -t "=$session:" @detach_running 2>/dev/null || true)" = "1" ]; then
+    pane="$("${lease_tmux[@]}" show-options -qv -t "=$session:" @detach_pane_id 2>/dev/null || true)"
     if [ -n "$pane" ] && [ "$("${lease_tmux[@]}" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null || printf '1')" = "0" ]; then
       return 0
     fi
@@ -1858,8 +1855,8 @@ worker_main() {
       --argjson exit_status "$exit_status" \
       --arg finished_at "$(now_iso)" || true
     printf '%s\n' "$exit_status" >"$(session_dir "$session")/exit-status"
-    if [ "$(tmux_option "$session" '@codex_detached_run_token')" = "$run_token" ]; then
-      "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_running 0 2>/dev/null || true
+    if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
+      "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 0 2>/dev/null || true
     fi
     amphetamine_release "$session" "$run_token" || true
   }
@@ -1871,8 +1868,8 @@ worker_main() {
 
   json_update_meta_for_run "$session" "$run_token" \
     '.status = "running" | .worker_started_at = $time' --arg time "$(now_iso)" || true
-  if [ "$(tmux_option "$session" '@codex_detached_run_token')" = "$run_token" ]; then
-    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_running 1 2>/dev/null || true
+  if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 1 2>/dev/null || true
   fi
 
   if [ "$PROVIDER" = "claude" ]; then
@@ -1930,7 +1927,7 @@ worker_main() {
     [ "$has_no_alt" -eq 1 ] || codex_args+=( --no-alt-screen )
     codex_args+=( -C "$cwd" )
     codex_args+=( "$@" )
-    export CODEX_INTERNAL_ORIGINATOR_OVERRIDE="codex_detached_$run_token"
+    export CODEX_INTERNAL_ORIGINATOR_OVERRIDE="detach_$run_token"
   fi
 
   "$SELF" __checkpoint_loop "$session" "$run_token" "$$" &
@@ -1958,26 +1955,18 @@ tmux_environment_args() {
               http_proxy https_proxy all_proxy no_proxy OPENAI_API_KEY ANTHROPIC_API_KEY \
               SSL_CERT_FILE SSL_CERT_DIR CODEX_HOME CLAUDE_CONFIG_DIR \
               DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM DETACH_LOCKS_ROOT \
-              DETACH_INSTALL_STATE_ROOT \
+              DETACH_STATE_ROOT DETACH_INSTALL_STATE_ROOT \
               DETACH_CONFIG_ROOT DETACH_AMPHETAMINE \
-              DETACH_AMPHETAMINE_STATE_ROOT DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG \
+              DETACH_AMPHETAMINE_STATE_ROOT DETACH_AMPHETAMINE_APP_PATH \
+              DETACH_AMPHETAMINE_POWER_PROTECT_PATH DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG \
               DETACH_TMUX_BIN DETACH_JQ_BIN \
               DETACH_SQLITE_BIN DETACH_TAR_BIN DETACH_OSASCRIPT_BIN DETACH_CAFFEINATE_BIN \
               DETACH_PMSET_BIN DETACH_LOCKF_BIN DETACH_SUDO_BIN \
-              CODEX_DETACHED_STATE_ROOT CODEX_DETACHED_CHECKPOINT_INTERVAL \
-              CODEX_DETACHED_HISTORY_LIMIT CODEX_DETACHED_AMPHETAMINE \
-              CODEX_DETACHED_REQUIREMENTS_FILE \
-              CODEX_DETACHED_AMPHETAMINE_STATE_ROOT \
-              CODEX_DETACHED_SYNC CODEX_DETACHED_TMUX_SOCKET \
-              CODEX_DETACHED_TMUX_CONFIG \
-              CODEX_DETACHED_TMUX_BIN CODEX_DETACHED_JQ_BIN \
-              CODEX_DETACHED_SQLITE_BIN CODEX_DETACHED_CODEX_BIN \
-              CODEX_DETACHED_OSASCRIPT_BIN CODEX_DETACHED_CAFFEINATE_BIN \
-              CODEX_DETACHED_PMSET_BIN CODEX_DETACHED_LOCKF_BIN \
-              CLAUDE_DETACHED_STATE_ROOT CLAUDE_DETACHED_CHECKPOINT_INTERVAL \
-              CLAUDE_DETACHED_HISTORY_LIMIT CLAUDE_DETACHED_AMPHETAMINE \
-              CLAUDE_DETACHED_SYNC CLAUDE_DETACHED_TMUX_SOCKET \
-              CLAUDE_DETACHED_TMUX_CONFIG CLAUDE_DETACHED_CLAUDE_BIN \
+              DETACH_CODEX_STATE_ROOT DETACH_CODEX_CHECKPOINT_INTERVAL \
+              DETACH_CODEX_HISTORY_LIMIT DETACH_CODEX_REQUIREMENTS_FILE \
+              DETACH_CODEX_SYNC DETACH_CODEX_BIN \
+              DETACH_CLAUDE_STATE_ROOT DETACH_CLAUDE_CHECKPOINT_INTERVAL \
+              DETACH_CLAUDE_HISTORY_LIMIT DETACH_CLAUDE_SYNC DETACH_CLAUDE_BIN \
               CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN; do
     value="${!name-}"
     [ -n "$value" ] || continue
@@ -2037,14 +2026,14 @@ start_tmux_session() {
     die "could not initialize session metadata"
   snapshot_known_threads "$session" "$cwd" || die "could not snapshot existing $PROVIDER_LABEL sessions"
   write_resume_args "$session" "$@" || die "could not save $PROVIDER_LABEL resume options"
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached 1
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_provider "$PROVIDER"
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_cwd "$cwd"
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_running 0
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_pane_id "$pane_id"
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_run_token "$run_token"
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_cli_version "$(release_version 2>/dev/null || printf 'unknown')"
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_core_path "$SELF"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_provider "$PROVIDER"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_cwd "$cwd"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 0
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_pane_id "$pane_id"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_run_token "$run_token"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_cli_version "$(release_version 2>/dev/null || printf 'unknown')"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_core_path "$SELF"
   "${TMUX_CMD[@]}" set-option -q -w -t "$pane_id" remain-on-exit on
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" history-limit "$HISTORY_LIMIT"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse on
@@ -2087,7 +2076,7 @@ running_session_for_project() {
     [ "$candidate" = "$excluded_session" ] && continue
     tmux_is_any_managed "$candidate" || continue
     tmux_session_running "$candidate" || continue
-    [ "$(tmux_option "$candidate" '@codex_detached_cwd')" = "$cwd" ] || continue
+    [ "$(tmux_option "$candidate" '@detach_cwd')" = "$cwd" ] || continue
     printf '%s\n' "$candidate"
     return 0
   done < <("${TMUX_CMD[@]}" list-sessions -F '#{session_name}' 2>/dev/null || true)
@@ -2438,7 +2427,7 @@ emit_list_json() {
   "$JQ_BIN" -n -c \
     --arg provider "$PROVIDER" \
     --arg session_name "$session" \
-    --arg name "${session#"$PROVIDER-detached-"}" \
+    --arg name "${session#"detach-$PROVIDER-"}" \
     --arg effective "$effective" \
     --arg meta_status "$meta_status" \
     --arg id "$id" \
@@ -2504,7 +2493,7 @@ list_sessions() {
       live="corrupt"
       if tmux_has_session "$session"; then
         if tmux_is_managed "$session"; then
-          cwd="$(tmux_option "$session" '@codex_detached_cwd')"
+          cwd="$(tmux_option "$session" '@detach_cwd')"
           if tmux_session_running "$session"; then
             live="running"
           else
@@ -2782,7 +2771,7 @@ restore_rollout_if_needed() {
 
   if [ "$restore" -eq 1 ]; then
     mkdir -p "$(dirname "$rollout")"
-    tmp="$rollout.codex-detached.tmp.$$"
+    tmp="$rollout.detach.tmp.$$"
     cp -p "$backup" "$tmp" || die "could not copy rollout checkpoint"
     valid_jsonl "$tmp" "$id" || {
       rm -f "$tmp"

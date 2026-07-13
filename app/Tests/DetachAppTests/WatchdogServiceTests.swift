@@ -15,8 +15,10 @@ final class WatchdogServiceTests: XCTestCase {
 
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(backend.unregisterCalls, 0)
-        XCTAssertEqual(fixture.defaults.string(forKey: "watchdogDefinitionDigest.v2"), "digest-v2")
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending.v2"))
+        XCTAssertEqual(
+            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            "digest-current")
+        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
     }
 
     func testChangedDefinitionRetriesTransientRegisterFailure() async throws {
@@ -31,15 +33,17 @@ final class WatchdogServiceTests: XCTestCase {
             backend: backend,
             sleep: { delays.append($0) })
         defer { fixture.cleanup() }
-        fixture.defaults.set("digest-v1", forKey: "watchdogDefinitionDigest.v2")
+        fixture.defaults.set("digest-previous", forKey: "watchdogDefinitionDigest")
 
         try await fixture.service.reconcileAfterAppUpdate()
 
         XCTAssertEqual(backend.unregisterCalls, 1)
         XCTAssertEqual(backend.registerCalls, 2)
         XCTAssertEqual(delays, [250_000_000])
-        XCTAssertEqual(fixture.defaults.string(forKey: "watchdogDefinitionDigest.v2"), "digest-v2")
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending.v2"))
+        XCTAssertEqual(
+            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            "digest-current")
+        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
     }
 
     func testPendingUnavailableStateRecoversInsteadOfDeadEnding() async throws {
@@ -48,13 +52,13 @@ final class WatchdogServiceTests: XCTestCase {
             registrations: [.success(.enabled)])
         let fixture = makeFixture(backend: backend)
         defer { fixture.cleanup() }
-        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending.v2")
+        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending")
 
         try await fixture.service.reconcileAfterAppUpdate()
 
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(fixture.service.status, .enabled)
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending.v2"))
+        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
     }
 
     func testApprovalStateCompletesRegistrationWithoutRetryLoop() async throws {
@@ -71,8 +75,10 @@ final class WatchdogServiceTests: XCTestCase {
 
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(fixture.service.status, .requiresApproval)
-        XCTAssertEqual(fixture.defaults.string(forKey: "watchdogDefinitionDigest.v2"), "digest-v2")
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending.v2"))
+        XCTAssertEqual(
+            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            "digest-current")
+        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
     }
 
     func testNonTransientFailureKeepsRecoveryPending() async {
@@ -90,103 +96,36 @@ final class WatchdogServiceTests: XCTestCase {
             XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
         }
 
-        XCTAssertTrue(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending.v2"))
-        XCTAssertNil(fixture.defaults.string(forKey: "watchdogDefinitionDigest.v2"))
+        XCTAssertTrue(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
+        XCTAssertNil(fixture.defaults.string(forKey: "watchdogDefinitionDigest"))
     }
 
-    func testEnabledReplacementUnregistersOldBundledServiceWithoutUserPlist() async throws {
-        let backend = FakeWatchdogBackend(
-            status: .notRegistered,
-            registrations: [.success(.enabled)])
-        let legacy = FakeWatchdogBackend(status: .enabled, registrations: [])
-        var launchctlCalls: [[String]] = []
-        let fixture = makeFixture(
-            backend: backend,
-            legacyBackend: legacy,
-            launchctl: { launchctlCalls.append($0); return 0 })
-        defer { fixture.cleanup() }
-
-        try await fixture.service.reconcileAfterAppUpdate()
-
-        XCTAssertEqual(legacy.unregisterCalls, 1)
-        XCTAssertEqual(
-            launchctlCalls.first,
-            ["bootout", "gui/\(getuid())/dev.tsarev.codex-detached-watchdog"])
-    }
-
-    func testApprovalRequiredKeepsOldServiceRunning() async throws {
-        let denied = NSError(domain: "SMAppServiceErrorDomain", code: 2)
-        let backend = FakeWatchdogBackend(
-            status: .notRegistered,
-            registrations: [.approvalRequired(denied)])
-        let legacy = FakeWatchdogBackend(status: .enabled, registrations: [])
-        var launchctlCalls: [[String]] = []
-        let fixture = makeFixture(
-            backend: backend,
-            legacyBackend: legacy,
-            launchctl: { launchctlCalls.append($0); return 0 })
-        defer { fixture.cleanup() }
-
-        try await fixture.service.reconcileAfterAppUpdate()
-
-        XCTAssertEqual(legacy.unregisterCalls, 0)
-        XCTAssertTrue(launchctlCalls.isEmpty)
-    }
-
-    func testLegacyUnregisterFailureDoesNotBreakEnabledReplacement() async throws {
-        let backend = FakeWatchdogBackend(
-            status: .notRegistered,
-            registrations: [.success(.enabled)])
-        let legacy = FakeWatchdogBackend(status: .enabled, registrations: [])
-        legacy.unregisterError = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)
-        var launchctlCalls: [[String]] = []
-        let fixture = makeFixture(
-            backend: backend,
-            legacyBackend: legacy,
-            launchctl: { launchctlCalls.append($0); return 0 })
-        defer { fixture.cleanup() }
-
-        try await fixture.service.reconcileAfterAppUpdate()
-
-        XCTAssertEqual(fixture.service.status, .enabled)
-        XCTAssertEqual(legacy.unregisterCalls, 1)
-        XCTAssertEqual(launchctlCalls.count, 1)
-    }
-
-    func testDisableUnregistersNewAndOldServices() async throws {
+    func testDisableUnregistersServiceAndClearsDefinitionState() async throws {
         let backend = FakeWatchdogBackend(status: .enabled, registrations: [])
-        let legacy = FakeWatchdogBackend(status: .enabled, registrations: [])
-        let fixture = makeFixture(
-            backend: backend,
-            legacyBackend: legacy,
-            launchctl: { _ in 0 })
+        let fixture = makeFixture(backend: backend)
         defer { fixture.cleanup() }
+        fixture.defaults.set("digest-current", forKey: "watchdogDefinitionDigest")
+        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending")
 
         try await fixture.service.disable()
 
         XCTAssertEqual(backend.unregisterCalls, 1)
-        XCTAssertEqual(legacy.unregisterCalls, 1)
         XCTAssertEqual(fixture.service.status, .notRegistered)
+        XCTAssertNil(fixture.defaults.string(forKey: "watchdogDefinitionDigest"))
+        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
     }
 
     private func makeFixture(
         backend: FakeWatchdogBackend,
-        legacyBackend: FakeWatchdogBackend? = nil,
-        sleep: @escaping (UInt64) async throws -> Void = { _ in },
-        launchctl: @escaping ([String]) -> Int32 = { _ in 0 }
+        sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> Fixture {
         let suite = "WatchdogServiceTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("watchdog-tests-\(UUID().uuidString)", isDirectory: true)
         let service = WatchdogService(
             backend: backend,
-            legacyBackend: legacyBackend,
             defaults: defaults,
-            homeDirectory: home,
-            digestProvider: { "digest-v2" },
-            sleep: sleep,
-            launchctl: launchctl)
+            digestProvider: { "digest-current" },
+            sleep: sleep)
         return Fixture(service: service, defaults: defaults, suite: suite)
     }
 }
@@ -203,7 +142,6 @@ private final class FakeWatchdogBackend: WatchdogRegistrationBackend {
     var registrations: [Registration]
     private(set) var registerCalls = 0
     private(set) var unregisterCalls = 0
-    var unregisterError: Error?
 
     init(status: WatchdogStatus, registrations: [Registration]) {
         self.status = status
@@ -228,7 +166,6 @@ private final class FakeWatchdogBackend: WatchdogRegistrationBackend {
 
     func unregister() async throws {
         unregisterCalls += 1
-        if let unregisterError { throw unregisterError }
         status = .notRegistered
     }
 }

@@ -2,9 +2,22 @@ import Foundation
 
 let fileManager = FileManager.default
 let environment = ProcessInfo.processInfo.environment
-let home = environment["HOME"] ?? fileManager.homeDirectoryForCurrentUser.path
-let stateRoot = environment["DETACH_AMPHETAMINE_STATE_ROOT"]
-    ?? "\(home)/.local/state/codex-detached-amphetamine"
+func environmentPath(_ key: String) -> String? {
+    guard let value = environment[key], !value.isEmpty else { return nil }
+    return value
+}
+
+let home = environmentPath("HOME") ?? fileManager.homeDirectoryForCurrentUser.path
+let stateBaseRoot = environmentPath("DETACH_STATE_ROOT")
+    ?? environmentPath("XDG_STATE_HOME").map {
+        URL(fileURLWithPath: $0, isDirectory: true)
+            .appendingPathComponent("detach", isDirectory: true).path
+    }
+    ?? URL(fileURLWithPath: home, isDirectory: true)
+        .appendingPathComponent(".local/state/detach", isDirectory: true).path
+let stateRoot = environmentPath("DETACH_AMPHETAMINE_STATE_ROOT")
+    ?? URL(fileURLWithPath: stateBaseRoot, isDirectory: true)
+        .appendingPathComponent("amphetamine", isDirectory: true).path
 let logURL = URL(fileURLWithPath: stateRoot).appendingPathComponent("watchdog.log")
 let statusURL = URL(fileURLWithPath: stateRoot).appendingPathComponent("watchdog-status.json")
 let detachURL = URL(fileURLWithPath: home)
@@ -57,6 +70,7 @@ do {
         "/opt/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
     ].joined(separator: ":")
     childEnvironment["PATH"] = commonPath
+    childEnvironment["DETACH_AMPHETAMINE_STATE_ROOT"] = stateRoot
     process.environment = childEnvironment
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = FileHandle.nullDevice
