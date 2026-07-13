@@ -295,7 +295,10 @@ APPCAST_SHA256="$(awk '{print $1}' "$APPCAST.sha256")"
 # rewritten lockfile, or concurrent worktree edit can never be attributed to
 # the preflight commit.
 verify_source_provenance
-plutil -create json "$RELEASE_MANIFEST"
+# `plutil -insert` on a JSON input tries to round-trip through the unsupported
+# OpenStep writer on some macOS versions. Build as an XML plist, then convert
+# the finished dictionary to JSON atomically before checksumming it.
+plutil -create xml1 "$RELEASE_MANIFEST"
 plutil -insert schema -integer 1 "$RELEASE_MANIFEST"
 plutil -insert version -string "$VERSION" "$RELEASE_MANIFEST"
 plutil -insert build -string "$BUILD_VERSION" "$RELEASE_MANIFEST"
@@ -308,6 +311,8 @@ plutil -insert download_url -string "$DOWNLOAD_URL" "$RELEASE_MANIFEST"
 plutil -insert dmg_sha256 -string "$DMG_SHA256" "$RELEASE_MANIFEST"
 plutil -insert update_sha256 -string "$UPDATE_SHA256" "$RELEASE_MANIFEST"
 plutil -insert appcast_sha256 -string "$APPCAST_SHA256" "$RELEASE_MANIFEST"
+plutil -convert json "$RELEASE_MANIFEST"
+plutil -p "$RELEASE_MANIFEST" >/dev/null
 (
   cd -P "$UPDATE_ASSETS"
   shasum -a 256 "$(basename "$RELEASE_MANIFEST")" \
