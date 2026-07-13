@@ -1,2 +1,23 @@
 .DS_Store
 .superpowers/
+
+# Local product planning and working notes. These may contain roadmap,
+# machine-specific paths, or other context that does not belong in the public
+# source repository.
+/docs/backlog.md
+/docs/superpowers/
+
+# Local credentials and release overrides must stay outside Git. Public
+# examples can be explicitly re-included as *.example files when needed.
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+*.keychain-db
+.credentials/
+.secrets/

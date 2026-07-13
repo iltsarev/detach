@@ -170,7 +170,7 @@ CODEX_DETACHED_STATE_ROOT="$HOME/.local/state/../../.codex" \
 grep -Fx provider-sentinel "$HOME/.codex/must-survive" >/dev/null
 grep -F 'bootout' "$LAUNCHCTL_LOG" >/dev/null
 
-! rg -n '/Users/example' "$ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
+! rg -n '<string>/Users/[^<]+/' "$ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
 plutil -lint "$ROOT/launchagents/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
 
 printf 'Detach distribution tests passed\n'

@@ -331,6 +331,3 @@ The app synchronizes its bundled CLI before polling sessions and uses
 `detach doctor --json` for install/dependency diagnostics. Swift adds only
 app-context checks such as `SMAppService` status. The normal session UI still
 talks exclusively through the public CLI surface.
-
-Future UI features and their acceptance criteria are tracked in
-[`docs/backlog.md`](docs/backlog.md).
