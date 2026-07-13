@@ -9,10 +9,15 @@ an internal implementation detail and is not installed on `PATH`.
 ## Install
 
 The preferred distribution is `Detach.dmg`: move `Detach.app` to
-`/Applications`, open it, and follow onboarding. The app installs an immutable
-versioned CLI under `~/.local`, then offers to enable its watchdog in Login
-Items. New installs keep the optional Amphetamine integration off until it is
-enabled in Settings. Download the current signed and notarized build from
+`/Applications` and open it. The app installs an immutable versioned CLI under
+`~/.local` automatically. Technical diagnostics are available on demand and
+collapsed by default. If `tmux`, `jq`, or a provider CLI is missing, setup shows
+one guided next action instead of raw diagnostics. New installs keep the
+optional Amphetamine integration off until it is enabled in Settings; its
+background helper is registered only then and may need a one-time Login Items
+approval. Permission to open Terminal is requested just in time on the first
+terminal action, not during setup. Download the current signed and notarized
+build from
 [GitHub Releases](https://github.com/iltsarev/detach/releases/latest).
 
 For a CLI-only install from a checkout, make sure `tmux`, `jq`, and at least one

@@ -21,9 +21,11 @@ struct SettingsView: View {
                 }
             }
             Section("Установка") {
-                Button("Repair CLI") { Task { await installation.repair() } }
+                Button("Переустановить командные инструменты") {
+                    Task { await installation.repair() }
+                }
                     .disabled(installation.isBusy || !installation.isStableApplicationLocation)
-                Button("Удалить CLI и watchdog…", role: .destructive) {
+                Button("Удалить установленные компоненты…", role: .destructive) {
                     confirmUninstall = true
                 }
                 .disabled(installation.isBusy)

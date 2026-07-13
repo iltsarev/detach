@@ -70,7 +70,8 @@ LAUNCHCTL_BIN="${DETACH_LAUNCHCTL_BIN:-/bin/launchctl}"
 INSTALL_BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
-WATCHDOG_LABEL="dev.tsarev.codex-detached-watchdog"
+LEGACY_WATCHDOG_LABEL="${DETACH_LEGACY_WATCHDOG_LABEL:-dev.tsarev.codex-detached-watchdog}"
+APP_WATCHDOG_LABEL="${DETACH_APP_WATCHDOG_LABEL:-dev.tsarev.detach.watchdog}"
 
 release_version() {
   local version
@@ -148,6 +149,7 @@ doctor_report() {
   local manifest_version manifest_build manifest_path manifest_payload payload_file
   local detach_hash core_hash installer_hash calculated_payload integrity_status
   local codex_path claude_path keep_awake amphetamine_path power_protect
+  local watchdog_label watchdog_required watchdog_missing_status
   local index comma required path
 
   version="$(release_version 2>/dev/null || printf 'unknown')"
@@ -223,13 +225,31 @@ doctor_report() {
   doctor_command caffeinate caffeinate "$CAFFEINATE_BIN" true
   doctor_command lockf lockf "$LOCKF_BIN" true
 
-  if [ -x "$LAUNCHCTL_BIN" ] && "$LAUNCHCTL_BIN" print "gui/$(id -u)/$WATCHDOG_LABEL" >/dev/null 2>&1; then
-    doctor_add watchdog base "Watchdog" true ok "$WATCHDOG_LABEL" "LaunchAgent активен"
+  keep_awake="${DETACH_AMPHETAMINE:-$(doctor_config_value AMPHETAMINE 2>/dev/null || printf '1')}"
+  watchdog_required=false
+  watchdog_missing_status=warning
+  if [ "$keep_awake" != "0" ]; then
+    watchdog_required=true
+    watchdog_missing_status=error
+  fi
+  watchdog_label=""
+  if [ -x "$LAUNCHCTL_BIN" ]; then
+    for path in "$APP_WATCHDOG_LABEL" "$LEGACY_WATCHDOG_LABEL"; do
+      if "$LAUNCHCTL_BIN" print "gui/$(id -u)/$path" >/dev/null 2>&1; then
+        watchdog_label="$path"
+        break
+      fi
+    done
+  fi
+  if [ -n "$watchdog_label" ]; then
+    doctor_add watchdog base "Фоновая служба" "$watchdog_required" ok \
+      "$watchdog_label" "Фоновая проверка активна"
   else
-    doctor_add watchdog base "Watchdog" true error "$WATCHDOG_LABEL" "LaunchAgent не зарегистрирован или требует разрешения"
+    doctor_add watchdog base "Фоновая служба" "$watchdog_required" \
+      "$watchdog_missing_status" "$APP_WATCHDOG_LABEL" \
+      "Фоновая проверка не зарегистрирована или требует разрешения"
   fi
 
-  keep_awake="${DETACH_AMPHETAMINE:-$(doctor_config_value AMPHETAMINE 2>/dev/null || printf '1')}"
   if [ "$keep_awake" = "0" ]; then
     doctor_add keep_awake keepAwake "Keep-awake" false ok "" "Опциональная функция выключена"
   else

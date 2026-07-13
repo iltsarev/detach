@@ -11,7 +11,8 @@ struct NewSessionSheet: View {
     @State private var name = ""
     @State private var prompt = ""
     @State private var showPicker = false
-    @State private var launchError: String?
+    @State private var launchFailure: TerminalLaunchFailure?
+    @State private var isLaunching = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -46,8 +47,14 @@ struct NewSessionSheet: View {
                 .frame(height: 70)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
 
-            if let launchError {
-                Text(launchError).font(.caption).foregroundStyle(.red)
+            if let launchFailure {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(launchFailure.message).font(.caption).foregroundStyle(.red)
+                    if launchFailure.requiresAutomationPermission {
+                        Button("Открыть настройки") { TerminalLauncher.openAutomationSettings() }
+                            .font(.caption)
+                    }
+                }
             }
 
             HStack {
@@ -56,7 +63,7 @@ struct NewSessionSheet: View {
                 Button("Запустить в терминале") { launch() }
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.indigo)
-                    .disabled(projectDir == nil)
+                    .disabled(projectDir == nil || isLaunching)
             }
         }
         .padding(20)
@@ -66,6 +73,7 @@ struct NewSessionSheet: View {
         }
     }
 
+    @MainActor
     private func launch() {
         guard let projectDir else { return }
         let command = TerminalCommand.start(
@@ -74,8 +82,12 @@ struct NewSessionSheet: View {
             projectDir: projectDir.path,
             name: name.trimmingCharacters(in: .whitespaces).isEmpty ? nil : name,
             prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : prompt)
-        if let message = TerminalLauncher.open(command: command) {
-            launchError = message
+        launchFailure = nil
+        isLaunching = true
+        let failure = TerminalLauncher.open(command: command)
+        isLaunching = false
+        if let failure {
+            launchFailure = failure
         } else {
             dismiss()
         }

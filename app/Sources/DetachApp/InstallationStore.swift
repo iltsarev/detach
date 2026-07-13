@@ -21,9 +21,9 @@ final class InstallationStore {
     private(set) var phase: Phase = .idle
     private(set) var report: DoctorReport?
     private(set) var watchdogStatus: WatchdogStatus = .unavailable
+    private(set) var watchdogError: String?
     private(set) var lastInstallMessage: String?
     private(set) var keepAwakeEnabled: Bool
-    private(set) var automationStatus: AutomationStatus = .notChecked
     private(set) var distributionMatchesBundle = false
 
     private let detachPath: String
@@ -36,9 +36,6 @@ final class InstallationStore {
         self.detachPath = detachPath
         bundleURL = bundle.bundleURL.standardizedFileURL
         keepAwakeEnabled = Self.readKeepAwakeSetting()
-        if UserDefaults.standard.bool(forKey: "terminalAutomationWasAllowed") {
-            automationStatus = .allowed
-        }
         let candidate = bundle.bundleURL
             .appendingPathComponent("Contents/Resources/DetachCLI", isDirectory: true)
         payloadDirectory = FileManager.default.fileExists(atPath: candidate.path)
@@ -80,19 +77,6 @@ final class InstallationStore {
         await synchronize(repair: true)
     }
 
-    func enableWatchdog() async {
-        guard !isBusy, isStableApplicationLocation, distributionMatchesBundle else { return }
-        phase = .syncing
-        do {
-            try await watchdog.enable()
-            watchdogStatus = watchdog.status
-            await refreshDoctor()
-        } catch {
-            watchdogStatus = watchdog.status
-            phase = .failed("Не удалось включить watchdog: \(error.localizedDescription)")
-        }
-    }
-
     func openLoginItemsSettings() {
         watchdog.openLoginItemsSettings()
     }
@@ -116,45 +100,29 @@ final class InstallationStore {
         switch watchdogStatus {
         case .enabled:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Watchdog",
-                required: true, status: .ok, path: nil,
-                summary: "LaunchAgent включён через Login Items")
+                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                required: keepAwakeEnabled, status: .ok, path: nil,
+                summary: "Фоновая проверка включена")
         case .requiresApproval:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Watchdog",
-                required: true, status: .error, path: nil,
-                summary: "Нужно разрешить Detach в System Settings → Login Items")
+                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                required: keepAwakeEnabled,
+                status: keepAwakeEnabled ? .error : .warning, path: nil,
+                summary: "macOS ожидает разрешение на фоновую работу")
         case .notRegistered:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Watchdog",
-                required: true, status: .error, path: nil,
-                summary: "LaunchAgent ещё не включён")
+                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                required: keepAwakeEnabled,
+                status: keepAwakeEnabled ? .error : .warning, path: nil,
+                summary: "Фоновая проверка пока не включена")
         case .unavailable:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Watchdog",
-                required: true, status: .error, path: nil,
-                summary: "Bundled LaunchAgent недоступен")
+                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                required: keepAwakeEnabled,
+                status: keepAwakeEnabled ? .error : .warning, path: nil,
+                summary: "macOS пока не зарегистрировала фоновую проверку")
         }
-
-        let automationCheck: DiagnosticCheck
-        switch automationStatus {
-        case .notChecked:
-            automationCheck = DiagnosticCheck(
-                id: "terminal_automation", section: .base, label: "Terminal Automation",
-                required: true, status: .error, path: nil,
-                summary: "Нажми «Проверить Terminal», чтобы запросить системное разрешение")
-        case .allowed:
-            automationCheck = DiagnosticCheck(
-                id: "terminal_automation", section: .base, label: "Terminal Automation",
-                required: true, status: .ok, path: nil,
-                summary: "Detach может открывать интерактивные сессии в Terminal")
-        case .denied(let message):
-            automationCheck = DiagnosticCheck(
-                id: "terminal_automation", section: .base, label: "Terminal Automation",
-                required: true, status: .error, path: nil, summary: message)
-        }
-        return [locationCheck, distributionCheck, watchdogCheck, automationCheck,
-                watchdogHeartbeatCheck]
+        return [locationCheck, distributionCheck, watchdogCheck, watchdogHeartbeatCheck]
     }
 
     private var watchdogHeartbeatCheck: DiagnosticCheck {
@@ -167,21 +135,15 @@ final class InstallationStore {
         let heartbeat = (try? Data(contentsOf: statusURL))
             .flatMap { try? JSONDecoder().decode(Heartbeat.self, from: $0) }
         let healthy = fresh && heartbeat?.state == "ok"
+        let expected = watchdogStatus == .enabled && keepAwakeEnabled
         return DiagnosticCheck(
-            id: "watchdog_heartbeat", section: .base, label: "Watchdog heartbeat",
-            required: false, status: healthy ? .ok : .warning, path: statusURL.path,
+            id: "watchdog_heartbeat", section: .base, label: "Запуск фоновой службы",
+            required: false,
+            status: healthy ? .ok : (expected ? .warning : .unknown), path: statusURL.path,
             summary: healthy
-                ? "Bundled helper запускался в последние три минуты"
-                : "Heartbeat отсутствует, устарел или helper сообщил ошибку")
-    }
-
-    func checkTerminalAutomation() async {
-        guard !isBusy, isStableApplicationLocation else { return }
-        phase = .syncing
-        automationStatus = await AutomationDiagnostics.probeTerminal()
-        UserDefaults.standard.set(automationStatus == .allowed,
-                                  forKey: "terminalAutomationWasAllowed")
-        updatePhase()
+                ? "Фоновая служба запускалась в последние три минуты"
+                : (expected ? "Фоновая служба запускается или требует внимания"
+                            : "Проверяется только при включённом keep-awake"))
     }
 
     func refreshContext() async {
@@ -190,13 +152,19 @@ final class InstallationStore {
             return
         }
         guard !isBusy else { return }
-        phase = .syncing
+        let wasReady = phase == .ready
+        if !wasReady { phase = .syncing }
         watchdogStatus = watchdog.status
-        if let current = await AutomationDiagnostics.preflightTerminal() {
-            automationStatus = current
-            UserDefaults.standard.set(current == .allowed,
-                                      forKey: "terminalAutomationWasAllowed")
+        if keepAwakeEnabled && distributionMatchesBundle {
+            do {
+                try await watchdog.reconcileAfterAppUpdate()
+                watchdogError = nil
+            } catch {
+                watchdogError = error.localizedDescription
+            }
+            watchdogStatus = watchdog.status
         }
+        if watchdogStatus == .enabled { watchdogError = nil }
         guard isStableApplicationLocation else {
             phase = .actionRequired
             return
@@ -208,16 +176,29 @@ final class InstallationStore {
         }
     }
 
-    func openAutomationSettings() {
-        AutomationDiagnostics.openAutomationSettings()
-    }
-
     func setKeepAwakeEnabled(_ enabled: Bool) async {
         guard !isBusy else { return }
         phase = .syncing
         do {
             try Self.writeKeepAwakeSetting(enabled)
             keepAwakeEnabled = enabled
+            if enabled {
+                watchdogError = nil
+                do {
+                    try await watchdog.enable()
+                } catch {
+                    watchdogError = error.localizedDescription
+                }
+                watchdogStatus = watchdog.status
+            } else {
+                do {
+                    try await watchdog.disable()
+                    watchdogError = nil
+                } catch {
+                    watchdogError = error.localizedDescription
+                }
+                watchdogStatus = watchdog.status
+            }
             await refreshDoctor()
         } catch {
             phase = .failed("Не удалось сохранить настройку keep-awake: \(error.localizedDescription)")
@@ -283,12 +264,26 @@ final class InstallationStore {
                     "Активная CLI (\(active)) не совпадает с payload этого приложения; откат watchdog отменён")
             }
             distributionMatchesBundle = true
-            try await watchdog.reconcileAfterAppUpdate()
-            watchdogStatus = watchdog.status
-            updatePhase()
         } catch {
             phase = .failed(error.localizedDescription)
+            return
         }
+
+        // The helper exists only for optional keep-awake cleanup. Register it
+        // just in time when that feature is enabled; otherwise retire any
+        // legacy/app service left by an older installation.
+        watchdogError = nil
+        do {
+            if keepAwakeEnabled {
+                try await watchdog.reconcileAfterAppUpdate()
+            } else {
+                try await watchdog.disable()
+            }
+        } catch {
+            watchdogError = error.localizedDescription
+        }
+        watchdogStatus = watchdog.status
+        updatePhase()
     }
 
     private func refreshDoctor() async {
@@ -319,10 +314,10 @@ final class InstallationStore {
         }
         guard let report else { phase = .actionRequired; return }
         let baseHealthy = report.checks
-            .filter { $0.required && $0.id != "watchdog" }
+            .filter { $0.required && $0.id != "watchdog" && $0.id != "cli_path" }
             .allSatisfy { $0.status == .ok }
-        phase = baseHealthy && watchdogStatus == .enabled && automationStatus == .allowed
-            ? .ready : .actionRequired
+        let backgroundHealthy = !keepAwakeEnabled || watchdogStatus == .enabled
+        phase = baseHealthy && backgroundHealthy ? .ready : .actionRequired
     }
 
     private static var configURL: URL {

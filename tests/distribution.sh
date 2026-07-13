@@ -133,6 +133,13 @@ doctor_json="$TMP_ROOT/doctor.json"
 PATH="/usr/bin:/bin" "$DETACH_INSTALL_BIN_DIR/detach" doctor --json >"$doctor_json" || true
 plutil -extract schema raw -o - "$doctor_json" | grep -qx 1
 plutil -extract checks.1.id raw -o - "$doctor_json" | grep -qx cli
+watchdog_index="$(plutil -p "$doctor_json" | awk '
+  $1 ~ /^[0-9]+$/ && $2 == "=>" && $3 == "{" { idx = $1 }
+  /"id" => "watchdog"/ { print idx; exit }
+')"
+[ -n "$watchdog_index" ]
+plutil -extract "checks.$watchdog_index.required" raw -o - "$doctor_json" | grep -qx false
+plutil -extract "checks.$watchdog_index.status" raw -o - "$doctor_json" | grep -qx warning
 
 # Uninstall is all-or-nothing while a managed pane is alive.
 export FAKE_TMUX_BUSY=1

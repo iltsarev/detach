@@ -9,6 +9,7 @@ struct SessionDetailView: View {
 
     @State private var logPoller: LogPoller?
     @State private var actionError: String?
+    @State private var terminalFailure: TerminalLaunchFailure?
     @State private var confirmDelete = false
 
     var body: some View {
@@ -39,6 +40,16 @@ struct SessionDetailView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(actionError ?? "")
+        }
+        .alert("Не удалось открыть Terminal", isPresented: .init(
+            get: { terminalFailure != nil },
+            set: { if !$0 { terminalFailure = nil } })) {
+            if terminalFailure?.requiresAutomationPermission == true {
+                Button("Открыть настройки") { TerminalLauncher.openAutomationSettings() }
+            }
+            Button("Закрыть", role: .cancel) {}
+        } message: {
+            Text(terminalFailure?.message ?? "")
         }
         .confirmationDialog("Удалить сессию «\(session.displayTitle)»?",
                             isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -166,13 +177,12 @@ struct SessionDetailView: View {
         }
     }
 
+    @MainActor
     private func openInTerminal(_ command: String) {
-        // NSAppleScript can block (first-run Automation prompt, Terminal launch) —
-        // keep it off the main actor.
-        Task.detached {
-            if let message = TerminalLauncher.open(command: command) {
-                await MainActor.run { actionError = message }
-            }
+        // NSAppleScript is main-thread-only. Invoke it just in time from the
+        // explicit user action, including the first Automation prompt.
+        if let failure = TerminalLauncher.open(command: command) {
+            terminalFailure = failure
         }
     }
 

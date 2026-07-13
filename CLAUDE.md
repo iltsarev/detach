@@ -6,6 +6,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A macOS harness that runs Codex or Claude Code detached inside a persistent tmux session, keeps the MacBook awake via Amphetamine Closed-Display Mode, and checkpoints provider session state every 5 minutes so an abrupt shutdown loses at most ~5 minutes of work. Pure Bash — no build, lint, or dependency step. README.md covers user-facing usage, install, recovery semantics, and provider policy; keep it in sync when behavior changes.
 
+## Public repository and local-only material
+
+This repository, its full pushed Git history, GitHub releases, and published
+artifacts are public. Treat every tracked file, commit/tag message, issue or PR,
+build log, manifest, and release asset as internet-visible. Public guidance,
+including this file, must not contain private context.
+
+- Never commit or publish local plans, backlogs, working specs, credentials,
+  signing material, account data, conversation/session state, machine-specific
+  absolute user paths, or private organization/client/project names.
+- Keep local planning material in the ignored `docs/backlog.md` and
+  `docs/superpowers/` paths. Keep secrets outside the repository, using the
+  Keychain or environment variables as appropriate. Never bypass these guards
+  with `git add -f`.
+- `.gitignore` is a safety net, not permission to publish every other file.
+  Before each commit and release, inspect the staged diff, tracked-file list,
+  artifact contents, and metadata for private or machine-specific data.
+- If private data appears in a commit or artifact, stop before pushing or
+  publishing and remove it from the history or artifact. Deleting it in a
+  later public commit is not sufficient.
+
 ## Commands
 
 - `tests/run.sh` — integration test for the Codex adapter. Hermetic: fake provider binary (`tests/fake-codex`), private tmux server (own `-L` socket and `TMUX_TMPDIR`), temp state roots, Amphetamine disabled.
@@ -79,12 +100,21 @@ Reference-counted lease files under `~/.local/state/codex-detached-amphetamine` 
 A SwiftPM package: `DetachKit` (tested parsing/process/distribution clients),
 `DetachApp` (SwiftUI, macOS 14+), and the small `DetachWatchdog` helper. The app
 bundles `DetachCLI`, syncs it on bootstrap, renders `doctor --json`, and
-registers a static bundled LaunchAgent via `SMAppService`. The helper resolves
+registers its static bundled LaunchAgent via `SMAppService` only when optional
+keep-awake is enabled. The helper resolves
 the stable per-user CLI at runtime and writes a heartbeat; never put user paths
-into the signed plist. Distribution bootstrap is allowed only from
+into the signed plist. Its signed-service label `dev.tsarev.detach.watchdog`
+is intentionally distinct from the CLI-only legacy label
+`dev.tsarev.codex-detached-watchdog`; both definitions remain bundled so direct
+updates can unregister the old SMAppService, but new code never registers the
+old definition. Enable the new service before removing the old registration
+(or remove both when keep-awake is off). The standalone helper must retain its embedded
+`__TEXT,__info_plist`. Distribution bootstrap is allowed only from
 `/Applications`, not a DMG/App Translocation path.
 When helper/plist bytes change, await unregister completion before registering
-again. Session operations still consume only the public CLI surface. On
+again and use the bounded retry for macOS' transient SMAppService Code=1 race.
+Terminal Automation is requested just in time by the first terminal action and
+must not gate base onboarding. Session operations still consume only the public CLI surface. On
 partially invalid `list --json`, keep the last good list; keep `emit_list_json`
 and `Session` in sync.
 

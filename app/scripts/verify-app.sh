@@ -7,7 +7,8 @@ REPO_ROOT="$(cd -P "$APP_ROOT/.." && pwd)"
 APP="${DETACH_APP_PATH:-$APP_ROOT/build/Detach.app}"
 PAYLOAD="$APP/Contents/Resources/DetachCLI"
 INFO="$APP/Contents/Info.plist"
-AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist"
+AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.watchdog.plist"
+MIGRATION_AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
 REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
@@ -28,7 +29,7 @@ trap cleanup EXIT
 [[ "$VERIFY_PRODUCTION" = 0 || "$VERIFY_PRODUCTION" = 1 ]] || {
   printf 'DETACH_VERIFY_PRODUCTION must be 0 or 1\n' >&2; exit 1;
 }
-plutil -lint "$INFO" "$AGENT" >/dev/null
+plutil -lint "$INFO" "$AGENT" "$MIGRATION_AGENT" >/dev/null
 # `plutil -lint` only accepts property lists even though the other plutil
 # operations support JSON. Parse the payload manifest explicitly as JSON.
 plutil -p "$PAYLOAD/payload.json" >/dev/null
@@ -130,8 +131,40 @@ UNSAFE_RPATHS="$(otool -l "$APP/Contents/MacOS/Detach" | awk '
 }
 
 bundle_program="$(plutil -extract BundleProgram raw -o - "$AGENT")"
+[ "$bundle_program" = "Contents/MacOS/DetachWatchdog" ] || {
+  printf 'Unexpected watchdog BundleProgram: %s\n' "$bundle_program" >&2
+  exit 1
+}
 [ -x "$APP/$bundle_program" ] || { printf 'BundleProgram is missing: %s\n' "$bundle_program" >&2; exit 1; }
 ! plutil -p "$AGENT" | grep -F '/Users/' >/dev/null
+[ "$(plutil -extract Label raw -o - "$AGENT")" = "dev.tsarev.detach.watchdog" ] || {
+  printf 'Unexpected bundled watchdog label\n' >&2
+  exit 1
+}
+[ "$(plutil -extract Label raw -o - "$MIGRATION_AGENT")" = \
+    "dev.tsarev.codex-detached-watchdog" ] || {
+  printf 'Unexpected migration watchdog label\n' >&2
+  exit 1
+}
+[ "$(plutil -extract BundleProgram raw -o - "$MIGRATION_AGENT")" = "$bundle_program" ] || {
+  printf 'Migration watchdog points to a different helper\n' >&2
+  exit 1
+}
+[ "$(plutil -extract Label raw -o - "$PAYLOAD/dev.tsarev.codex-detached-watchdog.plist")" = \
+    "dev.tsarev.codex-detached-watchdog" ] || {
+  printf 'Legacy CLI-only watchdog label changed unexpectedly\n' >&2
+  exit 1
+}
+[ ! -e "$PAYLOAD/dev.tsarev.detach.watchdog.plist" ] || {
+  printf 'Signed-service watchdog leaked into the CLI-only payload\n' >&2
+  exit 1
+}
+for own_binary in "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"; do
+  if LC_ALL=C grep -a -F '/Users/' "$own_binary" >/dev/null; then
+    printf 'Local build path leaked into %s\n' "$(basename "$own_binary")" >&2
+    exit 1
+  fi
+done
 
 bundle_executable() {
   local bundle="$1"
@@ -182,6 +215,32 @@ grep -F 'Identifier=dev.tsarev.detach' <<<"$APP_SIGNATURE" >/dev/null || {
 }
 
 ENTITLEMENTS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/detach-entitlements.XXXXXX")"
+for arch in $(lipo -archs "$APP/Contents/MacOS/DetachWatchdog"); do
+  otool -arch "$arch" -l "$APP/Contents/MacOS/DetachWatchdog" | awk '
+    $1 == "sectname" && $2 == "__info_plist" { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' || {
+    printf 'Watchdog has no embedded Info.plist for %s\n' "$arch" >&2
+    exit 1
+  }
+  HELPER_STRINGS="$(strings -arch "$arch" "$APP/Contents/MacOS/DetachWatchdog")"
+  grep -F '<string>dev.tsarev.detach.watchdog</string>' <<<"$HELPER_STRINGS" >/dev/null || {
+    printf 'Unexpected watchdog embedded bundle identifier for %s\n' "$arch" >&2
+    exit 1
+  }
+  grep -F '<string>DetachWatchdog</string>' <<<"$HELPER_STRINGS" >/dev/null || {
+    printf 'Unexpected watchdog embedded executable for %s\n' "$arch" >&2
+    exit 1
+  }
+  grep -F "<string>$EXPECTED_VERSION</string>" <<<"$HELPER_STRINGS" >/dev/null || {
+    printf 'Watchdog embedded version mismatch for %s\n' "$arch" >&2
+    exit 1
+  }
+  grep -F "<string>$INFO_BUILD</string>" <<<"$HELPER_STRINGS" >/dev/null || {
+    printf 'Watchdog embedded build mismatch for %s\n' "$arch" >&2
+    exit 1
+  }
+done
 codesign -d --entitlements "$ENTITLEMENTS_DIR/app.plist" --xml "$APP" >/dev/null 2>&1
 codesign -d --entitlements "$ENTITLEMENTS_DIR/helper.plist" --xml \
   "$APP/Contents/MacOS/DetachWatchdog" >/dev/null 2>&1

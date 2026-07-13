@@ -4,44 +4,154 @@ import DetachKit
 
 struct OnboardingView: View {
     let store: InstallationStore
+    @State private var terminalFailure: TerminalLaunchFailure?
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 22) {
                 header
-                if let report = store.report {
-                    checks(report.checks.filter { $0.section == .base && $0.id != "watchdog" }
-                        + store.appContextChecks)
-                    if report.checks.contains(where: { $0.section == .keepAwake }) {
-                        DisclosureGroup("Keep-awake (опционально)") {
-                            checks(report.checks.filter { $0.section == .keepAwake })
-                                .padding(.top, 8)
-                        }
-                    }
-                } else {
-                    checks(store.appContextChecks)
-                }
+                primaryStatus
                 actions
-                if let message = failureMessage {
-                    Text(message).font(.callout).foregroundStyle(.red)
-                        .textSelection(.enabled)
-                }
+                technicalDetails
             }
-            .frame(maxWidth: 620, alignment: .leading)
-            .padding(30)
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(36)
+        }
+        .alert("Не удалось открыть Terminal", isPresented: .init(
+            get: { terminalFailure != nil },
+            set: { if !$0 { terminalFailure = nil } })) {
+            if terminalFailure?.requiresAutomationPermission == true {
+                Button("Открыть настройки") { TerminalLauncher.openAutomationSettings() }
+            }
+            Button("Закрыть", role: .cancel) {}
+        } message: {
+            Text(terminalFailure?.message ?? "")
         }
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "shippingbox.and.arrow.backward")
-                .font(.system(size: 40)).foregroundStyle(Brand.gradient)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Настройка Detach").font(.title2.weight(.bold))
-                Text("CLI устанавливается из приложения атомарно; живые сессии сохраняют свою версию.")
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 16) {
+            Image(systemName: headerIcon)
+                .font(.system(size: 42))
+                .foregroundStyle(Brand.gradient)
+                .frame(width: 52)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(headerTitle).font(.title2.weight(.bold))
+                Text(headerSubtitle).foregroundStyle(.secondary)
             }
         }
+    }
+
+    @ViewBuilder
+    private var primaryStatus: some View {
+        if store.isBusy {
+            HStack(spacing: 12) {
+                ProgressView().controlSize(.small)
+                Text("Устанавливаем командные инструменты и проверяем компоненты…")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        } else if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+            Label {
+                Text("Это нужно только для надёжной работы keep-awake при закрытой крышке.")
+            } icon: {
+                Image(systemName: "gearshape.2")
+            }
+            .foregroundStyle(.secondary)
+        } else if case .installTools(let tools) = blocker {
+            Label("Не хватает: \(tools.joined(separator: ", ")). Detach может открыть готовую команду установки.",
+                  systemImage: "terminal")
+                .foregroundStyle(.secondary)
+        } else if blocker == .chooseProvider {
+            Label("Нужен хотя бы один установленный и авторизованный AI-клиент.",
+                  systemImage: "person.crop.circle.badge.questionmark")
+                .foregroundStyle(.secondary)
+        } else if case .other(let summary) = blocker {
+            Label(summary, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+        } else if case .failed = store.phase {
+            Label("Установленная версия CLI останется рабочей — повторная попытка безопасна.",
+                  systemImage: "arrow.clockwise.circle")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        if !store.isBusy {
+            if !store.isStableApplicationLocation {
+                Button("Открыть Программы") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Brand.indigo)
+            } else if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+                Button("Открыть системные настройки") { store.openLoginItemsSettings() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Brand.indigo)
+            } else {
+                switch blocker {
+                case .installTools(let tools):
+                    if let brewPath {
+                        Button("Установить \(tools.joined(separator: " и "))") {
+                            openInTerminal(
+                                "\(shellQuoted(brewPath)) install "
+                                    + tools.map(shellQuoted).joined(separator: " "))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.indigo)
+                    } else {
+                        Button("Установить Homebrew") {
+                            openWebPage("https://brew.sh")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.indigo)
+                    }
+                case .chooseProvider:
+                    Menu("Установить AI-клиент") {
+                        Button("Codex CLI") {
+                            openWebPage("https://github.com/openai/codex#quickstart")
+                        }
+                        Button("Claude Code") {
+                            openWebPage("https://docs.anthropic.com/en/docs/claude-code/getting-started")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Brand.indigo)
+                case .other:
+                    Button("Перепроверить") { Task { await store.refreshContext() } }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.indigo)
+                case .repairInstallation, nil:
+                    Button(buttonTitle) { Task { await store.repair() } }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.indigo)
+                }
+            }
+        }
+    }
+
+    private var technicalDetails: some View {
+        DisclosureGroup("Технические детали") {
+            VStack(alignment: .leading, spacing: 12) {
+                checks(allChecks)
+                if let error = technicalError {
+                    Text(error)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(.top, 10)
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    private var allChecks: [DiagnosticCheck] {
+        let cliChecks = store.report?.checks.filter {
+            $0.section == .base && $0.id != "watchdog"
+        } ?? []
+        return cliChecks + store.appContextChecks
     }
 
     private func checks(_ values: [DiagnosticCheck]) -> some View {
@@ -52,8 +162,8 @@ struct OnboardingView: View {
                         .foregroundStyle(color(for: check.status))
                         .frame(width: 18)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(check.label).fontWeight(.medium)
-                        Text(check.summary).font(.caption).foregroundStyle(.secondary)
+                        Text(check.label).fontWeight(.medium).foregroundStyle(.primary)
+                        Text(check.summary).font(.caption)
                         if let path = check.path, path.hasPrefix("/") {
                             Text(path).font(.caption2.monospaced()).foregroundStyle(.tertiary)
                                 .textSelection(.enabled)
@@ -70,50 +180,75 @@ struct OnboardingView: View {
         }
     }
 
-    @ViewBuilder
-    private var actions: some View {
-        HStack(spacing: 10) {
-            switch store.phase {
-            case .syncing:
-                ProgressView().controlSize(.small)
-                Text("Проверяем установку…").foregroundStyle(.secondary)
-            default:
-                if !store.isStableApplicationLocation {
-                    Button("Открыть /Applications") {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
-                    }
-                    .buttonStyle(.borderedProminent).tint(Brand.indigo)
-                } else {
-                    if store.watchdogStatus == .notRegistered && store.distributionMatchesBundle {
-                        Button("Включить watchdog") { Task { await store.enableWatchdog() } }
-                            .buttonStyle(.borderedProminent).tint(Brand.indigo)
-                    }
-                    if store.watchdogStatus == .requiresApproval {
-                        Button("Открыть Login Items") { store.openLoginItemsSettings() }
-                            .buttonStyle(.borderedProminent).tint(Brand.indigo)
-                        Button("Перепроверить") { Task { await store.refreshContext() } }
-                    }
-                    switch store.automationStatus {
-                    case .notChecked:
-                        Button("Проверить Terminal") {
-                            Task { await store.checkTerminalAutomation() }
-                        }
-                    case .denied:
-                        Button("Открыть Automation Settings") { store.openAutomationSettings() }
-                        Button("Перепроверить Terminal") {
-                            Task { await store.refreshContext() }
-                        }
-                    case .allowed:
-                        EmptyView()
-                    }
-                    Button("Repair") { Task { await store.repair() } }
-                }
+    private var headerTitle: String {
+        if store.isBusy { return "Настраиваем Detach…" }
+        if !store.isStableApplicationLocation { return "Переместите Detach в Программы" }
+        if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+            return "Разрешите фоновую работу"
+        }
+        if case .installTools = blocker { return "Установите необходимые компоненты" }
+        if blocker == .chooseProvider { return "Подключите Codex или Claude" }
+        if case .failed = store.phase { return "Не получилось завершить настройку" }
+        return "Завершите настройку"
+    }
+
+    private var headerSubtitle: String {
+        if store.isBusy { return "Обычно это занимает несколько секунд." }
+        if !store.isStableApplicationLocation {
+            return "Detach должен находиться в /Applications, чтобы обновляться и работать в фоне."
+        }
+        if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+            return "macOS просит один раз подтвердить работу Detach в фоне."
+        }
+        if case .installTools = blocker {
+            return "tmux держит сессии запущенными, а jq помогает безопасно сохранять их состояние."
+        }
+        if blocker == .chooseProvider {
+            return "Выберите AI-клиент, установите его по официальной инструкции и вернитесь в Detach."
+        }
+        return "Нажмите одну кнопку — Detach сам проверит и восстановит установку."
+    }
+
+    private var headerIcon: String {
+        if store.isBusy { return "shippingbox.and.arrow.backward" }
+        if !store.isStableApplicationLocation { return "folder.badge.plus" }
+        if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
+            return "person.badge.key"
+        }
+        return "wrench.and.screwdriver"
+    }
+
+    private var buttonTitle: String {
+        if case .failed = store.phase { return "Повторить настройку" }
+        return "Настроить Detach"
+    }
+
+    private var blocker: SetupBlocker? {
+        SetupGuidance.blocker(
+            distributionMatchesBundle: store.distributionMatchesBundle,
+            checks: store.report?.checks ?? [])
+    }
+
+    private var brewPath: String? {
+        ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private func openInTerminal(_ command: String) {
+        Task { @MainActor in
+            if let failure = TerminalLauncher.open(command: command) {
+                terminalFailure = failure
             }
-            SettingsLink { Text("Настройки") }
         }
     }
 
-    private var failureMessage: String? {
+    private func openWebPage(_ value: String) {
+        guard let url = URL(string: value) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private var technicalError: String? {
+        if let watchdogError = store.watchdogError { return watchdogError }
         if case .failed(let message) = store.phase { return message }
         return nil
     }
@@ -139,13 +274,13 @@ struct OnboardingView: View {
     private func remediation(for id: String) -> String? {
         switch id {
         case "tmux", "jq":
-            "Установи зависимости в Terminal: brew install tmux jq"
+            "Установите зависимости в Terminal: brew install tmux jq"
         case "provider":
-            "Установи и авторизуй Codex CLI или Claude CLI, затем нажми Repair."
+            "Установите и авторизуйте Codex CLI или Claude CLI, затем повторите настройку."
         case "cli_path":
-            "Добавь ~/.local/bin в PATH интерактивного shell."
+            "Добавьте ~/.local/bin в PATH интерактивного shell."
         case "app_location":
-            "Запуск из DMG/App Translocation ненадёжен для Login Item."
+            "Запуск из DMG или временной копии ненадёжен."
         default:
             nil
         }

@@ -54,4 +54,26 @@ final class TerminalCommandTests: XCTestCase {
         XCTAssertTrue(script.contains("tell application \"Terminal\""))
         XCTAssertTrue(script.contains("activate"))
     }
+
+    func testTerminalAutomationDenialGetsTypedRecovery() {
+        let failure = TerminalLauncher.failure(from: [
+            NSAppleScript.errorNumber: NSNumber(value: errAEEventNotPermitted),
+            NSAppleScript.errorMessage: "Not authorized",
+        ])
+
+        XCTAssertTrue(failure.requiresAutomationPermission)
+        XCTAssertEqual(
+            failure.message,
+            "Разрешите Detach управлять Terminal в Системных настройках.")
+    }
+
+    func testOtherTerminalFailureKeepsSystemMessage() {
+        let failure = TerminalLauncher.failure(from: [
+            NSAppleScript.errorNumber: NSNumber(value: -1),
+            NSAppleScript.errorMessage: "Terminal is unavailable",
+        ])
+
+        XCTAssertFalse(failure.requiresAutomationPermission)
+        XCTAssertEqual(failure.message, "Terminal is unavailable")
+    }
 }

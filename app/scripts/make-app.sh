@@ -60,6 +60,15 @@ if [ "$RELEASE_BUILD" = 1 ] && [ "$IDENTITY" = "-" ]; then
   exit 1
 fi
 
+# SwiftPM's standalone launch-agent executable needs an embedded Info.plist.
+# Use a versioned generated path so a version/build change invalidates the
+# linker command instead of accidentally reusing a cached helper binary.
+WATCHDOG_INFO_PLIST="$APP_ROOT/.build/DetachWatchdog-Info-$VERSION-$BUILD_VERSION.plist"
+cp "$APP_ROOT/Resources/DetachWatchdog-Info.plist" "$WATCHDOG_INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$WATCHDOG_INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$WATCHDOG_INFO_PLIST"
+export DETACH_WATCHDOG_INFO_PLIST="$WATCHDOG_INFO_PLIST"
+
 find_sparkle_framework() {
   local scratch="$1"
   local bin_path="$2"
@@ -188,6 +197,8 @@ ensure_app_rpath "$APP/Contents/MacOS/Detach"
 
 cp "$APP_ROOT/Resources/Detach.icns" "$APP/Contents/Resources/Detach.icns"
 cp "$APP_ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$APP_ROOT/Resources/dev.tsarev.detach.watchdog.plist" \
+  "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist"
 cp "$APP_ROOT/Resources/dev.tsarev.codex-detached-watchdog.plist" \
   "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
@@ -221,7 +232,13 @@ printf '{"schema":1,"version":"%s","build":"%s","payload_id":"%s","files":{"deta
   >"$PAYLOAD/payload.json"
 
 chmod 0755 "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"
-plutil -lint "$APP/Contents/Info.plist" "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
+# SwiftPM leaves source and object-file paths in the Mach-O symbol table even
+# for release builds. Strip debug symbols before signing so public artifacts
+# do not disclose the local checkout or user name.
+/usr/bin/strip -S "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"
+plutil -lint "$APP/Contents/Info.plist" \
+  "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist" \
+  "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist" >/dev/null
 
 codesign_args=(--force --options runtime --sign "$IDENTITY")
 if [ "$IDENTITY" != "-" ]; then
