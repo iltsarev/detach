@@ -15,13 +15,17 @@ A macOS harness that runs Codex or Claude Code detached inside a persistent tmux
 - `CODEX_DETACHED_TEST_KEEP=1 tests/run.sh` — preserve the temp state and tmux server after a run for inspection.
 - `tests/amphetamine-smoke.sh` — optional system smoke test that enables REAL Amphetamine Closed-Display Mode and toggles real system sleep via Power Protect. Do not run it as routine verification.
 
-- `cd app && swift test` — unit tests for the Detach.app library (`DetachKit`).
+- `cd app && swift test` — unit tests for `DetachKit` and the app-side updater
+  error/fallback policy.
 - `app/scripts/make-app.sh` — build the universal `Detach.app` bundle (release
-  build, bundled CLI/helper, ad-hoc codesign by default) into `app/build/`.
+  build, bundled CLI/helper/Sparkle, ad-hoc codesign by default) into
+  `app/build/`.
 - `app/scripts/make-dmg.sh` — create a local DMG. `app/scripts/release.sh` is the
-  strict Developer ID + app/DMG notarization pipeline and requires credentials.
+  strict Developer ID + app/DMG notarization + Sparkle appcast pipeline. It
+  requires credentials, a matching Ed25519 key, and a clean tagged commit.
 - `app/scripts/publish-release.sh` — explicit GitHub Release publication; it
-  verifies the checksum and refuses to replace an existing tag's assets.
+  verifies provenance, appcast destinations and checksums in a draft before
+  publishing, and refuses to replace an existing tag's assets.
 
 There is no separate linter; `run.sh` / `run-claude.sh` are the verification path for any change to `bin/`, `swift test` for `app/`.
 
@@ -83,6 +87,16 @@ When helper/plist bytes change, await unregister completion before registering
 again. Session operations still consume only the public CLI surface. On
 partially invalid `list --json`, keep the last good list; keep `emit_list_json`
 and `Session` in sync.
+
+Sparkle 2 is pinned in `Package.resolved`, embedded under `Contents/Frameworks`
+with its symlink layout intact, and signed inside-out before the outer app.
+Ad-hoc development builds alone use
+`com.apple.security.cs.disable-library-validation`; it must never appear in a
+Developer ID build. `UpdaterService` starts only when the packaged app is in
+`/Applications` and has a valid HTTPS `SUFeedURL` plus 32-byte Ed25519 public
+key. User update preferences belong to `SPUUpdater`/NSUserDefaults, not a
+parallel `AppStorage` value. A Sparkle release updates only `.app`; bootstrap
+then activates its immutable CLI payload without changing live sessions.
 
 ### Backward-compatibility constraints
 

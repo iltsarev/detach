@@ -243,23 +243,88 @@ ephemeral path. Build a local DMG with:
 app/scripts/make-dmg.sh
 ```
 
-Production release is fail-closed and requires a Developer ID identity plus a
-`notarytool` keychain profile:
+The app embeds the pinned Sparkle 2 framework. Development bundles omit update
+configuration and keep the updater disabled; production bundles require an
+HTTPS appcast, a matching Ed25519 public key, and a manual-download URL.
+Generate the permanent Sparkle key once (keep and back up the private key; do
+not commit it):
 
 ```sh
-DETACH_BUILD_VERSION=2 \
+swift package --package-path app resolve
+app/.build/artifacts/sparkle/Sparkle/bin/generate_keys \
+  --account dev.tsarev.detach
+```
+
+Keep release credentials in the macOS Keychain rather than in the repository
+or shell environment. Authenticate GitHub once with `gh auth login`. In Xcode,
+open **Settings → Accounts → Manage Certificates…** and create or install a
+**Developer ID Application** certificate, then store notarization credentials
+under the profile name used by the release script:
+
+```sh
+gh auth login --hostname github.com --git-protocol https --web --clipboard
+security find-identity -v -p codesigning
+xcrun notarytool store-credentials detach-notary \
+  --apple-id 'developer@example.com' \
+  --team-id 'TEAMID'
+```
+
+`notarytool` securely prompts for an app-specific Apple ID password when
+`--password` is omitted. Never pass the GitHub token, Apple password,
+certificate private key, or Sparkle private key to the release command.
+
+Production release is fail-closed and requires a clean worktree whose local
+`v<VERSION>` tag points to `HEAD`, a Developer ID identity, a `notarytool`
+keychain profile, the Sparkle key, and a GitHub downloads repository. For the
+first release only, use `DETACH_INITIAL_RELEASE=1`; later releases must fetch
+the published appcast and use a greater `CFBundleVersion`:
+
+```sh
+DETACH_BUILD_VERSION=3 \
+DETACH_INITIAL_RELEASE=1 \
 DETACH_CODESIGN_IDENTITY='Developer ID Application: …' \
 DETACH_NOTARY_PROFILE=detach-notary \
+DETACH_SPARKLE_KEY_ACCOUNT=dev.tsarev.detach \
+DETACH_SPARKLE_PUBLIC_ED_KEY='<generate_keys output>' \
+DETACH_GITHUB_REPOSITORY='owner/public-downloads' \
 app/scripts/release.sh
 ```
 
-After notarization succeeds, publication is a separate fail-closed step so a
-rerun cannot silently replace assets of an existing release:
+This builds and signs nested code inside-out, notarizes and staples the app and
+DMG, creates an EdDSA-signed update ZIP/appcast, records artifact hashes and
+the source commit in `release-manifest.json`, and retains notarization evidence
+under `app/build/`. A private key file exported for CI can be supplied with
+`DETACH_SPARKLE_ED_KEY_FILE`; the script verifies that it matches the public
+key embedded in the app.
+
+Publication is separate and fail-closed. It verifies the manifest, exact
+appcast destination, checksums, local tag/commit, and all remote draft assets
+before making a new GitHub Release public; it never replaces an existing tag.
+Push the matching tag when releases live in the source repository. For a
+separate public downloads repository whose tag does not exist yet, explicitly
+name the branch or commit from which GitHub may create that destination tag:
 
 ```sh
 DETACH_GITHUB_REPOSITORY='owner/public-downloads' \
+DETACH_SEPARATE_RELEASE_REPOSITORY=1 \
+DETACH_GITHUB_RELEASE_TARGET='main' \
 app/scripts/publish-release.sh
 ```
+
+Separate-repository behavior is never inferred: without that explicit opt-in,
+the remote tag/target must resolve to the source commit recorded in the
+manifest. Without an existing remote tag or `DETACH_GITHUB_RELEASE_TARGET`,
+publication also stops instead of silently tagging the remote default branch.
+The published release is explicitly marked and then verified as `Latest`,
+because the stable Sparkle feed uses GitHub's
+`/releases/latest/download/appcast.xml` endpoint.
+
+Installed production builds expose “Проверить наличие обновлений…” in the app
+menu and a background-check toggle in Settings. Sparkle updates only the app;
+on relaunch, the immutable distribution sync activates the bundled CLI and
+watchdog for new sessions while live sessions keep their original code. A
+build running outside `/Applications`, or an update-cycle failure, offers the
+manual download page instead of attempting an unsafe update.
 
 The app synchronizes its bundled CLI before polling sessions and uses
 `detach doctor --json` for install/dependency diagnostics. Swift adds only

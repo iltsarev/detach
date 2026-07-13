@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     let installation: InstallationStore
+    @ObservedObject var updater: UpdaterService
     @AppStorage("detachPath") private var detachPath = AppSettings.defaultDetachPath
     @AppStorage("pollInterval") private var pollInterval = 2.0
     @State private var confirmUninstall = false
@@ -40,6 +41,32 @@ struct SettingsView: View {
                     .disabled(installation.isBusy)
                 Text("Опционально. Без этой настройки Detach продолжает использовать tmux, чекпойнты и caffeinate при открытой крышке.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Обновления") {
+                if updater.isAvailable {
+                    Toggle("Автоматически проверять обновления", isOn: Binding(
+                        get: { updater.automaticallyChecksForUpdates },
+                        set: { updater.setAutomaticallyChecksForUpdates($0) }))
+                    Text("Проверки выполняет Sparkle в фоне по собственному расписанию.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("Автообновления") {
+                        Text("Недоступны")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let reason = updater.unavailableReason {
+                        Text(reason)
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let errorMessage = updater.updateErrorMessage {
+                    Text(errorMessage)
+                        .font(.caption).foregroundStyle(.red)
+                }
+                if updater.shouldOfferManualDownload,
+                   let downloadURL = updater.manualDownloadURL {
+                    Link("Открыть страницу загрузки…", destination: downloadURL)
+                }
             }
         }
         .padding(20)

@@ -1,0 +1,169 @@
+import Combine
+import DetachKit
+import Foundation
+import Sparkle
+import SwiftUI
+
+@MainActor
+private final class UpdateCycleObserver: NSObject, SPUUpdaterDelegate {
+    var didFinishUpdateCycle: ((Error?) -> Void)?
+
+    func updater(
+        _ updater: SPUUpdater,
+        didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
+        error: Error?
+    ) {
+        didFinishUpdateCycle?(error)
+    }
+}
+
+@MainActor
+final class UpdaterService: ObservableObject {
+    enum Availability: Equatable {
+        case available
+        case unavailable(reason: String)
+    }
+
+    let availability: Availability
+    let updaterController: SPUStandardUpdaterController
+    let manualDownloadURL: URL?
+
+    @Published private(set) var canCheckForUpdates = false
+    @Published private(set) var automaticallyChecksForUpdates = false
+    @Published private(set) var updateErrorMessage: String?
+
+    private let updateCycleObserver: UpdateCycleObserver
+    private var cancellables: Set<AnyCancellable> = []
+
+    init() {
+        let bundle = Bundle.main
+        let payload = bundle.bundleURL
+            .appendingPathComponent("Contents/Resources/DetachCLI", isDirectory: true)
+        let isPackagedApplication = FileManager.default.fileExists(atPath: payload.path)
+        let configuration = UpdateConfiguration(
+            feedURLString: bundle.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+            publicEDKey: bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+            downloadURLString: bundle.object(forInfoDictionaryKey: "DetachDownloadURL") as? String,
+            applicationURL: bundle.bundleURL,
+            isPackagedApplication: isPackagedApplication)
+        manualDownloadURL = configuration.manualDownloadURL
+        availability = Self.availability(
+            for: configuration, isPackagedApplication: isPackagedApplication)
+        let updateCycleObserver = UpdateCycleObserver()
+        self.updateCycleObserver = updateCycleObserver
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: false,
+            updaterDelegate: updateCycleObserver,
+            userDriverDelegate: nil)
+
+        updateCycleObserver.didFinishUpdateCycle = { [weak self] error in
+            self?.recordUpdateCycleResult(error)
+        }
+
+        guard isAvailable else { return }
+
+        let updater = updaterController.updater
+        automaticallyChecksForUpdates = updater.automaticallyChecksForUpdates
+
+        updater.publisher(for: \.canCheckForUpdates)
+            .sink { [weak self] value in
+                self?.canCheckForUpdates = value
+            }
+            .store(in: &cancellables)
+
+        updater.publisher(for: \.automaticallyChecksForUpdates)
+            .sink { [weak self] value in
+                self?.automaticallyChecksForUpdates = value
+            }
+            .store(in: &cancellables)
+
+        // SPUStandardUpdaterController displays a developer-error alert when it
+        // starts with an invalid bundle configuration. We deliberately start it
+        // only after validating the two required release settings above.
+        updaterController.startUpdater()
+    }
+
+    var isAvailable: Bool {
+        availability == .available
+    }
+
+    var unavailableReason: String? {
+        guard case let .unavailable(reason) = availability else { return nil }
+        return reason
+    }
+
+    var shouldOfferManualDownload: Bool {
+        !isAvailable || updateErrorMessage != nil
+    }
+
+    func checkForUpdates() {
+        guard isAvailable, updaterController.updater.canCheckForUpdates else { return }
+        updateErrorMessage = nil
+        updaterController.checkForUpdates(nil)
+    }
+
+    func setAutomaticallyChecksForUpdates(_ enabled: Bool) {
+        guard isAvailable else { return }
+        updaterController.updater.automaticallyChecksForUpdates = enabled
+    }
+
+    private func recordUpdateCycleResult(_ error: Error?) {
+        updateErrorMessage = Self.fallbackMessage(for: error)
+    }
+
+    private static func availability(
+        for configuration: UpdateConfiguration,
+        isPackagedApplication: Bool
+    ) -> Availability {
+        guard !configuration.isAvailable else { return .available }
+        let problems = configuration.issues.map { issue in
+            switch issue {
+            case .unstableApplicationLocation:
+                return "приложение запущено не из /Applications"
+            case .invalidFeedURL:
+                return "не задан корректный HTTPS SUFeedURL"
+            case .invalidPublicKey:
+                return "не задан корректный SUPublicEDKey"
+            }
+        }
+        let developmentNote = isPackagedApplication
+            ? "" : " Для локальной разработки это нормально."
+        return .unavailable(
+            reason: "Автообновления недоступны: \(problems.joined(separator: ", ")).\(developmentNote)")
+    }
+
+    static func fallbackMessage(for error: Error?) -> String? {
+        guard let error else { return nil }
+
+        let nsError = error as NSError
+        // A normal "no update" result and explicit user cancellation are not
+        // failures that warrant sending the user to a manual download.
+        let nonActionableSparkleErrorCodes = [1001, 4007, 4008]
+        guard nsError.domain != SUSparkleErrorDomain
+                || !nonActionableSparkleErrorCodes.contains(nsError.code) else {
+            return nil
+        }
+        return "Sparkle не смог завершить обновление: \(nsError.localizedDescription)"
+    }
+
+}
+
+struct CheckForUpdatesCommand: View {
+    @ObservedObject var updater: UpdaterService
+
+    var body: some View {
+        Button("Проверить наличие обновлений…") {
+            updater.checkForUpdates()
+        }
+        .disabled(!updater.isAvailable || !updater.canCheckForUpdates)
+
+        if updater.shouldOfferManualDownload {
+            if let downloadURL = updater.manualDownloadURL {
+                Link("Открыть страницу загрузки…", destination: downloadURL)
+            } else {
+                Button("Открыть страницу загрузки…") {}
+                    .disabled(true)
+            }
+        }
+    }
+}

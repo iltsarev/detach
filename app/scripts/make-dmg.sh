@@ -32,6 +32,7 @@ if [ "$IDENTITY" != "-" ]; then
   codesign --force --timestamp --sign "$IDENTITY" "$OUTPUT"
   codesign --verify --verbose=2 "$OUTPUT"
 fi
+hdiutil verify "$OUTPUT"
 
 (
   cd -P "$(dirname "$OUTPUT")"

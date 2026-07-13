@@ -8,9 +8,15 @@ VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 BUILD_VERSION="${DETACH_BUILD_VERSION:-1}"
 ARCHS="${DETACH_BUILD_ARCHS:-universal}"
 IDENTITY="${DETACH_CODESIGN_IDENTITY:--}"
+RELEASE_BUILD="${DETACH_RELEASE_BUILD:-0}"
+SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
+SPARKLE_FEED_URL="${DETACH_SPARKLE_FEED_URL:-}"
+SPARKLE_PUBLIC_ED_KEY="${DETACH_SPARKLE_PUBLIC_ED_KEY:-}"
+DOWNLOAD_URL="${DETACH_DOWNLOAD_URL:-}"
 APP="$APP_ROOT/build/Detach.app"
 PAYLOAD="$APP/Contents/Resources/DetachCLI"
 LAUNCH_AGENTS="$APP/Contents/Library/LaunchAgents"
+FRAMEWORKS="$APP/Contents/Frameworks"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$APP_ROOT/.build/module-cache}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$APP_ROOT/.build/module-cache}"
 mkdir -p "$CLANG_MODULE_CACHE_PATH"
@@ -23,25 +29,126 @@ mkdir -p "$CLANG_MODULE_CACHE_PATH"
   printf 'DETACH_BUILD_VERSION must be a positive integer\n' >&2
   exit 1
 }
+[[ "$RELEASE_BUILD" = 0 || "$RELEASE_BUILD" = 1 ]] || {
+  printf 'DETACH_RELEASE_BUILD must be 0 or 1\n' >&2
+  exit 1
+}
+if [ -n "$SPARKLE_FEED_URL" ] || [ -n "$SPARKLE_PUBLIC_ED_KEY" ]; then
+  [[ "$SPARKLE_FEED_URL" =~ ^https://[^[:space:]]+$ ]] || {
+    printf 'DETACH_SPARKLE_FEED_URL must be a valid HTTPS URL\n' >&2
+    exit 1
+  }
+  [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] || {
+    printf 'DETACH_SPARKLE_PUBLIC_ED_KEY must be a base64 Ed25519 public key\n' >&2
+    exit 1
+  }
+elif [ "$RELEASE_BUILD" = 1 ]; then
+  printf 'A production build requires DETACH_SPARKLE_FEED_URL and DETACH_SPARKLE_PUBLIC_ED_KEY\n' >&2
+  exit 1
+fi
+if [ -n "$DOWNLOAD_URL" ]; then
+  [[ "$DOWNLOAD_URL" =~ ^https://[^[:space:]]+$ ]] || {
+    printf 'DETACH_DOWNLOAD_URL must be a valid HTTPS URL\n' >&2
+    exit 1
+  }
+elif [ "$RELEASE_BUILD" = 1 ]; then
+  printf 'A production build requires DETACH_DOWNLOAD_URL\n' >&2
+  exit 1
+fi
+if [ "$RELEASE_BUILD" = 1 ] && [ "$IDENTITY" = "-" ]; then
+  printf 'A production build cannot use ad-hoc code signing\n' >&2
+  exit 1
+fi
+
+find_sparkle_framework() {
+  local scratch="$1"
+  local bin_path="$2"
+  local candidate
+
+  if [ -d "$bin_path/Sparkle.framework" ]; then
+    printf '%s\n' "$bin_path/Sparkle.framework"
+    return
+  fi
+  while IFS= read -r candidate; do
+    [ -d "$candidate" ] || continue
+    printf '%s\n' "$candidate"
+    return
+  done < <(find "$scratch/artifacts" "$APP_ROOT/.build/artifacts" -type d \
+    -path '*/Sparkle.xcframework/macos-*/Sparkle.framework' 2>/dev/null | sort -u)
+  printf 'SwiftPM did not produce Sparkle.framework\n' >&2
+  exit 1
+}
+
+ensure_app_rpath() {
+  local binary="$1"
+  local rpath
+
+  if ! otool -l "$binary" | awk '
+      $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+      in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+  ' | grep -Fx '@executable_path/../Frameworks' >/dev/null; then
+    install_name_tool -add_rpath '@executable_path/../Frameworks' "$binary"
+  fi
+  # Command-line SwiftPM builds may retain an Xcode-toolchain rpath that is
+  # useful only on the build host. All shipped dependencies are either system
+  # libraries or inside Contents/Frameworks, so remove that accidental path.
+  while IFS= read -r rpath; do
+    case "$rpath" in
+      /Applications/Xcode*.app/*)
+        install_name_tool -delete_rpath "$rpath" "$binary"
+        ;;
+    esac
+  done < <(otool -l "$binary" | awk '
+      $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+      in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+    ' | sort -u)
+}
+
+sign_sparkle_inside_out() {
+  local framework="$1"
+  local current_version
+  local version_root
+
+  current_version="$(readlink "$framework/Versions/Current")"
+  version_root="$framework/Versions/$current_version"
+  [ -d "$version_root" ] || {
+    printf 'Broken Sparkle Versions/Current symlink\n' >&2
+    exit 1
+  }
+
+  codesign "${codesign_args[@]}" "$version_root/XPCServices/Installer.xpc"
+  codesign "${codesign_args[@]}" --preserve-metadata=entitlements \
+    "$version_root/XPCServices/Downloader.xpc"
+  codesign "${codesign_args[@]}" "$version_root/Autoupdate"
+  codesign "${codesign_args[@]}" "$version_root/Updater.app"
+  codesign "${codesign_args[@]}" "$framework"
+}
 
 build_arch() {
   local arch="$1"
-  local scratch="$APP_ROOT/.build/distribution/$arch"
+  # SwiftPM already keeps target triples in separate product directories.
+  # Sharing one scratch directory also shares the pinned Sparkle checkout and
+  # binary artifact, so a universal build does not fetch dependencies twice.
+  local scratch="$APP_ROOT/.build"
   local triple="$arch-apple-macosx14.0"
-  swift build --disable-sandbox --package-path "$APP_ROOT" -c release --triple "$triple" \
+  swift build --disable-sandbox --disable-automatic-resolution \
+    --package-path "$APP_ROOT" -c release --triple "$triple" \
     --scratch-path "$scratch"
-  BUILT_BIN_PATH="$(swift build --disable-sandbox --package-path "$APP_ROOT" -c release --triple "$triple" \
+  BUILT_BIN_PATH="$(swift build --disable-sandbox --disable-automatic-resolution \
+    --package-path "$APP_ROOT" -c release --triple "$triple" \
     --scratch-path "$scratch" --show-bin-path)"
+  BUILT_SPARKLE_FRAMEWORK="$(find_sparkle_framework "$scratch" "$BUILT_BIN_PATH")"
 }
 
 mkdir -p "$APP_ROOT/build"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$PAYLOAD" "$LAUNCH_AGENTS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$PAYLOAD" "$LAUNCH_AGENTS" "$FRAMEWORKS"
 
 case "$ARCHS" in
   universal)
     build_arch arm64
     arm_bin="$BUILT_BIN_PATH"
+    sparkle_framework="$BUILT_SPARKLE_FRAMEWORK"
     build_arch x86_64
     intel_bin="$BUILT_BIN_PATH"
     lipo -create "$arm_bin/DetachApp" "$intel_bin/DetachApp" \
@@ -50,10 +157,13 @@ case "$ARCHS" in
       -output "$APP/Contents/MacOS/DetachWatchdog"
     ;;
   native)
-    swift build --disable-sandbox --package-path "$APP_ROOT" -c release
-    native_bin="$(swift build --disable-sandbox --package-path "$APP_ROOT" -c release --show-bin-path)"
+    swift build --disable-sandbox --disable-automatic-resolution \
+      --package-path "$APP_ROOT" -c release
+    native_bin="$(swift build --disable-sandbox --disable-automatic-resolution \
+      --package-path "$APP_ROOT" -c release --show-bin-path)"
     cp "$native_bin/DetachApp" "$APP/Contents/MacOS/Detach"
     cp "$native_bin/DetachWatchdog" "$APP/Contents/MacOS/DetachWatchdog"
+    sparkle_framework="$(find_sparkle_framework "$APP_ROOT/.build" "$native_bin")"
     ;;
   *)
     printf 'DETACH_BUILD_ARCHS must be universal or native\n' >&2
@@ -61,12 +171,34 @@ case "$ARCHS" in
     ;;
 esac
 
+framework_version="$(plutil -extract CFBundleShortVersionString raw -o - "$sparkle_framework/Resources/Info.plist")"
+[ "$framework_version" = "$SPARKLE_VERSION" ] || {
+  printf 'Expected Sparkle %s, found %s\n' "$SPARKLE_VERSION" "$framework_version" >&2
+  exit 1
+}
+# Sparkle.framework is versioned and relies on its symlink layout. `ditto`
+# preserves that layout while copying the SwiftPM binary artifact.
+ditto "$sparkle_framework" "$FRAMEWORKS/Sparkle.framework"
+[ -L "$FRAMEWORKS/Sparkle.framework/Versions/Current" ] && \
+  [ -L "$FRAMEWORKS/Sparkle.framework/Sparkle" ] || {
+    printf 'Sparkle framework symlinks were not preserved\n' >&2
+    exit 1
+  }
+ensure_app_rpath "$APP/Contents/MacOS/Detach"
+
 cp "$APP_ROOT/Resources/Detach.icns" "$APP/Contents/Resources/Detach.icns"
 cp "$APP_ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$APP_ROOT/Resources/dev.tsarev.codex-detached-watchdog.plist" \
   "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$APP/Contents/Info.plist"
+if [ -n "$SPARKLE_FEED_URL" ]; then
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $SPARKLE_FEED_URL" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$APP/Contents/Info.plist"
+fi
+if [ -n "$DOWNLOAD_URL" ]; then
+  /usr/libexec/PlistBuddy -c "Add :DetachDownloadURL string $DOWNLOAD_URL" "$APP/Contents/Info.plist"
+fi
 
 install -m 0755 "$REPO_ROOT/bin/detach" "$PAYLOAD/detach"
 install -m 0755 "$REPO_ROOT/bin/detach-core" "$PAYLOAD/detach-core"
@@ -95,13 +227,21 @@ codesign_args=(--force --options runtime --sign "$IDENTITY")
 if [ "$IDENTITY" != "-" ]; then
   codesign_args+=(--timestamp)
 fi
+sign_sparkle_inside_out "$FRAMEWORKS/Sparkle.framework"
 codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.watchdog \
   --entitlements "$APP_ROOT/Resources/Detach.entitlements" \
   "$APP/Contents/MacOS/DetachWatchdog"
-codesign "${codesign_args[@]}" --entitlements "$APP_ROOT/Resources/Detach.entitlements" "$APP"
+app_entitlements="$APP_ROOT/Resources/Detach.entitlements"
+if [ "$IDENTITY" = "-" ]; then
+  app_entitlements="$APP_ROOT/Resources/DetachDevelopment.entitlements"
+fi
+codesign "${codesign_args[@]}" --entitlements "$app_entitlements" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
 DETACH_APP_PATH="$APP" DETACH_VERSION="$VERSION" \
+  DETACH_SPARKLE_VERSION="$SPARKLE_VERSION" \
+  DETACH_REQUIRE_SPARKLE_CONFIG="$RELEASE_BUILD" \
+  DETACH_VERIFY_PRODUCTION="$RELEASE_BUILD" \
   DETACH_VERIFY_UNIVERSAL="$([ "$ARCHS" = universal ] && printf 1 || printf 0)" \
   "$APP_ROOT/scripts/verify-app.sh"
 

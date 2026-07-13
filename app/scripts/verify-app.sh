@@ -9,6 +9,11 @@ PAYLOAD="$APP/Contents/Resources/DetachCLI"
 INFO="$APP/Contents/Info.plist"
 AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
+SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
+REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
+VERIFY_PRODUCTION="${DETACH_VERIFY_PRODUCTION:-0}"
+FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+FRAMEWORK_VERSION_ROOT="$FRAMEWORK/Versions/B"
 ENTITLEMENTS_DIR=""
 
 cleanup() {
@@ -17,6 +22,12 @@ cleanup() {
 trap cleanup EXIT
 
 [ -d "$APP" ] || { printf 'Missing app bundle: %s\n' "$APP" >&2; exit 1; }
+[[ "$REQUIRE_SPARKLE_CONFIG" = 0 || "$REQUIRE_SPARKLE_CONFIG" = 1 ]] || {
+  printf 'DETACH_REQUIRE_SPARKLE_CONFIG must be 0 or 1\n' >&2; exit 1;
+}
+[[ "$VERIFY_PRODUCTION" = 0 || "$VERIFY_PRODUCTION" = 1 ]] || {
+  printf 'DETACH_VERIFY_PRODUCTION must be 0 or 1\n' >&2; exit 1;
+}
 plutil -lint "$INFO" "$AGENT" >/dev/null
 # `plutil -lint` only accepts property lists even though the other plutil
 # operations support JSON. Parse the payload manifest explicitly as JSON.
@@ -48,11 +59,119 @@ CALCULATED_PAYLOAD_ID="$(printf '%s\n%s\n%s\n%s\n%s\n' \
 [ "$(<"$PAYLOAD/PAYLOAD_ID")" = "$CALCULATED_PAYLOAD_ID" ]
 [ "$(plutil -extract payload_id raw -o - "$PAYLOAD/payload.json")" = "$CALCULATED_PAYLOAD_ID" ]
 
+[ -d "$FRAMEWORK_VERSION_ROOT" ] || {
+  printf 'Missing embedded Sparkle.framework 2.x layout\n' >&2
+  exit 1
+}
+for link in Versions/Current Sparkle Resources Autoupdate Updater.app XPCServices; do
+  [ -L "$FRAMEWORK/$link" ] || {
+    printf 'Sparkle framework symlink was not preserved: %s\n' "$link" >&2
+    exit 1
+  }
+done
+[ "$(readlink "$FRAMEWORK/Versions/Current")" = B ] || {
+  printf 'Unexpected Sparkle framework current version\n' >&2
+  exit 1
+}
+[ "$(plutil -extract CFBundleShortVersionString raw -o - "$FRAMEWORK/Resources/Info.plist")" = "$SPARKLE_VERSION" ] || {
+  printf 'Unexpected Sparkle framework version\n' >&2
+  exit 1
+}
+
+SPARKLE_FEED_URL="$(plutil -extract SUFeedURL raw -o - "$INFO" 2>/dev/null || true)"
+SPARKLE_PUBLIC_ED_KEY="$(plutil -extract SUPublicEDKey raw -o - "$INFO" 2>/dev/null || true)"
+DOWNLOAD_URL="$(plutil -extract DetachDownloadURL raw -o - "$INFO" 2>/dev/null || true)"
+if [ -n "$SPARKLE_FEED_URL" ] || [ -n "$SPARKLE_PUBLIC_ED_KEY" ]; then
+  [[ "$SPARKLE_FEED_URL" =~ ^https://[^[:space:]]+$ ]] || {
+    printf 'SUFeedURL must be HTTPS\n' >&2
+    exit 1
+  }
+  [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] || {
+    printf 'SUPublicEDKey is not a base64 Ed25519 public key\n' >&2
+    exit 1
+  }
+elif [ "$REQUIRE_SPARKLE_CONFIG" = 1 ]; then
+  printf 'Production verification requires SUFeedURL and SUPublicEDKey\n' >&2
+  exit 1
+fi
+if [ -n "$DOWNLOAD_URL" ]; then
+  [[ "$DOWNLOAD_URL" =~ ^https://[^[:space:]]+$ ]] || {
+    printf 'DetachDownloadURL must be HTTPS\n' >&2
+    exit 1
+  }
+elif [ "$REQUIRE_SPARKLE_CONFIG" = 1 ]; then
+  printf 'Production verification requires DetachDownloadURL\n' >&2
+  exit 1
+fi
+
+otool -L "$APP/Contents/MacOS/Detach" | \
+  grep -F '@rpath/Sparkle.framework/Versions/B/Sparkle' >/dev/null || {
+    printf 'Detach is not linked to the embedded Sparkle framework\n' >&2
+    exit 1
+  }
+otool -l "$APP/Contents/MacOS/Detach" | awk '
+    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+    in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+  ' | grep -Fx '@executable_path/../Frameworks' >/dev/null || {
+    printf 'Detach is missing the app Frameworks rpath\n' >&2
+    exit 1
+  }
+UNSAFE_RPATHS="$(otool -l "$APP/Contents/MacOS/Detach" | awk '
+    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+    in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+  ' | sort -u | grep '^/' | grep -Fvx '/usr/lib/swift' || true)"
+[ -z "$UNSAFE_RPATHS" ] || {
+  printf 'Detach contains build-host rpaths:\n%s\n' "$UNSAFE_RPATHS" >&2
+  exit 1
+}
+! otool -L "$APP/Contents/MacOS/Detach" | grep -F '/.build/' >/dev/null || {
+  printf 'Detach contains an absolute SwiftPM build dependency\n' >&2
+  exit 1
+}
+
 bundle_program="$(plutil -extract BundleProgram raw -o - "$AGENT")"
 [ -x "$APP/$bundle_program" ] || { printf 'BundleProgram is missing: %s\n' "$bundle_program" >&2; exit 1; }
 ! plutil -p "$AGENT" | grep -F '/Users/' >/dev/null
-codesign --verify --strict --verbose=2 "$APP/Contents/MacOS/DetachWatchdog"
-codesign --verify --strict --verbose=2 "$APP"
+
+bundle_executable() {
+  local bundle="$1"
+  local executable
+  executable="$(plutil -extract CFBundleExecutable raw -o - "$bundle/Contents/Info.plist")"
+  printf '%s\n' "$bundle/Contents/MacOS/$executable"
+}
+
+INSTALLER_XPC="$FRAMEWORK_VERSION_ROOT/XPCServices/Installer.xpc"
+DOWNLOADER_XPC="$FRAMEWORK_VERSION_ROOT/XPCServices/Downloader.xpc"
+AUTOUPDATE="$FRAMEWORK_VERSION_ROOT/Autoupdate"
+UPDATER_APP="$FRAMEWORK_VERSION_ROOT/Updater.app"
+INSTALLER_BINARY="$(bundle_executable "$INSTALLER_XPC")"
+DOWNLOADER_BINARY="$(bundle_executable "$DOWNLOADER_XPC")"
+UPDATER_BINARY="$(bundle_executable "$UPDATER_APP")"
+SPARKLE_BINARY="$FRAMEWORK_VERSION_ROOT/Sparkle"
+
+signed_objects=(
+  "$INSTALLER_XPC"
+  "$DOWNLOADER_XPC"
+  "$AUTOUPDATE"
+  "$UPDATER_APP"
+  "$FRAMEWORK"
+  "$APP/Contents/MacOS/DetachWatchdog"
+  "$APP"
+)
+for signed_object in "${signed_objects[@]}"; do
+  codesign --verify --strict --verbose=2 "$signed_object"
+  signature="$(codesign -d --verbose=4 "$signed_object" 2>&1)"
+  grep -F 'runtime)' <<<"$signature" >/dev/null || {
+    printf 'Signed code is missing Hardened Runtime: %s\n' "$signed_object" >&2
+    exit 1
+  }
+  if [ "$VERIFY_PRODUCTION" = 1 ]; then
+    grep -F 'Authority=Developer ID Application:' <<<"$signature" >/dev/null || {
+      printf 'Production code is not signed with Developer ID Application: %s\n' "$signed_object" >&2
+      exit 1
+    }
+  fi
+done
 HELPER_SIGNATURE="$(codesign -d --verbose=4 "$APP/Contents/MacOS/DetachWatchdog" 2>&1)"
 APP_SIGNATURE="$(codesign -d --verbose=4 "$APP" 2>&1)"
 grep -F 'Identifier=dev.tsarev.detach.watchdog' <<<"$HELPER_SIGNATURE" >/dev/null || {
@@ -60,12 +179,6 @@ grep -F 'Identifier=dev.tsarev.detach.watchdog' <<<"$HELPER_SIGNATURE" >/dev/nul
 }
 grep -F 'Identifier=dev.tsarev.detach' <<<"$APP_SIGNATURE" >/dev/null || {
   printf 'Unexpected app signing identifier\n' >&2; exit 1;
-}
-grep -F 'runtime)' <<<"$HELPER_SIGNATURE" >/dev/null || {
-  printf 'Watchdog is missing Hardened Runtime\n' >&2; exit 1;
-}
-grep -F 'runtime)' <<<"$APP_SIGNATURE" >/dev/null || {
-  printf 'App is missing Hardened Runtime\n' >&2; exit 1;
 }
 
 ENTITLEMENTS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/detach-entitlements.XXXXXX")"
@@ -79,9 +192,52 @@ for entitlements in "$ENTITLEMENTS_DIR/app.plist" "$ENTITLEMENTS_DIR/helper.plis
   }
 done
 
+if grep -F 'Signature=adhoc' <<<"$APP_SIGNATURE" >/dev/null; then
+  [ "$VERIFY_PRODUCTION" = 0 ] || {
+    printf 'Production app has an ad-hoc signature\n' >&2
+    exit 1
+  }
+  [ "$(plutil -extract 'com\.apple\.security\.cs\.disable-library-validation' raw -o - \
+    "$ENTITLEMENTS_DIR/app.plist")" = true ] || {
+      printf 'Ad-hoc app is missing the development library-validation exception\n' >&2
+      exit 1
+    }
+else
+  if plutil -extract 'com\.apple\.security\.cs\.disable-library-validation' raw -o - \
+    "$ENTITLEMENTS_DIR/app.plist" >/dev/null 2>&1; then
+    printf 'Non-ad-hoc app contains the development library-validation exception\n' >&2
+    exit 1
+  fi
+fi
+
+if [ "$VERIFY_PRODUCTION" = 1 ]; then
+  APP_TEAM="$(sed -n 's/^TeamIdentifier=//p' <<<"$APP_SIGNATURE")"
+  [ -n "$APP_TEAM" ] || {
+    printf 'Production app signature has no TeamIdentifier\n' >&2
+    exit 1
+  }
+  for signed_object in "${signed_objects[@]}"; do
+    object_signature="$(codesign -d --verbose=4 "$signed_object" 2>&1)"
+    [ "$(sed -n 's/^TeamIdentifier=//p' <<<"$object_signature")" = "$APP_TEAM" ] || {
+      printf 'Nested code TeamIdentifier mismatch: %s\n' "$signed_object" >&2
+      exit 1
+    }
+  done
+fi
+
 if [ "${DETACH_VERIFY_UNIVERSAL:-1}" = 1 ]; then
-  lipo "$APP/Contents/MacOS/Detach" -verify_arch arm64 x86_64
-  lipo "$APP/Contents/MacOS/DetachWatchdog" -verify_arch arm64 x86_64
+  universal_binaries=(
+    "$APP/Contents/MacOS/Detach"
+    "$APP/Contents/MacOS/DetachWatchdog"
+    "$SPARKLE_BINARY"
+    "$AUTOUPDATE"
+    "$UPDATER_BINARY"
+    "$INSTALLER_BINARY"
+    "$DOWNLOADER_BINARY"
+  )
+  for universal_binary in "${universal_binaries[@]}"; do
+    lipo "$universal_binary" -verify_arch arm64 x86_64
+  done
 fi
 
 printf 'Verified %s\n' "$APP"

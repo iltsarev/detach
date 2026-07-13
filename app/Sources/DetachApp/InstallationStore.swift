@@ -58,9 +58,7 @@ final class InstallationStore {
     var hasDistributionPayload: Bool { payloadDirectory != nil }
     var isStableApplicationLocation: Bool {
         guard hasDistributionPayload else { return true }
-        let path = bundleURL.path
-        return (path == "/Applications/Detach.app" || path.hasPrefix("/Applications/"))
-            && !path.contains("/AppTranslocation/") && !path.hasPrefix("/Volumes/")
+        return UpdateConfiguration.isStableApplicationLocation(bundleURL)
     }
     var isBusy: Bool { phase == .syncing }
 

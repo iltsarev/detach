@@ -11,6 +11,7 @@ struct DetachApp: App {
     @AppStorage("pollInterval") private var pollInterval = 2.0
     @State private var installation = InstallationStore(
         detachPath: AppSettings.defaultDetachPath)
+    @StateObject private var updater = UpdaterService()
 
     var body: some Scene {
         WindowGroup("Detach") {
@@ -20,8 +21,13 @@ struct DetachApp: App {
                      installation: installation)
                 .id(activeDetachPath) // rebuild the store when the CLI path changes
         }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand(updater: updater)
+            }
+        }
         Settings {
-            SettingsView(installation: installation)
+            SettingsView(installation: installation, updater: updater)
         }
     }
 }
