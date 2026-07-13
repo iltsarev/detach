@@ -121,8 +121,14 @@ Amphetamine coordination: app-launched CLI stop/delete paths may release the
 final lease, while the helper reconciles leases in the background. Session
 operations still consume only the public CLI surface. App notifications are
 opt-in and use one app-level polling service with a baseline and transition
-deduplication. On partially invalid `list --json`, keep the last good list;
-keep `emit_list_json` and `Session` in sync.
+deduplication. `list --json` exposes optional `agent_turn_state` and opaque
+`agent_turn_id` fields. Derive them only from structured provider lifecycle
+records: Codex task/turn start, complete, or abort events; and Claude main-chain
+external user plus `system/turn_duration` events. Never infer attention from
+terminal text. A completed turn means the live CLI is waiting for the next user
+message; mid-turn permission and elicitation prompts are not covered by this
+contract. On partially invalid `list --json`, keep the last good list; keep
+`emit_list_json` and `Session` in sync.
 
 Sparkle 2 is pinned in `Package.resolved`, embedded under `Contents/Frameworks`
 with its symlink layout intact, and signed inside-out before the outer app.

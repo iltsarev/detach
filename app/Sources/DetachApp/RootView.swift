@@ -69,9 +69,14 @@ struct RootView: View {
         .frame(
             minWidth: AppFontSize.minimumWindowSize(for: fontPointSize).width,
             minHeight: AppFontSize.minimumWindowSize(for: fontPointSize).height)
-        .task { await installation.bootstrap() }
         .task(id: pollInterval) { store.startPolling(interval: pollInterval) }
         .task(id: "\(detachPath)|\(pollInterval)") {
+            // A packaged update can replace the CLI during bootstrap. Wait for
+            // that handoff before establishing the notification baseline so a
+            // historical completed turn is not mistaken for a new one.
+            await installation.bootstrap()
+            guard !installation.hasDistributionPayload ||
+                    installation.distributionMatchesBundle else { return }
             notifications.configureMonitoring(
                 detachPath: detachPath,
                 interval: pollInterval)

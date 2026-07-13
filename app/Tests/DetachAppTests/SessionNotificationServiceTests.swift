@@ -26,6 +26,71 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(service.authorizationStatus, .denied)
     }
 
+    func testRefreshReflectsPermissionChangedInSystemSettings() async {
+        let center = FakeNotificationCenter(status: .denied)
+        let service = SessionNotificationService(center: center)
+        await service.configure(enabled: true)
+
+        center.status = .authorized
+        await service.refreshAuthorizationStatus()
+
+        XCTAssertEqual(service.authorizationStatus, .authorized)
+        XCTAssertEqual(center.requestCount, 0)
+    }
+
+    func testRefreshReflectsPermissionRevokedInSystemSettings() async {
+        let center = FakeNotificationCenter(status: .authorized)
+        let service = SessionNotificationService(center: center)
+        await service.configure(enabled: true)
+
+        center.status = .denied
+        await service.refreshAuthorizationStatus()
+
+        XCTAssertEqual(service.authorizationStatus, .denied)
+        XCTAssertEqual(center.requestCount, 0)
+    }
+
+    func testStalePermissionRefreshCannotOverwriteNewerStatus() async {
+        let center = OutOfOrderStatusNotificationCenter()
+        let service = SessionNotificationService(center: center)
+
+        let staleRefresh = Task { await service.refreshAuthorizationStatus() }
+        await center.waitUntilFirstStatusWasRequested()
+        await service.refreshAuthorizationStatus()
+        center.resumeFirstStatus(with: .denied)
+        await staleRefresh.value
+
+        XCTAssertEqual(service.authorizationStatus, .authorized)
+    }
+
+    func testConfigureInvalidatesOlderPermissionRefresh() async {
+        let center = OutOfOrderStatusNotificationCenter()
+        let service = SessionNotificationService(center: center)
+
+        let staleRefresh = Task { await service.refreshAuthorizationStatus() }
+        await center.waitUntilFirstStatusWasRequested()
+        await service.configure(enabled: true)
+        center.resumeFirstStatus(with: .denied)
+        await staleRefresh.value
+
+        XCTAssertEqual(service.authorizationStatus, .authorized)
+    }
+
+    func testReauthorizingNotificationsEstablishesANewSessionBaseline() async {
+        let center = FakeNotificationCenter(status: .authorized)
+        let service = SessionNotificationService(center: center)
+        await service.configure(enabled: true)
+        await service.observe([makeSession(status: .running)])
+
+        center.status = .denied
+        await service.refreshAuthorizationStatus()
+        center.status = .authorized
+        await service.refreshAuthorizationStatus()
+        await service.observe([makeSession(status: .completed)])
+
+        XCTAssertTrue(center.delivered.isEmpty)
+    }
+
     func testDisabledPreferenceDoesNotRequestPermission() async {
         let center = FakeNotificationCenter(status: .notDetermined)
         let service = SessionNotificationService(center: center)
@@ -62,6 +127,27 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(center.delivered[0].identifier, "detach.session.event-id")
         XCTAssertEqual(center.delivered[0].title, "Сессия завершилась с ошибкой")
         XCTAssertTrue(center.delivered[0].body.contains("Код выхода: 7"))
+    }
+
+    func testDeliversOneNotificationWhenAgentWaitsForUser() async {
+        let center = FakeNotificationCenter(status: .authorized)
+        let service = SessionNotificationService(
+            center: center, identifierProvider: { "waiting-event" })
+        await service.configure(enabled: true)
+
+        await service.observe([
+            makeSession(status: .running, turnState: .working, turnID: "turn-1")
+        ])
+        await service.observe([
+            makeSession(status: .running, turnState: .waiting, turnID: "turn-1")
+        ])
+        await service.observe([
+            makeSession(status: .running, turnState: .waiting, turnID: "turn-1")
+        ])
+
+        XCTAssertEqual(center.delivered.count, 1)
+        XCTAssertEqual(center.delivered[0].title, "Ответ агента готов")
+        XCTAssertTrue(center.delivered[0].body.contains("Откройте сессию, чтобы продолжить"))
     }
 
     func testInitialTerminalStateAndDisabledTransitionsAreNotReplayed() async {
@@ -167,10 +253,17 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(center.delivered.count, 1)
     }
 
-    private func makeSession(status: EffectiveStatus, exitStatus: Int? = nil) -> Session {
+    private func makeSession(
+        status: EffectiveStatus,
+        exitStatus: Int? = nil,
+        turnState: AgentTurnState? = nil,
+        turnID: String? = nil
+    ) -> Session {
         let exit = exitStatus.map(String.init) ?? "null"
+        let turnStateJSON = turnState.map { "\"\($0.rawValue)\"" } ?? "null"
+        let turnIDJSON = turnID.map { "\"\($0)\"" } ?? "null"
         let json = """
-        {"schema":1,"provider":"claude","session_name":"work","name":"work","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":"uuid","project_dir":"/tmp/harness","created_at":"2026-07-13T10:00:00Z","last_checkpoint_at":null,"exit_status":\(exit),"finished_at":null}
+        {"schema":1,"provider":"claude","session_name":"work","name":"work","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":"uuid","project_dir":"/tmp/harness","created_at":"2026-07-13T10:00:00Z","last_checkpoint_at":null,"exit_status":\(exit),"finished_at":null,"agent_turn_state":\(turnStateJSON),"agent_turn_id":\(turnIDJSON)}
         """
         return SessionListParser.parse(json).sessions[0]
     }
@@ -245,6 +338,37 @@ private final class NotificationCLI: DetachCLIRunning, @unchecked Sendable {
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         try responses.removeFirst().get()
     }
+}
+
+@MainActor
+private final class OutOfOrderStatusNotificationCenter: SessionNotificationCenterBackend {
+    private var firstStatusContinuation:
+        CheckedContinuation<SessionNotificationAuthorizationStatus, Never>?
+    private var firstStatusRequestedContinuation: CheckedContinuation<Void, Never>?
+    private var statusRequestCount = 0
+
+    func authorizationStatus() async -> SessionNotificationAuthorizationStatus {
+        statusRequestCount += 1
+        if statusRequestCount == 1 {
+            firstStatusRequestedContinuation?.resume()
+            firstStatusRequestedContinuation = nil
+            return await withCheckedContinuation { firstStatusContinuation = $0 }
+        }
+        return .authorized
+    }
+
+    func waitUntilFirstStatusWasRequested() async {
+        guard statusRequestCount == 0 else { return }
+        await withCheckedContinuation { firstStatusRequestedContinuation = $0 }
+    }
+
+    func resumeFirstStatus(with status: SessionNotificationAuthorizationStatus) {
+        firstStatusContinuation?.resume(returning: status)
+        firstStatusContinuation = nil
+    }
+
+    func requestAuthorization() async throws -> Bool { true }
+    func deliver(_ payload: SessionNotificationPayload) async throws {}
 }
 
 @MainActor

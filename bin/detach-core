@@ -2326,44 +2326,111 @@ resume_agent_session() {
 transcript_model_context() {
   local transcript="$1"
   local tail_data
-  local line
+  local field
+  local value
 
   TRANSCRIPT_MODEL=""
   TRANSCRIPT_CTX_USED=""
   TRANSCRIPT_CTX_WINDOW=""
+  TRANSCRIPT_AGENT_TURN_STATE=""
+  TRANSCRIPT_AGENT_TURN_ID=""
   [ -n "$transcript" ] && [ -f "$transcript" ] || return 0
+  # Completion markers are appended at the end of both provider transcripts.
+  # If a long in-progress turn pushes its start outside this bounded tail, the
+  # state safely becomes unknown; the eventual terminal marker and its stable
+  # ID are still observed without scanning multi-megabyte files every poll.
   tail_data="$(tail -c 262144 "$transcript" 2>/dev/null)" || return 0
   [ -n "$tail_data" ] || return 0
-  if [ "$PROVIDER" = "claude" ]; then
-    line="$(printf '%s\n' "$tail_data" | "$JQ_BIN" -Rr '
-      fromjson? | select(.type? == "assistant") |
-      [(.message.model // ""),
-       ((.message.usage.input_tokens // 0) +
-        (.message.usage.cache_read_input_tokens // 0) +
-        (.message.usage.cache_creation_input_tokens // 0))] | @tsv' 2>/dev/null | tail -1)"
-    if [ -n "$line" ]; then
-      TRANSCRIPT_MODEL="${line%%$'\t'*}"
-      TRANSCRIPT_CTX_USED="${line##*$'\t'}"
-    fi
-  else
-    TRANSCRIPT_MODEL="$(printf '%s\n' "$tail_data" | "$JQ_BIN" -Rr '
-      fromjson? | .payload.model? // empty' 2>/dev/null | tail -1)"
-    line="$(printf '%s\n' "$tail_data" | "$JQ_BIN" -Rr '
-      fromjson? | select(.payload.type? == "token_count") |
-      [((.payload.info.last_token_usage.input_tokens // 0) +
-        (.payload.info.last_token_usage.output_tokens // 0)),
-       (.payload.info.model_context_window // 0)] | @tsv' 2>/dev/null | tail -1)"
-    if [ -n "$line" ]; then
-      TRANSCRIPT_CTX_USED="${line%%$'\t'*}"
-      TRANSCRIPT_CTX_WINDOW="${line##*$'\t'}"
-    fi
-  fi
+  while IFS=$'\t' read -r field value; do
+    case "$field" in
+      model) TRANSCRIPT_MODEL="$value" ;;
+      context_used) TRANSCRIPT_CTX_USED="$value" ;;
+      context_window) TRANSCRIPT_CTX_WINDOW="$value" ;;
+      agent_turn_state) TRANSCRIPT_AGENT_TURN_STATE="$value" ;;
+      agent_turn_id) TRANSCRIPT_AGENT_TURN_ID="$value" ;;
+    esac
+  done < <(printf '%s\n' "$tail_data" | "$JQ_BIN" -Rrs --arg provider "$PROVIDER" '
+    def number_or_zero(value):
+      if (value | type) == "number" then value else 0 end;
+    reduce (split("\n")[] | fromjson?) as $record (
+      {model: null, context_used: null, context_window: null,
+       agent_turn_state: null, agent_turn_id: null};
+      if $provider == "claude" then
+        (if $record.type? == "assistant" then
+           .model = ($record.message.model // "")
+           | .context_used = (
+               number_or_zero($record.message.usage.input_tokens) +
+               number_or_zero($record.message.usage.cache_read_input_tokens) +
+               number_or_zero($record.message.usage.cache_creation_input_tokens))
+         else . end)
+        | (if ($record.isSidechain? != true and
+               ($record.uuid? | type) == "string" and
+               ($record.uuid? | length) > 0 and
+               $record.type? == "system" and
+               $record.subtype? == "turn_duration") then
+             .agent_turn_state = "waiting"
+             | .agent_turn_id = $record.uuid
+           elif ($record.isSidechain? != true and
+                 ($record.uuid? | type) == "string" and
+                 ($record.uuid? | length) > 0 and
+                 $record.type? == "user" and
+                 $record.isMeta? != true and
+                 $record.message.role? == "user" and
+                 (($record.message.content? | type) != "array" or
+                  ([$record.message.content[]? | .type?]
+                   | index("tool_result")) == null)) then
+             .agent_turn_state = "working"
+             | .agent_turn_id = $record.uuid
+           else . end)
+      else
+        (if ($record.payload.model? | type) == "string" then
+           .model = $record.payload.model
+         else . end)
+         | (if $record.payload.type? == "token_count" then
+             .context_used = (
+               number_or_zero($record.payload.info.last_token_usage.input_tokens) +
+               number_or_zero($record.payload.info.last_token_usage.output_tokens))
+             | .context_window = number_or_zero($record.payload.info.model_context_window)
+           else . end)
+        | (if ($record.type? == "event_msg" and
+               ($record.payload.turn_id? | type) == "string" and
+               ($record.payload.turn_id? | length) > 0 and
+               ($record.payload.type? == "task_started" or
+                $record.payload.type? == "turn_started")) then
+             .agent_turn_state = "working"
+             | .agent_turn_id = $record.payload.turn_id
+           elif ($record.type? == "event_msg" and
+                 ($record.payload.turn_id? | type) == "string" and
+                 ($record.payload.turn_id? | length) > 0 and
+                 ($record.payload.type? == "task_complete" or
+                  $record.payload.type? == "turn_complete")) then
+             .agent_turn_state = "waiting"
+             | .agent_turn_id = $record.payload.turn_id
+           elif ($record.type? == "event_msg" and
+                 ($record.payload.turn_id? | type) == "string" and
+                 ($record.payload.turn_id? | length) > 0 and
+                 $record.payload.type? == "turn_aborted") then
+             .agent_turn_state = "interrupted"
+             | .agent_turn_id = $record.payload.turn_id
+           else . end)
+      end)
+    | to_entries[]
+    | select(.value != null and .value != "")
+    | [.key, (.value | tostring)]
+    | @tsv' 2>/dev/null)
+
+  case "$TRANSCRIPT_AGENT_TURN_STATE" in
+    working|waiting|interrupted) ;;
+    *) TRANSCRIPT_AGENT_TURN_STATE=""; TRANSCRIPT_AGENT_TURN_ID="" ;;
+  esac
+  [ -n "$TRANSCRIPT_AGENT_TURN_ID" ] || TRANSCRIPT_AGENT_TURN_STATE=""
 }
 
 emit_list_json() {
   local session="$1" effective="$2" meta_status="$3" id="$4" checkpoint="$5"
   local cwd="$6" created="$7" exit_json="$8" finished="$9"
   local model="${10:-}" ctx_used="${11:-}" ctx_window="${12:-}"
+  local agent_turn_state="${13:-}" agent_turn_id="${14:-}"
 
   [ -n "$exit_json" ] || exit_json="null"
   [ -n "$ctx_used" ] || ctx_used="null"
@@ -2383,6 +2450,8 @@ emit_list_json() {
     --arg model "$model" \
     --argjson ctx_used "$ctx_used" \
     --argjson ctx_window "$ctx_window" \
+    --arg agent_turn_state "$agent_turn_state" \
+    --arg agent_turn_id "$agent_turn_id" \
     'def opt(v): if v == "" or v == "-" or v == "?" then null else v end;
      {schema: 1,
       provider: $provider,
@@ -2398,7 +2467,9 @@ emit_list_json() {
       finished_at: opt($finished),
       model: opt($model),
       context_used_tokens: (if $ctx_used == 0 then null else $ctx_used end),
-      context_window: (if $ctx_window == 0 then null else $ctx_window end)}'
+      context_window: (if $ctx_window == 0 then null else $ctx_window end),
+      agent_turn_state: opt($agent_turn_state),
+      agent_turn_id: opt($agent_turn_id)}'
 }
 
 list_sessions() {
@@ -2495,7 +2566,8 @@ list_sessions() {
     fi
     if [ "$json_mode" = "1" ]; then
       emit_list_json "$session" "$live" "$status" "$id" "$checkpoint" "$cwd" "$created" "$exit_json" "$finished" \
-        "$TRANSCRIPT_MODEL" "$TRANSCRIPT_CTX_USED" "$TRANSCRIPT_CTX_WINDOW"
+        "$TRANSCRIPT_MODEL" "$TRANSCRIPT_CTX_USED" "$TRANSCRIPT_CTX_WINDOW" \
+        "$TRANSCRIPT_AGENT_TURN_STATE" "$TRANSCRIPT_AGENT_TURN_ID"
     else
       printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
         "$PROVIDER" "$session" "$live" "$id" "$checkpoint" "$cwd"

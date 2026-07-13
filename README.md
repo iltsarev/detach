@@ -74,8 +74,10 @@ anything missing.
 
 Detach finds compatible terminal apps already installed on your Mac. Choose
 one in Settings; start, attach, resume, and recover open there. The main app
-does not need Terminal Automation access. Settings also offers optional session
-notifications and an exact 11–22 pt text size (14 pt by default). Optional
+does not need Terminal Automation access. Settings also offers optional
+notifications when an agent finishes a turn and waits for you, or when a
+session finishes, fails, or becomes recoverable. Text size is an exact 11–22 pt
+setting (14 pt by default). Optional
 keep-awake support stays off until you enable it; macOS may then ask Detach for
 permission to control Amphetamine.
 
@@ -83,8 +85,9 @@ permission to control Amphetamine.
 
 - **Start:** choose **＋**, a project, Codex or Claude Code, and an optional
   opening prompt.
-- **Watch:** see every session in one sidebar with live status, model, context
-  usage, checkpoint time, and ANSI-aware log previews.
+- **Watch:** see every session in one sidebar with live status—including when
+  an agent is waiting for you—plus model, context usage, checkpoint time, and
+  ANSI-aware log previews.
 - **Return:** open a live session in your selected terminal, resume a saved
   conversation, or recover the last successful checkpoint after an interruption.
 - **Control:** stop or delete sessions, repair the CLI, manage updates, and

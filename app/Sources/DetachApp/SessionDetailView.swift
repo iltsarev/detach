@@ -71,7 +71,7 @@ struct SessionDetailView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Text(session.displayTitle).appFont(.title2, weight: .bold)
-            Text(session.effectiveStatus.rawValue)
+            Text(session.displayStatus)
                 .appFont(.caption, weight: .semibold)
                 .padding(.horizontal, 7).padding(.vertical, 2)
                 .background(Capsule().fill(.quaternary))

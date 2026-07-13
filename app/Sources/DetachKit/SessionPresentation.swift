@@ -11,6 +11,14 @@ public enum SessionAction: String, CaseIterable, Sendable {
 }
 
 public extension Session {
+    var isWaitingForUser: Bool {
+        effectiveStatus == .running && agentTurnState == .waiting
+    }
+
+    var displayStatus: String {
+        isWaitingForUser ? "ответ готов" : effectiveStatus.rawValue
+    }
+
     var section: SessionSection {
         switch effectiveStatus {
         case .running, .starting, .recovering: .active

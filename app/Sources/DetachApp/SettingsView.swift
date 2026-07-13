@@ -3,6 +3,7 @@ import DetachKit
 import SwiftUI
 
 struct SettingsView: View {
+    @Environment(\.scenePhase) private var scenePhase
     let installation: InstallationStore
     @ObservedObject var updater: UpdaterService
     @ObservedObject var notifications: SessionNotificationService
@@ -78,6 +79,19 @@ struct SettingsView: View {
             notifications.configureMonitoring(
                 detachPath: activeDetachPath,
                 interval: pollInterval)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await notifications.refreshAuthorizationStatus() }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            // A Settings scene can remain open without the main window. The
+            // AppKit activation notification reliably fires after the user
+            // returns from macOS Notification settings in that configuration.
+            Task { await notifications.refreshAuthorizationStatus() }
         }
         .confirmationDialog(
             "Удалить установленные компоненты Detach?",
@@ -190,7 +204,7 @@ struct SettingsView: View {
 
     private var notificationsSection: some View {
         SettingsSectionView("Уведомления", systemImage: "bell.badge") {
-            Toggle("Сообщать о завершении и проблемах сессий", isOn: Binding(
+            Toggle("Сообщать, когда ответ агента готов или сессия завершилась", isOn: Binding(
                 get: { notificationsEnabled },
                 set: { value in
                     notificationsEnabled = value
@@ -199,13 +213,22 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(notificationStatusText)
-                .settingsMessage(color: notifications.authorizationStatus == .denied ? .red : nil)
+                .settingsMessage(color:
+                    notificationsEnabled && notifications.authorizationStatus == .denied
+                        ? .red : nil)
 
-            if notifications.authorizationStatus == .denied {
+            if notificationsEnabled,
+               notifications.authorizationStatus == .notDetermined {
+                Button {
+                    Task { await notifications.configure(enabled: true) }
+                } label: {
+                    Label("Разрешить уведомления", systemImage: "bell.badge")
+                }
+            } else if notificationsEnabled && notifications.authorizationStatus == .denied {
                 Button {
                     openNotificationSettings()
                 } label: {
-                    Label("Открыть настройки уведомлений", systemImage: "gearshape")
+                    Label("Открыть настройки macOS", systemImage: "gearshape")
                 }
             }
             if let errorMessage = notifications.errorMessage {
@@ -289,11 +312,11 @@ struct SettingsView: View {
         case .unknown:
             return "Проверяем системное разрешение…"
         case .notDetermined:
-            return "macOS попросит разрешение на уведомления."
+            return "Разрешение можно выдать прямо здесь — macOS покажет системный запрос."
         case .denied:
-            return "Уведомления запрещены в системных настройках macOS."
+            return "macOS не показывает повторный запрос после отказа. Разрешите уведомления для Detach в системных настройках."
         case .authorized:
-            return "Готово — сообщим, когда сессия завершится или потребует внимания."
+            return "Готово — сообщим о готовом ответе, завершении или проблеме сессии."
         }
     }
 

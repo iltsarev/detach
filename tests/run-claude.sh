@@ -82,7 +82,31 @@ json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
 printf '%s' "$json_line" | jq -e --arg id "$session_id" '
   .schema == 1 and .provider == "claude" and .effective_status == "running"
   and .agent_session_id == $id and (.project_dir | type == "string")
-  and has("model") and has("context_used_tokens") and has("context_window")' >/dev/null
+  and has("model") and has("context_used_tokens") and has("context_window")
+  and .agent_turn_state == "working" and .agent_turn_id == $id' >/dev/null
+transcript="$(jq -r '.transcript_path' "$meta")"
+jq -cn --arg id "$session_id" '
+  {type:"user",isSidechain:false,isMeta:false,sessionId:$id,
+   message:{role:"user",content:[{type:"tool_result"}]},
+   uuid:"tool-result-event",timestamp:"2099-01-01T00:02:00.000Z"}' >>"$transcript"
+jq -cn --arg id "$session_id" '
+  {type:"assistant",isSidechain:false,sessionId:$id,
+   message:{role:"assistant",stop_reason:"end_turn",id:"message-1"},
+   uuid:"assistant-chunk-1",timestamp:"2099-01-01T00:03:00.000Z"}' >>"$transcript"
+jq -cn --arg id "$session_id" '
+  {type:"assistant",isSidechain:false,sessionId:$id,
+   message:{role:"assistant",stop_reason:"end_turn",id:"message-1"},
+   uuid:"assistant-chunk-2",timestamp:"2099-01-01T00:03:01.000Z"}' >>"$transcript"
+json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
+printf '%s' "$json_line" | jq -e --arg id "$session_id" '
+  .agent_turn_state == "working" and .agent_turn_id == $id' >/dev/null
+jq -cn --arg id "$session_id" '
+  {type:"system",subtype:"turn_duration",isSidechain:false,sessionId:$id,
+   uuid:"turn-duration-1",timestamp:"2099-01-01T00:03:02.000Z"}' >>"$transcript"
+json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
+printf '%s' "$json_line" | jq -e '
+  .effective_status == "running" and .agent_turn_state == "waiting"
+  and .agent_turn_id == "turn-duration-1"' >/dev/null
 if "$SCRIPT" codex --name cross-provider --detach -- 'must not run beside Claude'; then
   printf 'Codex unexpectedly started beside a running Claude task\n' >&2
   exit 1

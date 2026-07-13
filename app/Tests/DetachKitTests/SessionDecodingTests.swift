@@ -67,6 +67,27 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertNil(s.contextSummary)
     }
 
+    func testAgentTurnFieldsDecodeAndRemainBackwardCompatible() throws {
+        let line = running.replacingOccurrences(
+            of: "\"finished_at\":null",
+            with: "\"finished_at\":null,\"agent_turn_state\":\"waiting\",\"agent_turn_id\":\"opaque-turn-id\"")
+        let waiting = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+        XCTAssertEqual(waiting.agentTurnState, .waiting)
+        XCTAssertEqual(waiting.agentTurnID, "opaque-turn-id")
+
+        let legacy = try XCTUnwrap(SessionListParser.parse(running).sessions.first)
+        XCTAssertNil(legacy.agentTurnState)
+        XCTAssertNil(legacy.agentTurnID)
+    }
+
+    func testUnknownAgentTurnStateFallsBack() throws {
+        let line = running.replacingOccurrences(
+            of: "\"finished_at\":null",
+            with: "\"finished_at\":null,\"agent_turn_state\":\"new-state\",\"agent_turn_id\":\"turn\"")
+        let session = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+        XCTAssertEqual(session.agentTurnState, .unknown)
+    }
+
     func testWrongSchemaIsFlagged() {
         let line = running.replacingOccurrences(of: "\"schema\":1", with: "\"schema\":2")
         let result = SessionListParser.parse(line)

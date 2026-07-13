@@ -4,6 +4,7 @@ public enum SessionTransitionKind: String, Equatable, Sendable {
     case completed
     case failed
     case recoverable
+    case waitingForUser
 }
 
 public struct SessionTransition: Equatable, Sendable {
@@ -30,7 +31,16 @@ public struct SessionTransitionDetector: Sendable {
         }
     }
 
-    private var statuses: [Lifecycle: EffectiveStatus] = [:]
+    private struct Snapshot: Sendable {
+        let status: EffectiveStatus
+
+        init(_ session: Session) {
+            status = session.effectiveStatus
+        }
+    }
+
+    private var snapshots: [Lifecycle: Snapshot] = [:]
+    private var seenWaitingTurnIDs: [String: Set<String>] = [:]
     private var pendingInterrupted: Set<Lifecycle> = []
     private var isPrimed = false
 
@@ -38,10 +48,22 @@ public struct SessionTransitionDetector: Sendable {
 
     public mutating func observe(_ sessions: [Session]) -> [SessionTransition] {
         defer {
-            statuses = Dictionary(uniqueKeysWithValues: sessions.map {
-                (Lifecycle($0), $0.effectiveStatus)
+            snapshots = Dictionary(uniqueKeysWithValues: sessions.map {
+                (Lifecycle($0), Snapshot($0))
             })
-            pendingInterrupted.formIntersection(statuses.keys)
+            pendingInterrupted.formIntersection(snapshots.keys)
+            for session in sessions where session.agentTurnState == .waiting {
+                guard let turnID = session.agentTurnID, !turnID.isEmpty else { continue }
+                let fallbackKey = conversationFallbackKey(for: session)
+                if let agentKey = conversationAgentKey(for: session) {
+                    if let fallbackIDs = seenWaitingTurnIDs.removeValue(forKey: fallbackKey) {
+                        seenWaitingTurnIDs[agentKey, default: []].formUnion(fallbackIDs)
+                    }
+                    seenWaitingTurnIDs[agentKey, default: []].insert(turnID)
+                } else {
+                    seenWaitingTurnIDs[fallbackKey, default: []].insert(turnID)
+                }
+            }
             isPrimed = true
         }
 
@@ -50,7 +72,8 @@ public struct SessionTransitionDetector: Sendable {
         var transitions: [SessionTransition] = []
         for session in sessions {
             let lifecycle = Lifecycle(session)
-            let previousStatus = statuses[lifecycle]
+            let previous = snapshots[lifecycle]
+            let previousStatus = previous?.status
 
             if session.effectiveStatus == .interrupted {
                 if pendingInterrupted.remove(lifecycle) != nil {
@@ -66,13 +89,40 @@ public struct SessionTransitionDetector: Sendable {
             }
 
             pendingInterrupted.remove(lifecycle)
-            guard previousStatus != session.effectiveStatus,
-                  let kind = SessionTransitionKind(status: session.effectiveStatus) else {
+            if previousStatus != session.effectiveStatus,
+               let kind = SessionTransitionKind(status: session.effectiveStatus) {
+                transitions.append(SessionTransition(kind: kind, session: session))
                 continue
             }
-            transitions.append(SessionTransition(kind: kind, session: session))
+
+            if session.effectiveStatus == .running,
+               session.agentTurnState == .waiting,
+               let turnID = session.agentTurnID,
+               !turnID.isEmpty,
+               !hasSeenWaitingTurn(turnID, for: session) {
+                transitions.append(SessionTransition(kind: .waitingForUser, session: session))
+            }
         }
         return transitions
+    }
+
+    private func conversationAgentKey(for session: Session) -> String? {
+        guard let agentSessionID = session.agentSessionId, !agentSessionID.isEmpty else {
+            return nil
+        }
+        return "agent:\(session.provider.rawValue):\(agentSessionID)"
+    }
+
+    private func conversationFallbackKey(for session: Session) -> String {
+        "session:\(session.sessionName)"
+    }
+
+    private func hasSeenWaitingTurn(_ turnID: String, for session: Session) -> Bool {
+        if let agentKey = conversationAgentKey(for: session),
+           seenWaitingTurnIDs[agentKey]?.contains(turnID) == true {
+            return true
+        }
+        return seenWaitingTurnIDs[conversationFallbackKey(for: session)]?.contains(turnID) == true
     }
 }
 

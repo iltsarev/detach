@@ -59,6 +59,8 @@ rollout="$codex_home/sessions/2099/01/01/rollout-test-$id.jsonl"
 originator="${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-codex_cli_rs}"
 printf '{"timestamp":"2099-01-01T00:00:00Z","type":"session_meta","payload":{"id":"%s","cwd":"%s","originator":"%s"}}\n' \
   "$id" "$cwd" "$originator" >"$rollout"
+printf '{"timestamp":"2099-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fake-turn-%s"}}\n' \
+  "$id" >>"$rollout"
 
 escaped_cwd="${cwd//\'/\'\'}"
 escaped_rollout="${rollout//\'/\'\'}"

@@ -47,6 +47,7 @@ final class SessionNotificationService: ObservableObject {
     private var isDelivering = false
     private var isEnabled = false
     private var configurationGeneration: UInt64 = 0
+    private var authorizationStatusGeneration: UInt64 = 0
     private var authorizationRequestTask: Task<Bool, Error>?
     private var monitorConfiguration: MonitorConfiguration?
     private var monitorTask: Task<Void, Never>?
@@ -86,6 +87,8 @@ final class SessionNotificationService: ObservableObject {
     func configure(enabled: Bool) async {
         configurationGeneration &+= 1
         let generation = configurationGeneration
+        authorizationStatusGeneration &+= 1
+        let statusGeneration = authorizationStatusGeneration
         isEnabled = enabled
         errorMessage = nil
 
@@ -94,9 +97,10 @@ final class SessionNotificationService: ObservableObject {
         }
 
         var status = await center.authorizationStatus()
-        guard generation == configurationGeneration else { return }
+        guard generation == configurationGeneration,
+              statusGeneration == authorizationStatusGeneration else { return }
         authorizationStatus = status
-        restartMonitoring(resetBaseline: false)
+        restartMonitoring(resetBaseline: status == .denied)
         guard enabled, status == .notDetermined else {
             if status == .denied { clearPendingPayloads() }
             return
@@ -108,32 +112,48 @@ final class SessionNotificationService: ObservableObject {
             }
             let granted = try await requestAuthorizationOnce()
             guard generation == configurationGeneration else { return }
+            authorizationStatusGeneration &+= 1
+            let postRequestStatusGeneration = authorizationStatusGeneration
             status = granted ? await center.authorizationStatus() : .denied
-            guard generation == configurationGeneration else { return }
+            guard generation == configurationGeneration,
+                  postRequestStatusGeneration == authorizationStatusGeneration else { return }
             authorizationStatus = status
             if status.canDeliver {
                 await deliverPendingPayloads()
             } else {
                 clearPendingPayloads()
             }
-            restartMonitoring(resetBaseline: false)
+            restartMonitoring(resetBaseline: status == .denied)
         } catch {
             guard generation == configurationGeneration else { return }
-            authorizationStatus = await center.authorizationStatus()
-            guard generation == configurationGeneration else { return }
+            authorizationStatusGeneration &+= 1
+            let failedRequestStatusGeneration = authorizationStatusGeneration
+            let refreshedStatus = await center.authorizationStatus()
+            guard generation == configurationGeneration,
+                  failedRequestStatusGeneration == authorizationStatusGeneration else { return }
+            authorizationStatus = refreshedStatus
             errorMessage = "Не удалось запросить разрешение на уведомления: \(error.localizedDescription)"
-            restartMonitoring(resetBaseline: false)
+            restartMonitoring(resetBaseline: refreshedStatus == .denied)
         }
     }
 
     func refreshAuthorizationStatus() async {
-        authorizationStatus = await center.authorizationStatus()
-        if authorizationStatus.canDeliver {
+        authorizationStatusGeneration &+= 1
+        let statusGeneration = authorizationStatusGeneration
+        let configurationAtStart = configurationGeneration
+        let previousStatus = authorizationStatus
+        let refreshedStatus = await center.authorizationStatus()
+        guard statusGeneration == authorizationStatusGeneration,
+              configurationAtStart == configurationGeneration else { return }
+
+        authorizationStatus = refreshedStatus
+        if refreshedStatus.canDeliver {
             await deliverPendingPayloads()
-        } else if authorizationStatus == .denied {
+        } else if refreshedStatus == .denied {
             clearPendingPayloads()
         }
-        restartMonitoring(resetBaseline: false)
+        restartMonitoring(resetBaseline:
+            refreshedStatus == .denied || previousStatus == .denied)
     }
 
     /// Kept internal for deterministic tests; production calls it from the
@@ -276,6 +296,9 @@ final class SessionNotificationService: ObservableObject {
         case .recoverable:
             title = "Сессию можно восстановить"
             detail = "Доступен recover из последнего чекпойнта"
+        case .waitingForUser:
+            title = "Ответ агента готов"
+            detail = "Откройте сессию, чтобы продолжить"
         }
 
         return SessionNotificationPayload(

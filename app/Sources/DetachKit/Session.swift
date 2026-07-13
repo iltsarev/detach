@@ -17,6 +17,18 @@ public enum EffectiveStatus: String, Codable, Sendable {
     }
 }
 
+public enum AgentTurnState: String, Codable, Sendable {
+    case working
+    case waiting
+    case interrupted
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AgentTurnState(rawValue: raw) ?? .unknown
+    }
+}
+
 public struct Session: Identifiable, Equatable, Sendable, Decodable {
     public var schema: Int
     public var provider: Provider
@@ -33,6 +45,8 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
     public var model: String?
     public var contextUsedTokens: Int?
     public var contextWindow: Int?
+    public var agentTurnState: AgentTurnState?
+    public var agentTurnID: String?
 
     public var id: String { sessionName }
 
@@ -49,6 +63,8 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
         case finishedAt = "finished_at"
         case contextUsedTokens = "context_used_tokens"
         case contextWindow = "context_window"
+        case agentTurnState = "agent_turn_state"
+        case agentTurnID = "agent_turn_id"
     }
 }
 

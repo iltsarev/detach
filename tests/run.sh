@@ -222,7 +222,17 @@ printf '%s' "$json_line" | jq -e '
   .schema == 1 and .provider == "codex" and .name == "integration"
   and .effective_status == "running" and (.project_dir | type == "string")
   and (.created_at | type == "string") and .exit_status == null
-  and has("model") and has("context_used_tokens") and has("context_window")' >/dev/null
+  and has("model") and has("context_used_tokens") and has("context_window")
+  and .agent_turn_state == "working" and (.agent_turn_id | type == "string")' >/dev/null
+turn_rollout="$(jq -r '.transcript_path' "$meta")"
+turn_id="$(printf '%s' "$json_line" | jq -r '.agent_turn_id')"
+jq -cn --arg turn_id "$turn_id" '
+  {timestamp:"2099-01-01T00:10:00Z",type:"event_msg",
+   payload:{type:"task_complete",turn_id:$turn_id}}' >>"$turn_rollout"
+json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+printf '%s' "$json_line" | jq -e --arg turn_id "$turn_id" '
+  .effective_status == "running" and .agent_turn_state == "waiting"
+  and .agent_turn_id == $turn_id' >/dev/null
 run_codex list --json | jq -es 'length > 0 and all(.schema == 1)' | grep -qx true
 run_codex stop integration
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"

@@ -2,9 +2,15 @@ import XCTest
 @testable import DetachKit
 
 final class SessionPresentationTests: XCTestCase {
-    func make(_ status: EffectiveStatus, uuid: String? = "u", project: String? = "/tmp/proj") -> Session {
+    func make(
+        _ status: EffectiveStatus,
+        uuid: String? = "u",
+        project: String? = "/tmp/proj",
+        turnState: AgentTurnState? = nil
+    ) -> Session {
+        let turnStateJSON = turnState.map { "\"\($0.rawValue)\"" } ?? "null"
         let json = """
-        {"schema":1,"provider":"claude","session_name":"claude-detached-proj-abcd1234","name":"proj-abcd1234","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(uuid.map { "\"\($0)\"" } ?? "null"),"project_dir":\(project.map { "\"\($0)\"" } ?? "null"),"created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        {"schema":1,"provider":"claude","session_name":"claude-detached-proj-abcd1234","name":"proj-abcd1234","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(uuid.map { "\"\($0)\"" } ?? "null"),"project_dir":\(project.map { "\"\($0)\"" } ?? "null"),"created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"agent_turn_state":\(turnStateJSON),"agent_turn_id":"turn"}
         """
         return SessionListParser.parse(json).sessions[0]
     }
@@ -34,5 +40,13 @@ final class SessionPresentationTests: XCTestCase {
     func testDisplayTitle() {
         XCTAssertEqual(make(.running, project: "/Users/me/dev/harness").displayTitle, "harness")
         XCTAssertEqual(make(.corrupt, project: nil).displayTitle, "proj-abcd1234")
+    }
+
+    func testWaitingTurnHasAttentionStatusWhileRemainingActive() {
+        let waiting = make(.running, turnState: .waiting)
+        XCTAssertTrue(waiting.isWaitingForUser)
+        XCTAssertEqual(waiting.displayStatus, "ответ готов")
+        XCTAssertEqual(waiting.section, .active)
+        XCTAssertEqual(waiting.availableActions, [.attach, .stop])
     }
 }
