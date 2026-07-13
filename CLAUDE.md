@@ -53,7 +53,12 @@ There is no separate linter; `run.sh` / `run-claude.sh` are the verification pat
 The repo copies are not what runs on the machine. `./install.sh` or Detach.app
 installs immutable payloads under
 `~/.local/libexec/detach/versions/<semver>-<hash>/` and atomically switches
-`~/.local/bin/detach`. Edits to `bin/` take effect only after Repair/reinstall.
+`~/.local/bin/detach`. Installation adds an owned, idempotent PATH entry to the
+user's login and interactive shell profiles (`zsh`, `bash`, `fish`, `csh`/`tcsh`,
+or POSIX `sh`/`dash`/`ksh`) so a new Terminal can invoke `detach` directly.
+Uninstall restores unchanged profiles byte-for-byte and removes only the exact
+Detach-owned entry from a profile that gained unrelated user edits. Edits to
+`bin/` take effect only after Repair/reinstall.
 
 ## Architecture
 
@@ -74,6 +79,9 @@ Two internal executables that must live side by side (`detach` resolves the core
   `install.lock`; session start takes the same lock before creating its worker,
   closing the uninstall/start race. Never overwrite an existing payload path,
   reuse active bytes as a Repair source, or ignore `BUILD` on downgrade checks.
+  Shell PATH setup follows the same ownership rule: preserve existing profile
+  content, track backups/hashes under install state, refuse unsafe paths, and
+  never delete an entry that is not exactly Detach-owned.
 - **Guarded metadata.** Per-session `meta.json` (schema 1) is updated only via jq through `json_update_meta_for_run`, guarded by a `run_token`, so a stale worker or checkpoint loop from a replaced session cannot clobber the current one.
 - **Validate before restore.** Anything that writes into a provider's own store (`~/.claude/projects/...`, `~/.codex/sessions/...`) goes through `safe_*_path` (symlink/traversal rejection) and `valid_*` (session-id match, parseable JSONL) checks, writes to a tmp file, validates, then `mv -f`. A checkpoint never overwrites a valid live transcript that is newer/larger, and the Codex shared SQLite is backed up but never restored automatically.
 - **State is private.** `umask 077`; checkpoints under `~/.local/state/detach/{codex,claude}/sessions/<name>/` contain full conversation data.

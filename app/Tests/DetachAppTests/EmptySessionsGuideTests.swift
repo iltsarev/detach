@@ -5,22 +5,22 @@ import DetachKit
 final class EmptySessionsGuideTests: XCTestCase {
     func testGuideShowsBothSupportedProviders() {
         XCTAssertEqual(
-            EmptySessionsGuide.examples(detachCommand: "~/.local/bin/detach").map(\.provider),
+            EmptySessionsGuide.examples.map(\.provider),
             [.codex, .claude])
     }
 
     func testGuideUsesCommandsThatStartFromTheProjectDirectory() {
         XCTAssertEqual(
-            EmptySessionsGuide.examples(detachCommand: "~/.local/bin/detach"),
+            EmptySessionsGuide.examples,
             [
                 EmptySessionExample(
                     provider: .codex,
                     directoryCommand: "cd ~/my/repo",
-                    launchCommand: "~/.local/bin/detach codex"),
+                    launchCommand: "detach codex"),
                 EmptySessionExample(
                     provider: .claude,
                     directoryCommand: "cd ~/my/repo",
-                    launchCommand: "~/.local/bin/detach claude"),
+                    launchCommand: "detach claude"),
             ])
     }
 }

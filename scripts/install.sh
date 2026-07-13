@@ -18,6 +18,13 @@ MV_BIN="${DETACH_MV_BIN:-/bin/mv}"
 RM_BIN="${DETACH_RM_BIN:-/bin/rm}"
 LN_BIN="${DETACH_LN_BIN:-/bin/ln}"
 MKDIR_BIN="${DETACH_MKDIR_BIN:-/bin/mkdir}"
+CAT_BIN="${DETACH_CAT_BIN:-/bin/cat}"
+CP_BIN="${DETACH_CP_BIN:-/bin/cp}"
+AWK_BIN="${DETACH_AWK_BIN:-/usr/bin/awk}"
+TAIL_BIN="${DETACH_TAIL_BIN:-/usr/bin/tail}"
+MKTEMP_BIN="${DETACH_MKTEMP_BIN:-/usr/bin/mktemp}"
+DSCL_BIN="${DETACH_DSCL_BIN:-/usr/bin/dscl}"
+ID_BIN="${DETACH_ID_BIN:-/usr/bin/id}"
 SHASUM_BIN="${DETACH_SHASUM_BIN:-/usr/bin/shasum}"
 XATTR_BIN="${DETACH_XATTR_BIN:-/usr/bin/xattr}"
 LAUNCHCTL_BIN="${DETACH_LAUNCHCTL_BIN:-/bin/launchctl}"
@@ -32,9 +39,11 @@ CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
 CODEX_STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_ROOT/codex}"
 CLAUDE_STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_ROOT/claude}"
 AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-$STATE_ROOT/amphetamine}"
+SHELL_PATH_STATE_ROOT="${DETACH_SHELL_PATH_STATE_ROOT:-$INSTALL_STATE_ROOT/shell-path}"
 CLI_WATCHDOG_PLIST_DEST="${DETACH_CLI_WATCHDOG_PLIST_DEST:-$HOME/Library/LaunchAgents/dev.tsarev.detach.cli-watchdog.plist}"
 CLI_WATCHDOG_LABEL="dev.tsarev.detach.cli-watchdog"
 APP_WATCHDOG_LABEL="dev.tsarev.detach.watchdog"
+SHELL_PATH_MARKER="# Detach CLI PATH"
 
 error() {
   printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -83,9 +92,11 @@ shell_quote() {
 
 resolve_path() {
   local source_path="$1"
-  local source_dir link_target
+  local source_dir link_target depth=0
 
   while [ -h "$source_path" ]; do
+    depth=$((depth + 1))
+    [ "$depth" -le 40 ] || return 1
     source_dir="$(cd -P "$(dirname "$source_path")" >/dev/null 2>&1 && pwd)" || return 1
     link_target="$(readlink "$source_path")" || return 1
     case "$link_target" in
@@ -97,10 +108,595 @@ resolve_path() {
   printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
 }
 
+shell_path_line() {
+  local kind="$1"
+  local quoted_bin
+  quoted_bin="$(shell_quote "$BIN_DIR")"
+  case "$kind" in
+    posix)
+      printf 'case ":${PATH:-}:" in *:%s:*) ;; *) export PATH=%s${PATH:+:${PATH}} ;; esac %s\n' \
+        "$quoted_bin" "$quoted_bin" "$SHELL_PATH_MARKER"
+      ;;
+    csh)
+      printf 'if ( " $path " !~ *%s* ) set path = ( %s $path ) %s\n' \
+        "$(shell_quote " $BIN_DIR ")" "$quoted_bin" "$SHELL_PATH_MARKER"
+      ;;
+    fish)
+      printf 'contains -- %s $PATH; or set -gx PATH %s $PATH %s\n' \
+        "$quoted_bin" "$quoted_bin" "$SHELL_PATH_MARKER"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+safe_shell_profile() {
+  local profile="$1"
+  local canonical_home resolved parent canonical_parent
+  case "$profile" in
+    "$HOME"/*) ;;
+    *) return 1 ;;
+  esac
+  canonical_home="$(cd -P "$HOME" >/dev/null 2>&1 && pwd)" || return 1
+  if [ -e "$profile" ] || [ -L "$profile" ]; then
+    [ -f "$profile" ] || return 1
+    resolved="$(resolve_path "$profile" 2>/dev/null)" || return 1
+    case "$resolved" in "$canonical_home"/*) ;; *) return 1 ;; esac
+    return 0
+  fi
+  parent="$(dirname "$profile")"
+  while [ ! -d "$parent" ]; do
+    case "$parent" in "$HOME"|/) break ;; esac
+    parent="$(dirname "$parent")"
+  done
+  canonical_parent="$(cd -P "$parent" >/dev/null 2>&1 && pwd)" || return 1
+  case "$canonical_parent" in "$canonical_home"|"$canonical_home"/*) ;; *) return 1 ;; esac
+}
+
+profile_has_line() {
+  local profile="$1" line="$2"
+  [ -f "$profile" ] && grep -Fqx -- "$line" "$profile" 2>/dev/null
+}
+
+profile_has_detach_marker() {
+  local profile="$1"
+  [ -f "$profile" ] && grep -Fq -- "$SHELL_PATH_MARKER" "$profile" 2>/dev/null
+}
+
+replace_shell_profile_line() {
+  local profile="$1" old_line="$2" new_line="$3" expected_sha="$4"
+  local resolved current_resolved current_sha tmp
+  resolved="$(resolve_path "$profile" 2>/dev/null)" || return 1
+  [ -f "$resolved" ] && [ ! -L "$resolved" ] || return 1
+  tmp="$("$MKTEMP_BIN" "$(dirname "$resolved")/.detach-profile.XXXXXX")" || return 1
+  "$CP_BIN" -p "$resolved" "$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  "$AWK_BIN" -v old="$old_line" -v new="$new_line" '
+    $0 == old { print new; replaced = 1; next }
+    { print }
+    END { if (!replaced) exit 4 }
+  ' "$profile" >"$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  current_resolved="$(resolve_path "$profile" 2>/dev/null)" || {
+    "$RM_BIN" -f "$tmp"; return 1;
+  }
+  current_sha="$(sha256_file "$profile" 2>/dev/null)" || {
+    "$RM_BIN" -f "$tmp"; return 1;
+  }
+  if [ "$current_resolved" != "$resolved" ] || [ "$current_sha" != "$expected_sha" ]; then
+    "$RM_BIN" -f "$tmp"
+    return 1
+  fi
+  "$MV_BIN" -f "$tmp" "$resolved" || { "$RM_BIN" -f "$tmp"; return 1; }
+}
+
+remove_shell_profile_line() {
+  local profile="$1" line="$2" expected_sha="$3"
+  local resolved current_resolved current_sha tmp
+  resolved="$(resolve_path "$profile" 2>/dev/null)" || return 1
+  [ -f "$resolved" ] && [ ! -L "$resolved" ] || return 1
+  tmp="$("$MKTEMP_BIN" "$(dirname "$resolved")/.detach-profile.XXXXXX")" || return 1
+  "$CP_BIN" -p "$resolved" "$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  "$AWK_BIN" -v owned="$line" '
+    $0 == owned { removed = 1; next }
+    { print }
+    END { if (!removed) exit 4 }
+  ' "$profile" >"$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  current_resolved="$(resolve_path "$profile" 2>/dev/null)" || {
+    "$RM_BIN" -f "$tmp"; return 1;
+  }
+  current_sha="$(sha256_file "$profile" 2>/dev/null)" || {
+    "$RM_BIN" -f "$tmp"; return 1;
+  }
+  if [ "$current_resolved" != "$resolved" ] || [ "$current_sha" != "$expected_sha" ]; then
+    "$RM_BIN" -f "$tmp"
+    return 1
+  fi
+  "$MV_BIN" -f "$tmp" "$resolved" || { "$RM_BIN" -f "$tmp"; return 1; }
+}
+
+restore_shell_profile_contents() {
+  local profile="$1" source="$2" expected_sha="$3"
+  local resolved current_resolved current_sha tmp
+  resolved="$(resolve_path "$profile" 2>/dev/null)" || return 1
+  [ -f "$resolved" ] && [ ! -L "$resolved" ] || return 1
+  tmp="$("$MKTEMP_BIN" "$(dirname "$resolved")/.detach-profile.XXXXXX")" || return 1
+  "$CP_BIN" -p "$resolved" "$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  "$CAT_BIN" "$source" >"$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  current_resolved="$(resolve_path "$profile" 2>/dev/null)" || {
+    "$RM_BIN" -f "$tmp"; return 1;
+  }
+  current_sha="$(sha256_file "$profile" 2>/dev/null)" || {
+    "$RM_BIN" -f "$tmp"; return 1;
+  }
+  if [ "$current_resolved" != "$resolved" ] || [ "$current_sha" != "$expected_sha" ]; then
+    "$RM_BIN" -f "$tmp"
+    return 1
+  fi
+  "$MV_BIN" -f "$tmp" "$resolved" || { "$RM_BIN" -f "$tmp"; return 1; }
+}
+
+write_shell_state_value() {
+  local target="$1" value="$2" tmp="${1}.tmp.$$"
+  "$RM_BIN" -f "$tmp"
+  (umask 077; printf '%s\n' "$value" >"$tmp") || {
+    "$RM_BIN" -f "$tmp"; return 1;
+  }
+  "$MV_BIN" -f "$tmp" "$target" || { "$RM_BIN" -f "$tmp"; return 1; }
+}
+
+remove_empty_shell_path_state_root() {
+  "$RM_BIN" -d "$SHELL_PATH_STATE_ROOT" >/dev/null 2>&1 || true
+}
+
+stage_shell_profile_line() {
+  local profile="$1" line="$2" existed="$3"
+  local resolved tmp last pre_sha post_sha
+  resolved="$(resolve_path "$profile" 2>/dev/null)" || return 1
+  tmp="$("$MKTEMP_BIN" "$(dirname "$resolved")/.detach-profile.XXXXXX")" || return 1
+  if [ "$existed" = 1 ]; then
+    [ -f "$resolved" ] && [ ! -L "$resolved" ] || { "$RM_BIN" -f "$tmp"; return 1; }
+    pre_sha="$(sha256_file "$profile" 2>/dev/null)" || { "$RM_BIN" -f "$tmp"; return 1; }
+    "$CP_BIN" -p "$resolved" "$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  else
+    pre_sha=""
+    chmod 0600 "$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  fi
+  if [ -s "$tmp" ]; then
+    last="$("$TAIL_BIN" -c 1 "$tmp" 2>/dev/null || true)"
+    [ -z "$last" ] || printf '\n' >>"$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  fi
+  printf '%s\n' "$line" >>"$tmp" || { "$RM_BIN" -f "$tmp"; return 1; }
+  post_sha="$(sha256_file "$tmp" 2>/dev/null)" || { "$RM_BIN" -f "$tmp"; return 1; }
+  STAGED_PROFILE_TMP="$tmp"
+  STAGED_PROFILE_RESOLVED="$resolved"
+  STAGED_PROFILE_PRE_SHA="$pre_sha"
+  STAGED_PROFILE_POST_SHA="$post_sha"
+}
+
+activate_staged_shell_profile() {
+  local profile="$1" existed="$2"
+  local current_resolved current_sha
+  current_resolved="$(resolve_path "$profile" 2>/dev/null)" || return 1
+  [ "$current_resolved" = "$STAGED_PROFILE_RESOLVED" ] || return 1
+  if [ "$existed" = 1 ]; then
+    current_sha="$(sha256_file "$profile" 2>/dev/null)" || return 1
+    [ "$current_sha" = "$STAGED_PROFILE_PRE_SHA" ] || return 1
+  else
+    [ ! -e "$profile" ] && [ ! -L "$profile" ] && \
+      [ ! -e "$STAGED_PROFILE_RESOLVED" ] && [ ! -L "$STAGED_PROFILE_RESOLVED" ] || return 1
+  fi
+  "$MV_BIN" -f "$STAGED_PROFILE_TMP" "$STAGED_PROFILE_RESOLVED"
+}
+
+ensure_shell_profile_line() {
+  local id="$1" profile="$2" kind="$3"
+  local line old_line state state_tmp parent existed post_sha previous_post
+  local current_sha restore_exact resolved_profile stored_profile stored_resolved
+  local stored_kind stored_existed stored_line exact_state_safe
+  case "$id" in
+    zshenv|zprofile|zshrc|bash_profile|bash_login|profile|bashrc|login|cshrc|fish) ;;
+    *) die "invalid shell profile id: $id" ;;
+  esac
+  safe_shell_profile "$profile" || die "refusing unsafe shell profile: $profile"
+  line="$(shell_path_line "$kind")" || die "unsupported shell profile kind: $kind"
+  state="$SHELL_PATH_STATE_ROOT/$id"
+
+  if [ -e "$state" ] || [ -L "$state" ]; then
+    [ -d "$state" ] && [ ! -L "$state" ] || die "invalid shell PATH state: $state"
+    [ -f "$state/owned" ] && [ -f "$state/profile" ] && \
+      [ -f "$state/kind" ] && [ -f "$state/existed" ] || \
+      die "incomplete shell PATH ownership state: $state"
+    IFS= read -r stored_profile <"$state/profile" || stored_profile=""
+    [ "$stored_profile" = "$profile" ] || \
+      die "shell profile location changed ($stored_profile -> $profile); uninstall and retry"
+    IFS= read -r stored_kind <"$state/kind" || stored_kind=""
+    [ "$stored_kind" = "$kind" ] || die "shell profile kind changed for $profile"
+    IFS= read -r stored_existed <"$state/existed" || stored_existed=""
+    case "$stored_existed" in 0) ;; 1)
+      [ -f "$state/backup" ] && [ ! -L "$state/backup" ] || \
+        die "shell profile backup is missing or unsafe: $state/backup"
+      ;; *) die "invalid shell profile ownership state: $state" ;; esac
+    if [ -f "$state/resolved-profile" ]; then
+      IFS= read -r stored_resolved <"$state/resolved-profile" || stored_resolved=""
+      resolved_profile="$(resolve_path "$profile" 2>/dev/null || true)"
+      [ -n "$stored_resolved" ] && [ "$resolved_profile" = "$stored_resolved" ] || \
+        die "shell profile target changed; refusing to update $profile"
+    fi
+    if profile_has_line "$profile" "$line"; then
+      current_sha="$(sha256_file "$profile")" || die "cannot hash $profile"
+      previous_post=""
+      [ ! -f "$state/post-sha" ] || \
+        IFS= read -r previous_post <"$state/post-sha" || previous_post=""
+      stored_line=""
+      [ ! -f "$state/line" ] || IFS= read -r stored_line <"$state/line" || stored_line=""
+      restore_exact=0
+      [ ! -f "$state/restore-exact" ] || \
+        IFS= read -r restore_exact <"$state/restore-exact" || restore_exact=0
+      exact_state_safe=1
+      [ "$restore_exact" = 0 ] || [ "$restore_exact" = 1 ] || exact_state_safe=0
+      [ -n "$previous_post" ] && [ "$current_sha" = "$previous_post" ] || exact_state_safe=0
+      [ "$stored_line" = "$line" ] || exact_state_safe=0
+      [ -f "$state/resolved-profile" ] || exact_state_safe=0
+      if [ "$exact_state_safe" -eq 0 ]; then
+        write_shell_state_value "$state/restore-exact" 0 || \
+          die "cannot repair shell restore policy"
+      fi
+      if [ ! -f "$state/post-sha" ]; then
+        write_shell_state_value "$state/post-sha" "$current_sha" || \
+          die "cannot repair shell PATH state"
+      fi
+      if [ ! -f "$state/resolved-profile" ]; then
+        resolved_profile="$(resolve_path "$profile" 2>/dev/null)" || \
+          die "cannot resolve configured shell profile: $profile"
+        write_shell_state_value "$state/resolved-profile" "$resolved_profile" || \
+          die "cannot repair resolved shell profile state"
+      fi
+      [ -f "$state/restore-exact" ] || write_shell_state_value "$state/restore-exact" 0 || \
+        die "cannot repair shell restore policy"
+      write_shell_state_value "$state/line" "$line" || \
+        die "cannot repair shell PATH line state"
+      return 0
+    fi
+    old_line=""
+    if [ -f "$state/line" ]; then
+      IFS= read -r old_line <"$state/line" || old_line=""
+    fi
+    if [ -n "$old_line" ]; then
+      case "$old_line" in *"$SHELL_PATH_MARKER"*) ;; *) old_line="" ;; esac
+    fi
+    if [ -n "$old_line" ] && profile_has_line "$profile" "$old_line"; then
+      current_sha="$(sha256_file "$profile")" || die "cannot hash profile before PATH update: $profile"
+      previous_post=""
+      [ ! -f "$state/post-sha" ] || IFS= read -r previous_post <"$state/post-sha" || previous_post=""
+      restore_exact=0
+      if [ -f "$state/restore-exact" ]; then
+        IFS= read -r restore_exact <"$state/restore-exact" || restore_exact=0
+      fi
+      [ "$restore_exact" = 1 ] && [ "$current_sha" = "$previous_post" ] || restore_exact=0
+      # Make every interrupted migration non-destructive first. Exact restore
+      # is re-enabled only after the profile and all related metadata agree.
+      write_shell_state_value "$state/restore-exact" 0 || \
+        die "cannot make shell PATH migration fail-safe"
+      replace_shell_profile_line "$profile" "$old_line" "$line" "$current_sha" || \
+        die "cannot update the Detach PATH entry in $profile"
+      post_sha="$(sha256_file "$profile")" || die "cannot hash updated profile: $profile"
+      resolved_profile="$(resolve_path "$profile" 2>/dev/null)" || \
+        die "cannot resolve updated shell profile: $profile"
+      write_shell_state_value "$state/post-sha" "$post_sha" || \
+        die "cannot update shell PATH hash state"
+      write_shell_state_value "$state/resolved-profile" "$resolved_profile" || \
+        die "cannot update resolved shell profile state"
+      write_shell_state_value "$state/line" "$line" || \
+        die "cannot update shell PATH line state"
+      write_shell_state_value "$state/restore-exact" "$restore_exact" || \
+        die "cannot update shell restore policy"
+      return 0
+    fi
+    profile_has_detach_marker "$profile" && \
+      die "the Detach PATH entry in $profile was modified; remove it and retry"
+    "$RM_BIN" -rf "$state" || die "cannot reset stale shell PATH state"
+  fi
+
+  # An identical line that predates Detach is already sufficient, but is not
+  # ours to remove during uninstall.
+  profile_has_line "$profile" "$line" && return 0
+  profile_has_detach_marker "$profile" && \
+    die "the Detach PATH entry in $profile was modified; remove it and retry"
+
+  parent="$(dirname "$profile")"
+  "$MKDIR_BIN" -p "$parent" || die "cannot create shell profile directory: $parent"
+  "$INSTALL_BIN" -d -m 0700 "$SHELL_PATH_STATE_ROOT" || \
+    die "cannot create shell PATH state directory"
+  state_tmp="$SHELL_PATH_STATE_ROOT/.incoming-$id-$$"
+  "$RM_BIN" -rf "$state_tmp"
+  "$INSTALL_BIN" -d -m 0700 "$state_tmp" || die "cannot stage shell PATH state"
+
+  existed=0
+  if [ -f "$profile" ]; then
+    existed=1
+    : >"$state_tmp/backup" || die "cannot stage shell profile backup"
+    chmod 0600 "$state_tmp/backup" || die "cannot secure shell profile backup"
+    "$CAT_BIN" "$profile" >"$state_tmp/backup" || die "cannot back up $profile"
+  fi
+  STAGED_PROFILE_TMP=""
+  STAGED_PROFILE_RESOLVED=""
+  STAGED_PROFILE_PRE_SHA=""
+  STAGED_PROFILE_POST_SHA=""
+  if ! stage_shell_profile_line "$profile" "$line" "$existed"; then
+    "$RM_BIN" -rf "$state_tmp"
+    remove_empty_shell_path_state_root
+    die "cannot stage the Detach PATH entry for $profile"
+  fi
+  post_sha="$STAGED_PROFILE_POST_SHA"
+  resolved_profile="$STAGED_PROFILE_RESOLVED"
+  if ! {
+    printf '%s\n' "$existed" >"$state_tmp/existed" &&
+    printf '%s\n' "$profile" >"$state_tmp/profile" &&
+    printf '%s\n' "$kind" >"$state_tmp/kind" &&
+    printf '%s\n' "$post_sha" >"$state_tmp/post-sha" &&
+    printf '%s\n' "$resolved_profile" >"$state_tmp/resolved-profile" &&
+    printf '%s\n' 1 >"$state_tmp/restore-exact" &&
+    printf '%s\n' "$line" >"$state_tmp/line" &&
+    : >"$state_tmp/owned"
+  }; then
+    "$RM_BIN" -f "$STAGED_PROFILE_TMP"
+    "$RM_BIN" -rf "$state_tmp"
+    remove_empty_shell_path_state_root
+    die "cannot record shell PATH state"
+  fi
+  if ! "$MV_BIN" "$state_tmp" "$state"; then
+    "$RM_BIN" -f "$STAGED_PROFILE_TMP"
+    "$RM_BIN" -rf "$state_tmp"
+    remove_empty_shell_path_state_root
+    die "cannot activate shell PATH state"
+  fi
+  if ! activate_staged_shell_profile "$profile" "$existed"; then
+    "$RM_BIN" -f "$STAGED_PROFILE_TMP"
+    "$RM_BIN" -rf "$state"
+    remove_empty_shell_path_state_root
+    die "shell profile changed while configuring detach: $profile"
+  fi
+}
+
+detect_user_shell() {
+  local record user_name="${USER:-}" detected="${DETACH_USER_SHELL:-}"
+  if [ -z "$user_name" ] && [ -x "$ID_BIN" ]; then
+    user_name="$("$ID_BIN" -un 2>/dev/null || true)"
+  fi
+  if [ -z "$detected" ] && [ -x "$DSCL_BIN" ] && [ -n "$user_name" ]; then
+    record="$("$DSCL_BIN" . -read "/Users/$user_name" UserShell 2>/dev/null || true)"
+    case "$record" in UserShell:\ *) detected="${record#UserShell: }" ;; esac
+  fi
+  [ -n "$detected" ] || detected="${SHELL:-}"
+  [ -n "$detected" ] || return 1
+  printf '%s\n' "$detected"
+}
+
+visit_shell_profiles() {
+  local callback="$1"
+  local user_shell shell_name login_profile zsh_root fish_config_root
+  case "$BIN_DIR" in *:*) die "CLI install directory cannot contain a colon: $BIN_DIR" ;; esac
+  user_shell="$(detect_user_shell)" || \
+    die "cannot determine the login shell; add $BIN_DIR to PATH manually"
+  shell_name="${user_shell##*/}"
+  DETECTED_USER_SHELL="$user_shell"
+
+  case "$shell_name" in
+    zsh)
+      zsh_root="${ZDOTDIR:-$HOME}"
+      # .zshenv is the one user startup file shared by login, interactive, and
+      # non-interactive zsh. It is also read before a user file can change
+      # ZDOTDIR, so Finder-launched installation cannot miss that redirect.
+      "$callback" zshenv "$zsh_root/.zshenv" posix
+      ;;
+    bash)
+      if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then
+        login_profile="$HOME/.bash_profile"; "$callback" bash_profile "$login_profile" posix
+      elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then
+        login_profile="$HOME/.bash_login"; "$callback" bash_login "$login_profile" posix
+      elif [ -e "$HOME/.profile" ] || [ -L "$HOME/.profile" ]; then
+        login_profile="$HOME/.profile"; "$callback" profile "$login_profile" posix
+      else
+        login_profile="$HOME/.bash_profile"; "$callback" bash_profile "$login_profile" posix
+      fi
+      "$callback" bashrc "$HOME/.bashrc" posix
+      ;;
+    fish)
+      fish_config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+      "$callback" fish "$fish_config_root/fish/conf.d/detach.fish" fish
+      ;;
+    csh|tcsh)
+      "$callback" login "$HOME/.login" csh
+      "$callback" cshrc "$HOME/.cshrc" csh
+      ;;
+    sh|dash|ksh)
+      "$callback" profile "$HOME/.profile" posix
+      ;;
+    *)
+      die "unsupported login shell $user_shell; add $BIN_DIR to its PATH and retry"
+      ;;
+  esac
+}
+
+preflight_shell_profile_line() {
+  local id="$1" profile="$2" kind="$3"
+  local line old_line parent state stored_profile stored_resolved current_resolved
+  local owned_previous=0
+  case "$id" in
+    zshenv|zprofile|zshrc|bash_profile|bash_login|profile|bashrc|login|cshrc|fish) ;;
+    *) die "invalid shell profile id: $id" ;;
+  esac
+  safe_shell_profile "$profile" || die "refusing unsafe shell profile: $profile"
+  state="$SHELL_PATH_STATE_ROOT/$id"
+  if [ -e "$state" ] || [ -L "$state" ]; then
+    [ -d "$state" ] && [ ! -L "$state" ] && [ -w "$state" ] || \
+      die "invalid or unwritable shell PATH state: $state"
+    if [ -f "$state/profile" ]; then
+      IFS= read -r stored_profile <"$state/profile" || stored_profile=""
+      [ "$stored_profile" = "$profile" ] || \
+        die "shell profile location changed ($stored_profile -> $profile); uninstall and retry"
+    fi
+    if [ -f "$state/resolved-profile" ]; then
+      IFS= read -r stored_resolved <"$state/resolved-profile" || stored_resolved=""
+      current_resolved="$(resolve_path "$profile" 2>/dev/null || true)"
+      [ -n "$stored_resolved" ] && [ "$current_resolved" = "$stored_resolved" ] || \
+        die "shell profile target changed; refusing to update $profile"
+    fi
+    if [ -f "$state/line" ]; then
+      IFS= read -r old_line <"$state/line" || old_line=""
+      case "$old_line" in *"$SHELL_PATH_MARKER"*)
+        profile_has_line "$profile" "$old_line" && owned_previous=1
+        ;;
+      esac
+    fi
+  fi
+  line="$(shell_path_line "$kind")" || die "unsupported shell profile kind: $kind"
+  profile_has_line "$profile" "$line" && return 0
+  [ "$owned_previous" -eq 1 ] || ! profile_has_detach_marker "$profile" || \
+    die "the Detach PATH entry in $profile was modified; remove it and retry"
+  if [ -e "$profile" ] || [ -L "$profile" ]; then
+    [ -w "$profile" ] || die "shell profile is not writable: $profile"
+    return 0
+  fi
+  parent="$(dirname "$profile")"
+  while [ ! -d "$parent" ]; do
+    case "$parent" in "$HOME"|/) break ;; esac
+    parent="$(dirname "$parent")"
+  done
+  case "$parent" in "$HOME"|"$HOME"/*) ;; *) die "unsafe shell profile parent: $parent" ;; esac
+  [ -w "$parent" ] || die "shell profile directory is not writable: $parent"
+}
+
+preflight_shell_path() {
+  local parent
+  if [ -e "$SHELL_PATH_STATE_ROOT" ] || [ -L "$SHELL_PATH_STATE_ROOT" ]; then
+    [ -d "$SHELL_PATH_STATE_ROOT" ] && [ ! -L "$SHELL_PATH_STATE_ROOT" ] && \
+      [ -w "$SHELL_PATH_STATE_ROOT" ] || \
+      die "invalid or unwritable shell PATH state: $SHELL_PATH_STATE_ROOT"
+  else
+    parent="$(dirname "$SHELL_PATH_STATE_ROOT")"
+    [ -d "$parent" ] && [ -w "$parent" ] || \
+      die "shell PATH state parent is not writable: $parent"
+  fi
+  DETECTED_USER_SHELL=""
+  visit_shell_profiles preflight_shell_profile_line
+}
+
+configure_shell_path() {
+  DETECTED_USER_SHELL=""
+  "$INSTALL_BIN" -d -m 0700 "$SHELL_PATH_STATE_ROOT" || \
+    die "cannot create shell PATH state directory"
+  visit_shell_profiles ensure_shell_profile_line
+  printf '%s\n' "$DETECTED_USER_SHELL" >"$SHELL_PATH_STATE_ROOT/login-shell" || \
+    die "cannot record configured login shell"
+}
+
+cleanup_shell_path() {
+  local state profile resolved_profile current_resolved kind existed post_sha current_sha
+  local line restore_exact kept=0 state_kept
+  [ -d "$SHELL_PATH_STATE_ROOT" ] && [ ! -L "$SHELL_PATH_STATE_ROOT" ] || return 0
+  for state in "$SHELL_PATH_STATE_ROOT"/*; do
+    [ -d "$state" ] && [ ! -L "$state" ] || continue
+    state_kept=0
+    [ -f "$state/owned" ] && [ -f "$state/profile" ] && \
+      [ -f "$state/resolved-profile" ] && [ -f "$state/kind" ] && \
+      [ -f "$state/existed" ] && [ -f "$state/post-sha" ] && \
+      [ -f "$state/restore-exact" ] && [ -f "$state/line" ] || {
+        error "keeping incomplete shell PATH state: $state"
+        kept=1
+        continue
+      }
+    IFS= read -r profile <"$state/profile" || {
+      error "keeping unreadable shell profile state: $state"; kept=1; continue
+    }
+    IFS= read -r resolved_profile <"$state/resolved-profile" || {
+      error "keeping unreadable resolved shell profile state: $state"; kept=1; continue
+    }
+    IFS= read -r kind <"$state/kind" || {
+      error "keeping unreadable shell kind state: $state"; kept=1; continue
+    }
+    IFS= read -r existed <"$state/existed" || {
+      error "keeping unreadable shell ownership state: $state"; kept=1; continue
+    }
+    IFS= read -r post_sha <"$state/post-sha" || {
+      error "keeping unreadable shell hash state: $state"; kept=1; continue
+    }
+    IFS= read -r line <"$state/line" || {
+      error "keeping unreadable shell PATH line state: $state"; kept=1; continue
+    }
+    IFS= read -r restore_exact <"$state/restore-exact" || {
+      error "keeping unreadable shell restore policy: $state"; kept=1; continue
+    }
+    case "$kind" in posix|csh|fish) ;; *) error "keeping invalid shell PATH state: $state"; kept=1; continue ;; esac
+    case "$existed" in 0|1) ;; *) error "keeping invalid shell PATH state: $state"; kept=1; continue ;; esac
+    case "$restore_exact" in 0|1) ;; *) error "keeping invalid shell restore policy: $state"; kept=1; continue ;; esac
+    safe_shell_profile "$profile" || {
+      error "refusing to clean unsafe shell profile: $profile"
+      kept=1
+      continue
+    }
+    if [ ! -e "$profile" ] && [ ! -L "$profile" ] && [ "$existed" = 0 ]; then
+      "$RM_BIN" -rf "$state"
+      continue
+    fi
+    current_resolved="$(resolve_path "$profile" 2>/dev/null || true)"
+    if [ -z "$current_resolved" ] || [ "$current_resolved" != "$resolved_profile" ]; then
+      error "shell profile target changed; refusing to clean $profile"
+      kept=1
+      continue
+    fi
+    case "$line" in *"$SHELL_PATH_MARKER"*) ;; *)
+      error "keeping shell state with an invalid owned PATH line: $state"
+      kept=1
+      continue
+      ;;
+    esac
+    if [ -f "$profile" ]; then
+      current_sha="$(sha256_file "$profile" 2>/dev/null || true)"
+    else
+      current_sha=""
+    fi
+
+    if [ "$restore_exact" = 1 ] && [ -n "$current_sha" ] && [ "$current_sha" = "$post_sha" ]; then
+      if [ "$existed" = 1 ]; then
+        if [ ! -f "$state/backup" ] || [ -L "$state/backup" ]; then
+          error "shell profile backup is missing or unsafe: $state/backup"
+          kept=1; state_kept=1
+          continue
+        fi
+        restore_shell_profile_contents "$profile" "$state/backup" "$current_sha" || {
+          error "cannot restore shell profile: $profile"
+          kept=1; state_kept=1
+          continue
+        }
+      else
+        "$RM_BIN" -f "$profile" || {
+          error "cannot remove Detach shell profile: $profile"
+          kept=1; state_kept=1
+          continue
+        }
+      fi
+    elif profile_has_line "$profile" "$line"; then
+      remove_shell_profile_line "$profile" "$line" "$current_sha" || {
+        error "cannot update shell profile: $profile"
+        kept=1; state_kept=1
+        continue
+      }
+    else
+      error "Detach PATH entry in $profile changed; it was left untouched"
+      kept=1; state_kept=1
+    fi
+    [ "$state_kept" -eq 1 ] || "$RM_BIN" -rf "$state"
+  done
+  if [ "$kept" -eq 0 ]; then
+    "$RM_BIN" -rf "$SHELL_PATH_STATE_ROOT"
+  else
+    "$RM_BIN" -f "$SHELL_PATH_STATE_ROOT/login-shell"
+  fi
+}
+
 validate_managed_paths() {
   local path
   for path in "$BIN_DIR" "$LIBEXEC_ROOT" "$INSTALL_STATE_ROOT" "$CONFIG_ROOT" \
-              "$CLI_WATCHDOG_PLIST_DEST"; do
+              "$SHELL_PATH_STATE_ROOT" "$CLI_WATCHDOG_PLIST_DEST"; do
     case "$path" in
       /*) ;;
       *) die "managed path must be absolute: $path" ;;
@@ -110,6 +706,10 @@ validate_managed_paths() {
         die "refusing unsafe managed path: $path" ;;
     esac
   done
+  case "$SHELL_PATH_STATE_ROOT" in
+    "$INSTALL_STATE_ROOT"/*) ;;
+    *) die "shell PATH state must stay inside install state: $SHELL_PATH_STATE_ROOT" ;;
+  esac
 }
 
 valid_semver() {
@@ -378,6 +978,11 @@ install_locked() {
   require_executable "$MV_BIN" mv
   require_executable "$RM_BIN" rm
   require_executable "$LN_BIN" ln
+  require_executable "$CAT_BIN" cat
+  require_executable "$CP_BIN" cp
+  require_executable "$AWK_BIN" awk
+  require_executable "$TAIL_BIN" tail
+  require_executable "$MKTEMP_BIN" mktemp
   require_executable "$SHASUM_BIN" shasum
   [ -x "$payload_dir/detach" ] || die "payload detach is missing or not executable"
   [ -x "$payload_dir/detach-core" ] || die "payload detach-core is missing or not executable"
@@ -462,6 +1067,10 @@ install_locked() {
     fi
   fi
 
+  # Reject unsupported shells, unsafe symlinks, edited Detach entries, and
+  # unwritable profiles before the immutable payload or public CLI changes.
+  preflight_shell_path
+
   "$INSTALL_BIN" -d -m 0755 "$BIN_DIR" "$LIBEXEC_ROOT/versions" || die "cannot create installation directories"
   "$INSTALL_BIN" -d -m 0700 "$INSTALL_STATE_ROOT" || die "cannot create install state directory"
 
@@ -507,6 +1116,10 @@ install_locked() {
     "$MV_BIN" "$stage" "$target" || die "cannot activate payload directory"
   fi
 
+  # Profile setup does not execute the CLI, so finish it before switching the
+  # public command. A shell-specific failure cannot leave a new CLI activated.
+  configure_shell_path
+
   link_tmp="$BIN_DIR/.detach-link.$$"
   "$RM_BIN" -f "$link_tmp"
   "$LN_BIN" -s "$target/detach" "$link_tmp" || die "cannot create CLI symlink"
@@ -524,6 +1137,7 @@ install_locked() {
   [ "$current" = "$version" ] || die "activated CLI failed validation"
   printf 'Installed detach %s (build %s, payload %s)\n' "$version" "$build" "${payload_id:0:12}"
   printf 'CLI: %s\n' "$BIN_DIR/detach"
+  printf 'Command: detach (open a new Terminal window)\n'
 }
 
 remove_detach_state_root() {
@@ -559,6 +1173,14 @@ uninstall_locked() {
     esac
   done
 
+  require_executable "$MV_BIN" mv
+  require_executable "$RM_BIN" rm
+  require_executable "$CAT_BIN" cat
+  require_executable "$CP_BIN" cp
+  require_executable "$AWK_BIN" awk
+  require_executable "$MKTEMP_BIN" mktemp
+  require_executable "$SHASUM_BIN" shasum
+
   managed_sessions_running && die "cannot uninstall while a detach session is running; stop it first"
 
   if [ -x "$LAUNCHCTL_BIN" ] && \
@@ -590,6 +1212,7 @@ uninstall_locked() {
     "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
     "$RM_BIN" -f "$CLI_WATCHDOG_PLIST_DEST"
   fi
+  cleanup_shell_path
   "$RM_BIN" -rf "$LIBEXEC_ROOT/versions"
   "$RM_BIN" -f "$INSTALL_STATE_ROOT/install.json"
   "$RM_BIN" -f "$LIBEXEC_ROOT/detach" "$LIBEXEC_ROOT/detach-core"

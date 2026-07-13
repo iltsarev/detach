@@ -75,7 +75,8 @@ anything missing.
    then return to Detach.
 4. Choose **＋**, select a project and provider, and start the session.
 
-Or start from your own Terminal after setup:
+Guided setup also adds `detach` to your login shell. Open a new Terminal window,
+then start from any project directory:
 
 ```bash
 cd ~/my/repo
@@ -111,8 +112,9 @@ tmux, and the dashboard catches up when you come back.
 <details>
 <summary><strong>Prefer the Terminal? Use the bundled CLI</strong></summary>
 
-The app installs `detach` automatically. Start interactively, start with a
-prompt, or leave the session running in the background immediately:
+The app installs `detach` automatically and configures it for your login and
+interactive shell. Start interactively, start with a prompt, or leave the
+session running in the background immediately:
 
 ```bash
 detach codex
@@ -321,7 +323,8 @@ detach uninstall --keep-state
 
 Prefer uninstalling from Detach Settings so macOS can unregister the required
 background helper before removing the CLI. Keeping state preserves recovery
-checkpoints for a future reinstall.
+checkpoints for a future reinstall. Uninstall also removes the shell PATH entry
+that Detach owns, without removing a PATH entry you created yourself.
 
 To remove Detach checkpoints as well:
 

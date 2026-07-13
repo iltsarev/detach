@@ -10,24 +10,15 @@ struct EmptySessionExample: Equatable, Identifiable {
 }
 
 enum EmptySessionsGuide {
-    static func examples(detachCommand: String) -> [EmptySessionExample] {
-        Provider.allCases.map {
-            EmptySessionExample(
-                provider: $0,
-                directoryCommand: "cd ~/my/repo",
-                launchCommand: "\(detachCommand) \($0.rawValue)")
-        }
+    static let examples = Provider.allCases.map {
+        EmptySessionExample(
+            provider: $0,
+            directoryCommand: "cd ~/my/repo",
+            launchCommand: "detach \($0.rawValue)")
     }
 }
 
 struct EmptySessionsView: View {
-    let detachPath: String
-
-    private var examples: [EmptySessionExample] {
-        EmptySessionsGuide.examples(
-            detachCommand: (detachPath as NSString).abbreviatingWithTildeInPath)
-    }
-
     var body: some View {
         ScrollView {
             VStack(spacing: 22) {
@@ -40,7 +31,7 @@ struct EmptySessionsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                TerminalGuideView(examples: examples)
+                TerminalGuideView(examples: EmptySessionsGuide.examples)
 
                 VStack(spacing: 6) {
                     Label("Сессия появится здесь автоматически", systemImage: "sparkles")

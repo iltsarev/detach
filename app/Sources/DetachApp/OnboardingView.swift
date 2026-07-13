@@ -322,7 +322,7 @@ struct OnboardingView: View {
         case "provider":
             "Установите и авторизуйте Codex CLI или Claude CLI, затем повторите настройку."
         case "cli_path":
-            "Добавьте ~/.local/bin в PATH интерактивного shell."
+            "Откройте новое окно Terminal. Repair повторно настроит команду detach для вашего shell."
         case "app_location":
             "Запуск из DMG или временной копии ненадёжен."
         case "amphetamine_app":

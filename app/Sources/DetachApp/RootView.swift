@@ -49,7 +49,7 @@ struct RootView: View {
                         selectedID: $selectedID)
                 } detail: {
                     if store.sessions.isEmpty && store.state == .ok {
-                        EmptySessionsView(detachPath: detachPath)
+                        EmptySessionsView()
                     } else if let session = selectedSession {
                         SessionDetailView(session: session, store: store, detachPath: detachPath)
                             .id(session.id)
