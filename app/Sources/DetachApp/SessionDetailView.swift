@@ -6,10 +6,13 @@ struct SessionDetailView: View {
     let session: Session
     let store: SessionStore
     let detachPath: String
+    @AppStorage(AppSettings.terminalBundleIdentifierKey) private var terminalBundleIdentifier =
+        TerminalCatalog.defaultBundleIdentifier
 
     @State private var logPoller: LogPoller?
     @State private var actionError: String?
     @State private var terminalFailure: TerminalLaunchFailure?
+    @State private var isLaunchingTerminal = false
     @State private var confirmDelete = false
 
     var body: some View {
@@ -41,11 +44,13 @@ struct SessionDetailView: View {
         } message: {
             Text(actionError ?? "")
         }
-        .alert("Не удалось открыть Terminal", isPresented: .init(
+        .alert("Не удалось открыть терминал", isPresented: .init(
             get: { terminalFailure != nil },
             set: { if !$0 { terminalFailure = nil } })) {
-            if terminalFailure?.requiresAutomationPermission == true {
-                Button("Открыть настройки") { TerminalLauncher.openAutomationSettings() }
+            if terminalFailure?.requiresTerminalSelection == true {
+                SettingsLink {
+                    Text("Выбрать другой терминал")
+                }
             }
             Button("Закрыть", role: .cancel) {}
         } message: {
@@ -65,14 +70,14 @@ struct SessionDetailView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text(session.displayTitle).font(.title2.weight(.bold))
+            Text(session.displayTitle).appFont(.title2, weight: .bold)
             Text(session.effectiveStatus.rawValue)
-                .font(.caption.weight(.semibold))
+                .appFont(.caption, weight: .semibold)
                 .padding(.horizontal, 7).padding(.vertical, 2)
                 .background(Capsule().fill(.quaternary))
             if let model = session.model {
                 Text(model)
-                    .font(.caption.weight(.semibold))
+                    .appFont(.caption, weight: .semibold)
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Capsule().fill(providerTint.opacity(0.16)))
                     .foregroundStyle(providerTint)
@@ -144,7 +149,7 @@ struct SessionDetailView: View {
             }
             if session.effectiveStatus == .collision {
                 Label("Имя занято чужой tmux-сессией", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
+                    .appFont(.caption).foregroundStyle(.orange)
             }
             Spacer()
         }
@@ -158,6 +163,7 @@ struct SessionDetailView: View {
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
+                .disabled(isLaunchingTerminal)
         case .resume:
             Button("Resume в терминале") {
                 if let command = TerminalCommand.resume(detachPath: detachPath, session: session) {
@@ -166,10 +172,12 @@ struct SessionDetailView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Brand.indigo)
+            .disabled(isLaunchingTerminal)
         case .recover:
             Button("Recover в терминале") { openInTerminal(TerminalCommand.recover(detachPath: detachPath, session: session)) }
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
+                .disabled(isLaunchingTerminal)
         case .stop:
             Button("Stop", role: .destructive) { run(.stop) }
         case .delete:
@@ -179,10 +187,15 @@ struct SessionDetailView: View {
 
     @MainActor
     private func openInTerminal(_ command: String) {
-        // NSAppleScript is main-thread-only. Invoke it just in time from the
-        // explicit user action, including the first Automation prompt.
-        if let failure = TerminalLauncher.open(command: command) {
-            terminalFailure = failure
+        Task {
+            guard !isLaunchingTerminal else { return }
+            isLaunchingTerminal = true
+            defer { isLaunchingTerminal = false }
+            if let failure = await TerminalLauncher.open(
+                command: command,
+                terminalBundleIdentifier: terminalBundleIdentifier) {
+                terminalFailure = failure
+            }
         }
     }
 
@@ -214,7 +227,7 @@ struct ContextGauge: View {
                 }
             }
             if let summary = session.contextSummary {
-                Text(summary).font(.caption).foregroundStyle(.secondary)
+                Text(summary).appFont(.caption).foregroundStyle(.secondary)
             }
         }
         .help("Занятый контекст модели")
@@ -222,14 +235,15 @@ struct ContextGauge: View {
 }
 
 struct MetaRow: View {
+    @Environment(\.appFontPointSize) private var fontPointSize
     let label: String
     let value: String
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .trailing)
-            Text(value).font(.caption).textSelection(.enabled)
+            Text(label).appFont(.caption).foregroundStyle(.secondary)
+                .frame(width: max(80, fontPointSize * 6), alignment: .trailing)
+            Text(value).appFont(.caption).textSelection(.enabled)
         }
     }
 }

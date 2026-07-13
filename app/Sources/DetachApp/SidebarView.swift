@@ -2,7 +2,9 @@ import SwiftUI
 import DetachKit
 
 struct SidebarView: View {
+    @Environment(\.appFontPointSize) private var fontPointSize
     let store: SessionStore
+    let detachPath: String
     @Binding var selectedID: String?
     @State private var showNewSession = false
 
@@ -50,9 +52,11 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showNewSession) {
-            NewSessionSheet()
+            NewSessionSheet(detachPath: detachPath)
         }
-        .navigationSplitViewColumnWidth(min: 230, ideal: 260)
+        .navigationSplitViewColumnWidth(
+            min: max(230, fontPointSize * 18),
+            ideal: max(260, fontPointSize * 20))
     }
 }
 
@@ -89,15 +93,15 @@ struct SessionRow: View {
             Circle().fill(dotColor).frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(session.displayTitle).font(.body.weight(.semibold)).lineLimit(1)
+                    Text(session.displayTitle).appFont(.body, weight: .semibold).lineLimit(1)
                     Text(session.provider.rawValue)
-                        .font(.caption2)
+                        .appFont(.caption2)
                         .foregroundStyle(Brand.tint(for: session.provider))
                         .padding(.horizontal, 4).padding(.vertical, 1)
                         .overlay(RoundedRectangle(cornerRadius: 4)
                             .strokeBorder(Brand.tint(for: session.provider).opacity(0.35)))
                 }
-                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(subtitle).appFont(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
         .padding(.vertical, 2)
@@ -126,7 +130,7 @@ struct StatusBar: View {
             }
             Spacer()
         }
-        .font(.caption)
+        .appFont(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(.bar)

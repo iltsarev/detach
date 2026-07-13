@@ -29,16 +29,4 @@ public enum TerminalCommand {
         }
         return command
     }
-
-    public static func appleScript(for command: String) -> String {
-        let escaped = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        return """
-        tell application "Terminal"
-            activate
-            do script "\(escaped)"
-        end tell
-        """
-    }
 }

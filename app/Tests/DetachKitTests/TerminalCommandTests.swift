@@ -47,33 +47,4 @@ final class TerminalCommandTests: XCTestCase {
                                   projectDir: "/tmp/p", name: nil, prompt: nil),
             "cd '/tmp/p' && exec '/Users/me/.local/bin/detach' codex")
     }
-
-    func testAppleScriptEscaping() {
-        let script = TerminalCommand.appleScript(for: #"echo "hi\there""#)
-        XCTAssertTrue(script.contains(#"do script "echo \"hi\\there\"""#))
-        XCTAssertTrue(script.contains("tell application \"Terminal\""))
-        XCTAssertTrue(script.contains("activate"))
-    }
-
-    func testTerminalAutomationDenialGetsTypedRecovery() {
-        let failure = TerminalLauncher.failure(from: [
-            NSAppleScript.errorNumber: NSNumber(value: errAEEventNotPermitted),
-            NSAppleScript.errorMessage: "Not authorized",
-        ])
-
-        XCTAssertTrue(failure.requiresAutomationPermission)
-        XCTAssertEqual(
-            failure.message,
-            "Разрешите Detach управлять Terminal в Системных настройках.")
-    }
-
-    func testOtherTerminalFailureKeepsSystemMessage() {
-        let failure = TerminalLauncher.failure(from: [
-            NSAppleScript.errorNumber: NSNumber(value: -1),
-            NSAppleScript.errorMessage: "Terminal is unavailable",
-        ])
-
-        XCTAssertFalse(failure.requiresAutomationPermission)
-        XCTAssertEqual(failure.message, "Terminal is unavailable")
-    }
 }

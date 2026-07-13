@@ -113,10 +113,16 @@ old definition. Enable the new service before removing the old registration
 `/Applications`, not a DMG/App Translocation path.
 When helper/plist bytes change, await unregister completion before registering
 again and use the bounded retry for macOS' transient SMAppService Code=1 race.
-Terminal Automation is requested just in time by the first terminal action and
-must not gate base onboarding. Session operations still consume only the public CLI surface. On
-partially invalid `list --json`, keep the last good list; keep `emit_list_json`
-and `Session` in sync.
+The selected terminal is stored by bundle identifier. Interactive actions write
+a private, self-deleting `.command` file and open it in the selected installed
+terminal through `NSWorkspace`; terminal actions must not use Apple Events.
+Both the app and `DetachWatchdog` retain Automation solely for optional
+Amphetamine coordination: app-launched CLI stop/delete paths may release the
+final lease, while the helper reconciles leases in the background. Session
+operations still consume only the public CLI surface. App notifications are
+opt-in and use one app-level polling service with a baseline and transition
+deduplication. On partially invalid `list --json`, keep the last good list;
+keep `emit_list_json` and `Session` in sync.
 
 Sparkle 2 is pinned in `Package.resolved`, embedded under `Contents/Frameworks`
 with its symlink layout intact, and signed inside-out before the outer app.

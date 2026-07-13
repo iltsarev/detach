@@ -72,8 +72,12 @@ anything missing.
    then return to Detach.
 4. Choose **＋**, select a project and provider, and start the session.
 
-The app asks for Terminal Automation only when you first open or create a
-session. Optional keep-awake support stays off until you enable it in Settings.
+Detach finds compatible terminal apps already installed on your Mac. Choose
+one in Settings; start, attach, resume, and recover open there. The main app
+does not need Terminal Automation access. Settings also offers optional session
+notifications and an exact 11–22 pt text size (14 pt by default). Optional
+keep-awake support stays off until you enable it; macOS may then ask Detach for
+permission to control Amphetamine.
 
 ## Use the app
 
@@ -81,8 +85,8 @@ session. Optional keep-awake support stays off until you enable it in Settings.
   opening prompt.
 - **Watch:** see every session in one sidebar with live status, model, context
   usage, checkpoint time, and ANSI-aware log previews.
-- **Return:** open a live session in Terminal, resume a saved conversation, or
-  recover the last successful checkpoint after an interruption.
+- **Return:** open a live session in your selected terminal, resume a saved
+  conversation, or recover the last successful checkpoint after an interruption.
 - **Control:** stop or delete sessions, repair the CLI, manage updates, and
   enable optional closed-lid work from one place.
 

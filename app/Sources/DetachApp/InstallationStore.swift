@@ -88,7 +88,7 @@ final class InstallationStore {
             path: bundleURL.path,
             summary: isStableApplicationLocation
                 ? "Detach.app запущен из /Applications"
-                : "Перетащи Detach.app в /Applications и открой установленную копию")
+                : "Переместите Detach.app в Applications и откройте установленную копию")
         let distributionCheck = DiagnosticCheck(
             id: "app_cli_match", section: .base, label: "Версия app и CLI",
             required: true, status: distributionMatchesBundle ? .ok : .error,

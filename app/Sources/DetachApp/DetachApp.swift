@@ -3,6 +3,8 @@ import DetachKit
 
 enum AppSettings {
     static let defaultDetachPath = ("~/.local/bin/detach" as NSString).expandingTildeInPath
+    static let terminalBundleIdentifierKey = "terminalBundleIdentifier"
+    static let notificationsEnabledKey = "sessionNotificationsEnabled"
 }
 
 @main
@@ -12,13 +14,14 @@ struct DetachApp: App {
     @State private var installation = InstallationStore(
         detachPath: AppSettings.defaultDetachPath)
     @StateObject private var updater = UpdaterService()
+    @StateObject private var notifications = SessionNotificationService()
 
     var body: some Scene {
-        WindowGroup("Detach") {
+        Window("Detach", id: "main") {
             let activeDetachPath = installation.hasDistributionPayload
                 ? AppSettings.defaultDetachPath : detachPath
             RootView(detachPath: activeDetachPath, pollInterval: pollInterval,
-                     installation: installation)
+                     installation: installation, notifications: notifications)
                 .id(activeDetachPath) // rebuild the store when the CLI path changes
         }
         .commands {
@@ -27,7 +30,10 @@ struct DetachApp: App {
             }
         }
         Settings {
-            SettingsView(installation: installation, updater: updater)
+            SettingsView(
+                installation: installation,
+                updater: updater,
+                notifications: notifications)
         }
     }
 }

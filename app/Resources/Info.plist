@@ -25,6 +25,6 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Detach открывает сессии агентов в Terminal.app.</string>
+  <string>Detach управляет опциональным режимом keep-awake через Amphetamine.</string>
 </dict>
 </plist>

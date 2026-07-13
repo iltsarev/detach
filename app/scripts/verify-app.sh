@@ -11,6 +11,8 @@ AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.watchdog.plist"
 MIGRATION_AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
+EXPECTED_APP_APPLE_EVENTS_DESCRIPTION="Detach управляет опциональным режимом keep-awake через Amphetamine."
+EXPECTED_WATCHDOG_APPLE_EVENTS_DESCRIPTION="Detach manages optional keep-awake automation for detached sessions."
 REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
 VERIFY_PRODUCTION="${DETACH_VERIFY_PRODUCTION:-0}"
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
@@ -30,6 +32,11 @@ trap cleanup EXIT
   printf 'DETACH_VERIFY_PRODUCTION must be 0 or 1\n' >&2; exit 1;
 }
 plutil -lint "$INFO" "$AGENT" "$MIGRATION_AGENT" >/dev/null
+[ "$(plutil -extract NSAppleEventsUsageDescription raw -o - "$INFO")" = \
+  "$EXPECTED_APP_APPLE_EVENTS_DESCRIPTION" ] || {
+  printf 'App Info.plist is missing the expected Amphetamine Apple Events description\n' >&2
+  exit 1
+}
 # `plutil -lint` only accepts property lists even though the other plutil
 # operations support JSON. Parse the payload manifest explicitly as JSON.
 plutil -p "$PAYLOAD/payload.json" >/dev/null
@@ -232,6 +239,17 @@ for arch in $(lipo -archs "$APP/Contents/MacOS/DetachWatchdog"); do
     printf 'Unexpected watchdog embedded executable for %s\n' "$arch" >&2
     exit 1
   }
+  grep -F '<key>NSAppleEventsUsageDescription</key>' <<<"$HELPER_STRINGS" >/dev/null || {
+    printf 'Watchdog embedded Info.plist is missing NSAppleEventsUsageDescription for %s\n' \
+      "$arch" >&2
+    exit 1
+  }
+  grep -F "<string>$EXPECTED_WATCHDOG_APPLE_EVENTS_DESCRIPTION</string>" \
+    <<<"$HELPER_STRINGS" >/dev/null || {
+    printf 'Watchdog embedded Apple Events usage description is missing or unexpected for %s\n' \
+      "$arch" >&2
+    exit 1
+  }
   grep -F "<string>$EXPECTED_VERSION</string>" <<<"$HELPER_STRINGS" >/dev/null || {
     printf 'Watchdog embedded version mismatch for %s\n' "$arch" >&2
     exit 1
@@ -244,12 +262,16 @@ done
 codesign -d --entitlements "$ENTITLEMENTS_DIR/app.plist" --xml "$APP" >/dev/null 2>&1
 codesign -d --entitlements "$ENTITLEMENTS_DIR/helper.plist" --xml \
   "$APP/Contents/MacOS/DetachWatchdog" >/dev/null 2>&1
-for entitlements in "$ENTITLEMENTS_DIR/app.plist" "$ENTITLEMENTS_DIR/helper.plist"; do
-  [ "$(plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - "$entitlements")" = true ] || {
-    printf 'Missing Automation Apple Events entitlement: %s\n' "$entitlements" >&2
-    exit 1
-  }
-done
+[ "$(plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - \
+  "$ENTITLEMENTS_DIR/app.plist")" = true ] || {
+  printf 'App is missing the Automation Apple Events entitlement for Amphetamine cleanup\n' >&2
+  exit 1
+}
+[ "$(plutil -extract 'com\.apple\.security\.automation\.apple-events' raw -o - \
+  "$ENTITLEMENTS_DIR/helper.plist")" = true ] || {
+  printf 'Watchdog is missing the Automation Apple Events entitlement\n' >&2
+  exit 1
+}
 
 if grep -F 'Signature=adhoc' <<<"$APP_SIGNATURE" >/dev/null; then
   [ "$VERIFY_PRODUCTION" = 0 ] || {

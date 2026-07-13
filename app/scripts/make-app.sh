@@ -246,7 +246,7 @@ if [ "$IDENTITY" != "-" ]; then
 fi
 sign_sparkle_inside_out "$FRAMEWORKS/Sparkle.framework"
 codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.watchdog \
-  --entitlements "$APP_ROOT/Resources/Detach.entitlements" \
+  --entitlements "$APP_ROOT/Resources/DetachWatchdog.entitlements" \
   "$APP/Contents/MacOS/DetachWatchdog"
 app_entitlements="$APP_ROOT/Resources/Detach.entitlements"
 if [ "$IDENTITY" = "-" ]; then

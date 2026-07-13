@@ -4,7 +4,11 @@ import DetachKit
 
 struct OnboardingView: View {
     let store: InstallationStore
+    @Environment(\.appFontPointSize) private var fontPointSize
+    @AppStorage(AppSettings.terminalBundleIdentifierKey) private var terminalBundleIdentifier =
+        TerminalCatalog.defaultBundleIdentifier
     @State private var terminalFailure: TerminalLaunchFailure?
+    @State private var isLaunchingTerminal = false
 
     var body: some View {
         ScrollView {
@@ -14,14 +18,16 @@ struct OnboardingView: View {
                 actions
                 technicalDetails
             }
-            .frame(maxWidth: 560, alignment: .leading)
+            .frame(maxWidth: max(560, fontPointSize * 36), alignment: .leading)
             .padding(36)
         }
-        .alert("Не удалось открыть Terminal", isPresented: .init(
+        .alert("Не удалось открыть терминал", isPresented: .init(
             get: { terminalFailure != nil },
             set: { if !$0 { terminalFailure = nil } })) {
-            if terminalFailure?.requiresAutomationPermission == true {
-                Button("Открыть настройки") { TerminalLauncher.openAutomationSettings() }
+            if terminalFailure?.requiresTerminalSelection == true {
+                SettingsLink {
+                    Text("Выбрать другой терминал")
+                }
             }
             Button("Закрыть", role: .cancel) {}
         } message: {
@@ -32,11 +38,11 @@ struct OnboardingView: View {
     private var header: some View {
         HStack(spacing: 16) {
             Image(systemName: headerIcon)
-                .font(.system(size: 42))
+                .appFont(.heroIcon)
                 .foregroundStyle(Brand.gradient)
-                .frame(width: 52)
+                .frame(width: max(52, AppFontRole.heroIcon.pointSize(base: fontPointSize)))
             VStack(alignment: .leading, spacing: 5) {
-                Text(headerTitle).font(.title2.weight(.bold))
+                Text(headerTitle).appFont(.title2, weight: .bold)
                 Text(headerSubtitle).foregroundStyle(.secondary)
             }
         }
@@ -80,7 +86,7 @@ struct OnboardingView: View {
     private var actions: some View {
         if !store.isBusy {
             if !store.isStableApplicationLocation {
-                Button("Открыть Программы") {
+                Button("Открыть Applications") {
                     NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
                 }
                 .buttonStyle(.borderedProminent)
@@ -100,6 +106,7 @@ struct OnboardingView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(Brand.indigo)
+                        .disabled(isLaunchingTerminal)
                     } else {
                         Button("Установить Homebrew") {
                             openWebPage("https://brew.sh")
@@ -137,7 +144,7 @@ struct OnboardingView: View {
                 checks(allChecks)
                 if let error = technicalError {
                     Text(error)
-                        .font(.caption.monospaced())
+                        .appFont(.caption, design: .monospaced)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
@@ -163,13 +170,14 @@ struct OnboardingView: View {
                         .frame(width: 18)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(check.label).fontWeight(.medium).foregroundStyle(.primary)
-                        Text(check.summary).font(.caption)
+                        Text(check.summary).appFont(.caption)
                         if let path = check.path, path.hasPrefix("/") {
-                            Text(path).font(.caption2.monospaced()).foregroundStyle(.tertiary)
+                            Text(path).appFont(.caption2, design: .monospaced)
+                                .foregroundStyle(.tertiary)
                                 .textSelection(.enabled)
                         }
                         if check.status == .error, let hint = remediation(for: check.id) {
-                            Text(hint).font(.caption).foregroundStyle(.primary)
+                            Text(hint).appFont(.caption).foregroundStyle(.primary)
                         }
                     }
                     Spacer()
@@ -182,7 +190,7 @@ struct OnboardingView: View {
 
     private var headerTitle: String {
         if store.isBusy { return "Настраиваем Detach…" }
-        if !store.isStableApplicationLocation { return "Переместите Detach в Программы" }
+        if !store.isStableApplicationLocation { return "Переместите Detach в Applications" }
         if store.watchdogStatus == .requiresApproval && store.keepAwakeEnabled {
             return "Разрешите фоновую работу"
         }
@@ -236,7 +244,12 @@ struct OnboardingView: View {
 
     private func openInTerminal(_ command: String) {
         Task { @MainActor in
-            if let failure = TerminalLauncher.open(command: command) {
+            guard !isLaunchingTerminal else { return }
+            isLaunchingTerminal = true
+            defer { isLaunchingTerminal = false }
+            if let failure = await TerminalLauncher.open(
+                command: command,
+                terminalBundleIdentifier: terminalBundleIdentifier) {
                 terminalFailure = failure
             }
         }
