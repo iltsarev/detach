@@ -23,9 +23,9 @@ struct EmptySessionsView: View {
         ScrollView {
             VStack(spacing: 22) {
                 VStack(spacing: 7) {
-                    Text("Запусти первую сессию")
+                    Text(L10n.string("Start your first session"))
                         .appFont(.title2, weight: .bold)
-                    Text("Открой свой терминал, перейди в папку проекта и запусти Codex или Claude.")
+                    Text(L10n.string("Open your terminal, go to the project folder, and launch Codex or Claude."))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
@@ -34,10 +34,10 @@ struct EmptySessionsView: View {
                 TerminalGuideView(examples: EmptySessionsGuide.examples)
 
                 VStack(spacing: 6) {
-                    Label("Сессия появится здесь автоматически", systemImage: "sparkles")
+                    Label(L10n.string("The session will appear here automatically"), systemImage: "sparkles")
                         .appFont(.body, weight: .medium)
                         .foregroundStyle(Brand.indigo)
-                    Text("Терминал можно закрыть — Detach продолжит работу в фоне. Или нажми ＋, чтобы выбрать проект в приложении.")
+                    Text(L10n.string("You can close the terminal—Detach will keep running in the background. Or click ＋ to choose a project in the app."))
                         .appFont(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -88,7 +88,7 @@ private struct TerminalGuideView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Brand.indigo.opacity(0.16), radius: 18, y: 9)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Примеры команд для запуска Detach")
+        .accessibilityLabel(L10n.string("Examples of commands for launching Detach"))
     }
 
     private var terminalTitleBar: some View {
@@ -97,7 +97,7 @@ private struct TerminalGuideView: View {
             Circle().fill(Color.yellow.opacity(0.9)).frame(width: 10, height: 10)
             Circle().fill(Brand.teal).frame(width: 10, height: 10)
             Spacer()
-            Label("Терминал", systemImage: "terminal")
+            Label(L10n.string("Terminal"), systemImage: "terminal")
                 .appFont(.caption, weight: .semibold)
                 .foregroundStyle(.white.opacity(0.62))
             Spacer()

@@ -1,4 +1,5 @@
 import Sparkle
+import DetachKit
 import XCTest
 @testable import DetachApp
 
@@ -20,6 +21,6 @@ final class UpdaterServiceTests: XCTestCase {
 
         XCTAssertEqual(
             UpdaterService.fallbackMessage(for: error),
-            "Sparkle не смог завершить обновление: Download failed")
+            L10n.format("Sparkle couldn't complete the update: %@", "Download failed"))
     }
 }

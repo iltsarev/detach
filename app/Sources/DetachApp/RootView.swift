@@ -38,9 +38,9 @@ struct RootView: View {
                 OnboardingView(store: installation)
             } else if store.state == .cliMissing && store.sessions.isEmpty {
                 ContentUnavailableView(
-                    "detach CLI не найден",
+                    L10n.string("detach CLI not found"),
                     systemImage: "terminal",
-                    description: Text("Проверь путь \(detachPath) в настройках."))
+                    description: Text(L10n.format("Check the %@ path in Settings.", detachPath)))
             } else {
                 NavigationSplitView {
                     SidebarView(
@@ -56,12 +56,12 @@ struct RootView: View {
                     } else {
                         ContentUnavailableView {
                             Label {
-                                Text("Выбери сессию")
+                                Text(L10n.string("Select a session"))
                             } icon: {
                                 Image(systemName: "terminal").foregroundStyle(Brand.gradient)
                             }
                         } description: {
-                            Text("Слева — все detach-сессии обоих провайдеров")
+                            Text(L10n.string("All detach sessions from both providers are on the left"))
                         }
                     }
                 }

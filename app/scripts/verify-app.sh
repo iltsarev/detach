@@ -11,7 +11,8 @@ AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.watchdog.plist"
 CLI_AGENT="$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
-EXPECTED_APP_APPLE_EVENTS_DESCRIPTION="Detach управляет обязательным режимом keep-awake через Amphetamine."
+EXPECTED_APP_APPLE_EVENTS_DESCRIPTION="Detach manages required keep-awake automation through Amphetamine."
+EXPECTED_RU_APPLE_EVENTS_DESCRIPTION="Detach управляет обязательным режимом keep-awake через Amphetamine."
 EXPECTED_WATCHDOG_APPLE_EVENTS_DESCRIPTION="Detach manages required keep-awake automation for detached sessions."
 REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
 VERIFY_PRODUCTION="${DETACH_VERIFY_PRODUCTION:-0}"
@@ -32,6 +33,31 @@ trap cleanup EXIT
   printf 'DETACH_VERIFY_PRODUCTION must be 0 or 1\n' >&2; exit 1;
 }
 plutil -lint "$INFO" "$AGENT" "$CLI_AGENT" >/dev/null
+[ "$(plutil -extract CFBundleDevelopmentRegion raw -o - "$INFO")" = en ] || {
+  printf 'App development localization must be English\n' >&2
+  exit 1
+}
+for localization in en ru; do
+  LOCALIZABLE="$APP/Contents/Resources/$localization.lproj/Localizable.strings"
+  INFO_PLIST_STRINGS="$APP/Contents/Resources/$localization.lproj/InfoPlist.strings"
+  [ -f "$LOCALIZABLE" ] && [ -f "$INFO_PLIST_STRINGS" ] || {
+    printf 'Missing %s app localization\n' "$localization" >&2
+    exit 1
+  }
+  plutil -lint "$LOCALIZABLE" "$INFO_PLIST_STRINGS" >/dev/null
+done
+[ "$(plutil -extract NSAppleEventsUsageDescription raw -o - \
+  "$APP/Contents/Resources/en.lproj/InfoPlist.strings")" = \
+  "$EXPECTED_APP_APPLE_EVENTS_DESCRIPTION" ] || {
+  printf 'English Info.plist localization is missing\n' >&2
+  exit 1
+}
+[ "$(plutil -extract NSAppleEventsUsageDescription raw -o - \
+  "$APP/Contents/Resources/ru.lproj/InfoPlist.strings")" = \
+  "$EXPECTED_RU_APPLE_EVENTS_DESCRIPTION" ] || {
+  printf 'Russian Info.plist localization is missing\n' >&2
+  exit 1
+}
 [ "$(plutil -extract NSAppleEventsUsageDescription raw -o - "$INFO")" = \
   "$EXPECTED_APP_APPLE_EVENTS_DESCRIPTION" ] || {
   printf 'App Info.plist is missing the expected Amphetamine Apple Events description\n' >&2

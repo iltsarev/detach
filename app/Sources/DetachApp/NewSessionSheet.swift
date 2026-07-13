@@ -21,19 +21,19 @@ struct NewSessionSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Новая сессия").appFont(.title3, weight: .bold)
+                Text(L10n.string("New session")).appFont(.title3, weight: .bold)
 
-                LabeledContent("Проект") {
+                LabeledContent(L10n.string("Project")) {
                     HStack {
-                        Text(projectDir?.path ?? "не выбран")
+                        Text(projectDir?.path ?? L10n.string("not selected"))
                             .foregroundStyle(projectDir == nil ? .secondary : .primary)
                             .lineLimit(1).truncationMode(.middle)
                         Spacer()
-                        Button("Выбрать…") { showPicker = true }
+                        Button(L10n.string("Choose…")) { showPicker = true }
                     }
                 }
 
-                LabeledContent("Провайдер") {
+                LabeledContent(L10n.string("Provider")) {
                     Picker("", selection: $provider) {
                         ForEach(Provider.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
@@ -41,11 +41,11 @@ struct NewSessionSheet: View {
                     .labelsHidden()
                 }
 
-                LabeledContent("Имя") {
-                    TextField("опционально, например migration", text: $name)
+                LabeledContent(L10n.string("Name")) {
+                    TextField(L10n.string("optional, for example migration"), text: $name)
                 }
 
-                Text("Стартовый промпт (опционально)")
+                Text(L10n.string("Initial prompt (optional)"))
                     .appFont(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $prompt)
                     .appFont(.body)
@@ -57,7 +57,7 @@ struct NewSessionSheet: View {
                         Text(launchFailure.message).appFont(.caption).foregroundStyle(.red)
                         if launchFailure.requiresTerminalSelection {
                             SettingsLink {
-                                Text("Выбрать другой терминал")
+                                Text(L10n.string("Choose another terminal"))
                             }
                             .appFont(.caption)
                         }
@@ -66,8 +66,8 @@ struct NewSessionSheet: View {
 
                 HStack {
                     Spacer()
-                    Button("Отмена") { dismiss() }
-                    Button("Запустить в терминале") {
+                    Button(L10n.string("Cancel")) { dismiss() }
+                    Button(L10n.string("Launch in Terminal")) {
                         Task { await launch() }
                     }
                         .buttonStyle(.borderedProminent)

@@ -48,7 +48,7 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertEqual(s.contextUsedTokens, 90000)
         XCTAssertEqual(s.contextWindow, 200000)
         XCTAssertEqual(s.contextFraction.map { ($0 * 100).rounded() }, 45)
-        XCTAssertEqual(s.contextSummary, "90k · 55% свободно")
+        XCTAssertEqual(s.contextSummary, L10n.format("%@ · %@%% available", "90k", "55"))
     }
 
     func testContextSummaryWithoutWindow() throws {
@@ -57,7 +57,7 @@ final class SessionDecodingTests: XCTestCase {
             with: "\"finished_at\":null,\"model\":\"claude-fable-5\",\"context_used_tokens\":361000,\"context_window\":null")
         let s = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
         XCTAssertNil(s.contextFraction)
-        XCTAssertEqual(s.contextSummary, "361k токенов")
+        XCTAssertEqual(s.contextSummary, L10n.format("%@ tokens", "361k"))
     }
 
     func testMissingModelFieldsDecodeAsNil() throws {

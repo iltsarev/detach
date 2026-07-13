@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>ru</string>
+  </array>
   <key>CFBundleIdentifier</key>
   <string>dev.tsarev.detach</string>
   <key>CFBundleName</key>
@@ -25,6 +32,6 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Detach управляет обязательным режимом keep-awake через Amphetamine.</string>
+  <string>Detach manages required keep-awake automation through Amphetamine.</string>
 </dict>
 </plist>

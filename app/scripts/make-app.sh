@@ -198,6 +198,15 @@ ensure_app_rpath "$APP/Contents/MacOS/Detach"
 
 cp "$APP_ROOT/Resources/Detach.icns" "$APP/Contents/Resources/Detach.icns"
 cp "$APP_ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+for localization in en ru; do
+  source_lproj="$APP_ROOT/Resources/$localization.lproj"
+  destination_lproj="$APP/Contents/Resources/$localization.lproj"
+  mkdir -p "$destination_lproj"
+  install -m 0644 "$source_lproj/Localizable.strings" \
+    "$destination_lproj/Localizable.strings"
+  install -m 0644 "$source_lproj/InfoPlist.strings" \
+    "$destination_lproj/InfoPlist.strings"
+done
 cp "$APP_ROOT/Resources/dev.tsarev.detach.watchdog.plist" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
@@ -236,6 +245,10 @@ chmod 0755 "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"
 # do not disclose the local checkout or user name.
 /usr/bin/strip -S "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"
 plutil -lint "$APP/Contents/Info.plist" \
+  "$APP/Contents/Resources/en.lproj/Localizable.strings" \
+  "$APP/Contents/Resources/en.lproj/InfoPlist.strings" \
+  "$APP/Contents/Resources/ru.lproj/Localizable.strings" \
+  "$APP/Contents/Resources/ru.lproj/InfoPlist.strings" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist" \
   "$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
 

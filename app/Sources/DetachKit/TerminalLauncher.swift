@@ -35,7 +35,7 @@ public enum TerminalLauncher {
         guard let terminal = TerminalCatalog.application(
             bundleIdentifier: terminalBundleIdentifier) else {
             return TerminalLaunchFailure(
-                message: "Выбранный терминал не найден или не поддерживает файлы .command. Выберите другой терминал в настройках.",
+                message: L10n.string("The selected terminal was not found or does not support .command files. Choose another terminal in Settings."),
                 reason: .terminalUnavailable)
         }
         return await open(
@@ -64,7 +64,9 @@ public enum TerminalLauncher {
                 fileManager: fileManager)
         } catch {
             return TerminalLaunchFailure(
-                message: "Не удалось безопасно подготовить временную команду: \(error.localizedDescription)",
+                message: L10n.format(
+                    "Could not safely prepare the temporary command: %@",
+                    error.localizedDescription),
                 reason: .commandFile)
         }
 
@@ -73,7 +75,10 @@ public enum TerminalLauncher {
         } catch {
             removeCommandDirectory(containing: commandURL, fileManager: fileManager)
             return TerminalLaunchFailure(
-                message: "\(terminal.displayName) не смог открыть команду: \(error.localizedDescription)",
+                message: L10n.format(
+                    "%@ could not open the command: %@",
+                    terminal.displayName,
+                    error.localizedDescription),
                 reason: .openFailed)
         }
 
@@ -83,7 +88,9 @@ public enum TerminalLauncher {
             if elapsed >= acknowledgementTimeoutNanoseconds {
                 removeCommandDirectory(containing: commandURL, fileManager: fileManager)
                 return TerminalLaunchFailure(
-                    message: "\(terminal.displayName) открыл файл, но не запустил команду. Выберите другой терминал в настройках.",
+                    message: L10n.format(
+                        "%@ opened the file but did not run the command. Choose another terminal in Settings.",
+                        terminal.displayName),
                     reason: .incompatible)
             }
             do {
@@ -91,7 +98,7 @@ public enum TerminalLauncher {
             } catch {
                 removeCommandDirectory(containing: commandURL, fileManager: fileManager)
                 return TerminalLaunchFailure(
-                    message: "Запуск команды был отменён.",
+                    message: L10n.string("Command launch was cancelled."),
                     reason: .openFailed)
             }
         }

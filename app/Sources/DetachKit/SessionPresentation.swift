@@ -1,9 +1,17 @@
 import Foundation
 
 public enum SessionSection: String, CaseIterable, Sendable {
-    case active = "Работают"
-    case finished = "Завершены"
-    case problems = "Проблемные"
+    case active
+    case finished
+    case problems
+
+    public var displayName: String {
+        switch self {
+        case .active: L10n.string("Working")
+        case .finished: L10n.string("Finished")
+        case .problems: L10n.string("Problems")
+        }
+    }
 }
 
 public enum SessionAction: String, CaseIterable, Sendable {
@@ -16,7 +24,21 @@ public extension Session {
     }
 
     var displayStatus: String {
-        isWaitingForUser ? "ответ готов" : effectiveStatus.rawValue
+        if isWaitingForUser { return L10n.string("answer ready") }
+        return switch effectiveStatus {
+        case .starting: L10n.string("starting")
+        case .running: L10n.string("running")
+        case .recovering: L10n.string("recovering")
+        case .completed: L10n.string("completed")
+        case .failed: L10n.string("failed")
+        case .interrupted: L10n.string("interrupted")
+        case .stopped: L10n.string("stopped")
+        case .recoverable: L10n.string("recoverable")
+        case .orphaned: L10n.string("orphaned")
+        case .corrupt: L10n.string("corrupt")
+        case .collision: L10n.string("name collision")
+        case .unknown: L10n.string("unknown")
+        }
     }
 
     var section: SessionSection {
@@ -55,13 +77,16 @@ public extension Session {
         return min(1.0, Double(used) / Double(window))
     }
 
-    /// "91k · 74% свободно" when the window is known, "361k токенов" otherwise.
+    /// Localized token usage summary for the model context window.
     var contextSummary: String? {
         guard let used = contextUsedTokens else { return nil }
         let usedText = "\(Int((Double(used) / 1000).rounded()))k"
         if let fraction = contextFraction {
-            return "\(usedText) · \(Int(((1 - fraction) * 100).rounded()))% свободно"
+            return L10n.format(
+                "%@ · %@%% available",
+                usedText,
+                String(Int(((1 - fraction) * 100).rounded())))
         }
-        return "\(usedText) токенов"
+        return L10n.format("%@ tokens", usedText)
     }
 }

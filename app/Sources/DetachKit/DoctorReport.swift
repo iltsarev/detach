@@ -71,7 +71,7 @@ public enum DistributionClientError: LocalizedError, Equatable {
         case .installerFailed(let message): message
         case .doctorOutputMissing(let message): message
         case .incompatibleDoctorSchema(let schema):
-            "Unsupported detach doctor schema: \(schema)"
+            L10n.format("Unsupported detach doctor schema: %d", schema)
         }
     }
 }
@@ -101,10 +101,12 @@ public struct DistributionClient: Sendable {
         let result = try await installer.run(arguments: arguments, timeout: 30)
         guard result.exitCode == 0, !result.timedOut else {
             let message = result.timedOut
-                ? "CLI installation timed out"
+                ? L10n.string("CLI installation timed out")
                 : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw DistributionClientError.installerFailed(
-                message.isEmpty ? "CLI installer exited with status \(result.exitCode)" : message)
+                message.isEmpty
+                    ? L10n.format("CLI installer exited with status %d", result.exitCode)
+                    : message)
         }
         return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -113,7 +115,7 @@ public struct DistributionClient: Sendable {
         let result = try await cli.run(arguments: ["doctor", "--json"], timeout: 15)
         guard !result.timedOut, let data = result.stdout.data(using: .utf8), !data.isEmpty else {
             throw DistributionClientError.doctorOutputMissing(
-                result.timedOut ? "detach doctor timed out" : result.stderr)
+                result.timedOut ? L10n.string("detach doctor timed out") : result.stderr)
         }
         let report = try JSONDecoder().decode(DoctorReport.self, from: data)
         guard report.schema == 1 else {

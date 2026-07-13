@@ -81,41 +81,47 @@ final class InstallationStore {
 
     var appContextChecks: [DiagnosticCheck] {
         let locationCheck = DiagnosticCheck(
-            id: "app_location", section: .base, label: "Расположение приложения",
+            id: "app_location", section: .base,
+            label: L10n.string("Application Location"),
             required: true, status: isStableApplicationLocation ? .ok : .error,
             path: bundleURL.path,
             summary: isStableApplicationLocation
-                ? "Detach.app запущен из /Applications"
-                : "Переместите Detach.app в Applications и откройте установленную копию")
+                ? L10n.string("Detach.app is running from /Applications")
+                : L10n.string("Move Detach.app to Applications and open the installed copy"))
         let distributionCheck = DiagnosticCheck(
-            id: "app_cli_match", section: .base, label: "Версия app и CLI",
+            id: "app_cli_match", section: .base,
+            label: L10n.string("App and CLI Version"),
             required: true, status: distributionMatchesBundle ? .ok : .error,
             path: detachPath,
             summary: distributionMatchesBundle
-                ? "Активный CLI совпадает с version/build/payload приложения"
-                : "CLI отсутствует или принадлежит другой сборке; запусти Repair из нужной версии app")
+                ? L10n.string("The active CLI matches the application's version, build, and payload")
+                : L10n.string("The CLI is missing or belongs to another build; run Repair from the intended app version"))
         let watchdogCheck: DiagnosticCheck
         switch watchdogStatus {
         case .enabled:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                id: "app_watchdog", section: .base,
+                label: L10n.string("Background Service"),
                 required: true, status: .ok, path: nil,
-                summary: "Фоновая проверка включена")
+                summary: L10n.string("Background checks are enabled"))
         case .requiresApproval:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                id: "app_watchdog", section: .base,
+                label: L10n.string("Background Service"),
                 required: true, status: .error, path: nil,
-                summary: "macOS ожидает разрешение на фоновую работу")
+                summary: L10n.string("macOS is waiting for permission to run in the background"))
         case .notRegistered:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                id: "app_watchdog", section: .base,
+                label: L10n.string("Background Service"),
                 required: true, status: .error, path: nil,
-                summary: "Фоновая проверка пока не включена")
+                summary: L10n.string("Background checks are not enabled yet"))
         case .unavailable:
             watchdogCheck = DiagnosticCheck(
-                id: "app_watchdog", section: .base, label: "Фоновая служба",
+                id: "app_watchdog", section: .base,
+                label: L10n.string("Background Service"),
                 required: true, status: .error, path: nil,
-                summary: "macOS пока не зарегистрировала фоновую проверку")
+                summary: L10n.string("macOS has not registered the background check yet"))
         }
         return [locationCheck, distributionCheck, watchdogCheck, watchdogHeartbeatCheck]
     }
@@ -132,13 +138,15 @@ final class InstallationStore {
         let healthy = fresh && heartbeat?.state == "ok"
         let expected = watchdogStatus == .enabled
         return DiagnosticCheck(
-            id: "watchdog_heartbeat", section: .base, label: "Запуск фоновой службы",
+            id: "watchdog_heartbeat", section: .base,
+            label: L10n.string("Background Service Launch"),
             required: false,
             status: healthy ? .ok : (expected ? .warning : .unknown), path: statusURL.path,
             summary: healthy
-                ? "Фоновая служба запускалась в последние три минуты"
-                : (expected ? "Фоновая служба запускается или требует внимания"
-                            : "Обязательная фоновая служба ещё не запущена"))
+                ? L10n.string("The background service ran within the last three minutes")
+                : (expected
+                    ? L10n.string("The background service is starting or needs attention")
+                    : L10n.string("The required background service has not started yet")))
     }
 
     private static var amphetamineStateRoot: URL {
@@ -213,7 +221,7 @@ final class InstallationStore {
             guard result.exitCode == 0, !result.timedOut else {
                 let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 throw DistributionClientError.installerFailed(
-                    detail.isEmpty ? "Uninstall failed" : detail)
+                    detail.isEmpty ? L10n.string("Uninstall failed") : detail)
             }
             report = nil
             distributionMatchesBundle = false
@@ -225,7 +233,9 @@ final class InstallationStore {
                 try? await watchdog.enable()
             }
             watchdogStatus = watchdog.status
-            phase = .failed("Не удалось удалить компоненты: \(error.localizedDescription)")
+            phase = .failed(L10n.format(
+                "Could not remove components: %@",
+                error.localizedDescription))
         }
     }
 
@@ -248,9 +258,15 @@ final class InstallationStore {
                                   build: bundledMetadata.build,
                                   payloadID: bundledMetadata.payloadID) == true else {
                 distributionMatchesBundle = false
-                let active = "\(report?.version ?? "unknown") build \(report?.build ?? "unknown")"
+                let unknown = L10n.string("unknown")
+                let active = L10n.format(
+                    "%@ build %@",
+                    report?.version ?? unknown,
+                    report?.build ?? unknown)
                 throw DistributionClientError.installerFailed(
-                    "Активная CLI (\(active)) не совпадает с payload этого приложения; откат watchdog отменён")
+                    L10n.format(
+                        "The active CLI (%@) does not match this application's payload; the watchdog rollback was cancelled",
+                        active))
             }
             distributionMatchesBundle = true
         } catch {

@@ -125,8 +125,8 @@ final class SessionNotificationServiceTests: XCTestCase {
 
         XCTAssertEqual(center.delivered.count, 1)
         XCTAssertEqual(center.delivered[0].identifier, "detach.session.event-id")
-        XCTAssertEqual(center.delivered[0].title, "Сессия завершилась с ошибкой")
-        XCTAssertTrue(center.delivered[0].body.contains("Код выхода: 7"))
+        XCTAssertEqual(center.delivered[0].title, L10n.string("Session failed"))
+        XCTAssertTrue(center.delivered[0].body.contains(L10n.format("Exit code: %d", 7)))
     }
 
     func testDeliversOneNotificationWhenAgentWaitsForUser() async {
@@ -146,8 +146,8 @@ final class SessionNotificationServiceTests: XCTestCase {
         ])
 
         XCTAssertEqual(center.delivered.count, 1)
-        XCTAssertEqual(center.delivered[0].title, "Ответ агента готов")
-        XCTAssertTrue(center.delivered[0].body.contains("Откройте сессию, чтобы продолжить"))
+        XCTAssertEqual(center.delivered[0].title, L10n.string("Agent response is ready"))
+        XCTAssertTrue(center.delivered[0].body.contains(L10n.string("Open the session to continue")))
     }
 
     func testInitialTerminalStateAndDisabledTransitionsAreNotReplayed() async {
@@ -176,7 +176,7 @@ final class SessionNotificationServiceTests: XCTestCase {
 
         XCTAssertEqual(center.requestCount, 1)
         XCTAssertEqual(center.delivered.count, 1)
-        XCTAssertTrue(center.delivered[0].body.contains("Код выхода: 9"))
+        XCTAssertTrue(center.delivered[0].body.contains(L10n.format("Exit code: %d", 9)))
     }
 
     func testConcurrentConfigureSharesOnePermissionRequest() async {

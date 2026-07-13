@@ -38,29 +38,29 @@ struct SessionDetailView: View {
                 await poller.fetchOnce()
             }
         }
-        .alert("Не получилось", isPresented: .init(
+        .alert(L10n.string("Something went wrong"), isPresented: .init(
             get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
-            Button("OK", role: .cancel) {}
+            Button(L10n.string("OK"), role: .cancel) {}
         } message: {
             Text(actionError ?? "")
         }
-        .alert("Не удалось открыть терминал", isPresented: .init(
+        .alert(L10n.string("Could not open Terminal"), isPresented: .init(
             get: { terminalFailure != nil },
             set: { if !$0 { terminalFailure = nil } })) {
             if terminalFailure?.requiresTerminalSelection == true {
                 SettingsLink {
-                    Text("Выбрать другой терминал")
+                    Text(L10n.string("Choose another terminal"))
                 }
             }
-            Button("Закрыть", role: .cancel) {}
+            Button(L10n.string("Close"), role: .cancel) {}
         } message: {
             Text(terminalFailure?.message ?? "")
         }
-        .confirmationDialog("Удалить сессию «\(session.displayTitle)»?",
+        .confirmationDialog(L10n.format("Delete session “%@”?", session.displayTitle),
                             isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Удалить", role: .destructive) { run(.delete) }
+            Button(L10n.string("Delete"), role: .destructive) { run(.delete) }
         } message: {
-            Text("State-каталог и чекпойнты harness удаляются безвозвратно. Транскрипт провайдера в ~/.claude (~/.codex) не трогается.")
+            Text(L10n.string("The harness state directory and checkpoints will be permanently deleted. The provider transcript in ~/.claude (~/.codex) will not be affected."))
         }
     }
 
@@ -92,12 +92,12 @@ struct SessionDetailView: View {
     private var metadata: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let projectDir = session.projectDir {
-                MetaRow(label: "Проект", value: projectDir)
+                MetaRow(label: L10n.string("Project"), value: projectDir)
             }
-            MetaRow(label: "Провайдер", value: session.provider.rawValue)
+            MetaRow(label: L10n.string("Provider"), value: session.provider.rawValue)
             if let uuid = session.agentSessionId {
                 HStack(spacing: 4) {
-                    MetaRow(label: "UUID", value: uuid)
+                    MetaRow(label: L10n.string("UUID"), value: uuid)
                     Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(uuid, forType: .string)
@@ -105,16 +105,17 @@ struct SessionDetailView: View {
                         Image(systemName: "doc.on.doc")
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel(L10n.string("Copy session UUID"))
                 }
             }
             if let created = session.createdAt {
-                MetaRow(label: "Создана", value: created.formatted())
+                MetaRow(label: L10n.string("Created"), value: created.formatted())
             }
             if let checkpoint = session.lastCheckpointAt {
-                MetaRow(label: "Чекпойнт", value: checkpoint.formatted())
+                MetaRow(label: L10n.string("Checkpoint"), value: checkpoint.formatted())
             }
             if let exit = session.exitStatus {
-                MetaRow(label: "Код выхода", value: "\(exit)")
+                MetaRow(label: L10n.string("Exit code"), value: "\(exit)")
             }
         }
     }
@@ -148,7 +149,7 @@ struct SessionDetailView: View {
                 actionButton(action)
             }
             if session.effectiveStatus == .collision {
-                Label("Имя занято чужой tmux-сессией", systemImage: "exclamationmark.triangle")
+                Label(L10n.string("The name is used by another tmux session"), systemImage: "exclamationmark.triangle")
                     .appFont(.caption).foregroundStyle(.orange)
             }
             Spacer()
@@ -159,13 +160,15 @@ struct SessionDetailView: View {
     private func actionButton(_ action: SessionAction) -> some View {
         switch action {
         case .attach:
-            Button("Открыть в терминале") { openInTerminal(TerminalCommand.attach(detachPath: detachPath, session: session)) }
+            Button(L10n.string("Open in Terminal")) {
+                openInTerminal(TerminalCommand.attach(detachPath: detachPath, session: session))
+            }
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
                 .disabled(isLaunchingTerminal)
         case .resume:
-            Button("Resume в терминале") {
+            Button(L10n.string("Resume in Terminal")) {
                 if let command = TerminalCommand.resume(detachPath: detachPath, session: session) {
                     openInTerminal(command)
                 }
@@ -174,14 +177,16 @@ struct SessionDetailView: View {
             .tint(Brand.indigo)
             .disabled(isLaunchingTerminal)
         case .recover:
-            Button("Recover в терминале") { openInTerminal(TerminalCommand.recover(detachPath: detachPath, session: session)) }
+            Button(L10n.string("Recover in Terminal")) {
+                openInTerminal(TerminalCommand.recover(detachPath: detachPath, session: session))
+            }
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
                 .disabled(isLaunchingTerminal)
         case .stop:
-            Button("Stop", role: .destructive) { run(.stop) }
+            Button(L10n.string("Stop"), role: .destructive) { run(.stop) }
         case .delete:
-            Button("Удалить", role: .destructive) { confirmDelete = true }
+            Button(L10n.string("Delete"), role: .destructive) { confirmDelete = true }
         }
     }
 
@@ -230,7 +235,7 @@ struct ContextGauge: View {
                 Text(summary).appFont(.caption).foregroundStyle(.secondary)
             }
         }
-        .help("Занятый контекст модели")
+        .help(L10n.string("Model context used"))
     }
 }
 

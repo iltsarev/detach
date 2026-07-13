@@ -132,7 +132,9 @@ final class SessionNotificationService: ObservableObject {
             guard generation == configurationGeneration,
                   failedRequestStatusGeneration == authorizationStatusGeneration else { return }
             authorizationStatus = refreshedStatus
-            errorMessage = "Не удалось запросить разрешение на уведомления: \(error.localizedDescription)"
+            errorMessage = L10n.format(
+                "Could not request notification permission: %@",
+                error.localizedDescription)
             restartMonitoring(resetBaseline: refreshedStatus == .denied)
         }
     }
@@ -259,7 +261,9 @@ final class SessionNotificationService: ObservableObject {
                 errorMessage = nil
             } catch {
                 guard isEnabled else { return }
-                errorMessage = "Не удалось показать уведомление: \(error.localizedDescription)"
+                errorMessage = L10n.format(
+                    "Could not show notification: %@",
+                    error.localizedDescription)
                 if generation == pendingGeneration {
                     // Put the exact same payload back so a later poll retries
                     // with the same system identifier.
@@ -284,27 +288,31 @@ final class SessionNotificationService: ObservableObject {
         let detail: String
         switch transition.kind {
         case .completed:
-            title = "Сессия завершена"
-            detail = "Работа завершилась успешно"
+            title = L10n.string("Session completed")
+            detail = L10n.string("Work completed successfully")
         case .failed:
-            title = "Сессия завершилась с ошибкой"
+            title = L10n.string("Session failed")
             if let exitStatus = session.exitStatus {
-                detail = "Код выхода: \(exitStatus)"
+                detail = L10n.format("Exit code: %d", exitStatus)
             } else {
-                detail = "Открой Detach, чтобы посмотреть детали"
+                detail = L10n.string("Open Detach to view details")
             }
         case .recoverable:
-            title = "Сессию можно восстановить"
-            detail = "Доступен recover из последнего чекпойнта"
+            title = L10n.string("Session can be recovered")
+            detail = L10n.string("Recovery from the latest checkpoint is available")
         case .waitingForUser:
-            title = "Ответ агента готов"
-            detail = "Откройте сессию, чтобы продолжить"
+            title = L10n.string("Agent response is ready")
+            detail = L10n.string("Open the session to continue")
         }
 
         return SessionNotificationPayload(
             identifier: "detach.session.\(identifierProvider())",
             title: title,
-            body: "\(session.displayTitle) · \(session.provider.rawValue)\n\(detail)",
+            body: L10n.format(
+                "%@ · %@\n%@",
+                session.displayTitle,
+                session.provider.rawValue,
+                detail),
             threadIdentifier: session.id)
     }
 }

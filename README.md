@@ -65,6 +65,8 @@ managed sessions with a stable home and a clear way back.
 Detach ships as a Mac product, not a setup recipe: one DMG includes guided
 setup, dependency diagnostics, a bundled CLI, repair, updates, and a background
 watchdog. You keep working in the provider and terminal you already use.
+Detach.app is available in English and Russian and follows the language chosen
+for Detach in macOS.
 
 ## Quick start
 

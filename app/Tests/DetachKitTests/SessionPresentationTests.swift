@@ -45,7 +45,7 @@ final class SessionPresentationTests: XCTestCase {
     func testWaitingTurnHasAttentionStatusWhileRemainingActive() {
         let waiting = make(.running, turnState: .waiting)
         XCTAssertTrue(waiting.isWaitingForUser)
-        XCTAssertEqual(waiting.displayStatus, "ответ готов")
+        XCTAssertEqual(waiting.displayStatus, L10n.string("answer ready"))
         XCTAssertEqual(waiting.section, .active)
         XCTAssertEqual(waiting.availableActions, [.attach, .stop])
     }

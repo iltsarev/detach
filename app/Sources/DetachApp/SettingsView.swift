@@ -94,34 +94,35 @@ struct SettingsView: View {
             Task { await notifications.refreshAuthorizationStatus() }
         }
         .confirmationDialog(
-            "Удалить установленные компоненты Detach?",
+            L10n.string("Remove installed Detach components?"),
             isPresented: $confirmUninstall,
             titleVisibility: .visible
         ) {
-            Button("Удалить, сохранив чекпойнты", role: .destructive) {
+            Button(L10n.string("Remove, keeping checkpoints"), role: .destructive) {
                 Task { await installation.uninstall(purgeState: false) }
             }
         } message: {
-            Text("Detach.app останется на месте и сможет установить CLI снова.")
+            Text(L10n.string("Detach.app will remain in place and can reinstall the CLI."))
         }
         .confirmationDialog(
-            "Удалить CLI и все сохранённые сессии?",
+            L10n.string("Remove the CLI and all saved sessions?"),
             isPresented: $confirmPurge,
             titleVisibility: .visible
         ) {
-            Button("Удалить безвозвратно", role: .destructive) {
+            Button(L10n.string("Remove permanently"), role: .destructive) {
                 Task { await installation.uninstall(purgeState: true) }
             }
         } message: {
-            Text("Будут удалены checkpoint/state-каталоги Detach. Хранилища ~/.codex и ~/.claude не затрагиваются.")
+            Text(L10n.string(
+                "Detach checkpoint/state directories will be deleted. The ~/.codex and ~/.claude stores won't be affected."))
         }
     }
 
     private var generalSection: some View {
-        SettingsSectionView("Основные", systemImage: "slider.horizontal.3") {
+        SettingsSectionView(L10n.string("General"), systemImage: "slider.horizontal.3") {
             if installation.hasDistributionPayload {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text("CLI")
+                    Text(L10n.string("CLI"))
                     Spacer(minLength: 12)
                     Text(AppSettings.defaultDetachPath)
                         .appFont(.body, design: .monospaced)
@@ -132,35 +133,35 @@ struct SettingsView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Путь к detach")
-                    TextField("Путь к detach", text: $detachPath)
+                    Text(L10n.string("Path to detach"))
+                    TextField(L10n.string("Path to detach"), text: $detachPath)
                         .labelsHidden()
                         .appFont(.body, design: .monospaced)
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Интервал обновления: \(Int(pollInterval)) с")
+                Text(L10n.format("Refresh interval: %d sec", Int(pollInterval)))
                 Slider(value: $pollInterval, in: 1...10, step: 1) {
-                    Text("Интервал обновления")
+                    Text(L10n.string("Refresh interval"))
                 }
                 .labelsHidden()
             }
 
             HStack {
-                Text("Размер шрифта")
+                Text(L10n.string("Font size"))
                 Spacer()
                 TextField(
-                    "Размер шрифта",
+                    L10n.string("Font size"),
                     value: normalizedFontPointSize,
                     format: .number.precision(.fractionLength(0)))
                     .labelsHidden()
                     .multilineTextAlignment(.trailing)
                     .monospacedDigit()
                     .frame(width: 42)
-                Text("пт").foregroundStyle(.secondary)
+                Text(L10n.string("pt")).foregroundStyle(.secondary)
                 Stepper(
-                    "Размер шрифта",
+                    L10n.string("Font size"),
                     value: normalizedFontPointSize,
                     in: AppFontSize.allowedRange,
                     step: 1)
@@ -170,13 +171,13 @@ struct SettingsView: View {
     }
 
     private var terminalSection: some View {
-        SettingsSectionView("Терминал", systemImage: "terminal") {
-            Picker("Открывать команды в", selection: $terminalBundleIdentifier) {
+        SettingsSectionView(L10n.string("Terminal"), systemImage: "terminal") {
+            Picker(L10n.string("Open commands in"), selection: $terminalBundleIdentifier) {
                 ForEach(terminalApplications) { application in
                     Text(application.displayName).tag(application.bundleIdentifier)
                 }
                 if selectedTerminalIsMissing {
-                    Text("Недоступен — выберите другой")
+                    Text(L10n.string("Unavailable — choose another"))
                         .tag(terminalBundleIdentifier)
                 }
             }
@@ -184,27 +185,32 @@ struct SettingsView: View {
             .disabled(terminalApplications.isEmpty)
 
             if terminalApplications.isEmpty {
-                Text("Не найдено ни одного установленного терминала, способного запускать .command-файлы.")
+                Text(L10n.string(
+                    "No installed terminal capable of opening .command files was found."))
                     .settingsMessage(color: .red)
             } else if selectedTerminalIsMissing {
-                Text("Ранее выбранное приложение удалено или больше не поддерживает запуск команд.")
+                Text(L10n.string(
+                    "The previously selected app was removed or no longer supports opening commands."))
                     .settingsMessage(color: .red)
             } else if let selectedTerminal {
-                Text("Все интерактивные действия будут открываться в \(selectedTerminal.displayName).")
+                Text(L10n.format(
+                    "All interactive actions will open in %@.",
+                    selectedTerminal.displayName))
                     .settingsMessage()
             }
 
             Button {
                 refreshTerminalApplications()
             } label: {
-                Label("Обновить список терминалов", systemImage: "arrow.clockwise")
+                Label(L10n.string("Refresh terminal list"), systemImage: "arrow.clockwise")
             }
         }
     }
 
     private var notificationsSection: some View {
-        SettingsSectionView("Уведомления", systemImage: "bell.badge") {
-            Toggle("Сообщать, когда ответ агента готов или сессия завершилась", isOn: Binding(
+        SettingsSectionView(L10n.string("Notifications"), systemImage: "bell.badge") {
+            Toggle(L10n.string(
+                "Notify me when an agent response is ready or a session finishes"), isOn: Binding(
                 get: { notificationsEnabled },
                 set: { value in
                     notificationsEnabled = value
@@ -222,13 +228,13 @@ struct SettingsView: View {
                 Button {
                     Task { await notifications.configure(enabled: true) }
                 } label: {
-                    Label("Разрешить уведомления", systemImage: "bell.badge")
+                    Label(L10n.string("Allow notifications"), systemImage: "bell.badge")
                 }
             } else if notificationsEnabled && notifications.authorizationStatus == .denied {
                 Button {
                     openNotificationSettings()
                 } label: {
-                    Label("Открыть настройки macOS", systemImage: "gearshape")
+                    Label(L10n.string("Open macOS Settings"), systemImage: "gearshape")
                 }
             }
             if let errorMessage = notifications.errorMessage {
@@ -238,9 +244,9 @@ struct SettingsView: View {
     }
 
     private var installationSection: some View {
-        SettingsSectionView("Установка", systemImage: "shippingbox") {
+        SettingsSectionView(L10n.string("Installation"), systemImage: "shippingbox") {
             fullWidthButton(
-                "Переустановить командные инструменты",
+                L10n.string("Reinstall command-line tools"),
                 systemImage: "arrow.clockwise"
             ) {
                 Task { await installation.repair() }
@@ -248,7 +254,7 @@ struct SettingsView: View {
             .disabled(installation.isBusy || !installation.isStableApplicationLocation)
 
             fullWidthButton(
-                "Удалить установленные компоненты…",
+                L10n.string("Remove installed components…"),
                 systemImage: "trash",
                 role: .destructive
             ) {
@@ -257,7 +263,7 @@ struct SettingsView: View {
             .disabled(installation.isBusy)
 
             fullWidthButton(
-                "Удалить всё, включая чекпойнты…",
+                L10n.string("Remove everything, including checkpoints…"),
                 systemImage: "trash.slash",
                 role: .destructive
             ) {
@@ -268,15 +274,17 @@ struct SettingsView: View {
     }
 
     private var keepAwakeSection: some View {
-        SettingsSectionView("Keep-awake", systemImage: "moon.stars") {
-            requiredComponentStatus(id: "amphetamine_app", label: "Amphetamine.app")
+        SettingsSectionView(L10n.string("Keep-awake"), systemImage: "moon.stars") {
+            requiredComponentStatus(
+                id: "amphetamine_app", label: L10n.string("Amphetamine.app"))
             requiredComponentStatus(
                 id: "amphetamine_power_protect",
-                label: "Amphetamine Power Protect")
+                label: L10n.string("Amphetamine Power Protect"))
             requiredComponentStatus(
-                label: "Фоновая служба Detach",
+                label: L10n.string("Detach background service"),
                 status: installation.watchdogStatus == .enabled ? .ok : .error)
-            Text("Amphetamine.app, Power Protect и фоновая служба — обязательные компоненты. Detach автоматически начинает keep-awake для активных сессий и останавливает его после последней.")
+            Text(L10n.string(
+                "Amphetamine.app, Power Protect, and the background service are required. Detach automatically starts keep-awake for active sessions and stops it after the last one."))
                 .settingsMessage()
         }
     }
@@ -291,24 +299,28 @@ struct SettingsView: View {
         status: DiagnosticCheck.Status
     ) -> some View {
         let healthy = status == .ok
+        let description = healthy
+            ? L10n.format("%@: ready", label)
+            : L10n.format("%@: needs attention", label)
         return Label(
-            "\(label): \(healthy ? "готов" : "требует внимания")",
+            description,
             systemImage: healthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
             .foregroundStyle(healthy ? Brand.teal : Color.orange)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private var updatesSection: some View {
-        SettingsSectionView("Обновления", systemImage: "arrow.triangle.2.circlepath") {
+        SettingsSectionView(L10n.string("Updates"), systemImage: "arrow.triangle.2.circlepath") {
             if updater.isAvailable {
-                Toggle("Автоматически проверять обновления", isOn: Binding(
+                Toggle(L10n.string("Automatically check for updates"), isOn: Binding(
                     get: { updater.automaticallyChecksForUpdates },
                     set: { updater.setAutomaticallyChecksForUpdates($0) }))
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Проверки выполняет Sparkle в фоне по собственному расписанию.")
+                Text(L10n.string(
+                    "Sparkle checks in the background on its own schedule."))
                     .settingsMessage()
             } else {
-                Text("Автообновления недоступны")
+                Text(L10n.string("Automatic updates are unavailable"))
                 if let reason = updater.unavailableReason {
                     Text(reason).settingsMessage()
                 }
@@ -318,22 +330,27 @@ struct SettingsView: View {
             }
             if updater.shouldOfferManualDownload,
                let downloadURL = updater.manualDownloadURL {
-                Link("Открыть страницу загрузки…", destination: downloadURL)
+                Link(L10n.string("Open download page…"), destination: downloadURL)
             }
         }
     }
 
     private var notificationStatusText: String {
-        guard notificationsEnabled else { return "Уведомления выключены в Detach." }
+        guard notificationsEnabled else {
+            return L10n.string("Notifications are turned off in Detach.")
+        }
         switch notifications.authorizationStatus {
         case .unknown:
-            return "Проверяем системное разрешение…"
+            return L10n.string("Checking the system permission…")
         case .notDetermined:
-            return "Разрешение можно выдать прямо здесь — macOS покажет системный запрос."
+            return L10n.string(
+                "You can grant permission here — macOS will show a system prompt.")
         case .denied:
-            return "macOS не показывает повторный запрос после отказа. Разрешите уведомления для Detach в системных настройках."
+            return L10n.string(
+                "macOS doesn't show the prompt again after a denial. Allow notifications for Detach in System Settings.")
         case .authorized:
-            return "Готово — сообщим о готовом ответе, завершении или проблеме сессии."
+            return L10n.string(
+                "Ready — we'll notify you about ready responses, completed sessions, or session problems.")
         }
     }
 

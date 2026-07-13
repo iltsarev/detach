@@ -40,7 +40,7 @@ public final class SessionStore {
         do {
             let result = try await cli.run(arguments: ["list", "--json"], timeout: 5)
             guard result.exitCode == 0, !result.timedOut else {
-                state = .error(result.timedOut ? "detach list timed out"
+                state = .error(result.timedOut ? L10n.string("detach list timed out")
                                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
                 return
             }
@@ -68,16 +68,20 @@ public final class SessionStore {
         case .delete:
             arguments = [session.provider.rawValue, "delete", "--force", session.sessionName]
         case .attach, .resume, .recover:
-            return "internal error: \(action.rawValue) must run in Terminal"
+            return L10n.format(
+                "Internal error: %@ must run in Terminal",
+                action.rawValue)
         }
         do {
             let result = try await cli.run(arguments: arguments, timeout: 30)
             await refresh()
             if result.exitCode == 0 { return nil }
             let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return stderr.isEmpty ? "detach exited with status \(result.exitCode)" : stderr
+            return stderr.isEmpty
+                ? L10n.format("detach exited with status %d", result.exitCode)
+                : stderr
         } catch {
-            return "could not run detach: \(error.localizedDescription)"
+            return L10n.format("Could not run detach: %@", error.localizedDescription)
         }
     }
 }

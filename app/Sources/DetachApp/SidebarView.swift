@@ -17,7 +17,7 @@ struct SidebarView: View {
             ForEach(SessionSection.allCases, id: \.self) { section in
                 let items = sessions(in: section)
                 if !items.isEmpty {
-                    Section("\(section.rawValue) · \(items.count)") {
+                    Section(L10n.format("%@ · %d", section.displayName, items.count)) {
                         ForEach(items) { session in
                             SessionRow(session: session).tag(session.id)
                         }
@@ -29,12 +29,12 @@ struct SidebarView: View {
             if store.sessions.isEmpty && store.state == .ok {
                 ContentUnavailableView {
                     Label {
-                        Text("Сессий пока нет")
+                        Text(L10n.string("No sessions yet"))
                     } icon: {
                         Image(systemName: "terminal").foregroundStyle(Brand.gradient)
                     }
                 } description: {
-                    Text("Запусти Codex или Claude в терминале")
+                    Text(L10n.string("Launch Codex or Claude in Terminal"))
                 }
             }
         }
@@ -46,7 +46,7 @@ struct SidebarView: View {
                 Button {
                     showNewSession = true
                 } label: {
-                    Label("Новая сессия", systemImage: "plus")
+                    Label(L10n.string("New session"), systemImage: "plus")
                         .foregroundStyle(Brand.indigo)
                 }
             }
@@ -82,7 +82,7 @@ struct SessionRow: View {
         var parts: [String] = []
         if isCustomName { parts.append(session.name) }
         parts.append(session.displayStatus)
-        if let exit = session.exitStatus { parts.append("exit \(exit)") }
+        if let exit = session.exitStatus { parts.append(L10n.format("exit %d", exit)) }
         if let created = session.createdAt {
             parts.append(created.formatted(.relative(presentation: .named)))
         }
@@ -117,13 +117,15 @@ struct StatusBar: View {
             switch store.state {
             case .ok:
                 if let updated = store.lastUpdated {
-                    Text("Обновлено \(updated.formatted(date: .omitted, time: .standard))")
+                    Text(L10n.format(
+                        "Updated %@",
+                        updated.formatted(date: .omitted, time: .standard)))
                 }
             case .incompatible:
-                Label("Несовместимая версия CLI — обнови detach", systemImage: "exclamationmark.triangle")
+                Label(L10n.string("Incompatible CLI version—update detach"), systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             case .cliMissing:
-                Label("detach недоступен", systemImage: "exclamationmark.triangle")
+                Label(L10n.string("detach is unavailable"), systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
             case .error(let message):
                 Label(message, systemImage: "exclamationmark.triangle")

@@ -1,4 +1,5 @@
 import CryptoKit
+import DetachKit
 import Foundation
 import ServiceManagement
 
@@ -63,9 +64,9 @@ enum WatchdogServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .bundledDefinitionMissing:
-            "The bundled watchdog definition is missing or incomplete."
+            L10n.string("The bundled watchdog definition is missing or incomplete.")
         case .registrationDidNotComplete:
-            "macOS did not finish registering the watchdog."
+            L10n.string("macOS did not finish registering the watchdog.")
         }
     }
 }

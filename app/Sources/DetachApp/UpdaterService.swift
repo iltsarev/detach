@@ -119,17 +119,20 @@ final class UpdaterService: ObservableObject {
         let problems = configuration.issues.map { issue in
             switch issue {
             case .unstableApplicationLocation:
-                return "приложение запущено не из /Applications"
+                return L10n.string("the app isn't running from /Applications")
             case .invalidFeedURL:
-                return "не задан корректный HTTPS SUFeedURL"
+                return L10n.string("a valid HTTPS SUFeedURL isn't configured")
             case .invalidPublicKey:
-                return "не задан корректный SUPublicEDKey"
+                return L10n.string("a valid SUPublicEDKey isn't configured")
             }
         }
-        let developmentNote = isPackagedApplication
-            ? "" : " Для локальной разработки это нормально."
-        return .unavailable(
-            reason: "Автообновления недоступны: \(problems.joined(separator: ", ")).\(developmentNote)")
+        let problemDescription = problems.joined(separator: ", ")
+        let reason = isPackagedApplication
+            ? L10n.format("Automatic updates are unavailable: %@.", problemDescription)
+            : L10n.format(
+                "Automatic updates are unavailable: %@. This is expected for local development.",
+                problemDescription)
+        return .unavailable(reason: reason)
     }
 
     static func fallbackMessage(for error: Error?) -> String? {
@@ -143,7 +146,8 @@ final class UpdaterService: ObservableObject {
                 || !nonActionableSparkleErrorCodes.contains(nsError.code) else {
             return nil
         }
-        return "Sparkle не смог завершить обновление: \(nsError.localizedDescription)"
+        return L10n.format(
+            "Sparkle couldn't complete the update: %@", nsError.localizedDescription)
     }
 
 }
@@ -152,16 +156,16 @@ struct CheckForUpdatesCommand: View {
     @ObservedObject var updater: UpdaterService
 
     var body: some View {
-        Button("Проверить наличие обновлений…") {
+        Button(L10n.string("Check for updates…")) {
             updater.checkForUpdates()
         }
         .disabled(!updater.isAvailable || !updater.canCheckForUpdates)
 
         if updater.shouldOfferManualDownload {
             if let downloadURL = updater.manualDownloadURL {
-                Link("Открыть страницу загрузки…", destination: downloadURL)
+                Link(L10n.string("Open download page…"), destination: downloadURL)
             } else {
-                Button("Открыть страницу загрузки…") {}
+                Button(L10n.string("Open download page…")) {}
                     .disabled(true)
             }
         }
