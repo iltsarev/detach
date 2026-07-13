@@ -6,8 +6,9 @@
   <string>dev.tsarev.codex-detached-watchdog</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/example/.local/bin/detach</string>
-    <string>__reconcile_amphetamine</string>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>mkdir -p "$HOME/.local/state/codex-detached-amphetamine" &amp;&amp; exec "$HOME/.local/bin/detach" __reconcile_amphetamine &gt;&gt;"$HOME/.local/state/codex-detached-amphetamine/watchdog.log" 2&gt;&amp;1</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -22,7 +23,5 @@
   <string>Background</string>
   <key>StandardOutPath</key>
   <string>/dev/null</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/example/.local/state/codex-detached-amphetamine/watchdog.log</string>
 </dict>
 </plist>

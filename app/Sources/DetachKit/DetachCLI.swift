@@ -39,12 +39,31 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
             "/opt/homebrew/bin",
             "/usr/local/bin",
             "/opt/local/bin",
-        ]
+            "\(home)/.volta/bin",
+            "\(home)/.local/share/mise/shims",
+            "\(home)/.asdf/shims",
+            "\(home)/.fnm/current/bin",
+            "\(home)/.npm-global/bin",
+        ] + versionManagerBinPaths(home: home)
         for path in commonPaths where !paths.contains(path) {
             paths.append(path)
         }
         environment["PATH"] = paths.joined(separator: ":")
         return environment
+    }
+
+    private static func versionManagerBinPaths(home: String) -> [String] {
+        let roots = [
+            "\(home)/.nvm/versions/node",
+            "\(home)/.local/share/mise/installs/node",
+        ]
+        let fileManager = FileManager.default
+        return roots.flatMap { root -> [String] in
+            guard let entries = try? fileManager.contentsOfDirectory(atPath: root) else {
+                return []
+            }
+            return entries.sorted(by: >).map { "\(root)/\($0)/bin" }
+        }
     }
 
     public func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {

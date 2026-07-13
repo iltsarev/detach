@@ -41,6 +41,7 @@ wait_for_process_group_exit() {
 
 export CODEX_DETACHED_STATE_ROOT="$TMP_ROOT/state"
 export DETACH_LOCKS_ROOT="$TMP_ROOT/locks"
+export DETACH_INSTALL_STATE_ROOT="$TMP_ROOT/install-state"
 export DETACH_AMPHETAMINE_STATE_ROOT="$TMP_ROOT/amphetamine-state"
 export CODEX_DETACHED_TMUX_SOCKET="$SOCKET"
 export CODEX_DETACHED_TMUX_CONFIG="$TMP_ROOT/tmux.conf"
@@ -58,25 +59,36 @@ export FAKE_CODEX_EXIT=7
 export FAKE_CODEX_FOREIGN_FIRST=1
 export FAKE_CODEX_INIT_DELAY=1
 export TMUX_TMPDIR="/tmp/cdt-tmux-$$"
+# The test owns a private tmux server. An outer Detach/tmux context must not
+# influence how tmux resolves -L or make attach semantics switch clients.
+unset TMUX TMUX_PANE DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM
 mkdir -p "$TMUX_TMPDIR" "$CODEX_HOME"
 printf '%s\n' 'set -g base-index 1' 'set -g pane-base-index 1' >"$CODEX_DETACHED_TMUX_CONFIG"
 printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request"]' >"$CODEX_DETACHED_REQUIREMENTS_FILE"
 
 bash -n "$SCRIPT"
 bash -n "$ROOT/bin/detach-core"
+[ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
 
 # The installed layout exposes only detach on PATH. The frontend must still
 # find its sibling core after resolving the public symlink.
 install_root="$TMP_ROOT/install"
-install -d "$install_root/bin" "$install_root/libexec/detach"
-install -m 0755 "$ROOT/bin/detach" "$ROOT/bin/detach-core" "$install_root/libexec/detach/"
-ln -s ../libexec/detach/detach "$install_root/bin/detach"
+installed_version="$(<"$ROOT/VERSION")"
+installed_payload="$install_root/libexec/detach/versions/$installed_version-test"
+install -d "$install_root/bin" "$installed_payload"
+install -m 0755 "$ROOT/bin/detach" "$ROOT/bin/detach-core" "$installed_payload/"
+install -m 0644 "$ROOT/VERSION" "$installed_payload/VERSION"
+installed_core="$(cd -P "$installed_payload" && pwd)/detach-core"
+ln -s "$installed_payload/detach" "$install_root/bin/detach"
 "$install_root/bin/detach" --help >/dev/null
+[ "$("$install_root/bin/detach" __version)" = "$installed_version" ]
 [ ! -e "$install_root/bin/detach-core" ]
-if "$install_root/libexec/detach/detach-core" >/dev/null 2>&1; then
+if "$installed_payload/detach-core" >/dev/null 2>&1; then
   printf 'detach-core unexpectedly accepted direct invocation\n' >&2
   exit 1
 fi
+SCRIPT="$install_root/bin/detach"
+DETACH="$SCRIPT"
 
 marker="$TMP_ROOT/must-not-exist"
 literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
@@ -86,11 +98,25 @@ sleep 2
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 "$DETACH" list | grep -F 'codex' | grep -F "$SESSION" >/dev/null
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_pane_id)"
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_cli_version)" = "$installed_version" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_core_path)" = "$installed_core" ]
 first_worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
 first_worker_pgid="$(ps -o pgid= -p "$first_worker_pid" | tr -d '[:space:]')"
 grep -F -- "$literal_prompt" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 ! grep -Fx -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 [ ! -e "$marker" ]
+
+# Switching the public CLI while a worker is alive must not change that
+# worker's resolved core path. New invocations get the upgraded payload.
+upgraded_version="0.2.0"
+upgraded_payload="$install_root/libexec/detach/versions/$upgraded_version-test"
+install -d "$upgraded_payload"
+install -m 0755 "$ROOT/bin/detach" "$ROOT/bin/detach-core" "$upgraded_payload/"
+printf '%s\n' "$upgraded_version" >"$upgraded_payload/VERSION"
+ln -s "$upgraded_payload/detach" "$install_root/bin/.detach-upgrade"
+mv -f "$install_root/bin/.detach-upgrade" "$install_root/bin/detach"
+[ "$("$SCRIPT" __version)" = "$upgraded_version" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_core_path)" = "$installed_core" ]
 
 meta="$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/meta.json"
 checkpoint="$CODEX_DETACHED_STATE_ROOT/sessions/$SESSION/checkpoint"
@@ -143,6 +169,7 @@ export FAKE_CODEX_INIT_DELAY=5
 printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request", "never"]' >"$CODEX_DETACHED_REQUIREMENTS_FILE"
 run_codex --name integration --detach -- 'start a new thread'
 sleep 1
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @codex_detached_cli_version)" = "$upgraded_version" ]
 [ "$(grep -Fxc -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ "$(grep -Fxc -- 'never' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ ! -e "$checkpoint/rollout.jsonl" ]

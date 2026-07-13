@@ -58,11 +58,42 @@ resolve_self() {
 }
 
 SELF="$(resolve_self)"
+SELF_DIR="$(dirname "$SELF")"
+VERSION_FILE="$SELF_DIR/VERSION"
+[ -f "$VERSION_FILE" ] || VERSION_FILE="$SELF_DIR/../VERSION"
+
+release_version() {
+  local version
+  [ -f "$VERSION_FILE" ] || return 1
+  IFS= read -r version <"$VERSION_FILE" || return 1
+  [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || return 1
+  printf '%s\n' "$version"
+}
+
+CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
+CONFIG_FILE="$CONFIG_ROOT/config"
+INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+INSTALL_LOCK="$INSTALL_STATE_ROOT/install.lock"
+
+config_value() {
+  local key="$1"
+  local line
+  [ -f "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      "$key="*) printf '%s\n' "${line#*=}"; return 0 ;;
+    esac
+  done <"$CONFIG_FILE"
+  return 1
+}
+
+CONFIG_AMPHETAMINE="$(config_value AMPHETAMINE 2>/dev/null || true)"
+case "$CONFIG_AMPHETAMINE" in 0|1|'') ;; *) CONFIG_AMPHETAMINE="" ;; esac
 if [ "$PROVIDER" = "codex" ]; then
   STATE_ROOT="${CODEX_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-detached}"
   CHECKPOINT_INTERVAL="${CODEX_DETACHED_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
   HISTORY_LIMIT="${CODEX_DETACHED_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
-  AMPHETAMINE_ENABLED="${CODEX_DETACHED_AMPHETAMINE:-1}"
+  AMPHETAMINE_ENABLED="${CODEX_DETACHED_AMPHETAMINE:-${DETACH_AMPHETAMINE:-${CONFIG_AMPHETAMINE:-1}}}"
   SYNC_ENABLED="${CODEX_DETACHED_SYNC:-1}"
   TMUX_SOCKET="${DETACH_TMUX_SOCKET:-${CODEX_DETACHED_TMUX_SOCKET:-}}"
   TMUX_CONFIG="${DETACH_TMUX_CONFIG:-${CODEX_DETACHED_TMUX_CONFIG:-}}"
@@ -70,7 +101,7 @@ else
   STATE_ROOT="${CLAUDE_DETACHED_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-detached}"
   CHECKPOINT_INTERVAL="${CLAUDE_DETACHED_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
   HISTORY_LIMIT="${CLAUDE_DETACHED_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
-  AMPHETAMINE_ENABLED="${CLAUDE_DETACHED_AMPHETAMINE:-1}"
+  AMPHETAMINE_ENABLED="${CLAUDE_DETACHED_AMPHETAMINE:-${DETACH_AMPHETAMINE:-${CONFIG_AMPHETAMINE:-1}}}"
   SYNC_ENABLED="${CLAUDE_DETACHED_SYNC:-1}"
   TMUX_SOCKET="${DETACH_TMUX_SOCKET:-${CLAUDE_DETACHED_TMUX_SOCKET:-}}"
   TMUX_CONFIG="${DETACH_TMUX_CONFIG:-${CLAUDE_DETACHED_TMUX_CONFIG:-}}"
@@ -82,6 +113,9 @@ AMPHETAMINE_LEASES="$AMPHETAMINE_ROOT/leases"
 AMPHETAMINE_OWNER="$AMPHETAMINE_ROOT/owner.json"
 AMPHETAMINE_LOCK="$AMPHETAMINE_ROOT/lock"
 INSIDE_TMUX="${TMUX:-}"
+DETACH_CONFIG_ROOT="$CONFIG_ROOT"
+DETACH_AMPHETAMINE_STATE_ROOT="$AMPHETAMINE_ROOT"
+export DETACH_CONFIG_ROOT DETACH_AMPHETAMINE_STATE_ROOT DETACH_INSTALL_STATE_ROOT
 
 TMUX_BIN="${DETACH_TMUX_BIN:-${CODEX_DETACHED_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}}"
 JQ_BIN="${DETACH_JQ_BIN:-${CODEX_DETACHED_JQ_BIN:-$(command -v jq 2>/dev/null || true)}}"
@@ -219,7 +253,8 @@ require_start_dependencies() {
 }
 
 ensure_state_dirs() {
-  mkdir -p "$SESSIONS_ROOT" "$LOCKS_ROOT" "$AMPHETAMINE_LEASES" || die "cannot create state directory: $STATE_ROOT"
+  mkdir -p "$SESSIONS_ROOT" "$LOCKS_ROOT" "$AMPHETAMINE_LEASES" "$INSTALL_STATE_ROOT" || \
+    die "cannot create state directory: $STATE_ROOT"
 }
 
 now_iso() {
@@ -1918,10 +1953,13 @@ tmux_environment_args() {
   local value
 
   for name in PATH HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL LC_CTYPE \
+              XDG_CONFIG_HOME XDG_STATE_HOME \
               NODE_EXTRA_CA_CERTS HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
               http_proxy https_proxy all_proxy no_proxy OPENAI_API_KEY ANTHROPIC_API_KEY \
               SSL_CERT_FILE SSL_CERT_DIR CODEX_HOME CLAUDE_CONFIG_DIR \
               DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM DETACH_LOCKS_ROOT \
+              DETACH_INSTALL_STATE_ROOT \
+              DETACH_CONFIG_ROOT DETACH_AMPHETAMINE \
               DETACH_AMPHETAMINE_STATE_ROOT DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG \
               DETACH_TMUX_BIN DETACH_JQ_BIN \
               DETACH_SQLITE_BIN DETACH_TAR_BIN DETACH_OSASCRIPT_BIN DETACH_CAFFEINATE_BIN \
@@ -2005,6 +2043,8 @@ start_tmux_session() {
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_running 0
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_pane_id "$pane_id"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_run_token "$run_token"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_cli_version "$(release_version 2>/dev/null || printf 'unknown')"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @codex_detached_core_path "$SELF"
   "${TMUX_CMD[@]}" set-option -q -w -t "$pane_id" remain-on-exit on
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" history-limit "$HISTORY_LIMIT"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse on
@@ -2077,7 +2117,7 @@ start_tmux_session_locked() {
   start_tmux_session "$session" "$cwd" 1 "$recovery_id" "$recovery_rollout" "$preserve_checkpoint" "$@"
 }
 
-start_under_project_lock() {
+start_under_install_lock() {
   local session="$1"
   local cwd="$2"
   local recovery_id="$3"
@@ -2089,6 +2129,11 @@ start_under_project_lock() {
   lock="$(project_lock_path "$cwd")"
   "$LOCKF_BIN" -k -t 30 "$lock" "$SELF" __start_tmux_session_locked \
     "$session" "$cwd" "$recovery_id" "$recovery_rollout" "$preserve_checkpoint" "$@"
+}
+
+start_under_project_lock() {
+  mkdir -p "$INSTALL_STATE_ROOT" || die "cannot create install lock directory"
+  "$LOCKF_BIN" -k -t 30 "$INSTALL_LOCK" "$SELF" __start_under_install_lock "$@"
 }
 
 read_meta_field() {
@@ -2905,6 +2950,11 @@ main() {
 }
 
 case "${1:-}" in
+  __version)
+    shift
+    [ "$#" -eq 0 ] || exit 1
+    release_version || exit 1
+    ;;
   __worker)
     shift
     worker_main "$@"
@@ -2942,6 +2992,10 @@ case "${1:-}" in
   __start_tmux_session_locked)
     shift
     start_tmux_session_locked "$@"
+    ;;
+  __start_under_install_lock)
+    shift
+    start_under_install_lock "$@"
     ;;
   __amphetamine_acquire_locked)
     shift

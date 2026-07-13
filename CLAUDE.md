@@ -10,15 +10,25 @@ A macOS harness that runs Codex or Claude Code detached inside a persistent tmux
 
 - `tests/run.sh` — integration test for the Codex adapter. Hermetic: fake provider binary (`tests/fake-codex`), private tmux server (own `-L` socket and `TMUX_TMPDIR`), temp state roots, Amphetamine disabled.
 - `tests/run-claude.sh` — the same for the Claude adapter (`tests/fake-claude`).
+- `tests/distribution.sh` — hermetic versioned install/upgrade/doctor/uninstall
+  and portable legacy LaunchAgent coverage (fake tmux/launchctl, temp HOME).
 - `CODEX_DETACHED_TEST_KEEP=1 tests/run.sh` — preserve the temp state and tmux server after a run for inspection.
 - `tests/amphetamine-smoke.sh` — optional system smoke test that enables REAL Amphetamine Closed-Display Mode and toggles real system sleep via Power Protect. Do not run it as routine verification.
 
 - `cd app && swift test` — unit tests for the Detach.app library (`DetachKit`).
-- `app/scripts/make-app.sh` — build the `Detach.app` bundle (release build, ad-hoc codesign) into `app/build/`.
+- `app/scripts/make-app.sh` — build the universal `Detach.app` bundle (release
+  build, bundled CLI/helper, ad-hoc codesign by default) into `app/build/`.
+- `app/scripts/make-dmg.sh` — create a local DMG. `app/scripts/release.sh` is the
+  strict Developer ID + app/DMG notarization pipeline and requires credentials.
+- `app/scripts/publish-release.sh` — explicit GitHub Release publication; it
+  verifies the checksum and refuses to replace an existing tag's assets.
 
 There is no separate linter; `run.sh` / `run-claude.sh` are the verification path for any change to `bin/`, `swift test` for `app/`.
 
-The repo copies are not what runs on the machine: stable copies are installed to `~/.local/bin`, and the watchdog LaunchAgent references absolute `/Users/example/.local/bin` paths. Edits to `bin/` or the plist take effect only after re-running the install block in README.md.
+The repo copies are not what runs on the machine. `./install.sh` or Detach.app
+installs immutable payloads under
+`~/.local/libexec/detach/versions/<semver>-<hash>/` and atomically switches
+`~/.local/bin/detach`. Edits to `bin/` take effect only after Repair/reinstall.
 
 ## Architecture
 
@@ -31,6 +41,14 @@ Two internal executables that must live side by side (`detach` resolves the core
 
 - **Self-reinvocation dispatch.** The `case` at the bottom of the core routes `__`-prefixed internal commands (`__worker`, `__checkpoint_once_locked`, `__amphetamine_acquire_locked`, `__reconcile_amphetamine`, ...) back into the same script. Critical sections run as `lockf <lockfile> "$SELF" __something_locked ...` so the lock brackets the whole child process. New shared-state mutations should follow this pattern.
 - **Everything is env-injectable.** Every external binary (tmux, jq, sqlite3, tar, osascript, provider CLIs, ...) and every state path has a `DETACH_*` override with `CODEX_DETACHED_*` / `CLAUDE_DETACHED_*` fallbacks. This is what makes the tests hermetic — any new external dependency or path must get the same treatment.
+- **Distribution is immutable and locked.** `VERSION` is the logical app/CLI
+  version; `scripts/install.sh` computes a payload hash, stages beside the
+  target, validates frontend/core/version/hashes, atomically switches the
+  public symlink, then writes `~/.local/state/detach/install.json`. App sync,
+  CLI-only install, Repair, and Uninstall share this implementation and
+  `install.lock`; session start takes the same lock before creating its worker,
+  closing the uninstall/start race. Never overwrite an existing payload path,
+  reuse active bytes as a Repair source, or ignore `BUILD` on downgrade checks.
 - **Guarded metadata.** Per-session `meta.json` (schema 1) is updated only via jq through `json_update_meta_for_run`, guarded by a `run_token`, so a stale worker or checkpoint loop from a replaced session cannot clobber the current one.
 - **Validate before restore.** Anything that writes into a provider's own store (`~/.claude/projects/...`, `~/.codex/sessions/...`) goes through `safe_*_path` (symlink/traversal rejection) and `valid_*` (session-id match, parseable JSONL) checks, writes to a tmp file, validates, then `mv -f`. A checkpoint never overwrites a valid live transcript that is newer/larger, and the Codex shared SQLite is backed up but never restored automatically.
 - **State is private.** `umask 077`; checkpoints under `~/.local/state/{codex,claude}-detached/sessions/<name>/` contain full conversation data.
@@ -54,7 +72,17 @@ Reference-counted lease files under `~/.local/state/codex-detached-amphetamine` 
 
 ### Detach.app (`app/`)
 
-A SwiftPM package: `DetachKit` (tested logic — JSONL parsing, status→section/action mapping, async Process CLI client, Terminal command composition with shell quoting) plus `DetachApp` (thin SwiftUI layer, macOS 14+). It consumes only the CLI surface — `list --json`, `logs`, `stop`, `delete --force`, and `attach`/`resume`/`recover` composed into Terminal.app via AppleScript — never the state dirs. On partially invalid `list --json` output the store keeps the last good list and shows an incompatible-CLI banner; keep `emit_list_json` and `Session` in sync when changing either side.
+A SwiftPM package: `DetachKit` (tested parsing/process/distribution clients),
+`DetachApp` (SwiftUI, macOS 14+), and the small `DetachWatchdog` helper. The app
+bundles `DetachCLI`, syncs it on bootstrap, renders `doctor --json`, and
+registers a static bundled LaunchAgent via `SMAppService`. The helper resolves
+the stable per-user CLI at runtime and writes a heartbeat; never put user paths
+into the signed plist. Distribution bootstrap is allowed only from
+`/Applications`, not a DMG/App Translocation path.
+When helper/plist bytes change, await unregister completion before registering
+again. Session operations still consume only the public CLI surface. On
+partially invalid `list --json`, keep the last good list; keep `emit_list_json`
+and `Session` in sync.
 
 ### Backward-compatibility constraints
 

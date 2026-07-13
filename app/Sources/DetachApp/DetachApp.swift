@@ -9,14 +9,19 @@ enum AppSettings {
 struct DetachApp: App {
     @AppStorage("detachPath") private var detachPath = AppSettings.defaultDetachPath
     @AppStorage("pollInterval") private var pollInterval = 2.0
+    @State private var installation = InstallationStore(
+        detachPath: AppSettings.defaultDetachPath)
 
     var body: some Scene {
         WindowGroup("Detach") {
-            RootView(detachPath: detachPath, pollInterval: pollInterval)
-                .id(detachPath) // rebuild the store when the CLI path changes
+            let activeDetachPath = installation.hasDistributionPayload
+                ? AppSettings.defaultDetachPath : detachPath
+            RootView(detachPath: activeDetachPath, pollInterval: pollInterval,
+                     installation: installation)
+                .id(activeDetachPath) // rebuild the store when the CLI path changes
         }
         Settings {
-            SettingsView()
+            SettingsView(installation: installation)
         }
     }
 }

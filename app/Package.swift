@@ -7,6 +7,7 @@ let package = Package(
     targets: [
         .target(name: "DetachKit"),
         .executableTarget(name: "DetachApp", dependencies: ["DetachKit"]),
+        .executableTarget(name: "DetachWatchdog"),
         .testTarget(name: "DetachKitTests", dependencies: ["DetachKit"]),
     ]
 )

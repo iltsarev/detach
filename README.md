@@ -8,24 +8,45 @@ an internal implementation detail and is not installed on `PATH`.
 
 ## Install
 
-The current LaunchAgent is configured for `/Users/example`. Install a stable
-copy of the wrapper and load the watchdog:
+The preferred distribution is `Detach.dmg`: move `Detach.app` to
+`/Applications`, open it, and follow onboarding. The app installs an immutable
+versioned CLI under `~/.local`, then offers to enable its watchdog in Login
+Items. New installs keep the optional Amphetamine integration off until it is
+enabled in Settings.
+
+For a CLI-only install from a checkout, make sure `tmux`, `jq`, and at least one
+provider CLI are installed, then run:
 
 ```sh
-install -d ~/.local/bin ~/.local/libexec/detach ~/Library/LaunchAgents
-install -d -m 0700 ~/.local/state/codex-detached-amphetamine
-install -m 0755 bin/detach bin/detach-core ~/.local/libexec/detach/
-ln -sfn ../libexec/detach/detach ~/.local/bin/detach
-rm -f ~/.local/bin/codex-detached
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist 2>/dev/null || true
-install -m 0644 launchagents/dev.tsarev.codex-detached-watchdog.plist ~/Library/LaunchAgents/
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist
-launchctl kickstart -k "gui/$(id -u)/dev.tsarev.codex-detached-watchdog"
+brew install tmux jq
+./install.sh
+detach doctor
 ```
 
-`~/.local/bin` must be on `PATH`. Check the installation with
-`command -v detach`, `[ ! -e ~/.local/bin/codex-detached ]`, and
-`launchctl print "gui/$(id -u)/dev.tsarev.codex-detached-watchdog"`.
+The installer stages and validates a payload under
+`~/.local/libexec/detach/versions/<version>-<hash>`, atomically switches
+`~/.local/bin/detach`, writes `~/.local/state/detach/install.json`, and installs
+a portable per-user LaunchAgent. It never downgrades a newer CLI implicitly.
+`~/.local/bin` must be on `PATH`.
+
+Repair the active payload or uninstall it while preserving checkpoints:
+
+```sh
+detach repair
+detach uninstall --keep-state
+```
+
+CLI Repair uses the pristine source recorded by the installer (normally the
+installed `Detach.app` or the original checkout); it refuses to clone bytes
+from a damaged immutable directory. For an app-first installation, uninstall
+from Detach Settings so macOS can unregister the `SMAppService` Login Item
+before the CLI is removed. CLI uninstall is the complete path for CLI-only
+installs.
+
+`detach uninstall --purge-state` additionally deletes Detach checkpoints after
+an explicit request. It never deletes provider stores in `~/.codex` or
+`~/.claude`, Amphetamine Power Protect, or sudoers configuration. Uninstall
+refuses to run while a managed session is alive.
 
 ## Usage
 
@@ -150,9 +171,11 @@ The Claude adapter disables the alternate screen so `logs` and retained pane
 checkpoints remain useful. It runs Claude in the project directory selected by
 the wrapper; Claude has no equivalent of Codex's `-C` option.
 
-## Amphetamine
+## Amphetamine (optional keep-awake)
 
-Amphetamine 5.3.2 and Power Protect must be installed. The first detached task
+Amphetamine 5.3.2 and Power Protect are needed only for Closed-Display Mode.
+Without them, Detach still provides tmux persistence, checkpoints and
+`caffeinate` while the lid is open. When keep-awake is enabled, the first task
 starts one infinite Amphetamine session with display sleep allowed and
 Closed-Display Mode enabled. Additional detached tasks share it. The last task
 ends it only when the launcher created it and the observable session properties
@@ -177,6 +200,10 @@ Keep the MacBook on a ventilated surface and preferably connected to power.
 This setup enables Amphetamine's low-battery auto-end option at its configured
 threshold (currently 10%). The watchdog leaves Amphetamine inactive at or below
 that threshold so macOS can sleep instead of draining the battery completely.
+
+Detach v1 is intentionally single-user. Multiple simultaneously logged-in
+users on one Mac are unsupported because leases are per-user while Power
+Protect changes system-wide sleep state.
 
 ## Development
 
@@ -203,11 +230,41 @@ delete/new-session through the CLI:
 
 ```sh
 app/scripts/make-app.sh
-open app/build/Detach.app
+ditto app/build/Detach.app /Applications/Detach.app
+open /Applications/Detach.app
 ```
 
-The app talks to the CLI only (`detach list --json`, `detach <provider> ...`);
-point it at a different binary in Settings.
+`make-app.sh` creates a universal ad-hoc-signed development bundle containing
+the CLI payload and signed watchdog helper. The app deliberately refuses to
+install CLI/Login Items while running from a DMG, App Translocation or another
+ephemeral path. Build a local DMG with:
+
+```sh
+app/scripts/make-dmg.sh
+```
+
+Production release is fail-closed and requires a Developer ID identity plus a
+`notarytool` keychain profile:
+
+```sh
+DETACH_BUILD_VERSION=2 \
+DETACH_CODESIGN_IDENTITY='Developer ID Application: …' \
+DETACH_NOTARY_PROFILE=detach-notary \
+app/scripts/release.sh
+```
+
+After notarization succeeds, publication is a separate fail-closed step so a
+rerun cannot silently replace assets of an existing release:
+
+```sh
+DETACH_GITHUB_REPOSITORY='owner/public-downloads' \
+app/scripts/publish-release.sh
+```
+
+The app synchronizes its bundled CLI before polling sessions and uses
+`detach doctor --json` for install/dependency diagnostics. Swift adds only
+app-context checks such as `SMAppService` status. The normal session UI still
+talks exclusively through the public CLI surface.
 
 Future UI features and their acceptance criteria are tracked in
 [`docs/backlog.md`](docs/backlog.md).

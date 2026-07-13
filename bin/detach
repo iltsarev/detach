@@ -21,6 +21,10 @@ usage() {
     '  detach claude [COMMAND] [ARGS...]' \
     '  detach list [--json]' \
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
+    '  detach doctor [--json]' \
+    '  detach repair' \
+    '  detach uninstall [--keep-state|--purge-state]' \
+    '  detach --version' \
     '' \
     'Use an explicit provider to start or run provider-specific management commands.' \
     'The shared list includes both providers; resume detects the provider by UUID.' \
@@ -28,7 +32,7 @@ usage() {
 }
 
 resolve_self() {
-  local source_path="$0"
+  local source_path="${1:-$0}"
   local source_dir
   local link_target
 
@@ -47,7 +51,256 @@ resolve_self() {
 
 SELF="$(resolve_self)"
 CORE="$(dirname "$SELF")/detach-core"
+SELF_DIR="$(dirname "$SELF")"
+VERSION_FILE="$SELF_DIR/VERSION"
+[ -f "$VERSION_FILE" ] || VERSION_FILE="$SELF_DIR/../VERSION"
+INSTALLER="$SELF_DIR/detach-install"
+[ -x "$INSTALLER" ] || INSTALLER="$SELF_DIR/../scripts/install.sh"
 JQ_BIN="${DETACH_JQ_BIN:-${CODEX_DETACHED_JQ_BIN:-$(command -v jq 2>/dev/null || true)}}"
+TMUX_BIN="${DETACH_TMUX_BIN:-${CODEX_DETACHED_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}}"
+SQLITE_BIN="${DETACH_SQLITE_BIN:-${CODEX_DETACHED_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}}"
+TAR_BIN="${DETACH_TAR_BIN:-/usr/bin/tar}"
+CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-${CODEX_DETACHED_CAFFEINATE_BIN:-/usr/bin/caffeinate}}"
+LOCKF_BIN="${DETACH_LOCKF_BIN:-${CODEX_DETACHED_LOCKF_BIN:-/usr/bin/lockf}}"
+CODEX_BIN="${CODEX_DETACHED_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+CLAUDE_BIN="${CLAUDE_DETACHED_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
+SHASUM_BIN="${DETACH_SHASUM_BIN:-/usr/bin/shasum}"
+PLUTIL_BIN="${DETACH_PLUTIL_BIN:-/usr/bin/plutil}"
+LAUNCHCTL_BIN="${DETACH_LAUNCHCTL_BIN:-/bin/launchctl}"
+INSTALL_BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
+INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
+WATCHDOG_LABEL="dev.tsarev.codex-detached-watchdog"
+
+release_version() {
+  local version
+  [ -f "$VERSION_FILE" ] || return 1
+  IFS= read -r version <"$VERSION_FILE" || return 1
+  [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || return 1
+  printf '%s\n' "$version"
+}
+
+show_version() {
+  local frontend_version core_version
+  frontend_version="$(release_version)" || die "version metadata is missing or invalid: $VERSION_FILE"
+  require_core
+  core_version="$(DETACH_CORE_ENTRYPOINT=1 DETACH_PROVIDER=codex DETACH_PROGRAM="$PROGRAM" "$CORE" __version 2>/dev/null)" || \
+    die "could not read detach-core version"
+  [ "$frontend_version" = "$core_version" ] || \
+    die "frontend/core version mismatch: $frontend_version != $core_version"
+  printf '%s\n' "$frontend_version"
+}
+
+json_escape() {
+  local value="${1-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+DOCTOR_IDS=()
+DOCTOR_SECTIONS=()
+DOCTOR_LABELS=()
+DOCTOR_REQUIRED=()
+DOCTOR_STATUSES=()
+DOCTOR_PATHS=()
+DOCTOR_SUMMARIES=()
+DOCTOR_OK=1
+
+doctor_add() {
+  DOCTOR_IDS+=("$1")
+  DOCTOR_SECTIONS+=("$2")
+  DOCTOR_LABELS+=("$3")
+  DOCTOR_REQUIRED+=("$4")
+  DOCTOR_STATUSES+=("$5")
+  DOCTOR_PATHS+=("$6")
+  DOCTOR_SUMMARIES+=("$7")
+  if [ "$4" = "true" ] && [ "$5" = "error" ]; then
+    DOCTOR_OK=0
+  fi
+}
+
+doctor_command() {
+  local id="$1" label="$2" command_name="$3" required="$4"
+  local path
+  path="$(command -v "$command_name" 2>/dev/null || true)"
+  if [ -n "$path" ] && [ -x "$path" ]; then
+    doctor_add "$id" base "$label" "$required" ok "$path" "Найден: $path"
+  else
+    doctor_add "$id" base "$label" "$required" error "" "$command_name не найден в PATH"
+  fi
+}
+
+doctor_config_value() {
+  local key="$1" config="$CONFIG_ROOT/config" line
+  [ -f "$config" ] && [ ! -L "$config" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in "$key="*) printf '%s\n' "${line#*=}"; return 0 ;; esac
+  done <"$config"
+  return 1
+}
+
+doctor_report() {
+  local json="$1" version build payload_id expected resolved path_command path_resolved
+  local manifest_version manifest_build manifest_path manifest_payload payload_file
+  local detach_hash core_hash installer_hash calculated_payload integrity_status
+  local codex_path claude_path keep_awake amphetamine_path power_protect
+  local index comma required path
+
+  version="$(release_version 2>/dev/null || printf 'unknown')"
+  build="$(head -n 1 "$SELF_DIR/BUILD" 2>/dev/null || true)"
+  payload_id="$(head -n 1 "$SELF_DIR/PAYLOAD_ID" 2>/dev/null || true)"
+  integrity_status=error
+  if [[ "$build" =~ ^[1-9][0-9]*$ ]] && [ -x "$INSTALLER" ] && [ -x "$SHASUM_BIN" ]; then
+    detach_hash="$("$SHASUM_BIN" -a 256 "$SELF" 2>/dev/null | awk '{print $1}')"
+    core_hash="$("$SHASUM_BIN" -a 256 "$CORE" 2>/dev/null | awk '{print $1}')"
+    installer_hash="$("$SHASUM_BIN" -a 256 "$INSTALLER" 2>/dev/null | awk '{print $1}')"
+    calculated_payload="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+      "$version" "$build" "$detach_hash" "$core_hash" "$installer_hash" | \
+      "$SHASUM_BIN" -a 256 | awk '{print $1}')"
+    [ "$calculated_payload" != "$payload_id" ] || integrity_status=ok
+  fi
+  if [ "$integrity_status" = ok ]; then
+    doctor_add integrity base "CLI integrity" true ok "$SELF_DIR" "Payload hashes согласованы"
+  else
+    doctor_add integrity base "CLI integrity" true error "$SELF_DIR" "Payload повреждён или metadata не согласованы"
+  fi
+
+  expected="$INSTALL_BIN_DIR/detach"
+  resolved=""
+  [ ! -e "$expected" ] || resolved="$(resolve_self "$expected" 2>/dev/null || true)"
+  if [ -L "$expected" ] && [ "$resolved" = "$SELF" ]; then
+    doctor_add cli base "detach CLI" true ok "$expected" "Установлена версия $version"
+  else
+    doctor_add cli base "detach CLI" true error "$expected" "Публичный CLI не указывает на текущую immutable-версию"
+  fi
+  path_command="$(command -v detach 2>/dev/null || true)"
+  path_resolved=""
+  [ -z "$path_command" ] || path_resolved="$(resolve_self "$path_command" 2>/dev/null || true)"
+  if [ "$path_resolved" = "$SELF" ]; then
+    doctor_add cli_path base "CLI в PATH" true ok "$path_command" "Terminal найдёт установленный detach"
+  else
+    doctor_add cli_path base "CLI в PATH" true error "$INSTALL_BIN_DIR" "Добавь $INSTALL_BIN_DIR в PATH"
+  fi
+
+  manifest_version=""
+  manifest_build=""
+  manifest_path=""
+  manifest_payload=""
+  if [ -f "$INSTALL_STATE_ROOT/install.json" ] && [ -x "$PLUTIL_BIN" ]; then
+    manifest_version="$("$PLUTIL_BIN" -extract version raw -o - "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
+    manifest_build="$("$PLUTIL_BIN" -extract build raw -o - "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
+    manifest_path="$("$PLUTIL_BIN" -extract executable_path raw -o - "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
+    manifest_payload="$("$PLUTIL_BIN" -extract payload_id raw -o - "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
+  fi
+  payload_file="$SELF_DIR/PAYLOAD_ID"
+  if [ "$manifest_version" = "$version" ] && [ "$manifest_build" = "$build" ] && \
+     [ "$manifest_path" = "$SELF" ] && [ -f "$payload_file" ] && \
+     [ "$payload_id" = "$manifest_payload" ] && [ "$integrity_status" = ok ]; then
+    doctor_add manifest base "Install manifest" true ok "$INSTALL_STATE_ROOT/install.json" "Manifest согласован с CLI"
+  else
+    doctor_add manifest base "Install manifest" true error "$INSTALL_STATE_ROOT/install.json" "Manifest отсутствует, повреждён или содержит другую версию"
+  fi
+
+  doctor_command tmux tmux "$TMUX_BIN" true
+  doctor_command jq jq "$JQ_BIN" true
+
+  codex_path="$CODEX_BIN"
+  claude_path="$CLAUDE_BIN"
+  [ -x "$codex_path" ] || codex_path=""
+  [ -x "$claude_path" ] || claude_path=""
+  if [ -n "$codex_path" ] || [ -n "$claude_path" ]; then
+    path="${codex_path:-${claude_path:-}}"
+    doctor_add provider base "Provider CLI" true ok "$path" "Доступны:${codex_path:+ Codex}${claude_path:+ Claude}"
+  else
+    doctor_add provider base "Provider CLI" true error "" "Не найден ни Codex CLI, ни Claude CLI"
+  fi
+  if [ -n "$codex_path" ]; then doctor_command sqlite sqlite3 "$SQLITE_BIN" true; fi
+  if [ -n "$claude_path" ]; then doctor_command tar tar "$TAR_BIN" true; fi
+  doctor_command caffeinate caffeinate "$CAFFEINATE_BIN" true
+  doctor_command lockf lockf "$LOCKF_BIN" true
+
+  if [ -x "$LAUNCHCTL_BIN" ] && "$LAUNCHCTL_BIN" print "gui/$(id -u)/$WATCHDOG_LABEL" >/dev/null 2>&1; then
+    doctor_add watchdog base "Watchdog" true ok "$WATCHDOG_LABEL" "LaunchAgent активен"
+  else
+    doctor_add watchdog base "Watchdog" true error "$WATCHDOG_LABEL" "LaunchAgent не зарегистрирован или требует разрешения"
+  fi
+
+  keep_awake="${DETACH_AMPHETAMINE:-$(doctor_config_value AMPHETAMINE 2>/dev/null || printf '1')}"
+  if [ "$keep_awake" = "0" ]; then
+    doctor_add keep_awake keepAwake "Keep-awake" false ok "" "Опциональная функция выключена"
+  else
+    amphetamine_path="/Applications/Amphetamine.app"
+    power_protect="$HOME/Library/Application Scripts/com.if.Amphetamine/powerProtect.scpt"
+    if [ -d "$amphetamine_path" ] && [ -f "$power_protect" ]; then
+      doctor_add keep_awake keepAwake "Keep-awake" false ok "$amphetamine_path" "Amphetamine и Power Protect найдены"
+    else
+      doctor_add keep_awake keepAwake "Keep-awake" false warning "$amphetamine_path" "Для Closed-Display Mode нужны Amphetamine и Power Protect"
+    fi
+  fi
+
+  if [ "$json" -eq 1 ]; then
+    printf '{"schema":1,"version":"%s","build":"%s","payload_id":"%s","ok":%s,"checks":[' \
+      "$(json_escape "$version")" "$(json_escape "$build")" "$(json_escape "$payload_id")" \
+      "$([ "$DOCTOR_OK" -eq 1 ] && printf true || printf false)"
+    comma=""
+    for index in "${!DOCTOR_IDS[@]}"; do
+      printf '%s{"id":"%s","section":"%s","label":"%s","required":%s,"status":"%s","path":' \
+        "$comma" "$(json_escape "${DOCTOR_IDS[$index]}")" \
+        "$(json_escape "${DOCTOR_SECTIONS[$index]}")" \
+        "$(json_escape "${DOCTOR_LABELS[$index]}")" \
+        "${DOCTOR_REQUIRED[$index]}" "${DOCTOR_STATUSES[$index]}"
+      if [ -n "${DOCTOR_PATHS[$index]}" ]; then
+        printf '"%s"' "$(json_escape "${DOCTOR_PATHS[$index]}")"
+      else
+        printf 'null'
+      fi
+      printf ',"summary":"%s"}' "$(json_escape "${DOCTOR_SUMMARIES[$index]}")"
+      comma=,
+    done
+    printf ']}\n'
+  else
+    printf 'Detach %s doctor\n' "$version"
+    for index in "${!DOCTOR_IDS[@]}"; do
+      case "${DOCTOR_STATUSES[$index]}" in ok) path='✓' ;; warning) path='!' ;; *) path='✗' ;; esac
+      required=""
+      [ "${DOCTOR_REQUIRED[$index]}" = true ] || required=" (optional)"
+      printf '%s %s%s — %s\n' "$path" "${DOCTOR_LABELS[$index]}" "$required" "${DOCTOR_SUMMARIES[$index]}"
+    done
+  fi
+  [ "$DOCTOR_OK" -eq 1 ]
+}
+
+require_installer() {
+  [ -x "$INSTALLER" ] || die "distribution installer not found next to detach: $INSTALLER"
+}
+
+repair_source() {
+  local source version_file installer_source fallback
+  source="$("$PLUTIL_BIN" -extract payload_source_path raw -o - \
+    "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
+  version_file="$("$PLUTIL_BIN" -extract version_file_path raw -o - \
+    "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
+  installer_source="$("$PLUTIL_BIN" -extract installer_source_path raw -o - \
+    "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
+  if [ -d "$source" ] && [ "$source" != "$SELF_DIR" ] && \
+     [ -x "$source/detach" ] && [ -x "$source/detach-core" ] && \
+     [ -f "$version_file" ] && [ -x "$installer_source" ]; then
+    printf '%s\n%s\n%s\n' "$source" "$version_file" "$installer_source"
+    return 0
+  fi
+
+  fallback="/Applications/Detach.app/Contents/Resources/DetachCLI"
+  if [ -x "$fallback/detach" ] && [ -x "$fallback/detach-core" ] && \
+     [ -x "$fallback/detach-install" ] && [ -f "$fallback/VERSION" ]; then
+    printf '%s\n%s\n%s\n' "$fallback" "$fallback/VERSION" "$fallback/detach-install"
+    return 0
+  fi
+  return 1
+}
 
 require_core() {
   [ -x "$CORE" ] || die "core executable not found: $CORE"
@@ -213,10 +466,45 @@ resume_auto() {
 
 main() {
   local command="${1:-}"
+  local repair_metadata="" local_repair_source="" local_repair_version=""
+  local local_repair_installer=""
 
   configure_common_tmux
 
   case "$command" in
+    --version|version|__version)
+      shift
+      [ "$#" -eq 0 ] || die "$command does not accept arguments"
+      show_version
+      ;;
+    doctor)
+      shift
+      case "${1:-}" in
+        '') doctor_report 0 ;;
+        --json)
+          [ "$#" -eq 1 ] || die "doctor accepts only --json"
+          doctor_report 1
+          ;;
+        *) die "unknown doctor option: $1" ;;
+      esac
+      ;;
+    repair)
+      shift
+      [ "$#" -eq 0 ] || die "repair does not accept arguments"
+      require_installer
+      repair_metadata="$(repair_source)" || \
+        die "pristine repair payload is unavailable; open Detach.app or rerun install.sh from its checkout"
+      local_repair_source="$(printf '%s\n' "$repair_metadata" | sed -n '1p')"
+      local_repair_version="$(printf '%s\n' "$repair_metadata" | sed -n '2p')"
+      local_repair_installer="$(printf '%s\n' "$repair_metadata" | sed -n '3p')"
+      exec "$local_repair_installer" install --source repair --payload-dir "$local_repair_source" \
+        --version-file "$local_repair_version" --no-launch-agent --repair
+      ;;
+    uninstall)
+      shift
+      require_installer
+      exec "$INSTALLER" uninstall "$@"
+      ;;
     codex|claude)
       shift
       exec_provider "$command" "$@"

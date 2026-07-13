@@ -30,6 +30,7 @@ export CODEX_DETACHED_AMPHETAMINE=0
 export CLAUDE_DETACHED_CHECKPOINT_INTERVAL=1
 export CLAUDE_DETACHED_SYNC=0
 export DETACH_LOCKS_ROOT="$TMP_ROOT/locks"
+export DETACH_INSTALL_STATE_ROOT="$TMP_ROOT/install-state"
 export DETACH_AMPHETAMINE_STATE_ROOT="$TMP_ROOT/amphetamine-state"
 export CLAUDE_CONFIG_DIR="$TMP_ROOT/claude-home"
 export CODEX_HOME="$TMP_ROOT/codex-home"
@@ -38,11 +39,13 @@ export FAKE_CODEX_ARGS_FILE="$TMP_ROOT/codex-args.txt"
 export FAKE_CLAUDE_SLEEP=4
 export FAKE_CLAUDE_EXIT=7
 export TMUX_TMPDIR="/tmp/claude-detached-tmux-$$"
+unset TMUX TMUX_PANE DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM
 mkdir -p "$TMUX_TMPDIR" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
 printf '%s\n' 'set -g base-index 1' 'set -g pane-base-index 1' >"$DETACH_TMUX_CONFIG"
 
 bash -n "$SCRIPT"
 bash -n "$ROOT/tests/fake-claude"
+[ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
 
 marker="$TMP_ROOT/must-not-exist"
 literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
