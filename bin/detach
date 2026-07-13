@@ -21,6 +21,7 @@ usage() {
     '  detach claude [COMMAND] [ARGS...]' \
     '  detach list [--json]' \
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
+    '  detach config tmux-style [detach|inherit]' \
     '  detach doctor [--json]' \
     '  detach repair' \
     '  detach uninstall [--keep-state|--purge-state]' \
@@ -512,6 +513,10 @@ main() {
     resume)
       shift
       resume_auto "$@"
+      ;;
+    config)
+      shift
+      exec_provider codex config "$@"
       ;;
     __reconcile_amphetamine)
       shift

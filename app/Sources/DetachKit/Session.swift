@@ -29,6 +29,51 @@ public enum AgentTurnState: String, Codable, Sendable {
     }
 }
 
+/// The stable accent assigned to one managed tmux session.
+///
+/// The CLI is the source of truth for this value so terminal and app visuals
+/// cannot drift. Keeping the representation deliberately narrow also makes it
+/// safe to pass directly to tmux's `#[fg=#RRGGBB]` style syntax.
+public struct SessionColor: Equatable, Hashable, Sendable, Codable {
+    public let hex: String
+    public let red: UInt8
+    public let green: UInt8
+    public let blue: UInt8
+
+    public init?(hex: String) {
+        let bytes = hex.utf8
+        guard bytes.count == 7, bytes.first == 0x23,
+              bytes.dropFirst().allSatisfy({ byte in
+                  (0x30...0x39).contains(byte)
+                      || (0x41...0x46).contains(byte)
+                      || (0x61...0x66).contains(byte)
+              }),
+              let value = UInt32(hex.dropFirst(), radix: 16) else {
+            return nil
+        }
+        red = UInt8((value >> 16) & 0xff)
+        green = UInt8((value >> 8) & 0xff)
+        blue = UInt8(value & 0xff)
+        self.hex = String(format: "#%02X%02X%02X", red, green, blue)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let color = SessionColor(hex: raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "session_color must use #RRGGBB format")
+        }
+        self = color
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(hex)
+    }
+}
+
 public struct Session: Identifiable, Equatable, Sendable, Decodable {
     public var schema: Int
     public var provider: Provider
@@ -47,6 +92,7 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
     public var contextWindow: Int?
     public var agentTurnState: AgentTurnState?
     public var agentTurnID: String?
+    public var sessionColor: SessionColor?
 
     public var id: String { sessionName }
 
@@ -65,6 +111,7 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
         case contextWindow = "context_window"
         case agentTurnState = "agent_turn_state"
         case agentTurnID = "agent_turn_id"
+        case sessionColor = "session_color"
     }
 }
 

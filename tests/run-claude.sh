@@ -31,6 +31,7 @@ export DETACH_CLAUDE_CHECKPOINT_INTERVAL=1
 export DETACH_CLAUDE_SYNC=0
 export DETACH_LOCKS_ROOT="$TMP_ROOT/locks"
 export DETACH_INSTALL_STATE_ROOT="$TMP_ROOT/install-state"
+export DETACH_CONFIG_ROOT="$TMP_ROOT/config"
 export DETACH_AMPHETAMINE_STATE_ROOT="$TMP_ROOT/amphetamine-state"
 export CLAUDE_CONFIG_DIR="$TMP_ROOT/claude-home"
 export CODEX_HOME="$TMP_ROOT/codex-home"
@@ -46,6 +47,8 @@ printf '%s\n' 'set -g base-index 1' 'set -g pane-base-index 1' >"$DETACH_TMUX_CO
 bash -n "$SCRIPT"
 bash -n "$ROOT/tests/fake-claude"
 [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
+[ "$($SCRIPT config tmux-style)" = "detach" ]
+[ "$("$SCRIPT" claude __session_color /fixtures/harness)" = "#1D4ED8" ]
 
 marker="$TMP_ROOT/must-not-exist"
 literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
@@ -80,11 +83,18 @@ checkpoint="$session_dir/checkpoint"
 tmux -L "$SOCKET" has-session -t "=$session"
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach)" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_provider)" = "claude" ]
+session_color="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_color)"
+[[ "$session_color" =~ ^#[[:xdigit:]]{6}$ ]]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_status)" = "running" ]
+tmux -L "$SOCKET" show-options -qv -t "=$session:" status-style | grep -F "bg=$session_color" >/dev/null
+tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
+  grep -F 'Detach | Claude | harness' | grep -F 'RUNNING' >/dev/null
 "$SCRIPT" list | grep -F 'claude' | grep -F "$session" | grep -F "$session_id" >/dev/null
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
-printf '%s' "$json_line" | jq -e --arg id "$session_id" '
+printf '%s' "$json_line" | jq -e --arg id "$session_id" --arg color "$session_color" '
   .schema == 1 and .provider == "claude" and .effective_status == "running"
   and .agent_session_id == $id and (.project_dir | type == "string")
+  and .session_color == $color
   and has("model") and has("context_used_tokens") and has("context_window")
   and .agent_turn_state == "working" and .agent_turn_id == $id' >/dev/null
 transcript="$(jq -r '.transcript_path' "$meta")"
@@ -146,6 +156,9 @@ tar -tf "$checkpoint/claude-session.tar" | grep -F "./teams/session-${session_id
 
 sleep 4
 jq -e '.status == "failed" and .exit_status == 7' "$meta" >/dev/null
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_status)" = "failed" ]
+tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
+  grep -F 'bg=#B91C1C' | grep -F 'FAILED' >/dev/null
 "$SCRIPT" claude logs integration | grep -F 'fake Claude finished' >/dev/null
 
 "$SCRIPT" claude stop integration

@@ -80,7 +80,7 @@ config_value() {
   local key="$1"
   local line
   [ -f "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ] || return 1
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       "$key="*) printf '%s\n' "${line#*=}"; return 0 ;;
     esac
@@ -90,6 +90,8 @@ config_value() {
 
 CONFIG_AMPHETAMINE="$(config_value AMPHETAMINE 2>/dev/null || true)"
 case "$CONFIG_AMPHETAMINE" in 0|1|'') ;; *) CONFIG_AMPHETAMINE="" ;; esac
+CONFIG_TMUX_STYLE="$(config_value TMUX_STYLE 2>/dev/null || true)"
+case "$CONFIG_TMUX_STYLE" in 0|1|'') ;; *) CONFIG_TMUX_STYLE="" ;; esac
 if [ "$PROVIDER" = "codex" ]; then
   STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_BASE_ROOT/codex}"
   CHECKPOINT_INTERVAL="${DETACH_CODEX_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
@@ -102,6 +104,11 @@ else
   SYNC_ENABLED="${DETACH_CLAUDE_SYNC:-1}"
 fi
 AMPHETAMINE_ENABLED="${DETACH_AMPHETAMINE:-${CONFIG_AMPHETAMINE:-1}}"
+TMUX_STYLE_ENABLED="${DETACH_TMUX_STYLE:-${CONFIG_TMUX_STYLE:-1}}"
+case "$TMUX_STYLE_ENABLED" in
+  0|1) ;;
+  *) die "DETACH_TMUX_STYLE must be 0 or 1" ;;
+esac
 AMPHETAMINE_APP_PATH="${DETACH_AMPHETAMINE_APP_PATH:-/Applications/Amphetamine.app}"
 AMPHETAMINE_POWER_PROTECT_PATH="${DETACH_AMPHETAMINE_POWER_PROTECT_PATH:-$HOME/Library/Application Scripts/$AMPHETAMINE_ID/powerProtect.scpt}"
 TMUX_SOCKET="${DETACH_TMUX_SOCKET:-}"
@@ -147,6 +154,7 @@ usage() {
     "  $PROGRAM resume [--name NAME] [--detach] SESSION_ID [$PROVIDER_ARGS_LABEL...]" \
     "  $PROGRAM attach [NAME]" \
     "  $PROGRAM list [--json]" \
+    "  $PROGRAM config tmux-style [detach|inherit]" \
     "  $PROGRAM status [NAME]" \
     "  $PROGRAM logs [--ansi] [NAME]" \
     "  $PROGRAM stop [NAME]" \
@@ -409,6 +417,304 @@ tmux_option() {
   "${TMUX_CMD[@]}" show-options -qv -t "=$1:" "$2" 2>/dev/null || true
 }
 
+session_color_for() {
+  local provider="$1"
+  local cwd="$2"
+  local digest
+  local index
+  local palette=(
+    '#1D4ED8'
+    '#6D28D9'
+    '#4D7C0F'
+    '#047857'
+    '#B45309'
+    '#0F766E'
+    '#4338CA'
+    '#A21CAF'
+  )
+
+  digest="$(printf '%s\0%s' "$provider" "$cwd" | shasum -a 256 | awk '{print substr($1, 1, 8)}')" || return 1
+  [[ "$digest" =~ ^[0-9a-fA-F]{8}$ ]] || return 1
+  index=$((16#$digest % ${#palette[@]}))
+  printf '%s\n' "${palette[$index]}"
+}
+
+muted_session_color() {
+  local color="$1"
+  local red green blue
+
+  [[ "$color" =~ ^#[0-9A-Fa-f]{6}$ ]] || return 1
+  red=$((16#${color:1:2}))
+  green=$((16#${color:3:2}))
+  blue=$((16#${color:5:2}))
+  # Blend the identity color towards a neutral dark grey while keeping its hue.
+  red=$(((red * 45 + 48 * 55) / 100))
+  green=$(((green * 45 + 52 * 55) / 100))
+  blue=$(((blue * 45 + 59 * 55) / 100))
+  printf '#%02X%02X%02X\n' "$red" "$green" "$blue"
+}
+
+tmux_status_literal() {
+  local value="$1"
+  local result=""
+  local character
+  local index
+
+  for ((index = 0; index < ${#value} && index < 48; index++)); do
+    character="${value:index:1}"
+    if [[ "$character" == [[:cntrl:]] ]]; then
+      result+='?'
+    elif [ "$character" = '#' ]; then
+      # A doubled hash is a literal hash in a tmux format string.
+      result+='##'
+    else
+      result+="$character"
+    fi
+  done
+  printf '%s' "$result"
+}
+
+tmux_forget_session_style_snapshot() {
+  local session="$1"
+  local option
+
+  for option in \
+    @detach_saved_status \
+    @detach_saved_status_style \
+    @detach_saved_status_left \
+    @detach_saved_status_left_length \
+    @detach_style_snapshot; do
+    "${TMUX_CMD[@]}" set-option -qu -t "=$session:" "$option" 2>/dev/null || true
+  done
+}
+
+tmux_snapshot_session_style() {
+  local session="$1"
+  local saved_status saved_status_style saved_status_left saved_status_left_length
+
+  [ "$(tmux_option "$session" '@detach_style_snapshot')" != "1" ] || return 0
+  saved_status="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status 2>/dev/null)" || return 1
+  saved_status_style="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-style 2>/dev/null)" || return 1
+  saved_status_left="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-left 2>/dev/null)" || return 1
+  saved_status_left_length="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-left-length 2>/dev/null)" || return 1
+
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status "$saved_status" && \
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_style "$saved_status_style" && \
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_left "$saved_status_left" && \
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_left_length "$saved_status_left_length" && \
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_style_snapshot 1 && return 0
+  tmux_forget_session_style_snapshot "$session"
+  return 1
+}
+
+tmux_restore_session_style() {
+  local session="$1"
+  local saved_status saved_status_style saved_status_left saved_status_left_length
+
+  [ "$(tmux_option "$session" '@detach_style_snapshot')" = "1" ] || return 0
+  saved_status="$(tmux_option "$session" '@detach_saved_status')"
+  saved_status_style="$(tmux_option "$session" '@detach_saved_status_style')"
+  saved_status_left="$(tmux_option "$session" '@detach_saved_status_left')"
+  saved_status_left_length="$(tmux_option "$session" '@detach_saved_status_left_length')"
+
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-style "$saved_status_style" || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left "$saved_status_left" || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left-length "$saved_status_left_length" || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status "$saved_status" || return 1
+  tmux_forget_session_style_snapshot "$session"
+}
+
+tmux_apply_session_style() {
+  local session="$1"
+  local status="$2"
+  local provider cwd project color background provider_label state_label status_left
+
+  [ "$(tmux_option "$session" '@detach_tmux_style')" = "1" ] || {
+    tmux_restore_session_style "$session"
+    return 0
+  }
+
+  provider="$(tmux_option "$session" '@detach_provider')"
+  cwd="$(tmux_option "$session" '@detach_cwd')"
+  color="$(tmux_option "$session" '@detach_color')"
+  if ! [[ "$color" =~ ^#[0-9A-Fa-f]{6}$ ]]; then
+    color="$(session_color_for "${provider:-$PROVIDER}" "${cwd:-?}")" || return 1
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_color "$color" || return 1
+  fi
+  case "$provider" in
+    codex) provider_label='Codex' ;;
+    claude) provider_label='Claude' ;;
+    *) provider_label='Agent' ;;
+  esac
+  project="$(basename "${cwd:-project}")"
+  [ -n "$project" ] || project='project'
+  project="$(tmux_status_literal "$project")"
+
+  background="$color"
+  state_label="$(printf '%s' "$status" | LC_ALL=C tr '[:lower:]' '[:upper:]')"
+  case "$status" in
+    completed|interrupted|stopped)
+      background="$(muted_session_color "$color")" || background="$color"
+      ;;
+  esac
+
+  status_left="#[bold] Detach | $provider_label | $project #[nobold]"
+  case "$status" in
+    failed|start_failed)
+      status_left+="#[fg=#FFFFFF,bg=#B91C1C,bold] ${state_label:-FAILED} #[fg=#FFFFFF,bg=$background,nobold]"
+      ;;
+    interrupted)
+      status_left+="#[fg=#111827,bg=#F59E0B,bold] INTERRUPTED #[fg=#FFFFFF,bg=$background,nobold]"
+      ;;
+    *)
+      status_left+=" ${state_label:-UNKNOWN} "
+      ;;
+  esac
+
+  tmux_snapshot_session_style "$session" || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status on || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-style "fg=#FFFFFF,bg=$background" || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left-length 120 || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left "$status_left" || return 1
+}
+
+tmux_update_session_status() {
+  local session="$1"
+  local status="$2"
+
+  tmux_has_session "$session" || return 0
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_status "$status" || return 1
+  tmux_apply_session_style "$session" "$status"
+}
+
+tmux_refresh_managed_styles() {
+  local enabled="$1"
+  local session status pane_status owned
+
+  [ -n "$TMUX_BIN" ] && [ -x "$TMUX_BIN" ] || return 0
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    tmux_is_any_managed "$session" || continue
+    owned="$(tmux_option "$session" '@detach_tmux_style')"
+    case "$owned" in 0|1) ;; *) continue ;; esac
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_tmux_style "$enabled" || continue
+    if [ "$enabled" = "0" ]; then
+      tmux_restore_session_style "$session" || true
+      continue
+    fi
+    status="$(tmux_option "$session" '@detach_status')"
+    if [ -z "$status" ]; then
+      if [ "$(tmux_option "$session" '@detach_running')" = "1" ]; then
+        status='running'
+      else
+        pane_status="$("${TMUX_CMD[@]}" display-message -p -t "$(tmux_pane_id "$session")" '#{pane_dead_status}' 2>/dev/null || true)"
+        if [ "$pane_status" = "0" ]; then status='completed'; else status='failed'; fi
+      fi
+      "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_status "$status" || continue
+    fi
+    if ! tmux_apply_session_style "$session" "$status"; then
+      "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_tmux_style 0 2>/dev/null || true
+      tmux_restore_session_style "$session" || true
+    fi
+  done < <("${TMUX_CMD[@]}" list-sessions -F '#{session_name}' 2>/dev/null || true)
+}
+
+ensure_config_root() {
+  [ -n "$CONFIG_ROOT" ] && [ "$CONFIG_ROOT" != "/" ] || die "unsafe Detach config directory: $CONFIG_ROOT"
+  if [ -e "$CONFIG_ROOT" ] || [ -L "$CONFIG_ROOT" ]; then
+    [ -d "$CONFIG_ROOT" ] && [ ! -L "$CONFIG_ROOT" ] || \
+      die "Detach config directory is not a regular directory: $CONFIG_ROOT"
+  else
+    mkdir -p "$CONFIG_ROOT" || die "cannot create Detach config directory: $CONFIG_ROOT"
+  fi
+  chmod 0700 "$CONFIG_ROOT" || die "cannot protect Detach config directory: $CONFIG_ROOT"
+}
+
+write_tmux_style_config_locked() {
+  local value="$1"
+  local tmp="$CONFIG_FILE.tmp.$$"
+  local line
+  local found=0
+
+  case "$value" in 0|1) ;; *) die "invalid internal tmux style value" ;; esac
+  ensure_config_root
+  if [ -e "$CONFIG_FILE" ] || [ -L "$CONFIG_FILE" ]; then
+    [ -f "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ] || \
+      die "Detach config is not a regular file: $CONFIG_FILE"
+  fi
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || die "temporary config path already exists: $tmp"
+
+  if [ -f "$CONFIG_FILE" ]; then
+    : >"$tmp" || die "cannot create temporary Detach config"
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        TMUX_STYLE=*)
+          if [ "$found" -eq 0 ]; then
+            printf 'TMUX_STYLE=%s\n' "$value" >>"$tmp" || {
+              rm -f "$tmp"
+              die "cannot update Detach config"
+            }
+            found=1
+          fi
+          ;;
+        *)
+          printf '%s\n' "$line" >>"$tmp" || {
+            rm -f "$tmp"
+            die "cannot update Detach config"
+          }
+          ;;
+      esac
+    done <"$CONFIG_FILE"
+    if [ "$found" -eq 0 ]; then
+      printf 'TMUX_STYLE=%s\n' "$value" >>"$tmp" || {
+        rm -f "$tmp"
+        die "cannot update Detach config"
+      }
+    fi
+  else
+    printf '%s\n' \
+      '# Detach settings. Environment variables override these values.' \
+      "TMUX_STYLE=$value" >"$tmp" || die "cannot create Detach config"
+  fi
+  chmod 0600 "$tmp" || {
+    rm -f "$tmp"
+    die "cannot protect Detach config"
+  }
+  mv -f "$tmp" "$CONFIG_FILE" || {
+    rm -f "$tmp"
+    die "cannot replace Detach config"
+  }
+  tmux_refresh_managed_styles "$value"
+}
+
+config_tmux_style() {
+  local requested="${1:-}"
+  local value
+
+  if [ "$#" -eq 0 ]; then
+    if [ "$TMUX_STYLE_ENABLED" = "1" ]; then printf 'detach\n'; else printf 'inherit\n'; fi
+    return 0
+  fi
+  [ "$#" -eq 1 ] || die "config tmux-style accepts at most one value"
+  [ "${DETACH_TMUX_STYLE+x}" != "x" ] || \
+    die "cannot change tmux style while DETACH_TMUX_STYLE overrides the config"
+  case "$requested" in
+    detach) value=1 ;;
+    inherit) value=0 ;;
+    *) die "tmux style must be 'detach' or 'inherit'" ;;
+  esac
+
+  require_file_or_command "$LOCKF_BIN" "lockf"
+  if [ -e "$INSTALL_STATE_ROOT" ] || [ -L "$INSTALL_STATE_ROOT" ]; then
+    [ -d "$INSTALL_STATE_ROOT" ] && [ ! -L "$INSTALL_STATE_ROOT" ] || \
+      die "install state root is not a regular directory: $INSTALL_STATE_ROOT"
+  else
+    mkdir -p "$INSTALL_STATE_ROOT" || die "cannot create install lock directory"
+  fi
+  "$LOCKF_BIN" -k -t 30 "$INSTALL_LOCK" "$SELF" __write_tmux_style_config_locked "$value" || \
+    die "could not update tmux style setting"
+}
+
 attach_session() {
   local session="$1"
 
@@ -461,6 +767,7 @@ write_initial_meta() {
   local meta
   local tmp
   local agent_version
+  local session_color
 
   dir="$(session_dir "$session")"
   meta="$dir/meta.json"
@@ -484,6 +791,7 @@ write_initial_meta() {
     : >"$dir/checkpoint.log"
   fi
   agent_version="$("$agent_bin" --version 2>/dev/null || printf 'unknown')"
+  session_color="$(session_color_for "$PROVIDER" "$cwd")" || return 1
 
   "$JQ_BIN" -n \
     --arg session_name "$session" \
@@ -492,6 +800,7 @@ write_initial_meta() {
     --argjson created_at_ms "$start_ms" \
     --arg status "starting" \
     --arg provider "$PROVIDER" \
+    --arg session_color "$session_color" \
     --arg agent_bin "$agent_bin" \
     --arg agent_version "$agent_version" \
     --arg agent_session_id "$recovery_id" \
@@ -507,6 +816,7 @@ write_initial_meta() {
       status: $status,
       run_token: $run_token,
       provider: $provider,
+      session_color: $session_color,
       agent_bin: $agent_bin,
       agent_version: $agent_version,
       agent_session_id: (if $agent_session_id == "" then null else $agent_session_id end),
@@ -1857,6 +2167,7 @@ worker_main() {
     printf '%s\n' "$exit_status" >"$(session_dir "$session")/exit-status"
     if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
       "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 0 2>/dev/null || true
+      tmux_update_session_status "$session" "$status_label" 2>/dev/null || true
     fi
     amphetamine_release "$session" "$run_token" || true
   }
@@ -1870,6 +2181,7 @@ worker_main() {
     '.status = "running" | .worker_started_at = $time' --arg time "$(now_iso)" || true
   if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 1 2>/dev/null || true
+    tmux_update_session_status "$session" running 2>/dev/null || true
   fi
 
   if [ "$PROVIDER" = "claude" ]; then
@@ -1959,7 +2271,7 @@ tmux_environment_args() {
               DETACH_CONFIG_ROOT DETACH_AMPHETAMINE \
               DETACH_AMPHETAMINE_STATE_ROOT DETACH_AMPHETAMINE_APP_PATH \
               DETACH_AMPHETAMINE_POWER_PROTECT_PATH DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG \
-              DETACH_TMUX_BIN DETACH_JQ_BIN \
+              DETACH_TMUX_BIN DETACH_TMUX_STYLE DETACH_JQ_BIN \
               DETACH_SQLITE_BIN DETACH_TAR_BIN DETACH_OSASCRIPT_BIN DETACH_CAFFEINATE_BIN \
               DETACH_PMSET_BIN DETACH_LOCKF_BIN DETACH_SUDO_BIN \
               DETACH_CODEX_STATE_ROOT DETACH_CODEX_CHECKPOINT_INTERVAL \
@@ -1991,6 +2303,7 @@ start_tmux_session() {
   local pane_id=""
   local env_file
   local env_args=()
+  local session_color
 
   start_ms="$(now_ms)"
   run_token="$(new_run_token)"
@@ -2026,17 +2339,28 @@ start_tmux_session() {
     die "could not initialize session metadata"
   snapshot_known_threads "$session" "$cwd" || die "could not snapshot existing $PROVIDER_LABEL sessions"
   write_resume_args "$session" "$@" || die "could not save $PROVIDER_LABEL resume options"
+  session_color="$(read_meta_field "$session" '.session_color // empty')"
+  [[ "$session_color" =~ ^#[0-9A-Fa-f]{6}$ ]] || \
+    session_color="$(session_color_for "$PROVIDER" "$cwd")" || die "could not derive session color"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach 1
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_provider "$PROVIDER"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_cwd "$cwd"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 0
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_pane_id "$pane_id"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_run_token "$run_token"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_color "$session_color"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_tmux_style "$TMUX_STYLE_ENABLED"
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_status starting
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_cli_version "$(release_version 2>/dev/null || printf 'unknown')"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_core_path "$SELF"
   "${TMUX_CMD[@]}" set-option -q -w -t "$pane_id" remain-on-exit on
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" history-limit "$HISTORY_LIMIT"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse on
+  if ! tmux_apply_session_style "$session" starting; then
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_tmux_style 0 2>/dev/null || true
+    tmux_restore_session_style "$session" 2>/dev/null || true
+    error "warning: could not apply Detach tmux styling; inheriting the tmux theme for this session"
+  fi
 
   leased=1
   amphetamine_acquire "$session" "$run_token" || die "could not acquire Amphetamine Closed-Display Mode"
@@ -2420,10 +2744,12 @@ emit_list_json() {
   local cwd="$6" created="$7" exit_json="$8" finished="$9"
   local model="${10:-}" ctx_used="${11:-}" ctx_window="${12:-}"
   local agent_turn_state="${13:-}" agent_turn_id="${14:-}"
+  local session_color="${15:-}"
 
   [ -n "$exit_json" ] || exit_json="null"
   [ -n "$ctx_used" ] || ctx_used="null"
   [ -n "$ctx_window" ] || ctx_window="null"
+  [[ "$session_color" =~ ^#[0-9A-Fa-f]{6}$ ]] || session_color=''
   "$JQ_BIN" -n -c \
     --arg provider "$PROVIDER" \
     --arg session_name "$session" \
@@ -2441,11 +2767,13 @@ emit_list_json() {
     --argjson ctx_window "$ctx_window" \
     --arg agent_turn_state "$agent_turn_state" \
     --arg agent_turn_id "$agent_turn_id" \
+    --arg session_color "$session_color" \
     'def opt(v): if v == "" or v == "-" or v == "?" then null else v end;
      {schema: 1,
       provider: $provider,
       session_name: $session_name,
       name: $name,
+      session_color: opt($session_color),
       effective_status: $effective,
       meta_status: opt($meta_status),
       agent_session_id: opt($id),
@@ -2476,6 +2804,7 @@ list_sessions() {
   local created
   local finished
   local exit_json
+  local session_color
 
   ensure_state_dirs
   if [ "$json_mode" != "1" ]; then
@@ -2491,9 +2820,11 @@ list_sessions() {
     if [ -z "$meta" ]; then
       cwd="?"
       live="corrupt"
+      session_color=""
       if tmux_has_session "$session"; then
         if tmux_is_managed "$session"; then
           cwd="$(tmux_option "$session" '@detach_cwd')"
+          session_color="$(tmux_option "$session" '@detach_color')"
           if tmux_session_running "$session"; then
             live="running"
           else
@@ -2504,7 +2835,8 @@ list_sessions() {
         fi
       fi
       if [ "$json_mode" = "1" ]; then
-        emit_list_json "$session" "$live" "" "-" "-" "${cwd:-?}" "" "null" "" "" "null" "null"
+        emit_list_json "$session" "$live" "" "-" "-" "${cwd:-?}" "" "null" "" \
+          "" "null" "null" "" "" "$session_color"
       else
         printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
           "$PROVIDER" "$session" "$live" '-' '-' "${cwd:-?}"
@@ -2519,11 +2851,18 @@ list_sessions() {
     created="$(read_meta_field "$session" '.created_at // empty' 2>/dev/null || true)"
     finished="$(read_meta_field "$session" '.finished_at // empty' 2>/dev/null || true)"
     exit_json="$(read_meta_field "$session" '(.exit_status // null) | tojson' 2>/dev/null || printf 'null')"
+    session_color="$(read_meta_field "$session" '.session_color // empty' 2>/dev/null || true)"
+    if [ -z "$session_color" ] && [ -n "$cwd" ] && [ "$cwd" != "?" ]; then
+      session_color="$(session_color_for "$PROVIDER" "$cwd")" || session_color=''
+    fi
     transcript_model_context "$(read_meta_field "$session" '.transcript_path // .rollout_path // empty' 2>/dev/null || true)"
     live=""
     if tmux_has_session "$session"; then
       if ! tmux_is_managed "$session"; then
         live="collision"
+        # Do not present Detach identity for a foreign tmux session that only
+        # happens to reuse a saved managed session name.
+        session_color=""
       elif tmux_session_running "$session"; then
         live="running"
       else
@@ -2556,7 +2895,7 @@ list_sessions() {
     if [ "$json_mode" = "1" ]; then
       emit_list_json "$session" "$live" "$status" "$id" "$checkpoint" "$cwd" "$created" "$exit_json" "$finished" \
         "$TRANSCRIPT_MODEL" "$TRANSCRIPT_CTX_USED" "$TRANSCRIPT_CTX_WINDOW" \
-        "$TRANSCRIPT_AGENT_TURN_STATE" "$TRANSCRIPT_AGENT_TURN_ID"
+        "$TRANSCRIPT_AGENT_TURN_STATE" "$TRANSCRIPT_AGENT_TURN_ID" "$session_color"
     else
       printf '%-9s %-48s %-12s %-36s %-20s %s\n' \
         "$PROVIDER" "$session" "$live" "$id" "$checkpoint" "$cwd"
@@ -2880,7 +3219,7 @@ main() {
   validate_runtime_config
 
   case "${1:-}" in
-    start|resume|attach|list|status|logs|stop|recover|delete)
+    start|resume|attach|list|config|status|logs|stop|recover|delete)
       action="$1"
       shift
       ;;
@@ -2890,7 +3229,12 @@ main() {
       ;;
   esac
 
-  if [ "$action" = "start" ] || [ "$action" = "resume" ]; then
+  if [ "$action" = "config" ]; then
+    [ "${1:-}" = "tmux-style" ] || die "unknown config key: ${1:-missing}"
+    shift
+    config_tmux_style "$@"
+    exit 0
+  elif [ "$action" = "start" ] || [ "$action" = "resume" ]; then
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -n|--name)
@@ -3040,6 +3384,11 @@ case "${1:-}" in
     shift
     write_initial_meta "$@"
     ;;
+  __write_tmux_style_config_locked)
+    shift
+    [ "$#" -eq 1 ] || exit 1
+    write_tmux_style_config_locked "$1"
+    ;;
   __has_session_id)
     shift
     [ "$#" -eq 1 ] || exit 1
@@ -3049,6 +3398,11 @@ case "${1:-}" in
     shift
     [ "$#" -eq 1 ] || exit 1
     provider_session_context "$1"
+    ;;
+  __session_color)
+    shift
+    [ "$#" -eq 1 ] || exit 1
+    session_color_for "$PROVIDER" "$1"
     ;;
   __start_tmux_session_locked)
     shift

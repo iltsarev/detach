@@ -91,6 +91,14 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            if let sessionColor = session.sessionColor {
+                Capsule(style: .continuous)
+                    .fill(SessionIdentity.color(sessionColor).opacity(
+                        SessionIdentity.emphasis(for: session.effectiveStatus)))
+                    .frame(width: 4, height: 34)
+                    .help(L10n.format("Session color: %@", sessionColor.hex))
+                    .accessibilityHidden(true)
+            }
             Circle().fill(dotColor).frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {

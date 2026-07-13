@@ -43,6 +43,7 @@ export DETACH_STATE_ROOT="$TMP_ROOT/detach-state"
 export DETACH_CODEX_STATE_ROOT="$TMP_ROOT/state"
 export DETACH_LOCKS_ROOT="$TMP_ROOT/locks"
 export DETACH_INSTALL_STATE_ROOT="$TMP_ROOT/install-state"
+export DETACH_CONFIG_ROOT="$TMP_ROOT/config"
 export DETACH_AMPHETAMINE_STATE_ROOT="$TMP_ROOT/amphetamine-state"
 export DETACH_TMUX_SOCKET="$SOCKET"
 export DETACH_TMUX_CONFIG="$TMP_ROOT/tmux.conf"
@@ -70,6 +71,59 @@ printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request"]' >"$DETAC
 bash -n "$SCRIPT"
 bash -n "$ROOT/bin/detach-core"
 [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
+[ "$($SCRIPT config tmux-style)" = "detach" ]
+[ "$(run_codex __session_color /fixtures/harness)" = "#0F766E" ]
+mkdir -p "$DETACH_CONFIG_ROOT"
+printf '%s\n' '# Detach settings' 'CUSTOM_SETTING=kept' 'AMPHETAMINE=1' \
+  >"$DETACH_CONFIG_ROOT/config"
+printf '%s' 'TMUX_STYLE=0' >>"$DETACH_CONFIG_ROOT/config"
+[ "$($SCRIPT config tmux-style)" = "inherit" ]
+printf '%s\n' '' 'TMUX_STYLE=1' >>"$DETACH_CONFIG_ROOT/config"
+"$SCRIPT" config tmux-style inherit
+[ "$($SCRIPT config tmux-style)" = "inherit" ]
+grep -Fx CUSTOM_SETTING=kept "$DETACH_CONFIG_ROOT/config" >/dev/null
+grep -Fx AMPHETAMINE=1 "$DETACH_CONFIG_ROOT/config" >/dev/null
+[ "$(grep -Fxc TMUX_STYLE=0 "$DETACH_CONFIG_ROOT/config")" = "1" ]
+if "$SCRIPT" config tmux-style unsupported >/dev/null 2>&1; then
+  printf 'config unexpectedly accepted an unsupported tmux style\n' >&2
+  exit 1
+fi
+mv "$DETACH_CONFIG_ROOT/config" "$DETACH_CONFIG_ROOT/config.real"
+ln -s config.real "$DETACH_CONFIG_ROOT/config"
+if "$SCRIPT" config tmux-style detach >/dev/null 2>&1; then
+  printf 'config unexpectedly replaced a symlink\n' >&2
+  exit 1
+fi
+rm "$DETACH_CONFIG_ROOT/config"
+mv "$DETACH_CONFIG_ROOT/config.real" "$DETACH_CONFIG_ROOT/config"
+"$SCRIPT" config tmux-style detach
+[ "$($SCRIPT config tmux-style)" = "detach" ]
+[ "$(DETACH_TMUX_STYLE=0 "$SCRIPT" config tmux-style)" = "inherit" ]
+if DETACH_TMUX_STYLE=0 "$SCRIPT" config tmux-style detach >/dev/null 2>&1; then
+  printf 'config unexpectedly changed a value owned by DETACH_TMUX_STYLE\n' >&2
+  exit 1
+fi
+
+# Pre-feature managed sessions have no styling ownership marker and must not
+# be modified when the shared setting changes.
+legacy_session="detach-codex-legacy-style"
+legacy_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' -s "$legacy_session" -n legacy)"
+tmux -L "$SOCKET" set-option -q -t "=$legacy_session:" @detach 1
+tmux -L "$SOCKET" set-option -q -t "=$legacy_session:" @detach_provider codex
+tmux -L "$SOCKET" set-option -q -t "=$legacy_session:" @detach_cwd /fixtures/legacy
+tmux -L "$SOCKET" set-option -q -t "=$legacy_session:" status off
+tmux -L "$SOCKET" set-option -q -t "=$legacy_session:" status-style 'fg=colour10,bg=colour20'
+tmux -L "$SOCKET" set-option -q -t "=$legacy_session:" status-left 'legacy user status'
+tmux -L "$SOCKET" set-option -q -t "=$legacy_session:" status-left-length 37
+legacy_style="$(tmux -L "$SOCKET" show-options -qv -t "=$legacy_session:" status-style)"
+"$SCRIPT" config tmux-style inherit
+"$SCRIPT" config tmux-style detach
+[ -z "$(tmux -L "$SOCKET" show-options -qv -t "=$legacy_session:" @detach_tmux_style)" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$legacy_session:" status)" = "off" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$legacy_session:" status-style)" = "$legacy_style" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$legacy_session:" status-left)" = "legacy user status" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$legacy_session:" status-left-length)" = "37" ]
+tmux -L "$SOCKET" kill-session -t "=$legacy_session"
 
 # The installed layout exposes only detach on PATH. The frontend must still
 # find its sibling core after resolving the public symlink.
@@ -101,6 +155,14 @@ tmux -L "$SOCKET" has-session -t "=$SESSION"
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach)" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_provider)" = "codex" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "running" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_tmux_style)" = "1" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_style_snapshot)" = "1" ]
+session_color="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_color)"
+[[ "$session_color" =~ ^#[[:xdigit:]]{6}$ ]]
+tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style | grep -F "bg=$session_color" >/dev/null
+status_left="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left)"
+printf '%s' "$status_left" | grep -F 'Detach | Codex | harness' | grep -F 'RUNNING' >/dev/null
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_cli_version)" = "$installed_version" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_core_path)" = "$installed_core" ]
 first_worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
@@ -124,6 +186,7 @@ mv -f "$install_root/bin/.detach-upgrade" "$install_root/bin/detach"
 meta="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/meta.json"
 checkpoint="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint"
 jq -e '.codex_session_id != null' "$meta" >/dev/null
+jq -e --arg color "$session_color" '.session_color == $color' "$meta" >/dev/null
 expected_id="$(jq -r '.codex_session_id' "$meta")"
 [ "$expected_id" != "ffffffff-ffff-4fff-8fff-ffffffffffff" ]
 rollout="$(jq -r '.rollout_path' "$meta")"
@@ -139,6 +202,30 @@ pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead_status}')" = "7" ]
 wait_for_process_group_exit "$first_worker_pgid"
 jq -e '.status == "failed" and .exit_status == 7' "$meta" >/dev/null
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "failed" ]
+failed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
+printf '%s' "$failed_style" | grep -F "bg=$session_color" >/dev/null
+tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left | \
+  grep -F 'bg=#B91C1C' | grep -F 'FAILED' >/dev/null
+"$DETACH" config tmux-style inherit
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_tmux_style)" = "0" ]
+[ -z "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_style_snapshot)" ]
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" status off
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" status-style 'fg=colour11,bg=colour21'
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" status-left 'user sentinel status'
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" status-left-length 41
+sentinel_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
+"$DETACH" config tmux-style detach
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_tmux_style)" = "1" ]
+tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left | grep -F 'FAILED' >/dev/null
+"$DETACH" config tmux-style inherit
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status)" = "off" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)" = "$sentinel_style" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left)" = "user sentinel status" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left-length)" = "41" ]
+[ -z "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_style_snapshot)" ]
+"$DETACH" config tmux-style detach
+tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left | grep -F 'FAILED' >/dev/null
 run_codex logs integration | grep -F 'fake Codex finished' >/dev/null
 
 run_codex stop integration
@@ -204,6 +291,10 @@ jq -e --arg id "$expected_id" '.codex_session_id == $id' "$meta" >/dev/null
 completed_run_token="$(jq -r '.run_token' "$meta")"
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "1" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "completed" ]
+completed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
+[ "$completed_style" != "$failed_style" ]
+! printf '%s' "$completed_style" | grep -F "bg=$session_color" >/dev/null
 
 # A normal start replaces a completed retained pane with a fresh Codex thread.
 export FAKE_CODEX_INIT_DELAY=5
@@ -227,6 +318,7 @@ printf '%s' "$json_line" | jq -e '
   .schema == 1 and .provider == "codex" and .name == "integration"
   and .effective_status == "running" and (.project_dir | type == "string")
   and (.created_at | type == "string") and .exit_status == null
+  and (.session_color | test("^#[0-9A-Fa-f]{6}$"))
   and has("model") and has("context_used_tokens") and has("context_window")
   and .agent_turn_state == "working" and (.agent_turn_id | type == "string")' >/dev/null
 turn_rollout="$(jq -r '.transcript_path' "$meta")"
@@ -243,6 +335,21 @@ run_codex stop integration
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 printf '%s' "$json_line" | jq -e '
   .effective_status == "stopped" and .meta_status == "stopped"' >/dev/null
+legacy_meta="$meta.tmp-legacy-color"
+jq 'del(.session_color)' "$meta" >"$legacy_meta"
+mv "$legacy_meta" "$meta"
+json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+printf '%s' "$json_line" | jq -e --arg color "$session_color" '.session_color == $color' >/dev/null
+invalid_color_meta="$meta.tmp-invalid-color"
+jq '.session_color = "not-a-color"' "$meta" >"$invalid_color_meta"
+mv "$invalid_color_meta" "$meta"
+json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+printf '%s' "$json_line" | jq -e '.session_color == null' >/dev/null
+# Restore a valid identity before collision coverage so the foreign-session
+# safety assertion does not pass merely because the saved value is malformed.
+valid_color_meta="$meta.tmp-valid-color"
+jq --arg color "$session_color" '.session_color = $color' "$meta" >"$valid_color_meta"
+mv "$valid_color_meta" "$meta"
 
 # delete refuses a live session and removes a stopped one.
 run_codex --name integration --detach -- 'delete refusal coverage'
@@ -274,6 +381,9 @@ while [ "$(tmux -L "$SOCKET" display-message -p -t "$foreign_pane" '#{pane_dead}
   }
   sleep 0.05
 done
+collision_json="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+printf '%s' "$collision_json" | jq -e \
+  '.effective_status == "collision" and has("session_color") and .session_color == null' >/dev/null
 if run_codex __delete_locked "$SESSION"; then
   printf 'locked delete unexpectedly removed an unmanaged tmux session\n' >&2
   exit 1

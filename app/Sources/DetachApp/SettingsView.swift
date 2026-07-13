@@ -18,6 +18,9 @@ struct SettingsView: View {
     @State private var terminalApplications: [TerminalApplication] = []
     @State private var confirmUninstall = false
     @State private var confirmPurge = false
+    @State private var tmuxStyle: TmuxStyle?
+    @State private var isUpdatingTmuxStyle = false
+    @State private var tmuxStyleError: String?
 
     private var selectedTerminal: TerminalApplication? {
         terminalApplications.first { $0.bundleIdentifier == terminalBundleIdentifier }
@@ -42,6 +45,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 22) {
                 generalSection
                 terminalSection
+                tmuxSection
                 notificationsSection
                 installationSection
                 keepAwakeSection
@@ -68,6 +72,9 @@ struct SettingsView: View {
                 interval: pollInterval)
             await notifications.configure(enabled: notificationsEnabled)
         }
+        .task(id: activeDetachPath) {
+            await loadTmuxStyle()
+        }
         .onChange(of: fontPointSize) { _, value in
             let clamped = AppFontSize.clamped(value)
             if value != clamped { fontPointSize = clamped }
@@ -82,7 +89,12 @@ struct SettingsView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
-            Task { await notifications.refreshAuthorizationStatus() }
+            Task {
+                await notifications.refreshAuthorizationStatus()
+                if !isUpdatingTmuxStyle {
+                    await loadTmuxStyle()
+                }
+            }
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -203,6 +215,47 @@ struct SettingsView: View {
                 refreshTerminalApplications()
             } label: {
                 Label(L10n.string("Refresh terminal list"), systemImage: "arrow.clockwise")
+            }
+        }
+    }
+
+    private var tmuxSection: some View {
+        SettingsSectionView(L10n.string("tmux appearance"), systemImage: "paintpalette") {
+            Toggle(
+                L10n.string("Inherit tmux theme"),
+                isOn: Binding(
+                    get: { tmuxStyle == .inherit },
+                    set: { inherit in
+                        Task {
+                            await saveTmuxStyle(inherit ? .inherit : .detach)
+                        }
+                    }))
+                .disabled(tmuxStyle == nil || isUpdatingTmuxStyle)
+
+            if isUpdatingTmuxStyle && tmuxStyle == nil {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text(L10n.string("Reading the setting from detach…"))
+                }
+                .settingsMessage()
+            } else {
+                Text(tmuxStyle == .inherit
+                     ? L10n.string(
+                        "Detach doesn't change the status bar of managed sessions — your tmux configuration is used.")
+                     : L10n.string(
+                        "Each session gets a stable color shared by tmux and the Detach interface."))
+                    .settingsMessage()
+            }
+
+            if let tmuxStyleError {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(tmuxStyleError).settingsMessage(color: .red)
+                    Spacer(minLength: 8)
+                    Button(L10n.string("Try again")) {
+                        Task { await loadTmuxStyle() }
+                    }
+                    .disabled(isUpdatingTmuxStyle)
+                }
             }
         }
     }
@@ -351,6 +404,54 @@ struct SettingsView: View {
         case .authorized:
             return L10n.string(
                 "Ready — we'll notify you about ready responses, completed sessions, or session problems.")
+        }
+    }
+
+    @MainActor
+    private func loadTmuxStyle() async {
+        let path = activeDetachPath
+        isUpdatingTmuxStyle = true
+        tmuxStyleError = nil
+        defer {
+            if path == activeDetachPath {
+                isUpdatingTmuxStyle = false
+            }
+        }
+        do {
+            let style = try await TmuxStyleClient(
+                cli: ProcessDetachCLI(executable: URL(fileURLWithPath: path)))
+                .loadStyle()
+            guard !Task.isCancelled, path == activeDetachPath else { return }
+            tmuxStyle = style
+        } catch {
+            guard !Task.isCancelled, path == activeDetachPath else { return }
+            tmuxStyle = nil
+            tmuxStyleError = L10n.format(
+                "Couldn't read the tmux setting: %@", error.localizedDescription)
+        }
+    }
+
+    @MainActor
+    private func saveTmuxStyle(_ style: TmuxStyle) async {
+        guard !isUpdatingTmuxStyle, let previous = tmuxStyle else { return }
+        let path = activeDetachPath
+        tmuxStyle = style
+        isUpdatingTmuxStyle = true
+        tmuxStyleError = nil
+        defer {
+            if path == activeDetachPath {
+                isUpdatingTmuxStyle = false
+            }
+        }
+        do {
+            try await TmuxStyleClient(
+                cli: ProcessDetachCLI(executable: URL(fileURLWithPath: path)))
+                .setStyle(style)
+        } catch {
+            guard !Task.isCancelled, path == activeDetachPath else { return }
+            tmuxStyle = previous
+            tmuxStyleError = L10n.format(
+                "Couldn't save the tmux setting: %@", error.localizedDescription)
         }
     }
 

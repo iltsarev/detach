@@ -120,6 +120,14 @@ entire lifecycle of every managed session one clear home:
 - **Maintain:** inspect setup health, repair the CLI, manage updates, and remove
   Detach-owned components from Settings.
 
+Every managed session gets a stable identity color derived from its provider
+and project. The same accent appears beside the session in Detach.app and in
+that session's tmux status bar, alongside `Detach`, provider, project, and
+state labels. Completed sessions become quieter and failures remain explicit.
+The styling is session-local, so ordinary tmux sessions and global config stay
+untouched; enable **Inherit tmux theme** in Settings to remove Detach's status
+bar overrides entirely.
+
 The main app window is not the runtime. A managed session and its checkpoint
 loop continue independently, and the dashboard catches up when you reopen it.
 Turn-ready status is derived from structured provider lifecycle records rather
@@ -291,6 +299,7 @@ detach resume --name migration --detach SESSION_UUID
 | `detach <provider> stop [name]` | Stop a running managed session. |
 | `detach <provider> recover [name]` | Restart an interrupted managed run using its saved recovery context. |
 | `detach <provider> delete [name]` | Delete stopped Detach state; leave provider storage untouched. |
+| `detach config tmux-style [mode]` | Select `detach` styling or `inherit` your tmux theme. |
 | `detach doctor` | Check installation integrity, dependencies, providers, Amphetamine, Power Protect, and the background service. |
 
 A normal start always creates a new Codex or Claude conversation. Use `attach`

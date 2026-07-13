@@ -33,6 +33,19 @@
 "%@ opened the file but did not run the command. Choose another terminal in Settings." = "%@ открыл файл, но не запустил команду. Выберите другой терминал в настройках.";
 "Command launch was cancelled." = "Запуск команды был отменён.";
 
+/* tmux session identity */
+"Session color: %@" = "Цвет сессии: %@";
+"Session base color: %@" = "Базовый цвет сессии: %@";
+"Session identity color" = "Цвет сессии";
+"tmux appearance" = "Оформление tmux";
+"Inherit tmux theme" = "Наследовать тему tmux";
+"Reading the setting from detach…" = "Читаем настройку из detach…";
+"Detach doesn't change the status bar of managed sessions — your tmux configuration is used." = "Detach не меняет status bar управляемых сессий — действует ваша конфигурация tmux.";
+"Each session gets a stable color shared by tmux and the Detach interface." = "Каждая сессия получает стабильный цвет, одинаковый в tmux и интерфейсе Detach.";
+"Try again" = "Повторить";
+"Couldn't read the tmux setting: %@" = "Не удалось прочитать настройку tmux: %@";
+"Couldn't save the tmux setting: %@" = "Не удалось сохранить настройку tmux: %@";
+
 /* App and shared UI */
 "%@ build %@" = "%@ (сборка %@)";
 "%@ was not found in PATH" = "%@ не найден в PATH";
@@ -40,6 +53,7 @@
 "%@ · %d" = "%@ · %d";
 "%@: needs attention" = "%@: требует внимания";
 "%@: ready" = "%@: готов";
+"<empty>" = "<пусто>";
 "Add %@ to PATH" = "Добавьте %@ в PATH";
 "After installing Amphetamine, install Power Protect from the official website." = "После установки Amphetamine установите Power Protect с официального сайта.";
 "Agent response is ready" = "Ответ агента готов";
@@ -223,7 +237,10 @@
 "caffeinate" = "caffeinate";
 "detach CLI" = "detach CLI";
 "detach CLI not found" = "detach CLI не найден";
+"detach config exited with status %d" = "detach config завершился с кодом %d";
+"detach config timed out" = "Истекло время ожидания detach config";
 "detach is unavailable" = "detach недоступен";
+"detach returned an unsupported tmux style: %@" = "detach вернул неподдерживаемый стиль tmux: %@";
 "exit %d" = "код выхода %d";
 "jq" = "jq";
 "lockf" = "lockf";

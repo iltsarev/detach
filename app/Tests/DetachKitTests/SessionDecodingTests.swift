@@ -80,6 +80,32 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertNil(legacy.agentTurnID)
     }
 
+    func testSessionColorDecodesAndNormalizesHex() throws {
+        let line = running.replacingOccurrences(
+            of: "\"finished_at\":null",
+            with: "\"finished_at\":null,\"session_color\":\"#1aB2c3\"")
+        let session = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+        let color = try XCTUnwrap(session.sessionColor)
+        XCTAssertEqual(color.hex, "#1AB2C3")
+        XCTAssertEqual(color.red, 0x1a)
+        XCTAssertEqual(color.green, 0xb2)
+        XCTAssertEqual(color.blue, 0xc3)
+
+        let legacy = try XCTUnwrap(SessionListParser.parse(running).sessions.first)
+        XCTAssertNil(legacy.sessionColor)
+    }
+
+    func testInvalidSessionColorRejectsOnlyThatLine() {
+        let invalidColor = running.replacingOccurrences(
+            of: "\"finished_at\":null",
+            with: "\"finished_at\":null,\"session_color\":\"blue\"")
+        let result = SessionListParser.parse(invalidColor + "\n" + corrupt)
+        XCTAssertTrue(result.hadInvalidLines)
+        XCTAssertEqual(result.sessions, SessionListParser.parse(corrupt).sessions)
+        XCTAssertNil(SessionColor(hex: "blue"))
+        XCTAssertNil(SessionColor(hex: "#+12345"))
+    }
+
     func testUnknownAgentTurnStateFallsBack() throws {
         let line = running.replacingOccurrences(
             of: "\"finished_at\":null",

@@ -64,13 +64,13 @@ Detach-owned entry from a profile that gained unrelated user edits. Edits to
 
 Two internal executables that must live side by side (`detach` resolves the core as its sibling after following symlinks). Only `detach` is exposed on `PATH`; installation puts both files under `~/.local/libexec/detach` and symlinks the frontend into `~/.local/bin`:
 
-- **`bin/detach`** — thin provider multiplexer. Sets `DETACH_PROVIDER=codex|claude` and execs the core. Owns only the cross-provider commands: `list` (concatenates both providers) and `resume` (detects a UUID's provider via the core's `__has_session_id` / `__session_context` internal calls; refuses ambiguous UUIDs).
-- **`bin/detach-core`** — the internal core (~2800 lines). It rejects direct invocation unless the frontend marks the call with `DETACH_CORE_ENTRYPOINT=1`; that marker is propagated into tmux for self-reinvocation. All logic lives here, parameterized by `$PROVIDER`; provider differences (session identity, checkpoint artifacts, resume-flag allowlists, policy defaults) are gated inline, not split into adapter files.
+- **`bin/detach`** — thin provider multiplexer. Sets `DETACH_PROVIDER=codex|claude` and execs the core. It owns the cross-provider `list`, UUID-aware `resume`, shared `config`, and distribution-wide `doctor`/`repair`/`uninstall` commands.
+- **`bin/detach-core`** — the internal core (~3300 lines). It rejects direct invocation unless the frontend marks the call with `DETACH_CORE_ENTRYPOINT=1`; that marker is propagated into tmux for self-reinvocation. All logic lives here, parameterized by `$PROVIDER`; provider differences (session identity, checkpoint artifacts, resume-flag allowlists, policy defaults) are gated inline, not split into adapter files.
 
 ### Core patterns
 
 - **Self-reinvocation dispatch.** The `case` at the bottom of the core routes `__`-prefixed internal commands (`__worker`, `__checkpoint_once_locked`, `__amphetamine_acquire_locked`, `__reconcile_amphetamine`, ...) back into the same script. Critical sections run as `lockf <lockfile> "$SELF" __something_locked ...` so the lock brackets the whole child process. New shared-state mutations should follow this pattern.
-- **Everything is env-injectable.** Every external binary (tmux, jq, sqlite3, tar, osascript, provider CLIs, ...) and every state path has a canonical `DETACH_*` override. Provider-specific overrides use `DETACH_CODEX_*` or `DETACH_CLAUDE_*`. This is what makes the tests hermetic — any new external dependency or path must get the same treatment.
+- **Everything is env-injectable.** Every external binary (tmux, jq, sqlite3, tar, osascript, provider CLIs, ...) and every state path has a canonical `DETACH_*` override. Provider-specific overrides use `DETACH_CODEX_*` or `DETACH_CLAUDE_*`. Provider-owned variables such as `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` keep their provider names. This is what makes the tests hermetic — any new external dependency or path must get the same treatment.
 - **Distribution is immutable and locked.** `VERSION` is the logical app/CLI
   version; `scripts/install.sh` computes a payload hash, stages beside the
   target, validates frontend/core/version/hashes, atomically switches the
@@ -89,7 +89,9 @@ Two internal executables that must live side by side (`detach` resolves the core
 
 ### Lifecycle
 
-`start` takes the per-project lock (`DETACH_LOCKS_ROOT` is shared across providers — one detached agent per project root, total), creates a tmux session named `detach-<provider>-<slug>-<8-hex sha256 of project dir>` with `remain-on-exit on`, and runs `__worker` in the pane. The worker starts the checkpoint loop, runs the provider under `caffeinate -s`, and on exit records status into meta/`exit-status`, takes a final checkpoint, and releases the Amphetamine lease. The retained pane keeps `logs`/`status` useful; a new `start` replaces a completed retained pane but refuses a live one.
+`start` takes the per-project lock (`DETACH_LOCKS_ROOT` is shared across providers — one detached agent per project root, total), creates a tmux session named `detach-<provider>-<slug>-<8-hex sha256 of project dir>` with `remain-on-exit on`, and runs `__worker` in the pane. Detach-owned tmux metadata and presentation use session-scoped `@detach*` options. The worker starts the checkpoint loop, runs the provider under `caffeinate -s`, and on exit records status into meta/`exit-status`, takes a final checkpoint, and releases the Amphetamine lease. The retained pane keeps `logs`/`status` useful; a new `start` replaces a completed retained pane but refuses a live one.
+
+Each session gets a stable color from a fixed palette, hashed from provider and canonical project directory. The color is stored in `meta.json.session_color`, tmux `@detach_color`, and `list --json`; keep those three representations and the Swift `Session` decoder in sync. By default Detach applies only session-local tmux status options, updates them across running/completed/failed states, and leaves global/foreign tmux configuration untouched. `detach config tmux-style inherit` removes those local overrides; the shared config write is serialized by `install.lock`.
 
 Session identity: Claude gets a preassigned UUID via wrapper-owned `--session-id`; Codex is discovered after launch by matching the `detach_<run_token>` originator (injected via `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`) in rollout files against `~/.codex` SQLite threads, refusing ambiguity. The worker `die`s if user args include wrapper-owned flags (Claude: `--session-id/--resume/--continue/--fork-session/--background/--tmux/--worktree`; Codex: `-C/--cd`), and applies policy defaults only when the user did not pass their own (Codex approval/sandbox, Claude `--permission-mode auto`).
 
@@ -154,17 +156,3 @@ Developer ID build. `UpdaterService` starts only when the packaged app is in
 key. User update preferences belong to `SPUUpdater`/NSUserDefaults, not a
 parallel `AppStorage` value. A Sparkle release updates only `.app`; bootstrap
 then activates its immutable CLI payload without changing live sessions.
-
-### Backward-compatibility constraints
-
-There are no compatibility aliases or migrations for pre-release names. The
-canonical wrapper-owned names are `detach`, `detach-core`, `detach-<provider>-*`
-tmux sessions, `@detach*` tmux options, `DETACH_*` environment variables
-(`DETACH_CODEX_*` / `DETACH_CLAUDE_*` when provider-specific), and state under
-`~/.local/state/detach/`. Do not reintroduce removed pre-release wrapper
-aliases, provider-first `*_DETACHED_*` environment families, old tmux option
-prefixes, or migration-only service definitions without an explicit migration
-decision.
-Provider-owned names such as `~/.codex`,
-`CODEX_HOME`, and `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` remain provider-specific.
-`detach-core` is internal; `detach` is the sole public CLI.

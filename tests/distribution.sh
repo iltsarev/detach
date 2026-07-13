@@ -111,7 +111,7 @@ version_count="$(find "$DETACH_INSTALL_LIBEXEC_ROOT/versions" -mindepth 1 -maxde
 [ "$version_count" = 1 ]
 
 # Idempotent sync reuses the immutable payload.
-printf '%s\n' '# Detach settings' 'CUSTOM_SETTING=kept' 'AMPHETAMINE=0' \
+printf '%s\n' '# Detach settings' 'CUSTOM_SETTING=kept' 'TMUX_STYLE=0' 'AMPHETAMINE=0' \
   >"$DETACH_CONFIG_ROOT/config"
 "$payload_v1/detach-install" install --source app --payload-dir "$payload_v1" \
   --version-file "$payload_v1/VERSION" --no-launch-agent
@@ -120,6 +120,7 @@ printf '%s\n' '# Detach settings' 'CUSTOM_SETTING=kept' 'AMPHETAMINE=0' \
 [ "$(shasum -a 256 "$TEST_HOME/.zshenv" | awk '{print $1}')" = "$zshenv_configured_sha" ]
 grep -Fx AMPHETAMINE=1 "$DETACH_CONFIG_ROOT/config" >/dev/null
 grep -Fx CUSTOM_SETTING=kept "$DETACH_CONFIG_ROOT/config" >/dev/null
+grep -Fx TMUX_STYLE=0 "$DETACH_CONFIG_ROOT/config" >/dev/null
 ! grep -Fx AMPHETAMINE=0 "$DETACH_CONFIG_ROOT/config" >/dev/null
 
 # A malformed payload fails before the public symlink changes.

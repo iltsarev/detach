@@ -33,6 +33,19 @@
 "%@ opened the file but did not run the command. Choose another terminal in Settings." = "%@ opened the file but did not run the command. Choose another terminal in Settings.";
 "Command launch was cancelled." = "Command launch was cancelled.";
 
+/* tmux session identity */
+"Session color: %@" = "Session color: %@";
+"Session base color: %@" = "Session base color: %@";
+"Session identity color" = "Session identity color";
+"tmux appearance" = "tmux appearance";
+"Inherit tmux theme" = "Inherit tmux theme";
+"Reading the setting from detach…" = "Reading the setting from detach…";
+"Detach doesn't change the status bar of managed sessions — your tmux configuration is used." = "Detach doesn't change the status bar of managed sessions — your tmux configuration is used.";
+"Each session gets a stable color shared by tmux and the Detach interface." = "Each session gets a stable color shared by tmux and the Detach interface.";
+"Try again" = "Try again";
+"Couldn't read the tmux setting: %@" = "Couldn't read the tmux setting: %@";
+"Couldn't save the tmux setting: %@" = "Couldn't save the tmux setting: %@";
+
 /* App and shared UI */
 "%@ build %@" = "%@ build %@";
 "%@ was not found in PATH" = "%@ was not found in PATH";
@@ -40,6 +53,7 @@
 "%@ · %d" = "%@ · %d";
 "%@: needs attention" = "%@: needs attention";
 "%@: ready" = "%@: ready";
+"<empty>" = "<empty>";
 "Add %@ to PATH" = "Add %@ to PATH";
 "After installing Amphetamine, install Power Protect from the official website." = "After installing Amphetamine, install Power Protect from the official website.";
 "Agent response is ready" = "Agent response is ready";
@@ -223,7 +237,10 @@
 "caffeinate" = "caffeinate";
 "detach CLI" = "detach CLI";
 "detach CLI not found" = "detach CLI not found";
+"detach config exited with status %d" = "detach config exited with status %d";
+"detach config timed out" = "detach config timed out";
 "detach is unavailable" = "detach is unavailable";
+"detach returned an unsupported tmux style: %@" = "detach returned an unsupported tmux style: %@";
 "exit %d" = "exit %d";
 "jq" = "jq";
 "lockf" = "lockf";
