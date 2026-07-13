@@ -12,7 +12,8 @@ The preferred distribution is `Detach.dmg`: move `Detach.app` to
 `/Applications`, open it, and follow onboarding. The app installs an immutable
 versioned CLI under `~/.local`, then offers to enable its watchdog in Login
 Items. New installs keep the optional Amphetamine integration off until it is
-enabled in Settings.
+enabled in Settings. Download the current signed and notarized build from
+[GitHub Releases](https://github.com/iltsarev/detach/releases/latest).
 
 For a CLI-only install from a checkout, make sure `tmux`, `jq`, and at least one
 provider CLI are installed, then run:
