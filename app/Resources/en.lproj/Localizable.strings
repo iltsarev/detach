@@ -278,3 +278,18 @@
 "Last checked %@" = "Last checked %@";
 "created %@" = "created %@";
 "checkpoint %@" = "checkpoint %@";
+
+/* Tips */
+"Show tips" = "Show tips";
+"Tip" = "Tip";
+"Open this setting" = "Open this setting";
+"Next tip" = "Next tip";
+"Hide tips until next launch" = "Hide tips until next launch";
+"Adjust text size and refresh frequency in General settings." = "Adjust text size and refresh frequency in General settings.";
+"Choose which terminal opens Detach commands." = "Choose which terminal opens Detach commands.";
+"Keep your tmux theme or use Detach session colors." = "Keep your tmux theme or use Detach session colors.";
+"Get a notification when an agent response is ready." = "Get a notification when an agent response is ready.";
+"Check keep-awake and background service health in System settings." = "Check keep-awake and background service health in System settings.";
+"Reinstall the command-line tools from System settings if the CLI needs repair." = "Reinstall the command-line tools from System settings if the CLI needs repair.";
+"Let Detach check automatically for app updates." = "Let Detach check automatically for app updates.";
+"Use ＋ to start Codex or Claude in any project." = "Use ＋ to start Codex or Claude in any project.";

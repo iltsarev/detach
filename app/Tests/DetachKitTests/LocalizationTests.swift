@@ -88,6 +88,16 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(usedKeys.subtracting(english.keys), Set<String>())
     }
 
+    func testEveryTipCatalogEntryHasEnglishAndRussianTranslations() throws {
+        let english = try stringsDictionary(language: "en")
+        let russian = try stringsDictionary(language: "ru")
+
+        for tip in TipCatalog.all {
+            XCTAssertNotNil(english[tip.localizationKey], "Missing English tip: \(tip.id)")
+            XCTAssertNotNil(russian[tip.localizationKey], "Missing Russian tip: \(tip.id)")
+        }
+    }
+
     private func stringsDictionary(language: String) throws -> [String: String] {
         let url = resources.bundleURL
             .appendingPathComponent("\(language).lproj/Localizable.strings")

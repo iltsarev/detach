@@ -4,12 +4,16 @@ import DetachKit
 @MainActor
 struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openSettings) private var openSettings
     @AppStorage(AppFontSize.storageKey) private var fontPointSize = AppFontSize.defaultValue
     @AppStorage(AppSettings.notificationsEnabledKey) private var notificationsEnabled = false
+    @AppStorage(AppSettings.tipsEnabledKey) private var tipsEnabled = true
     let detachPath: String
     let pollInterval: Double
     let installation: InstallationStore
     @ObservedObject var notifications: SessionNotificationService
+    @ObservedObject var tips: TipSession
+    @ObservedObject var settingsNavigation: SettingsNavigation
 
     @State private var store: SessionStore
     @State private var selectedID: String?
@@ -18,12 +22,16 @@ struct RootView: View {
         detachPath: String,
         pollInterval: Double,
         installation: InstallationStore,
-        notifications: SessionNotificationService
+        notifications: SessionNotificationService,
+        tips: TipSession,
+        settingsNavigation: SettingsNavigation
     ) {
         self.detachPath = detachPath
         self.pollInterval = pollInterval
         self.installation = installation
         self.notifications = notifications
+        self.tips = tips
+        self.settingsNavigation = settingsNavigation
         _store = State(initialValue: SessionStore(
             cli: ProcessDetachCLI(executable: URL(fileURLWithPath: detachPath))))
     }
@@ -42,27 +50,43 @@ struct RootView: View {
                     systemImage: "terminal",
                     description: Text(L10n.format("Check the %@ path in Settings.", detachPath)))
             } else {
-                NavigationSplitView {
-                    SidebarView(
-                        store: store,
-                        detachPath: detachPath,
-                        selectedID: $selectedID)
-                } detail: {
-                    if store.sessions.isEmpty && store.state == .ok {
-                        EmptySessionsView()
-                    } else if let session = selectedSession {
-                        SessionDetailView(session: session, store: store, detachPath: detachPath)
-                            .id(session.id)
-                    } else {
-                        ContentUnavailableView {
-                            Label {
-                                Text(L10n.string("Select a session"))
-                            } icon: {
-                                Image(systemName: "terminal").foregroundStyle(Brand.gradient)
+                VStack(spacing: 0) {
+                    NavigationSplitView {
+                        SidebarView(
+                            store: store,
+                            detachPath: detachPath,
+                            selectedID: $selectedID)
+                    } detail: {
+                        if store.sessions.isEmpty && store.state == .ok {
+                            EmptySessionsView()
+                        } else if let session = selectedSession {
+                            SessionDetailView(session: session, store: store, detachPath: detachPath)
+                                .id(session.id)
+                        } else {
+                            ContentUnavailableView {
+                                Label {
+                                    Text(L10n.string("Select a session"))
+                                } icon: {
+                                    Image(systemName: "terminal").foregroundStyle(Brand.gradient)
+                                }
+                            } description: {
+                                Text(L10n.string("All detach sessions from both providers are on the left"))
                             }
-                        } description: {
-                            Text(L10n.string("All detach sessions from both providers are on the left"))
                         }
+                    }
+
+                    if tipsEnabled,
+                       !tips.isDismissed,
+                       store.state != .cliMissing,
+                       let tip = tips.currentTip {
+                        TipsBar(
+                            tip: tip,
+                            openSettings: { destination in
+                                settingsNavigation.select(destination)
+                                openSettings()
+                            },
+                            showNext: tips.showNext,
+                            dismiss: tips.dismissUntilNextLaunch)
                     }
                 }
             }

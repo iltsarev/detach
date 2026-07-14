@@ -278,3 +278,18 @@
 "Last checked %@" = "Проверено %@";
 "created %@" = "создана %@";
 "checkpoint %@" = "чекпоинт %@";
+
+/* Tips */
+"Show tips" = "Показывать советы";
+"Tip" = "Совет";
+"Open this setting" = "Открыть эту настройку";
+"Next tip" = "Следующий совет";
+"Hide tips until next launch" = "Скрыть советы до следующего запуска";
+"Adjust text size and refresh frequency in General settings." = "Настройте размер текста и частоту обновления во вкладке «Основные».";
+"Choose which terminal opens Detach commands." = "Выберите терминал, в котором Detach открывает команды.";
+"Keep your tmux theme or use Detach session colors." = "Оставьте свою тему tmux или используйте цвета сессий Detach.";
+"Get a notification when an agent response is ready." = "Получайте уведомление, когда ответ агента готов.";
+"Check keep-awake and background service health in System settings." = "Проверяйте keep-awake и фоновую службу во вкладке «Система».";
+"Reinstall the command-line tools from System settings if the CLI needs repair." = "Если CLI нужно восстановить, переустановите командные инструменты во вкладке «Система».";
+"Let Detach check automatically for app updates." = "Разрешите Detach автоматически проверять обновления приложения.";
+"Use ＋ to start Codex or Claude in any project." = "Нажмите ＋, чтобы запустить Codex или Claude в любом проекте.";

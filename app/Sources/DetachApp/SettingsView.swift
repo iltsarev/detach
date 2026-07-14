@@ -3,14 +3,12 @@ import DetachKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum SettingsTab: Hashable {
-    case general, terminal, notifications, system, updates
-
+private extension SettingsDestination {
     /// Content height measured at the default text size; the window follows
     /// the selected tab like classic AppKit preference panes.
     var baseHeight: CGFloat {
         switch self {
-        case .general: 420
+        case .general: 450
         case .terminal: 460
         case .notifications: 350
         case .system: 660
@@ -24,7 +22,7 @@ struct SettingsView: View {
     let installation: InstallationStore
     @ObservedObject var updater: UpdaterService
     @ObservedObject var notifications: SessionNotificationService
-    @State private var selectedTab: SettingsTab = .general
+    @ObservedObject var navigation: SettingsNavigation
 
     @AppStorage("detachPath") private var detachPath = AppSettings.defaultDetachPath
     @AppStorage("pollInterval") private var pollInterval = 2.0
@@ -32,6 +30,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.terminalBundleIdentifierKey) private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
     @AppStorage(AppSettings.notificationsEnabledKey) private var notificationsEnabled = false
+    @AppStorage(AppSettings.tipsEnabledKey) private var tipsEnabled = true
 
     @State private var terminalApplications: [TerminalApplication] = []
     @State private var terminalIcons: [String: NSImage] = [:]
@@ -89,37 +88,37 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: $navigation.selectedTab) {
             generalTab.tabItem {
                 tabLabel(L10n.string("General"), systemImage: "gearshape.fill", color: .systemGray)
             }
-            .tag(SettingsTab.general)
+            .tag(SettingsDestination.general)
             terminalTab.tabItem {
                 tabLabel(L10n.string("Terminal"), systemImage: "terminal.fill",
                          color: NSColor(Brand.teal))
             }
-            .tag(SettingsTab.terminal)
+            .tag(SettingsDestination.terminal)
             notificationsTab.tabItem {
                 tabLabel(L10n.string("Notifications"), systemImage: "bell.badge.fill",
                          color: .systemRed)
             }
-            .tag(SettingsTab.notifications)
+            .tag(SettingsDestination.notifications)
             systemTab.tabItem {
                 tabLabel(L10n.string("System"), systemImage: "moon.stars.fill",
                          color: .systemOrange)
             }
-            .tag(SettingsTab.system)
+            .tag(SettingsDestination.system)
             updatesTab.tabItem {
                 tabLabel(L10n.string("Updates"), systemImage: "arrow.triangle.2.circlepath",
                          color: NSColor(Brand.indigo))
             }
-            .tag(SettingsTab.updates)
+            .tag(SettingsDestination.updates)
         }
         .appFontSize(fontPointSize)
         .frame(
             width: AppFontSize.settingsWidth(for: fontPointSize),
             height: AppFontSize.settingsHeight(
-                base: selectedTab.baseHeight, for: fontPointSize))
+                base: navigation.selectedTab.baseHeight, for: fontPointSize))
         .task {
             let clampedFontPointSize = AppFontSize.clamped(fontPointSize)
             if fontSizeDraft == nil {
@@ -269,6 +268,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(minWidth: 44, alignment: .trailing)
                 }
+                Toggle(L10n.string("Show tips"), isOn: $tipsEnabled)
             }
             Section(L10n.string("Command line")) {
                 if installation.hasDistributionPayload {
