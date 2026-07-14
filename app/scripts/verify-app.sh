@@ -8,7 +8,6 @@ APP="${DETACH_APP_PATH:-$APP_ROOT/build/Detach.app}"
 PAYLOAD="$APP/Contents/Resources/DetachCLI"
 INFO="$APP/Contents/Info.plist"
 AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.watchdog.plist"
-MIGRATION_AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist"
 CLI_AGENT="$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
@@ -33,7 +32,7 @@ trap cleanup EXIT
 [[ "$VERIFY_PRODUCTION" = 0 || "$VERIFY_PRODUCTION" = 1 ]] || {
   printf 'DETACH_VERIFY_PRODUCTION must be 0 or 1\n' >&2; exit 1;
 }
-plutil -lint "$INFO" "$AGENT" "$MIGRATION_AGENT" "$CLI_AGENT" >/dev/null
+plutil -lint "$INFO" "$AGENT" "$CLI_AGENT" >/dev/null
 [ "$(plutil -extract CFBundleDevelopmentRegion raw -o - "$INFO")" = en ] || {
   printf 'App development localization must be English\n' >&2
   exit 1
@@ -175,17 +174,8 @@ bundle_program="$(plutil -extract BundleProgram raw -o - "$AGENT")"
   printf 'Unexpected bundled watchdog label\n' >&2
   exit 1
 }
-[ "$(plutil -extract Label raw -o - "$MIGRATION_AGENT")" = \
-    "dev.tsarev.codex-detached-watchdog" ] || {
-  printf 'Unexpected migration watchdog label\n' >&2
-  exit 1
-}
-[ "$(plutil -extract BundleProgram raw -o - "$MIGRATION_AGENT")" = "$bundle_program" ] || {
-  printf 'Migration watchdog points to a different helper\n' >&2
-  exit 1
-}
-[ "$(find "$APP/Contents/Library/LaunchAgents" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2 ] || {
-  printf 'The app must bundle the current and migration-only SMAppService definitions\n' >&2
+[ "$(find "$APP/Contents/Library/LaunchAgents" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1 ] || {
+  printf 'The app must bundle exactly one SMAppService definition\n' >&2
   exit 1
 }
 [ "$(plutil -extract Label raw -o - "$CLI_AGENT")" = \

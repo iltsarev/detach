@@ -42,8 +42,6 @@ AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-$STATE_ROOT/amphetamine}"
 SHELL_PATH_STATE_ROOT="${DETACH_SHELL_PATH_STATE_ROOT:-$INSTALL_STATE_ROOT/shell-path}"
 CLI_WATCHDOG_PLIST_DEST="${DETACH_CLI_WATCHDOG_PLIST_DEST:-$HOME/Library/LaunchAgents/dev.tsarev.detach.cli-watchdog.plist}"
 CLI_WATCHDOG_LABEL="dev.tsarev.detach.cli-watchdog"
-LEGACY_CLI_WATCHDOG_PLIST_DEST="${DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST:-${DETACH_LEGACY_PLIST_DEST:-$HOME/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist}}"
-LEGACY_CLI_WATCHDOG_LABEL="dev.tsarev.codex-detached-watchdog"
 APP_WATCHDOG_LABEL="dev.tsarev.detach.watchdog"
 SHELL_PATH_MARKER="# Detach CLI PATH"
 
@@ -698,8 +696,7 @@ cleanup_shell_path() {
 validate_managed_paths() {
   local path
   for path in "$BIN_DIR" "$LIBEXEC_ROOT" "$INSTALL_STATE_ROOT" "$CONFIG_ROOT" \
-              "$SHELL_PATH_STATE_ROOT" "$CLI_WATCHDOG_PLIST_DEST" \
-              "$LEGACY_CLI_WATCHDOG_PLIST_DEST"; do
+              "$SHELL_PATH_STATE_ROOT" "$CLI_WATCHDOG_PLIST_DEST"; do
     case "$path" in
       /*) ;;
       *) die "managed path must be absolute: $path" ;;
@@ -801,19 +798,6 @@ active_payload_dir() {
   esac
 }
 
-looks_like_legacy_flat_payload() {
-  local candidate expected core
-  [ -L "$1" ] || return 1
-  candidate="$(resolve_path "$1" 2>/dev/null)" || return 1
-  expected="$(resolve_path "$LIBEXEC_ROOT/detach" 2>/dev/null)" || return 1
-  [ "$candidate" = "$expected" ] || return 1
-  core="$(dirname "$candidate")/detach-core"
-  [ -f "$candidate" ] && [ -x "$candidate" ] && \
-    [ -f "$core" ] && [ -x "$core" ] || return 1
-  grep -q 'DETACH_PROVIDER' "$candidate" 2>/dev/null && \
-    grep -Eq 'CODEX_DETACHED|DETACH_CORE_ENTRYPOINT' "$core" 2>/dev/null
-}
-
 managed_sessions_running_on() {
   local socket="$1" config="$2"
   local session pane dead managed output
@@ -898,36 +882,6 @@ write_required_config() {
   "$MV_BIN" -f "$tmp" "$config"
 }
 
-owned_cli_watchdog_plist() {
-  local path="$1" expected_label="$2"
-  local label argument0 argument1 argument2
-  [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$PLUTIL_BIN" ] || return 1
-  label="$("$PLUTIL_BIN" -extract Label raw -o - "$path" 2>/dev/null || true)"
-  [ "$label" = "$expected_label" ] || return 1
-  argument0="$("$PLUTIL_BIN" -extract ProgramArguments.0 raw -o - "$path" 2>/dev/null || true)"
-  argument1="$("$PLUTIL_BIN" -extract ProgramArguments.1 raw -o - "$path" 2>/dev/null || true)"
-  argument2="$("$PLUTIL_BIN" -extract ProgramArguments.2 raw -o - "$path" 2>/dev/null || true)"
-  if [ "$argument0" = /bin/sh ] && [ "$argument1" = -c ]; then
-    case "$argument2" in *__reconcile_amphetamine*) return 0 ;; esac
-  fi
-  case "$argument0:$argument1" in
-    */.local/bin/detach:__reconcile_amphetamine) return 0 ;;
-  esac
-  return 1
-}
-
-retire_legacy_cli_watchdog() {
-  local original="$LEGACY_CLI_WATCHDOG_PLIST_DEST"
-  local backup="$LEGACY_CLI_WATCHDOG_PLIST_DEST.detach-backup"
-  if owned_cli_watchdog_plist "$original" "$LEGACY_CLI_WATCHDOG_LABEL"; then
-    "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$LEGACY_CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
-    "$RM_BIN" -f "$original"
-  fi
-  if owned_cli_watchdog_plist "$backup" "$LEGACY_CLI_WATCHDOG_LABEL"; then
-    "$RM_BIN" -f "$backup"
-  fi
-}
-
 install_cli_watchdog() {
   local source_plist="$1"
   local destination_dir
@@ -946,9 +900,6 @@ install_cli_watchdog() {
 
   if [ -f "$CLI_WATCHDOG_PLIST_DEST" ] && cmp -s "$rendered" "$CLI_WATCHDOG_PLIST_DEST"; then
     "$RM_BIN" -f "$rendered"
-    if "$LAUNCHCTL_BIN" print "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1; then
-      retire_legacy_cli_watchdog
-    fi
     return 0
   fi
   destination_tmp="$CLI_WATCHDOG_PLIST_DEST.tmp.$$"
@@ -972,8 +923,6 @@ install_cli_watchdog() {
   fi
   "$RM_BIN" -f "$backup"
   "$LAUNCHCTL_BIN" kickstart -k "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
-  # Only retire the older label after bootstrap of its replacement succeeds.
-  retire_legacy_cli_watchdog
 }
 
 install_locked() {
@@ -1061,7 +1010,7 @@ install_locked() {
       die "refusing to replace an unmanaged file: $BIN_DIR/detach"
     fi
     active_dir="$(active_payload_dir 2>/dev/null || true)"
-    if [ -z "$active_dir" ] && ! looks_like_legacy_flat_payload "$BIN_DIR/detach"; then
+    if [ -z "$active_dir" ]; then
       die "refusing to replace an unmanaged detach symlink: $BIN_DIR/detach"
     fi
   else
@@ -1263,7 +1212,6 @@ uninstall_locked() {
     "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
     "$RM_BIN" -f "$CLI_WATCHDOG_PLIST_DEST"
   fi
-  retire_legacy_cli_watchdog
   cleanup_shell_path
   "$RM_BIN" -rf "$LIBEXEC_ROOT/versions"
   "$RM_BIN" -f "$INSTALL_STATE_ROOT/install.json"

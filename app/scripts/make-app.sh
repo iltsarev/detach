@@ -209,8 +209,6 @@ for localization in en ru; do
 done
 cp "$APP_ROOT/Resources/dev.tsarev.detach.watchdog.plist" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist"
-cp "$APP_ROOT/Resources/dev.tsarev.codex-detached-watchdog.plist" \
-  "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$APP/Contents/Info.plist"
 if [ -n "$SPARKLE_FEED_URL" ]; then
@@ -252,7 +250,6 @@ plutil -lint "$APP/Contents/Info.plist" \
   "$APP/Contents/Resources/ru.lproj/Localizable.strings" \
   "$APP/Contents/Resources/ru.lproj/InfoPlist.strings" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist" \
-  "$LAUNCH_AGENTS/dev.tsarev.codex-detached-watchdog.plist" \
   "$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
 
 codesign_args=(--force --options runtime --sign "$IDENTITY")
