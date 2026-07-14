@@ -30,6 +30,40 @@ enum AppFontSize {
     static let settingsIdealHeight: CGFloat = 680
 }
 
+/// Keeps text-size changes local to Settings until the user applies them.
+struct AppFontSizeDraft: Equatable {
+    private(set) var appliedValue: Double
+    private(set) var previewValue: Double
+
+    var hasChanges: Bool { previewValue != appliedValue }
+
+    init(appliedValue: Double) {
+        let normalizedValue = AppFontSize.clamped(appliedValue)
+        self.appliedValue = normalizedValue
+        previewValue = normalizedValue
+    }
+
+    mutating func updatePreview(_ value: Double) {
+        previewValue = AppFontSize.clamped(value)
+    }
+
+    @discardableResult
+    mutating func apply() -> Double {
+        appliedValue = previewValue
+        return appliedValue
+    }
+
+    /// Follows an external preference update only while there is no local edit.
+    mutating func synchronizeAppliedValue(_ value: Double) {
+        let normalizedValue = AppFontSize.clamped(value)
+        let shouldUpdatePreview = !hasChanges
+        appliedValue = normalizedValue
+        if shouldUpdatePreview {
+            previewValue = normalizedValue
+        }
+    }
+}
+
 enum AppFontRole {
     case caption2
     case caption
@@ -78,7 +112,7 @@ private struct AppFontModifier: ViewModifier {
 }
 
 extension View {
-    /// Applies the exact persisted point size as the interface's body font.
+    /// Applies the provided point size as the subtree's body font.
     func appFontSize(_ value: Double) -> some View {
         let pointSize = CGFloat(AppFontSize.clamped(value))
         return environment(\.appFontPointSize, pointSize)

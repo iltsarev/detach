@@ -255,6 +255,7 @@
 "Interface" = "Interface";
 "Text size" = "Text size";
 "Text size preview" = "Text size preview";
+"Apply" = "Apply";
 "%d pt" = "%d pt";
 "%d sec" = "%d sec";
 "Command line" = "Command line";

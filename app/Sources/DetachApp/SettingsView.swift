@@ -22,6 +22,7 @@ struct SettingsView: View {
     @State private var tmuxStyle: TmuxStyle?
     @State private var isUpdatingTmuxStyle = false
     @State private var tmuxStyleError: String?
+    @State private var fontSizeDraft: AppFontSizeDraft?
 
     private var selectedTerminal: TerminalApplication? {
         terminalApplications.first { $0.bundleIdentifier == terminalBundleIdentifier }
@@ -35,10 +36,32 @@ struct SettingsView: View {
         installation.hasDistributionPayload ? AppSettings.defaultDetachPath : detachPath
     }
 
-    private var normalizedFontPointSize: Binding<Double> {
+    private var previewFontPointSize: Double {
+        fontSizeDraft?.previewValue ?? AppFontSize.clamped(fontPointSize)
+    }
+
+    private var previewFontPointSizeBinding: Binding<Double> {
         Binding(
-            get: { AppFontSize.clamped(fontPointSize) },
-            set: { fontPointSize = AppFontSize.clamped($0) })
+            get: { previewFontPointSize },
+            set: { value in
+                var draft = fontSizeDraft ?? AppFontSizeDraft(appliedValue: fontPointSize)
+                draft.updatePreview(value)
+                fontSizeDraft = draft
+            })
+    }
+
+    private var fontSizePreview: some View {
+        ZStack(alignment: .topLeading) {
+            // Reserve the largest preview's space so the controls below do
+            // not move while the user drags the slider.
+            SessionRowPreviewCard()
+                .appFontSize(AppFontSize.allowedRange.upperBound)
+                .accessibilityHidden(true)
+                .hidden()
+            SessionRowPreviewCard()
+                .appFontSize(previewFontPointSize)
+                .accessibilityValue(L10n.format("%d pt", Int(previewFontPointSize)))
+        }
     }
 
     var body: some View {
@@ -69,6 +92,9 @@ struct SettingsView: View {
             height: AppFontSize.settingsMinimumHeight)
         .task {
             let clampedFontPointSize = AppFontSize.clamped(fontPointSize)
+            if fontSizeDraft == nil {
+                fontSizeDraft = AppFontSizeDraft(appliedValue: clampedFontPointSize)
+            }
             if fontPointSize != clampedFontPointSize {
                 fontPointSize = clampedFontPointSize
             }
@@ -83,7 +109,13 @@ struct SettingsView: View {
         }
         .onChange(of: fontPointSize) { _, value in
             let clamped = AppFontSize.clamped(value)
-            if value != clamped { fontPointSize = clamped }
+            if value != clamped {
+                fontPointSize = clamped
+                return
+            }
+            guard var draft = fontSizeDraft else { return }
+            draft.synchronizeAppliedValue(clamped)
+            fontSizeDraft = draft
         }
         .onChange(of: pollInterval) { _, value in
             notifications.configureMonitoring(detachPath: activeDetachPath, interval: value)
@@ -110,6 +142,9 @@ struct SettingsView: View {
             // AppKit activation notification reliably fires after the user
             // returns from macOS Notification settings in that configuration.
             Task { await notifications.refreshAuthorizationStatus() }
+        }
+        .onDisappear {
+            fontSizeDraft = nil
         }
         .confirmationDialog(
             L10n.string("Remove installed Detach components?"),
@@ -153,15 +188,17 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section(L10n.string("Interface")) {
-                SessionRowPreviewCard()
+                fontSizePreview
                 HStack(spacing: 8) {
                     Text(L10n.string("Text size"))
+                        .accessibilityHidden(true)
                     Spacer(minLength: 12)
                     Text(verbatim: "A")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                     Slider(
-                        value: normalizedFontPointSize,
+                        value: previewFontPointSizeBinding,
                         in: AppFontSize.allowedRange,
                         step: 1
                     ) {
@@ -169,14 +206,24 @@ struct SettingsView: View {
                     }
                     .labelsHidden()
                     .frame(width: 150)
+                    .accessibilityLabel(L10n.string("Text size"))
+                    .accessibilityValue(L10n.format("%d pt", Int(previewFontPointSize)))
                     Text(verbatim: "A")
                         .font(.system(size: 16))
                         .foregroundStyle(.secondary)
-                    Text(L10n.format("%d pt", Int(AppFontSize.clamped(fontPointSize))))
+                        .accessibilityHidden(true)
+                    Text(L10n.format("%d pt", Int(previewFontPointSize)))
                         .appFont(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .frame(width: 44, alignment: .trailing)
+                        .accessibilityHidden(true)
+                    Button(L10n.string("Apply")) {
+                        applyFontPointSize()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Brand.indigo)
+                    .disabled(fontSizeDraft?.hasChanges != true)
                 }
                 HStack(spacing: 8) {
                     Text(L10n.string("Refresh interval"))
@@ -217,6 +264,13 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func applyFontPointSize() {
+        guard var draft = fontSizeDraft, draft.hasChanges else { return }
+        let appliedValue = draft.apply()
+        fontSizeDraft = draft
+        fontPointSize = appliedValue
     }
 
     // MARK: - Terminal

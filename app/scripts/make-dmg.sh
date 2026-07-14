@@ -3,10 +3,8 @@
 set -euo pipefail
 
 APP_ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-REPO_ROOT="$(cd -P "$APP_ROOT/.." && pwd)"
-VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 APP="${DETACH_APP_PATH:-$APP_ROOT/build/Detach.app}"
-OUTPUT="${DETACH_DMG_PATH:-$APP_ROOT/build/Detach-$VERSION.dmg}"
+OUTPUT="${DETACH_DMG_PATH:-$APP_ROOT/build/Detach.dmg}"
 IDENTITY="${DETACH_CODESIGN_IDENTITY:--}"
 STAGING=""
 

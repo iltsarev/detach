@@ -7,7 +7,7 @@ REPO_ROOT="$(cd -P "$APP_ROOT/.." && pwd)"
 VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 REPOSITORY="${DETACH_GITHUB_REPOSITORY:-}"
 TAG="${DETACH_RELEASE_TAG:-v$VERSION}"
-DMG="$APP_ROOT/build/Detach-$VERSION.dmg"
+DMG="$APP_ROOT/build/Detach.dmg"
 CHECKSUM="$DMG.sha256"
 UPDATE_ASSETS="$APP_ROOT/build/update-assets"
 UPDATE_ZIP="$UPDATE_ASSETS/Detach-$VERSION.zip"
@@ -206,6 +206,26 @@ for asset in "${assets[@]}"; do
     exit 1
   }
 done
+
+verify_remote_digest() {
+  local asset="$1"
+  local expected_sha256="$2"
+  local asset_name
+  local remote_digest
+
+  asset_name="$(basename "$asset")"
+  remote_digest="$(gh release view "$TAG" --repo "$REPOSITORY" --json assets \
+    --jq ".assets[] | select(.name == \"$asset_name\") | .digest")"
+  [ "$remote_digest" = "sha256:$expected_sha256" ] || {
+    printf 'Draft release asset digest mismatch: %s\n' "$asset_name" >&2
+    exit 1
+  }
+}
+
+verify_remote_digest "$DMG" "$DMG_SHA256"
+verify_remote_digest "$UPDATE_ZIP" "$UPDATE_SHA256"
+verify_remote_digest "$APPCAST" "$APPCAST_SHA256"
+
 gh release edit "$TAG" --repo "$REPOSITORY" --draft=false --latest
 LATEST_TAG="$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName)"
 [ "$LATEST_TAG" = "$TAG" ] || {

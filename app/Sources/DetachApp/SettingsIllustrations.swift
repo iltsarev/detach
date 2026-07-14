@@ -56,8 +56,7 @@ struct StatusIndicator: View {
     }
 }
 
-/// A sample session-list row rendered with the app font environment, so the
-/// text-size slider changes it live.
+/// A sample session-list row rendered with its own preview font environment.
 struct SessionRowPreviewCard: View {
     var body: some View {
         HStack(spacing: 10) {

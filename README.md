@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iltsarev/detach/releases/latest">
+  <a href="https://github.com/iltsarev/detach/releases/latest/download/Detach.dmg">
     <img src="https://img.shields.io/badge/Download_for_macOS-latest_DMG-545CE0?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Download Detach for macOS — latest DMG">
   </a>
 </p>
@@ -80,9 +80,8 @@ for Detach in macOS.
 > concrete next step for anything missing. Provider authentication remains in
 > Codex or Claude Code itself.
 
-1. Download the current **DMG** from
-   [GitHub Releases](https://github.com/iltsarev/detach/releases/latest), move
-   **Detach.app** to `/Applications`, and open it.
+1. [Download the current **DMG**](https://github.com/iltsarev/detach/releases/latest/download/Detach.dmg),
+   move **Detach.app** to `/Applications`, and open it.
 2. Follow guided setup. Detach installs its bundled CLI, registers its required
    background service, and checks the rest of the runtime. When Amphetamine or
    Power Protect is missing, setup opens its official App Store or project page.
@@ -430,6 +429,6 @@ until you move it to Trash.
 
 Make the terminal a view into the work—not the thing keeping it alive.
 
-[**Download the latest DMG →**](https://github.com/iltsarev/detach/releases/latest)
+[**Download the latest DMG →**](https://github.com/iltsarev/detach/releases/latest/download/Detach.dmg)
 &nbsp;·&nbsp;
 [Report an issue](https://github.com/iltsarev/detach/issues)
