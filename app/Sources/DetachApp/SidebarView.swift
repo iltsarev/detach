@@ -137,7 +137,10 @@ struct StatusBar: View {
         }
         .appFont(.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        // No backing material: the sidebar List already ends above this inset,
+        // and an opaque bar reads as a stray strip over the sidebar glass.
     }
 }

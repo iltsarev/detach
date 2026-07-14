@@ -86,14 +86,21 @@ struct SessionDetailView: View {
                     .help(session.sessionColor.map {
                         L10n.format("Session base color: %@", $0.hex)
                     } ?? "")
-                Text(session.displayTitle).appFont(.title2, weight: .bold)
+                Text(session.displayTitle)
+                    .appFont(.title2, weight: .bold)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(session.displayTitle)
                 statusPill
                 if let model = session.model {
                     Text(model)
                         .appFont(.caption, weight: .semibold)
+                        .lineLimit(1)
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(Capsule().fill(providerTint.opacity(0.16)))
                         .foregroundStyle(providerTint)
+                        // Pills keep their single line; the title truncates first.
+                        .layoutPriority(1)
                 }
                 if session.contextSummary != nil {
                     ContextGauge(session: session)
@@ -135,9 +142,11 @@ struct SessionDetailView: View {
         let color = SessionIdentity.statusColor(for: session)
         return Text(session.displayStatus)
             .appFont(.caption, weight: .semibold)
+            .lineLimit(1)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(Capsule().fill(color.opacity(0.14)))
             .foregroundStyle(color)
+            .layoutPriority(1)
     }
 
     private func metaChip(
@@ -391,7 +400,7 @@ struct ContextGauge: View {
                 }
             }
             if let summary = session.contextSummary {
-                Text(summary).appFont(.caption).foregroundStyle(.secondary)
+                Text(summary).appFont(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
         .help(L10n.string("Model context used"))

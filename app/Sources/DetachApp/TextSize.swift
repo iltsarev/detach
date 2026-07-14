@@ -24,10 +24,13 @@ enum AppFontSize {
         return 560 + growth * 25
     }
 
-    /// Settings scrolls vertically, so its minimum must remain usable even on
-    /// a smaller display instead of growing with the font size.
-    static let settingsMinimumHeight: CGFloat = 460
-    static let settingsIdealHeight: CGFloat = 680
+    /// The Settings window is sized to the selected tab, like classic
+    /// AppKit preference panes; the base heights are per-tab measurements
+    /// at the default text size.
+    static func settingsHeight(base: CGFloat, for value: Double) -> CGFloat {
+        let growth = max(0, clamped(value) - defaultValue)
+        return base + growth * 18
+    }
 }
 
 /// Keeps text-size changes local to Settings until the user applies them.

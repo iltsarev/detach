@@ -9,16 +9,22 @@ enum SettingsTabIcon {
     private static var cache: [String: NSImage] = [:]
 
     static func image(systemName: String, color: NSColor) -> NSImage {
-        if let cached = cache[systemName] { return cached }
-        let side: CGFloat = 21
+        let key = "\(systemName)|\(color.description)"
+        if let cached = cache[key] { return cached }
+        // The toolbar scales the image to fill its fixed tab-icon slot, so the
+        // plate is drawn inset within the canvas: the transparent margin is
+        // what keeps neighboring tabs and the selection card from crowding it.
+        let side: CGFloat = 24
+        let plateInset: CGFloat = 2.5
         let image = NSImage(
             size: NSSize(width: side, height: side),
             flipped: false
         ) { rect in
-            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).addClip()
+            let plate = rect.insetBy(dx: plateInset, dy: plateInset)
+            NSBezierPath(roundedRect: plate, xRadius: 5, yRadius: 5).addClip()
             color.setFill()
-            rect.fill()
-            let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            plate.fill()
+            let configuration = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
                 .applying(.init(paletteColors: [.white]))
             if let symbol = NSImage(
                 systemSymbolName: systemName, accessibilityDescription: nil)?
@@ -34,7 +40,7 @@ enum SettingsTabIcon {
             return true
         }
         image.isTemplate = false
-        cache[systemName] = image
+        cache[key] = image
         return image
     }
 }

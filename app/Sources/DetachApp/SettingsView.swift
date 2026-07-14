@@ -2,11 +2,28 @@ import AppKit
 import DetachKit
 import SwiftUI
 
+private enum SettingsTab: Hashable {
+    case general, terminal, notifications, system, updates
+
+    /// Content height measured at the default text size; the window follows
+    /// the selected tab like classic AppKit preference panes.
+    var baseHeight: CGFloat {
+        switch self {
+        case .general: 420
+        case .terminal: 460
+        case .notifications: 350
+        case .system: 660
+        case .updates: 420
+        }
+    }
+}
+
 struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     let installation: InstallationStore
     @ObservedObject var updater: UpdaterService
     @ObservedObject var notifications: SessionNotificationService
+    @State private var selectedTab: SettingsTab = .general
 
     @AppStorage("detachPath") private var detachPath = AppSettings.defaultDetachPath
     @AppStorage("pollInterval") private var pollInterval = 2.0
@@ -65,31 +82,37 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             generalTab.tabItem {
                 tabLabel(L10n.string("General"), systemImage: "gearshape.fill", color: .systemGray)
             }
+            .tag(SettingsTab.general)
             terminalTab.tabItem {
                 tabLabel(L10n.string("Terminal"), systemImage: "terminal.fill",
                          color: NSColor(Brand.teal))
             }
+            .tag(SettingsTab.terminal)
             notificationsTab.tabItem {
                 tabLabel(L10n.string("Notifications"), systemImage: "bell.badge.fill",
                          color: .systemRed)
             }
+            .tag(SettingsTab.notifications)
             systemTab.tabItem {
                 tabLabel(L10n.string("System"), systemImage: "moon.stars.fill",
                          color: .systemOrange)
             }
+            .tag(SettingsTab.system)
             updatesTab.tabItem {
                 tabLabel(L10n.string("Updates"), systemImage: "arrow.triangle.2.circlepath",
                          color: NSColor(Brand.indigo))
             }
+            .tag(SettingsTab.updates)
         }
         .appFontSize(fontPointSize)
         .frame(
             width: AppFontSize.settingsWidth(for: fontPointSize),
-            height: AppFontSize.settingsMinimumHeight)
+            height: AppFontSize.settingsHeight(
+                base: selectedTab.baseHeight, for: fontPointSize))
         .task {
             let clampedFontPointSize = AppFontSize.clamped(fontPointSize)
             if fontSizeDraft == nil {
@@ -216,7 +239,7 @@ struct SettingsView: View {
                         .appFont(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
+                        .frame(minWidth: 44, alignment: .trailing)
                         .accessibilityHidden(true)
                     Button(L10n.string("Apply")) {
                         applyFontPointSize()
@@ -237,7 +260,7 @@ struct SettingsView: View {
                         .appFont(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
+                        .frame(minWidth: 44, alignment: .trailing)
                 }
             }
             Section(L10n.string("Command line")) {

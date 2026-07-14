@@ -19,11 +19,13 @@ struct NewSessionSheet: View {
     @State private var isLaunching = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(L10n.string("New session")).appFont(.title3, weight: .bold)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.string("New session")).appFont(.title3, weight: .bold)
 
-                LabeledContent(L10n.string("Project")) {
+            Grid(alignment: .leadingFirstTextBaseline,
+                 horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow {
+                    Text(L10n.string("Project"))
                     HStack {
                         Text(projectDir?.path ?? L10n.string("not selected"))
                             .foregroundStyle(projectDir == nil ? .secondary : .primary)
@@ -32,55 +34,54 @@ struct NewSessionSheet: View {
                         Button(L10n.string("Choose…")) { showPicker = true }
                     }
                 }
-
-                LabeledContent(L10n.string("Provider")) {
+                GridRow {
+                    Text(L10n.string("Provider"))
                     Picker("", selection: $provider) {
                         ForEach(Provider.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
+                    .gridCellAnchor(.leading)
                 }
-
-                LabeledContent(L10n.string("Name")) {
+                GridRow {
+                    Text(L10n.string("Name"))
                     TextField(L10n.string("optional, for example migration"), text: $name)
                 }
+            }
 
-                Text(L10n.string("Initial prompt (optional)"))
-                    .appFont(.caption).foregroundStyle(.secondary)
-                TextEditor(text: $prompt)
-                    .appFont(.body)
-                    .frame(height: max(70, fontPointSize * 5.5))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+            Text(L10n.string("Initial prompt (optional)"))
+                .appFont(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $prompt)
+                .appFont(.body)
+                .frame(height: max(70, fontPointSize * 5.5))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
 
-                if let launchFailure {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(launchFailure.message).appFont(.caption).foregroundStyle(.red)
-                        if launchFailure.requiresTerminalSelection {
-                            SettingsLink {
-                                Text(L10n.string("Choose another terminal"))
-                            }
-                            .appFont(.caption)
+            if let launchFailure {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(launchFailure.message).appFont(.caption).foregroundStyle(.red)
+                    if launchFailure.requiresTerminalSelection {
+                        SettingsLink {
+                            Text(L10n.string("Choose another terminal"))
                         }
+                        .appFont(.caption)
                     }
-                }
-
-                HStack {
-                    Spacer()
-                    Button(L10n.string("Cancel")) { dismiss() }
-                    Button(L10n.string("Launch in Terminal")) {
-                        Task { await launch() }
-                    }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.indigo)
-                        .disabled(projectDir == nil || isLaunching)
                 }
             }
-            .padding(20)
+
+            HStack {
+                Spacer()
+                Button(L10n.string("Cancel")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n.string("Launch in Terminal")) {
+                    Task { await launch() }
+                }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Brand.indigo)
+                    .disabled(projectDir == nil || isLaunching)
+            }
         }
-        .frame(
-            minWidth: max(460, fontPointSize * 32),
-            idealWidth: max(460, fontPointSize * 32),
-            minHeight: 400)
+        .padding(20)
+        .frame(width: max(460, fontPointSize * 32))
         .fileImporter(isPresented: $showPicker, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { projectDir = url }
         }

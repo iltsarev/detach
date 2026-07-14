@@ -35,5 +35,6 @@ struct DetachApp: App {
                 updater: updater,
                 notifications: notifications)
         }
+        .windowResizability(.contentSize)
     }
 }

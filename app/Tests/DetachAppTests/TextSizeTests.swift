@@ -76,7 +76,9 @@ final class TextSizeTests: XCTestCase {
             AppFontSize.settingsWidth(for: 20),
             AppFontSize.settingsWidth(for: AppFontSize.defaultValue))
         XCTAssertLessThanOrEqual(AppFontSize.minimumWindowSize(for: 22).width, 840)
-        XCTAssertGreaterThan(AppFontSize.settingsIdealHeight, AppFontSize.settingsMinimumHeight)
+        XCTAssertEqual(
+            AppFontSize.settingsHeight(base: 420, for: AppFontSize.defaultValue), 420)
+        XCTAssertGreaterThan(AppFontSize.settingsHeight(base: 420, for: 20), 420)
     }
 
     func testLogResizeUsesExactPointSizeAndPreservesTraitsAndColors() throws {
