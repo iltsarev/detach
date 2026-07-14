@@ -2,13 +2,13 @@ import XCTest
 @testable import DetachApp
 import DetachKit
 
+@MainActor
 final class TipSessionTests: XCTestCase {
     private let tips = [
-        DetachTip(id: "one", localizationKey: "One"),
-        DetachTip(id: "two", localizationKey: "Two"),
+        DetachTip(id: "one", localizationKey: "One", destination: .general),
+        DetachTip(id: "two", localizationKey: "Two", destination: .terminal),
     ]
 
-    @MainActor
     func testEachAppSessionAdvancesThePersistedRotationOnce() throws {
         let defaults = try isolatedDefaults()
         let rotation = TipRotation(tips: tips)
@@ -28,10 +28,10 @@ final class TipSessionTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "last"), "two")
     }
 
-    @MainActor
     func testManualNextPersistsAndDismissOnlyAffectsCurrentSession() throws {
         let defaults = try isolatedDefaults()
         let rotation = TipRotation(tips: tips)
+
         let session = TipSession(
             rotation: rotation,
             defaults: defaults,
@@ -51,6 +51,14 @@ final class TipSessionTests: XCTestCase {
             lastShownIdentifierKey: "last")
         XCTAssertFalse(nextLaunch.isDismissed)
         XCTAssertEqual(nextLaunch.currentTip?.id, "one")
+    }
+
+    func testSettingsNavigationSelectsTipDestination() {
+        let navigation = SettingsNavigation()
+
+        navigation.select(.updates)
+
+        XCTAssertEqual(navigation.selectedTab, .updates)
     }
 
     private func isolatedDefaults() throws -> UserDefaults {

@@ -62,12 +62,14 @@ struct TipsBar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help(L10n.string("Open this setting"))
+                .help(tip.localizedText())
+                .accessibilityHint(L10n.string("Open this setting"))
             } else {
                 Text(tip.localizedText())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .help(tip.localizedText())
             }
 
             Spacer(minLength: 8)

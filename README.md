@@ -123,12 +123,18 @@ clear home:
   prompt.
 - **Monitor:** see both providers in one sidebar with live status, model and
   context usage when available, checkpoint time, and ANSI-aware log previews.
+  Sessions waiting for your reply move into **Answer ready**, above agents that
+  are still working.
 - **Know:** opt in to notifications when a completed turn is waiting for your
   next message, or when a session finishes, fails, or becomes recoverable.
 - **Rejoin:** open a live session, resume a known provider conversation, or
   recover an interrupted managed run in your selected terminal.
 - **Maintain:** inspect setup health, repair the CLI, manage updates, and remove
   Detach-owned components from Settings.
+
+The footer rotates short, optional tips about useful Detach settings. Tips that
+refer to a setting open its exact tab; hide the strip for the current launch or
+turn it off permanently in Settings → General.
 
 Every managed session gets a stable identity color derived from its provider
 and project. The same accent appears beside the session in Detach.app and in
