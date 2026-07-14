@@ -96,6 +96,11 @@ for Detach in macOS.
 4. Choose **＋**, select a project and provider, add an optional opening prompt,
    and start the session.
 
+Upgrades from early manual or CLI-only installations are migrated in place.
+Detach moves the managed flat CLI to its immutable versioned layout, keeps
+unrelated symlinks untouched, and retires an older watchdog only after the
+signed background service is enabled.
+
 When the session appears as running in the sidebar, you are done. Close the
 terminal window or Detach.app and the managed worker and checkpoints continue;
 reopen Detach whenever you want the dashboard back.

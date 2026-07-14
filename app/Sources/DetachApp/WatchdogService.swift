@@ -74,34 +74,50 @@ enum WatchdogServiceError: LocalizedError {
 @MainActor
 final class WatchdogService {
     static let plistName = "dev.tsarev.detach.watchdog.plist"
+    static let portablePlistName = "dev.tsarev.detach.cli-watchdog.plist"
+    static let portableLabel = "dev.tsarev.detach.cli-watchdog"
+    static let legacyPlistName = "dev.tsarev.codex-detached-watchdog.plist"
+    static let legacyLabel = "dev.tsarev.codex-detached-watchdog"
 
     private let backend: any WatchdogRegistrationBackend
+    private let legacyBackend: (any WatchdogRegistrationBackend)?
     private let defaults: UserDefaults
+    private let homeDirectory: URL
     private let digestProvider: () -> String?
     private let sleep: (UInt64) async throws -> Void
+    private let launchctl: ([String]) -> Int32
 
     private let digestKey = "watchdogDefinitionDigest"
     private let pendingDigestKey = "watchdogDefinitionReconcilePending"
 
     init() {
         backend = SystemWatchdogRegistrationBackend(plistName: Self.plistName)
+        legacyBackend = SystemWatchdogRegistrationBackend(plistName: Self.legacyPlistName)
         defaults = .standard
+        homeDirectory = FileManager.default.homeDirectoryForCurrentUser
         digestProvider = Self.bundleDefinitionDigest
         sleep = { try await Task.sleep(nanoseconds: $0) }
+        launchctl = Self.runLaunchctl
     }
 
     init(
         backend: any WatchdogRegistrationBackend,
+        legacyBackend: (any WatchdogRegistrationBackend)? = nil,
         defaults: UserDefaults,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         digestProvider: @escaping () -> String?,
         sleep: @escaping (UInt64) async throws -> Void = {
             try await Task.sleep(nanoseconds: $0)
-        }
+        },
+        launchctl: @escaping ([String]) -> Int32 = { _ in 0 }
     ) {
         self.backend = backend
+        self.legacyBackend = legacyBackend
         self.defaults = defaults
+        self.homeDirectory = homeDirectory
         self.digestProvider = digestProvider
         self.sleep = sleep
+        self.launchctl = launchctl
     }
 
     var status: WatchdogStatus { backend.status }
@@ -138,9 +154,12 @@ final class WatchdogService {
         switch status {
         case .enabled:
             rememberDefinition(digest)
+            await retireLegacyWatchdogs()
         case .requiresApproval:
             // Registration is complete. The remaining action belongs to the
             // user in macOS Login Items and must not trigger re-registration.
+            // Keep the portable agent alive until the signed replacement is
+            // actually enabled, so migration never loses reconciliation.
             rememberDefinition(digest)
         case .notRegistered, .unavailable:
             defaults.set(true, forKey: pendingDigestKey)
@@ -161,6 +180,7 @@ final class WatchdogService {
                 unregisterError = error
             }
         }
+        await retireLegacyWatchdogs()
         defaults.removeObject(forKey: digestKey)
         defaults.removeObject(forKey: pendingDigestKey)
         if let unregisterError { throw unregisterError }
@@ -218,5 +238,83 @@ final class WatchdogService {
         data.append(plist)
         data.append(helper)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func retireLegacyWatchdogs() async {
+        let legacyWasRegistered: Bool
+        if let legacyBackend {
+            legacyWasRegistered = legacyBackend.status != .notRegistered &&
+                legacyBackend.status != .unavailable
+        } else {
+            legacyWasRegistered = false
+        }
+        if let legacyBackend, legacyWasRegistered {
+            // The migration-only bundled definition lets an update address an
+            // already registered 0.1.0 SMAppService. The signed replacement
+            // is enabled before this best-effort unregister can run.
+            try? await legacyBackend.unregister()
+        }
+        retireUserWatchdog(
+            plistName: Self.legacyPlistName,
+            label: Self.legacyLabel,
+            addressEvenIfMissing: legacyWasRegistered)
+        retireUserWatchdog(
+            plistName: Self.portablePlistName,
+            label: Self.portableLabel)
+    }
+
+    private func retireUserWatchdog(
+        plistName: String,
+        label: String,
+        addressEvenIfMissing: Bool = false
+    ) {
+        let definition = homeDirectory
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+            .appendingPathComponent(plistName)
+        let backup = definition.appendingPathExtension("detach-backup")
+        let ownsDefinition = Self.isOwnedUserDefinition(definition, label: label)
+        let ownsBackup = Self.isOwnedUserDefinition(backup, label: label)
+        guard addressEvenIfMissing || ownsDefinition || ownsBackup else { return }
+
+        if launchctl(["bootout", "gui/\(getuid())/\(label)"]) != 0,
+           ownsDefinition {
+            _ = launchctl(["bootout", "gui/\(getuid())", definition.path])
+        }
+        if ownsDefinition { try? FileManager.default.removeItem(at: definition) }
+        if ownsBackup { try? FileManager.default.removeItem(at: backup) }
+    }
+
+    private static func isOwnedUserDefinition(_ url: URL, label: String) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [
+            .isRegularFileKey, .isSymbolicLinkKey
+        ]),
+        values.isRegularFile == true,
+        values.isSymbolicLink != true,
+        let data = try? Data(contentsOf: url),
+        let plist = try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil),
+        let dictionary = plist as? [String: Any],
+        dictionary["Label"] as? String == label,
+        let arguments = dictionary["ProgramArguments"] as? [String],
+        (arguments.count >= 3 &&
+            arguments[0] == "/bin/sh" &&
+            arguments[1] == "-c" &&
+            arguments[2].contains("__reconcile_amphetamine")) ||
+        (arguments.count == 2 &&
+            arguments[0].hasSuffix("/.local/bin/detach") &&
+            arguments[1] == "__reconcile_amphetamine") else { return false }
+        return true
+    }
+
+    @discardableResult
+    private static func runLaunchctl(_ arguments: [String]) -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run(); process.waitUntilExit(); return process.terminationStatus }
+        catch { return -1 }
     }
 }

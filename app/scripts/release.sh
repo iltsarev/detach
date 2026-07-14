@@ -11,7 +11,7 @@ BUILD_VERSION="${DETACH_BUILD_VERSION:-}"
 SPARKLE_FEED_URL="${DETACH_SPARKLE_FEED_URL:-}"
 SPARKLE_PUBLIC_ED_KEY="${DETACH_SPARKLE_PUBLIC_ED_KEY:-}"
 SPARKLE_ED_KEY_FILE="${DETACH_SPARKLE_ED_KEY_FILE:-}"
-SPARKLE_KEY_ACCOUNT="${DETACH_SPARKLE_KEY_ACCOUNT:-ed25519}"
+SPARKLE_KEY_ACCOUNT="${DETACH_SPARKLE_KEY_ACCOUNT:-dev.tsarev.detach}"
 REPOSITORY="${DETACH_GITHUB_REPOSITORY:-}"
 TAG="${DETACH_RELEASE_TAG:-v$VERSION}"
 DOWNLOAD_URL_PREFIX="${DETACH_SPARKLE_DOWNLOAD_URL_PREFIX:-}"
@@ -122,19 +122,26 @@ verify_source_provenance() {
 
 verify_source_provenance
 
-if [ -z "${DETACH_SPARKLE_GENERATE_APPCAST:-}" ]; then
+find_sparkle_generate_appcast() {
+  local candidate
+  while IFS= read -r candidate; do
+    [ -x "$candidate" ] || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done < <(find "$APP_ROOT/.build" -type f -path '*/Sparkle/bin/generate_appcast' 2>/dev/null | sort)
+  return 1
+}
+
+SPARKLE_GENERATE_APPCAST="${DETACH_SPARKLE_GENERATE_APPCAST:-}"
+if [ -z "$SPARKLE_GENERATE_APPCAST" ]; then
+  SPARKLE_GENERATE_APPCAST="$(find_sparkle_generate_appcast || true)"
+fi
+if [ -z "$SPARKLE_GENERATE_APPCAST" ]; then
   # A clean checkout has no binary artifact yet. Resolving the pinned package
   # downloads Sparkle's framework and release tools without doing the much
   # more expensive universal application build.
   swift package --disable-sandbox --package-path "$APP_ROOT" resolve
-fi
-SPARKLE_GENERATE_APPCAST="${DETACH_SPARKLE_GENERATE_APPCAST:-}"
-if [ -z "$SPARKLE_GENERATE_APPCAST" ]; then
-  while IFS= read -r candidate; do
-    [ -x "$candidate" ] || continue
-    SPARKLE_GENERATE_APPCAST="$candidate"
-    break
-  done < <(find "$APP_ROOT/.build" -type f -path '*/Sparkle/bin/generate_appcast' 2>/dev/null | sort)
+  SPARKLE_GENERATE_APPCAST="$(find_sparkle_generate_appcast || true)"
 fi
 [ -x "$SPARKLE_GENERATE_APPCAST" ] || {
   printf 'Sparkle generate_appcast was not found; resolve SwiftPM dependencies first\n' >&2

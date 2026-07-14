@@ -32,7 +32,9 @@ including this file, must not contain private context.
 - `tests/run.sh` — integration test for the Codex adapter. Hermetic: fake provider binary (`tests/fake-codex`), private tmux server (own `-L` socket and `TMUX_TMPDIR`), temp state roots, Amphetamine disabled.
 - `tests/run-claude.sh` — the same for the Claude adapter (`tests/fake-claude`).
 - `tests/distribution.sh` — hermetic versioned install/upgrade/doctor/uninstall
-  and portable CLI LaunchAgent coverage (fake tmux/launchctl, temp HOME).
+  coverage, including exact legacy flat-layout migration and watchdog-label
+  retirement (fake tmux/launchctl, temp HOME). It also runs the hermetic
+  Sparkle release preflight.
 - `DETACH_CODEX_TEST_KEEP=1 tests/run.sh` — preserve the temp state and tmux server after a run for inspection (`DETACH_CLAUDE_TEST_KEEP=1` does the same for `run-claude.sh`).
 - `tests/amphetamine-smoke.sh` — optional system smoke test that enables REAL Amphetamine Closed-Display Mode and toggles real system sleep via Power Protect. Do not run it as routine verification.
 
@@ -132,8 +134,13 @@ the stable per-user CLI at runtime and writes a heartbeat; never put user paths
 into the signed plist. Its signed-service label `dev.tsarev.detach.watchdog`
 is intentionally distinct from the CLI-only label
 `dev.tsarev.detach.cli-watchdog`, so the signed helper and portable script agent
-cannot collide in BackgroundTaskManagement. The standalone helper must retain its embedded
-`__TEXT,__info_plist`. Distribution bootstrap is allowed only from
+cannot collide in BackgroundTaskManagement. The bundle retains the
+migration-only `dev.tsarev.codex-detached-watchdog` definition so direct updates
+can unregister the earliest SMAppService. User LaunchAgents under either old
+label are removed only after the current signed helper reaches `enabled`; an
+approval-pending replacement keeps the previous watchdog running. The
+standalone helper must retain its embedded `__TEXT,__info_plist`. Distribution
+bootstrap is allowed only from
 `/Applications`, not a DMG/App Translocation path.
 When helper/plist bytes change, await unregister completion before registering
 again and use the bounded retry for macOS' transient SMAppService Code=1 race.

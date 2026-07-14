@@ -25,6 +25,9 @@ case "${1:-}" in
       */dev.tsarev.detach.watchdog)
         [ "${FAKE_APP_WATCHDOG:-0}" = 1 ] && exit 0
         ;;
+      */dev.tsarev.detach.cli-watchdog)
+        [ "${FAKE_CLI_WATCHDOG:-0}" = 1 ] && exit 0
+        ;;
     esac
     exit 1
     ;;
@@ -62,6 +65,7 @@ export DETACH_AMPHETAMINE=0
 export DETACH_AMPHETAMINE_APP_PATH="$TMP_ROOT/prerequisites/Amphetamine.app"
 export DETACH_AMPHETAMINE_POWER_PROTECT_PATH="$TMP_ROOT/prerequisites/powerProtect.scpt"
 export DETACH_CLI_WATCHDOG_PLIST_DEST="$TEST_HOME/Library/LaunchAgents/dev.tsarev.detach.cli-watchdog.plist"
+export DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST="$TEST_HOME/Library/LaunchAgents/dev.tsarev.codex-detached-watchdog.plist"
 export DETACH_LAUNCHCTL_BIN="$TMP_ROOT/bin/fake-launchctl"
 export DETACH_TMUX_BIN="$TMP_ROOT/bin/fake-tmux"
 export DETACH_USER_SHELL=/bin/zsh
@@ -232,13 +236,56 @@ cmp -s "$TMP_ROOT/zshenv.original" "$TEST_HOME/.zshenv"
 grep -Fx sentinel "$DETACH_CODEX_STATE_ROOT/sessions/kept/value" >/dev/null
 ! grep -F 'bootout' "$LAUNCHCTL_LOG" >/dev/null
 
+# App sync accepts only the historical canonical flat payload. Arbitrary
+# marker-bearing or otherwise unmanaged symlink targets remain protected.
+mkdir -p "$TMP_ROOT/unmanaged"
+install -m 0755 "$payload_v2/detach" "$payload_v2/detach-core" \
+  "$TMP_ROOT/unmanaged/"
+ln -s "$TMP_ROOT/unmanaged/detach" "$DETACH_INSTALL_BIN_DIR/detach"
+if "$payload_v2/detach-install" install --source app --payload-dir "$payload_v2" \
+    --version-file "$payload_v2/VERSION" --no-launch-agent; then
+  printf 'installer unexpectedly replaced an unmanaged symlink\n' >&2
+  exit 1
+fi
+rm -f "$DETACH_INSTALL_BIN_DIR/detach"
+
+mkdir -p "$DETACH_INSTALL_LIBEXEC_ROOT"
+install -m 0755 "$payload_v2/detach" "$payload_v2/detach-core" \
+  "$payload_v2/detach-install" "$DETACH_INSTALL_LIBEXEC_ROOT/"
+install -m 0644 "$payload_v2/VERSION" "$payload_v2/BUILD" \
+  "$DETACH_INSTALL_LIBEXEC_ROOT/"
+ln -s "$DETACH_INSTALL_LIBEXEC_ROOT/detach" "$DETACH_INSTALL_BIN_DIR/detach"
+flat_detach_sha="$(shasum -a 256 "$DETACH_INSTALL_LIBEXEC_ROOT/detach" | awk '{print $1}')"
+flat_core_sha="$(shasum -a 256 "$DETACH_INSTALL_LIBEXEC_ROOT/detach-core" | awk '{print $1}')"
+
+"$payload_v2/detach-install" install --source app --payload-dir "$payload_v2" \
+  --version-file "$payload_v2/VERSION" --no-launch-agent
+
+case "$(readlink "$DETACH_INSTALL_BIN_DIR/detach")" in
+  "$DETACH_INSTALL_LIBEXEC_ROOT"/versions/*/detach) ;;
+  *) printf 'legacy flat payload was not migrated to an immutable target\n' >&2; exit 1 ;;
+esac
+[ "$(shasum -a 256 "$DETACH_INSTALL_LIBEXEC_ROOT/detach" | awk '{print $1}')" = \
+  "$flat_detach_sha" ]
+[ "$(shasum -a 256 "$DETACH_INSTALL_LIBEXEC_ROOT/detach-core" | awk '{print $1}')" = \
+  "$flat_core_sha" ]
+"$DETACH_INSTALL_BIN_DIR/detach" uninstall --keep-state
+
 # CLI-only installation owns its portable watchdog and reloads it only when changed.
 : >"$LAUNCHCTL_LOG"
 rm -f "$DETACH_CONFIG_ROOT/config"
+mkdir -p "$(dirname "$DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST")"
+cp "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" \
+  "$DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST"
+plutil -replace Label -string dev.tsarev.codex-detached-watchdog \
+  "$DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST"
 "$payload_v2/detach-install" install --source install.sh --payload-dir "$payload_v2" \
   --version-file "$payload_v2/VERSION" \
   --launch-agent-plist "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist"
 [ -f "$DETACH_CLI_WATCHDOG_PLIST_DEST" ]
+[ ! -e "$DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST" ]
+grep -F "bootout gui/$(id -u)/dev.tsarev.codex-detached-watchdog" \
+  "$LAUNCHCTL_LOG" >/dev/null
 plutil -extract Label raw -o - "$DETACH_CLI_WATCHDOG_PLIST_DEST" | \
   grep -qx dev.tsarev.detach.cli-watchdog
 watchdog_command="$(plutil -extract ProgramArguments.2 raw -o - "$DETACH_CLI_WATCHDOG_PLIST_DEST")"
@@ -256,9 +303,16 @@ for expected_root in \
 done
 grep -Fx AMPHETAMINE=1 "$DETACH_CONFIG_ROOT/config" >/dev/null
 [ "$(grep -Fc 'bootstrap' "$LAUNCHCTL_LOG")" = 1 ]
+cp "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" \
+  "$DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST"
+plutil -replace Label -string dev.tsarev.codex-detached-watchdog \
+  "$DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST"
+export FAKE_CLI_WATCHDOG=1
 "$payload_v2/detach-install" install --source install.sh --payload-dir "$payload_v2" \
   --version-file "$payload_v2/VERSION" \
   --launch-agent-plist "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist"
+unset FAKE_CLI_WATCHDOG
+[ ! -e "$DETACH_LEGACY_CLI_WATCHDOG_PLIST_DEST" ]
 [ "$(grep -Fc 'bootstrap' "$LAUNCHCTL_LOG")" = 1 ]
 mkdir -p "$HOME/.codex"
 printf '%s\n' provider-sentinel >"$HOME/.codex/must-survive"
@@ -645,5 +699,7 @@ shell_case_uninstall >/dev/null
 
 ! rg -n '<string>/Users/[^<]+/' "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
 plutil -lint "$ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
+
+"$ROOT/tests/release-preflight.sh"
 
 printf 'Detach distribution tests passed\n'
