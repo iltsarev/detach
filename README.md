@@ -39,6 +39,10 @@
   <sub>Apple silicon + Intel · Native app + CLI · No separate Detach account · Recovery state stays on your Mac</sub>
 </p>
 
+<p align="center">
+  <img src="docs/assets/detach-app.png" width="920" alt="Detach.app main window: a sidebar listing working, waiting, and finished agent sessions across Codex and Claude Code, and a live session log with status, model, and context usage">
+</p>
+
 ---
 
 ## Long agent runs without terminal babysitting
