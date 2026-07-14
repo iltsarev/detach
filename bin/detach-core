@@ -135,6 +135,7 @@ AGENT_BIN_DEFAULT="$CODEX_BIN_DEFAULT"
 [ "$PROVIDER" = "codex" ] || AGENT_BIN_DEFAULT="$CLAUDE_BIN_DEFAULT"
 OSASCRIPT_BIN="${DETACH_OSASCRIPT_BIN:-/usr/bin/osascript}"
 CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-/usr/bin/caffeinate}"
+ENV_BIN="${DETACH_ENV_BIN:-/usr/bin/env}"
 PMSET_BIN="${DETACH_PMSET_BIN:-/usr/bin/pmset}"
 LOCKF_BIN="${DETACH_LOCKF_BIN:-/usr/bin/lockf}"
 SUDO_BIN="${DETACH_SUDO_BIN:-/usr/bin/sudo}"
@@ -249,6 +250,8 @@ require_start_dependencies() {
   fi
   require_file_or_command "$AGENT_BIN_DEFAULT" "$PROVIDER"
   require_file_or_command "$CAFFEINATE_BIN" "caffeinate"
+  require_file_or_command "$ENV_BIN" "env"
+  "$ENV_BIN" -C / "$ENV_BIN" >/dev/null 2>&1 || die "env with -C support is required"
   require_file_or_command "$LOCKF_BIN" "lockf"
 
   if [ "$AMPHETAMINE_ENABLED" != "0" ]; then
@@ -2177,6 +2180,12 @@ worker_main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
+  # tmux can retain an unlinked cwd after a project volume is unmounted. On
+  # macOS, a pane created by that server may inherit the dead directory even
+  # when new-session/respawn-pane receive an absolute -c path. Re-enter the
+  # project in the worker so the provider and checkpoint loop never inherit it.
+  cd -P "$cwd" >/dev/null 2>&1 || die "could not enter project directory: $cwd"
+
   json_update_meta_for_run "$session" "$run_token" \
     '.status = "running" | .worker_started_at = $time' --arg time "$(now_iso)" || true
   if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
@@ -2273,6 +2282,7 @@ tmux_environment_args() {
               DETACH_AMPHETAMINE_POWER_PROTECT_PATH DETACH_TMUX_SOCKET DETACH_TMUX_CONFIG \
               DETACH_TMUX_BIN DETACH_TMUX_STYLE DETACH_JQ_BIN \
               DETACH_SQLITE_BIN DETACH_TAR_BIN DETACH_OSASCRIPT_BIN DETACH_CAFFEINATE_BIN \
+              DETACH_ENV_BIN \
               DETACH_PMSET_BIN DETACH_LOCKF_BIN DETACH_SUDO_BIN \
               DETACH_CODEX_STATE_ROOT DETACH_CODEX_CHECKPOINT_INTERVAL \
               DETACH_CODEX_HISTORY_LIMIT DETACH_CODEX_REQUIREMENTS_FILE \
@@ -2329,7 +2339,12 @@ start_tmux_session() {
   }
   trap partial_cleanup EXIT HUP INT TERM
 
-  pane_id="$("${TMUX_CMD[@]}" new-session -d -P -F '#{pane_id}' -s "$session" -c "$cwd" -n "$PROVIDER")" || \
+  # A newly daemonized tmux server inherits the client's cwd for its lifetime.
+  # Anchor it in persistent Detach state instead of a removable project mount.
+  pane_id="$(
+    cd -P "$INSTALL_STATE_ROOT" >/dev/null 2>&1 &&
+      "${TMUX_CMD[@]}" new-session -d -P -F '#{pane_id}' -s "$session" -c "$cwd" -n "$PROVIDER"
+  )" || \
     die "could not create tmux session"
   [ -n "$pane_id" ] || die "tmux did not return a pane id"
   created=1
@@ -2377,7 +2392,8 @@ start_tmux_session() {
     -t "$pane_id" \
     -c "$cwd" \
     "${env_args[@]}" \
-    "$SELF" __worker "$session" "$cwd" "$start_ms" "$run_token" "$agent_bin" "$@" || \
+    "$ENV_BIN" -C "$INSTALL_STATE_ROOT" \
+      "$SELF" __worker "$session" "$cwd" "$start_ms" "$run_token" "$agent_bin" "$@" || \
       die "could not start $PROVIDER_LABEL in tmux"
 
   started=1

@@ -137,8 +137,9 @@ public enum TerminalLauncher {
         }
         let script = """
         #!/bin/zsh
-        command_file=$0
+        command_file=${0:A}
         command_dir=${command_file:h}
+        builtin cd -q -- "${HOME:-/}" || builtin cd -q -- / || exit 125
         /bin/rm -f -- "$command_file" || exit 125
         [[ ! -e "$command_file" ]] || exit 125
         /bin/rmdir -- "$command_dir" 2>/dev/null || true

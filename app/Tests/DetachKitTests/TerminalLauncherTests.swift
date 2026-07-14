@@ -36,11 +36,48 @@ final class TerminalLauncherTests: XCTestCase {
             NSNumber(value: 0o700))
         XCTAssertTrue(contents.hasPrefix("#!/bin/zsh\n"))
         XCTAssertLessThan(
+            try XCTUnwrap(contents.range(of: "builtin cd -q --")?.lowerBound),
+            try XCTUnwrap(contents.range(of: "/bin/rm -f -- \"$command_file\"")?.lowerBound))
+        XCTAssertLessThan(
             try XCTUnwrap(contents.range(of: "/bin/rm -f -- \"$command_file\" || exit 125")?.lowerBound),
             try XCTUnwrap(contents.range(of: "exec /bin/zsh -lic")?.lowerBound))
         XCTAssertTrue(contents.contains("[[ ! -e \"$command_file\" ]] || exit 125"))
         XCTAssertTrue(contents.contains("/bin/rmdir -- \"$command_dir\""))
         XCTAssertTrue(contents.contains("exec /bin/zsh -lic \(shellQuoted(command))"))
+    }
+
+    func testCommandFileLeavesItsDirectoryBeforeDeletingIt() throws {
+        let safeHome = temporaryDirectory.appendingPathComponent("home", isDirectory: true)
+        let zdotdir = temporaryDirectory.appendingPathComponent("zdotdir", isDirectory: true)
+        try FileManager.default.createDirectory(at: safeHome, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: zdotdir, withIntermediateDirectories: false)
+        let url = try TerminalLauncher.writeCommandFile(
+            command: "exec /bin/pwd",
+            temporaryDirectory: temporaryDirectory,
+            fileManager: .default)
+        let commandDirectory = url.deletingLastPathComponent()
+        let output = Pipe()
+        let errors = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["./run.command"]
+        process.currentDirectoryURL = commandDirectory
+        process.standardOutput = output
+        process.standardError = errors
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = safeHome.path
+        environment["ZDOTDIR"] = zdotdir.path
+        process.environment = environment
+
+        try process.run()
+        process.waitUntilExit()
+
+        let stdout = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let stderr = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(process.terminationStatus, 0, stderr)
+        XCTAssertEqual(stdout.trimmingCharacters(in: .whitespacesAndNewlines), safeHome.path)
+        XCTAssertFalse(stderr.contains("getcwd"), stderr)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: commandDirectory.path))
     }
 
     @MainActor

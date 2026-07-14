@@ -194,6 +194,14 @@ checkpoint, repeats every five minutes by default, and attempts a final
 checkpoint when the worker exits. It also retains terminal output and session
 status after the provider process finishes.
 
+When Detach creates the shared tmux server, it anchors the daemon in persistent
+state rather than in the first project that starts it. Every worker also starts
+from that stable location and re-enters its canonical project directory before
+launching the provider. Unmounting one project can still interrupt the agent
+working there, but it does not leave unrelated new Detach sessions with that
+project's stale working directory. Remount the project and use Resume or
+Recover for the interrupted conversation.
+
 Checkpoints stay on your Mac with private file permissions. Detach has no
 separate account or hosted session backend; Codex or Claude Code continues to
 use its own normal service and local session storage.

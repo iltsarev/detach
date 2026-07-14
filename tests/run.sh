@@ -8,6 +8,7 @@ SCRIPT="$ROOT/bin/detach"
 DETACH="$ROOT/bin/detach"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-codex-test.XXXXXX")"
 SOCKET="detach-codex-test-$$"
+CWD_SOCKET="detach-codex-cwd-test-$$"
 SESSION="detach-codex-integration"
 
 run_codex() {
@@ -19,6 +20,7 @@ cleanup() {
     printf 'Preserved test state: %s (socket=%s, tmux_tmpdir=%s)\n' "$TMP_ROOT" "$SOCKET" "$TMUX_TMPDIR" >&2
   else
     tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+    tmux -L "$CWD_SOCKET" kill-server >/dev/null 2>&1 || true
     rm -rf "$TMUX_TMPDIR"
     rm -rf "$TMP_ROOT"
   fi
@@ -37,6 +39,23 @@ wait_for_process_group_exit() {
     sleep 0.1
   done
   ! process_group_exists "$pgid"
+}
+
+wait_for_pane_text() {
+  local socket="$1"
+  local pane="$2"
+  local expected="$3"
+  local attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    if tmux -L "$socket" capture-pane -p -t "$pane" -S -100 2>/dev/null | \
+       grep -F "$expected" >/dev/null; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'pane %s did not contain expected text: %s\n' "$pane" "$expected" >&2
+  return 1
 }
 
 export DETACH_STATE_ROOT="$TMP_ROOT/detach-state"
@@ -71,6 +90,51 @@ printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request"]' >"$DETAC
 bash -n "$SCRIPT"
 bash -n "$ROOT/bin/detach-core"
 [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
+
+# A tmux server keeps the cwd from which it was first daemonized. Simulate an
+# unmounted project behind an already-running server, then prove Detach repairs
+# the worker cwd before the provider starts.
+poisoned_cwd="$TMP_ROOT/poisoned-cwd"
+healthy_cwd="$TMP_ROOT/healthy-cwd"
+mkdir -p "$poisoned_cwd" "$healthy_cwd"
+(cd "$poisoned_cwd" && \
+  tmux -L "$CWD_SOCKET" -f "$DETACH_TMUX_CONFIG" new-session -d -s poisoned-cwd 'sleep 30')
+rmdir "$poisoned_cwd"
+(cd "$healthy_cwd" && DETACH_TMUX_SOCKET="$CWD_SOCKET" \
+  "$SCRIPT" codex --name cwd-repair --detach -- 'repair a stale tmux cwd')
+cwd_session="detach-codex-cwd-repair"
+tmux -L "$CWD_SOCKET" has-session -t "=$cwd_session"
+cwd_pane="$(tmux -L "$CWD_SOCKET" show-options -qv -t "=$cwd_session:" @detach_pane_id)"
+wait_for_pane_text "$CWD_SOCKET" "$cwd_pane" 'fake Codex started'
+[ "$(tmux -L "$CWD_SOCKET" display-message -p -t "$cwd_pane" '#{pane_current_path}')" = \
+  "$(cd -P "$healthy_cwd" && pwd)" ]
+(cd "$healthy_cwd" && DETACH_TMUX_SOCKET="$CWD_SOCKET" \
+  "$SCRIPT" codex stop cwd-repair)
+tmux -L "$CWD_SOCKET" kill-server >/dev/null 2>&1 || true
+(cd "$healthy_cwd" && DETACH_TMUX_SOCKET="$CWD_SOCKET" \
+  "$SCRIPT" codex delete --force cwd-repair)
+
+# When Detach creates the tmux server itself, its daemon cwd must remain valid
+# after the first project disappears so unrelated panes can still honor -c.
+removable_cwd="$TMP_ROOT/removable-cwd"
+next_cwd="$TMP_ROOT/next-cwd"
+mkdir -p "$removable_cwd" "$next_cwd"
+(cd "$removable_cwd" && DETACH_TMUX_SOCKET="$CWD_SOCKET" \
+  "$SCRIPT" codex --name cwd-anchor --detach -- 'anchor the tmux server')
+anchor_session="detach-codex-cwd-anchor"
+anchor_pane="$(tmux -L "$CWD_SOCKET" show-options -qv -t "=$anchor_session:" @detach_pane_id)"
+wait_for_pane_text "$CWD_SOCKET" "$anchor_pane" 'fake Codex started'
+rmdir "$removable_cwd"
+probe_pane="$(tmux -L "$CWD_SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s cwd-probe -c "$next_cwd" 'sleep 30')"
+[ "$(tmux -L "$CWD_SOCKET" display-message -p -t "$probe_pane" '#{pane_current_path}')" = \
+  "$(cd -P "$next_cwd" && pwd)" ]
+(cd "$next_cwd" && DETACH_TMUX_SOCKET="$CWD_SOCKET" \
+  "$SCRIPT" codex stop cwd-anchor)
+tmux -L "$CWD_SOCKET" kill-server >/dev/null 2>&1 || true
+(cd "$next_cwd" && DETACH_TMUX_SOCKET="$CWD_SOCKET" \
+  "$SCRIPT" codex delete --force cwd-anchor)
+
 [ "$($SCRIPT config tmux-style)" = "detach" ]
 [ "$(run_codex __session_color /fixtures/harness)" = "#0F766E" ]
 mkdir -p "$DETACH_CONFIG_ROOT"

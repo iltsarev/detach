@@ -62,6 +62,7 @@ TMUX_BIN="${DETACH_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}"
 SQLITE_BIN="${DETACH_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}"
 TAR_BIN="${DETACH_TAR_BIN:-/usr/bin/tar}"
 CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-/usr/bin/caffeinate}"
+ENV_BIN="${DETACH_ENV_BIN:-/usr/bin/env}"
 LOCKF_BIN="${DETACH_LOCKF_BIN:-/usr/bin/lockf}"
 CODEX_BIN="${DETACH_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
 CLAUDE_BIN="${DETACH_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
@@ -136,6 +137,14 @@ doctor_command() {
     doctor_add "$id" base "$label" "$required" ok "$path" "Найден: $path"
   else
     doctor_add "$id" base "$label" "$required" error "" "$command_name не найден в PATH"
+  fi
+}
+
+doctor_env() {
+  if [ -x "$ENV_BIN" ] && "$ENV_BIN" -C / "$ENV_BIN" >/dev/null 2>&1; then
+    doctor_add env base env true ok "$ENV_BIN" "Поддерживает безопасный запуск из заданного каталога"
+  else
+    doctor_add env base env true error "$ENV_BIN" "Требуется env с поддержкой -C"
   fi
 }
 
@@ -217,6 +226,7 @@ doctor_report() {
   if [ -n "$codex_path" ]; then doctor_command sqlite sqlite3 "$SQLITE_BIN" true; fi
   if [ -n "$claude_path" ]; then doctor_command tar tar "$TAR_BIN" true; fi
   doctor_command caffeinate caffeinate "$CAFFEINATE_BIN" true
+  doctor_env
   doctor_command lockf lockf "$LOCKF_BIN" true
 
   watchdog_label=""

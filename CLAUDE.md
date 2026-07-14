@@ -91,6 +91,13 @@ Two internal executables that must live side by side (`detach` resolves the core
 
 `start` takes the per-project lock (`DETACH_LOCKS_ROOT` is shared across providers — one detached agent per project root, total), creates a tmux session named `detach-<provider>-<slug>-<8-hex sha256 of project dir>` with `remain-on-exit on`, and runs `__worker` in the pane. Detach-owned tmux metadata and presentation use session-scoped `@detach*` options. The worker starts the checkpoint loop, runs the provider under `caffeinate -s`, and on exit records status into meta/`exit-status`, takes a final checkpoint, and releases the Amphetamine lease. The retained pane keeps `logs`/`status` useful; a new `start` replaces a completed retained pane but refuses a live one.
 
+When Detach daemonizes the shared tmux server, its client runs from the
+persistent install-state root, never the project directory. Worker launch uses
+`env -C` to enter that stable root and then `cd -P` to enter the project under
+the cleanup trap, so a tmux server holding an unlinked cwd cannot pass that
+dead directory to a new provider or strand startup metadata if the project
+disappears during launch.
+
 Each session gets a stable color from a fixed palette, hashed from provider and canonical project directory. The color is stored in `meta.json.session_color`, tmux `@detach_color`, and `list --json`; keep those three representations and the Swift `Session` decoder in sync. By default Detach applies only session-local tmux status options, updates them across running/completed/failed states, and leaves global/foreign tmux configuration untouched. `detach config tmux-style inherit` removes those local overrides; the shared config write is serialized by `install.lock`.
 
 Session identity: Claude gets a preassigned UUID via wrapper-owned `--session-id`; Codex is discovered after launch by matching the `detach_<run_token>` originator (injected via `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`) in rollout files against `~/.codex` SQLite threads, refusing ambiguity. The worker `die`s if user args include wrapper-owned flags (Claude: `--session-id/--resume/--continue/--fork-session/--background/--tmux/--worktree`; Codex: `-C/--cd`), and applies policy defaults only when the user did not pass their own (Codex approval/sandbox, Claude `--permission-mode auto`).
