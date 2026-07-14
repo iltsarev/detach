@@ -22,8 +22,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iltsarev/detach/releases/latest"><strong>Download the latest DMG →</strong></a>
-  &nbsp;·&nbsp;
+  <a href="https://github.com/iltsarev/detach/releases/latest">
+    <img src="https://img.shields.io/badge/Download_for_macOS-latest_DMG-545CE0?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Download Detach for macOS — latest DMG">
+  </a>
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick start</a>
   &nbsp;·&nbsp;
   <a href="#attach-resume-or-recover">How recovery works</a>
@@ -125,8 +129,8 @@ and project. The same accent appears beside the session in Detach.app and in
 that session's tmux status bar, alongside `Detach`, provider, project, and
 state labels. Completed sessions become quieter and failures remain explicit.
 The styling is session-local, so ordinary tmux sessions and global config stay
-untouched; enable **Inherit tmux theme** in Settings to remove Detach's status
-bar overrides entirely.
+untouched; pick **My tmux theme** in Settings → Terminal to remove Detach's
+status bar overrides entirely.
 
 The main app window is not the runtime. A managed session and its checkpoint
 loop continue independently, and the dashboard catches up when you reopen it.
