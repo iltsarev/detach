@@ -27,6 +27,17 @@ enum SessionIdentity {
             blue: Double(color.blue) / 255)
     }
 
+    /// One status color shared by the sidebar dots and the detail status pill.
+    static func statusColor(for session: Session) -> Color {
+        if session.isWaitingForUser { return .orange }
+        switch session.effectiveStatus {
+        case .running, .starting, .recovering: return Brand.teal
+        case .completed, .stopped: return .secondary.opacity(0.6)
+        case .failed, .interrupted: return .red
+        case .recoverable, .orphaned, .corrupt, .collision, .unknown: return .orange
+        }
+    }
+
     /// Finished sessions keep their identity hue while receding behind active
     /// work. Failure remains prominent through the separate red status marker.
     static func emphasis(for status: EffectiveStatus) -> Double {
@@ -41,28 +52,15 @@ enum SessionIdentity {
     }
 }
 
-struct TmuxSessionColorBadge: View {
-    let session: Session
+/// Small circle carrying the three brand colors; used as a discreet signature.
+struct TriColorDot: View {
+    var size: CGFloat = 8
 
     var body: some View {
-        if let sessionColor = session.sessionColor {
-            let color = SessionIdentity.color(sessionColor)
-            let emphasis = SessionIdentity.emphasis(for: session.effectiveStatus)
-            HStack(spacing: 5) {
-                Image(systemName: "terminal.fill")
-                    .foregroundStyle(color.opacity(emphasis))
-                Text("tmux")
-                    .foregroundStyle(.secondary)
-            }
-            .appFont(.caption2, weight: .semibold)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.12 * emphasis)))
-            .overlay(Capsule().strokeBorder(color.opacity(0.32 * emphasis)))
-            .help(L10n.format("Session base color: %@", sessionColor.hex))
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(L10n.string("Session identity color"))
-            .accessibilityValue(sessionColor.hex)
-        }
+        Circle()
+            .fill(AngularGradient(
+                colors: [Brand.teal, Brand.indigo, Brand.coral, Brand.teal],
+                center: .center))
+            .frame(width: size, height: size)
     }
 }

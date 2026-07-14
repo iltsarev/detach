@@ -17,8 +17,7 @@ struct SessionDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header
-            metadata
+            headerCard
             logView
             actionBar
         }
@@ -68,58 +67,136 @@ struct SessionDetailView: View {
         Brand.tint(for: session.provider)
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Text(session.displayTitle).appFont(.title2, weight: .bold)
-            TmuxSessionColorBadge(session: session)
-            Text(session.displayStatus)
-                .appFont(.caption, weight: .semibold)
-                .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Capsule().fill(.quaternary))
-            if let model = session.model {
-                Text(model)
-                    .appFont(.caption, weight: .semibold)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Capsule().fill(providerTint.opacity(0.16)))
-                    .foregroundStyle(providerTint)
-            }
-            if session.contextSummary != nil {
-                ContextGauge(session: session)
-            }
-            Spacer()
+    private var identityColor: Color {
+        guard let sessionColor = session.sessionColor else {
+            return Color.secondary.opacity(0.5)
         }
+        return SessionIdentity.color(sessionColor)
+            .opacity(SessionIdentity.emphasis(for: session.effectiveStatus))
     }
 
-    private var metadata: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let projectDir = session.projectDir {
-                MetaRow(label: L10n.string("Project"), value: projectDir)
+    // MARK: - Header
+
+    private var headerCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(identityColor)
+                    .frame(width: 11, height: 11)
+                    .help(session.sessionColor.map {
+                        L10n.format("Session base color: %@", $0.hex)
+                    } ?? "")
+                Text(session.displayTitle).appFont(.title2, weight: .bold)
+                statusPill
+                if let model = session.model {
+                    Text(model)
+                        .appFont(.caption, weight: .semibold)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Capsule().fill(providerTint.opacity(0.16)))
+                        .foregroundStyle(providerTint)
+                }
+                if session.contextSummary != nil {
+                    ContextGauge(session: session)
+                }
+                Spacer()
             }
-            MetaRow(label: L10n.string("Provider"), value: session.provider.rawValue)
-            if let uuid = session.agentSessionId {
-                HStack(spacing: 4) {
-                    MetaRow(label: L10n.string("UUID"), value: uuid)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(uuid, forType: .string)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(L10n.string("Copy session UUID"))
+            FlowLayout(spacing: 6) {
+                if let projectDir = session.projectDir {
+                    metaChip(icon: "folder", abbreviatePath(projectDir), mono: true,
+                             help: projectDir)
+                }
+                if let uuid = session.agentSessionId {
+                    uuidChip(uuid)
+                }
+                if let created = session.createdAt {
+                    metaChip(L10n.format(
+                        "created %@", created.formatted(.relative(presentation: .named))))
+                }
+                if let checkpoint = session.lastCheckpointAt {
+                    metaChip(L10n.format(
+                        "checkpoint %@", checkpoint.formatted(.relative(presentation: .named))))
+                }
+                if let exit = session.exitStatus {
+                    metaChip(L10n.format("exit %d", exit))
                 }
             }
-            if let created = session.createdAt {
-                MetaRow(label: L10n.string("Created"), value: created.formatted())
-            }
-            if let checkpoint = session.lastCheckpointAt {
-                MetaRow(label: L10n.string("Checkpoint"), value: checkpoint.formatted())
-            }
-            if let exit = session.exitStatus {
-                MetaRow(label: L10n.string("Exit code"), value: "\(exit)")
-            }
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.78)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07)))
     }
+
+    private var statusPill: some View {
+        let color = SessionIdentity.statusColor(for: session)
+        return Text(session.displayStatus)
+            .appFont(.caption, weight: .semibold)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.14)))
+            .foregroundStyle(color)
+    }
+
+    private func metaChip(
+        icon: String? = nil,
+        _ text: String,
+        mono: Bool = false,
+        help: String? = nil
+    ) -> some View {
+        HStack(spacing: 4) {
+            if let icon {
+                Image(systemName: icon)
+                    .appFont(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(text)
+                .appFont(.caption, design: mono ? .monospaced : .default)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(.quaternary.opacity(0.6)))
+        .help(help ?? text)
+        .frame(maxWidth: 320, alignment: .leading)
+    }
+
+    private func uuidChip(_ uuid: String) -> some View {
+        HStack(spacing: 4) {
+            Text(shortUUID(uuid))
+                .appFont(.caption, design: .monospaced)
+                .lineLimit(1)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(uuid, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .appFont(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(L10n.string("Copy session UUID"))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(.quaternary.opacity(0.6)))
+        .help(uuid)
+    }
+
+    private func shortUUID(_ uuid: String) -> String {
+        guard uuid.count > 13 else { return uuid }
+        return "\(uuid.prefix(8))…\(uuid.suffix(4))"
+    }
+
+    private func abbreviatePath(_ path: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
+    }
+
+    // MARK: - Log
 
     private static let placeholderAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
@@ -139,10 +216,39 @@ struct SessionDetailView: View {
     }
 
     private var logView: some View {
-        LogTextView(text: logContent)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .frame(maxHeight: .infinity)
+        VStack(spacing: 0) {
+            LogTextView(text: logContent)
+                .frame(maxHeight: .infinity)
+            sessionColorStrip
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
+
+    /// A discreet echo of the tmux status line under the log, in the
+    /// session's stable identity color.
+    @ViewBuilder
+    private var sessionColorStrip: some View {
+        if let sessionColor = session.sessionColor {
+            let emphasis = SessionIdentity.emphasis(for: session.effectiveStatus)
+            HStack(spacing: 0) {
+                Text(verbatim: "● \(session.name)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 16)
+            .background(SessionIdentity.color(sessionColor).opacity(emphasis))
+            // The identity palette is dark and saturated; only a light
+            // foreground stays readable on every one of its colors.
+            .foregroundStyle(Color.white.opacity(0.92))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(L10n.string("Session identity color"))
+            .accessibilityValue(sessionColor.hex)
+        }
+    }
+
+    // MARK: - Actions
 
     private var actionBar: some View {
         HStack(spacing: 8) {
@@ -214,6 +320,58 @@ struct SessionDetailView: View {
     }
 }
 
+/// Wraps subviews onto new lines when they don't fit, like tag chips.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        arrangement(
+            width: proposal.width ?? .infinity,
+            subviews: subviews).size
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        let frames = arrangement(width: bounds.width, subviews: subviews).frames
+        for (frame, subview) in zip(frames, subviews) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func arrangement(
+        width: CGFloat,
+        subviews: Subviews
+    ) -> (frames: [CGRect], size: CGSize) {
+        var frames: [CGRect] = []
+        var origin = CGPoint.zero
+        var rowHeight: CGFloat = 0
+        var maxWidth: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if origin.x > 0, origin.x + size.width > width {
+                origin.x = 0
+                origin.y += rowHeight + spacing
+                rowHeight = 0
+            }
+            frames.append(CGRect(origin: origin, size: size))
+            origin.x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            maxWidth = max(maxWidth, origin.x - spacing)
+        }
+        return (frames, CGSize(width: maxWidth, height: origin.y + rowHeight))
+    }
+}
+
 struct ContextGauge: View {
     let session: Session
 
@@ -237,19 +395,5 @@ struct ContextGauge: View {
             }
         }
         .help(L10n.string("Model context used"))
-    }
-}
-
-struct MetaRow: View {
-    @Environment(\.appFontPointSize) private var fontPointSize
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).appFont(.caption).foregroundStyle(.secondary)
-                .frame(width: max(80, fontPointSize * 6), alignment: .trailing)
-            Text(value).appFont(.caption).textSelection(.enabled)
-        }
     }
 }

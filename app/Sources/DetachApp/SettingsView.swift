@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.notificationsEnabledKey) private var notificationsEnabled = false
 
     @State private var terminalApplications: [TerminalApplication] = []
+    @State private var terminalIcons: [String: NSImage] = [:]
     @State private var confirmUninstall = false
     @State private var confirmPurge = false
     @State private var tmuxStyle: TmuxStyle?
@@ -41,26 +42,31 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                generalSection
-                terminalSection
-                tmuxSection
-                notificationsSection
-                installationSection
-                keepAwakeSection
-                updatesSection
+        TabView {
+            generalTab.tabItem {
+                tabLabel(L10n.string("General"), systemImage: "gearshape.fill", color: .systemGray)
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            terminalTab.tabItem {
+                tabLabel(L10n.string("Terminal"), systemImage: "terminal.fill",
+                         color: NSColor(Brand.teal))
+            }
+            notificationsTab.tabItem {
+                tabLabel(L10n.string("Notifications"), systemImage: "bell.badge.fill",
+                         color: .systemRed)
+            }
+            systemTab.tabItem {
+                tabLabel(L10n.string("System"), systemImage: "moon.stars.fill",
+                         color: .systemOrange)
+            }
+            updatesTab.tabItem {
+                tabLabel(L10n.string("Updates"), systemImage: "arrow.triangle.2.circlepath",
+                         color: NSColor(Brand.indigo))
+            }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .appFontSize(fontPointSize)
         .frame(
-            minWidth: AppFontSize.settingsWidth(for: fontPointSize),
-            idealWidth: AppFontSize.settingsWidth(for: fontPointSize),
-            minHeight: AppFontSize.settingsMinimumHeight,
-            idealHeight: AppFontSize.settingsIdealHeight)
+            width: AppFontSize.settingsWidth(for: fontPointSize),
+            height: AppFontSize.settingsMinimumHeight)
         .task {
             let clampedFontPointSize = AppFontSize.clamped(fontPointSize)
             if fontPointSize != clampedFontPointSize {
@@ -130,216 +136,295 @@ struct SettingsView: View {
         }
     }
 
-    private var generalSection: some View {
-        SettingsSectionView(L10n.string("General"), systemImage: "slider.horizontal.3") {
-            if installation.hasDistributionPayload {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(L10n.string("CLI"))
+    private func tabLabel(
+        _ title: String,
+        systemImage: String,
+        color: NSColor
+    ) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(nsImage: SettingsTabIcon.image(systemName: systemImage, color: color))
+        }
+    }
+
+    // MARK: - General
+
+    private var generalTab: some View {
+        Form {
+            Section(L10n.string("Interface")) {
+                SessionRowPreviewCard()
+                HStack(spacing: 8) {
+                    Text(L10n.string("Text size"))
                     Spacer(minLength: 12)
-                    Text(AppSettings.defaultDetachPath)
-                        .appFont(.body, design: .monospaced)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                        .help(AppSettings.defaultDetachPath)
+                    Text(verbatim: "A")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Slider(
+                        value: normalizedFontPointSize,
+                        in: AppFontSize.allowedRange,
+                        step: 1
+                    ) {
+                        Text(L10n.string("Text size"))
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+                    Text(verbatim: "A")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                    Text(L10n.format("%d pt", Int(AppFontSize.clamped(fontPointSize))))
+                        .appFont(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(L10n.string("Path to detach"))
-                    TextField(L10n.string("Path to detach"), text: $detachPath)
-                        .labelsHidden()
-                        .appFont(.body, design: .monospaced)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L10n.format("Refresh interval: %d sec", Int(pollInterval)))
-                Slider(value: $pollInterval, in: 1...10, step: 1) {
+                HStack(spacing: 8) {
                     Text(L10n.string("Refresh interval"))
+                    Spacer(minLength: 12)
+                    Slider(value: $pollInterval, in: 1...10, step: 1) {
+                        Text(L10n.string("Refresh interval"))
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+                    Text(L10n.format("%d sec", Int(pollInterval)))
+                        .appFont(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
                 }
-                .labelsHidden()
             }
-
-            HStack {
-                Text(L10n.string("Font size"))
-                Spacer()
-                TextField(
-                    L10n.string("Font size"),
-                    value: normalizedFontPointSize,
-                    format: .number.precision(.fractionLength(0)))
-                    .labelsHidden()
-                    .multilineTextAlignment(.trailing)
-                    .monospacedDigit()
-                    .frame(width: 42)
-                Text(L10n.string("pt")).foregroundStyle(.secondary)
-                Stepper(
-                    L10n.string("Font size"),
-                    value: normalizedFontPointSize,
-                    in: AppFontSize.allowedRange,
-                    step: 1)
-                    .labelsHidden()
+            Section(L10n.string("Command line")) {
+                if installation.hasDistributionPayload {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(L10n.string("CLI"))
+                        Spacer(minLength: 12)
+                        Text(AppSettings.defaultDetachPath)
+                            .appFont(.body, design: .monospaced)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                            .help(AppSettings.defaultDetachPath)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(L10n.string("Path to detach"))
+                        TextField(L10n.string("Path to detach"), text: $detachPath)
+                            .labelsHidden()
+                            .appFont(.body, design: .monospaced)
+                    }
+                }
             }
         }
+        .formStyle(.grouped)
     }
 
-    private var terminalSection: some View {
-        SettingsSectionView(L10n.string("Terminal"), systemImage: "terminal") {
-            Picker(L10n.string("Open commands in"), selection: $terminalBundleIdentifier) {
-                ForEach(terminalApplications) { application in
-                    Text(application.displayName).tag(application.bundleIdentifier)
+    // MARK: - Terminal
+
+    private var terminalTab: some View {
+        Form {
+            Section(L10n.string("tmux status line")) {
+                HStack(spacing: 18) {
+                    Spacer(minLength: 0)
+                    TmuxThemeThumbnail(
+                        title: L10n.string("Detach colors"),
+                        statusText: "● detach-claude · my-project",
+                        detachStyled: true,
+                        isSelected: tmuxStyle == .detach
+                    ) {
+                        Task { await saveTmuxStyle(.detach) }
+                    }
+                    TmuxThemeThumbnail(
+                        title: L10n.string("My tmux theme"),
+                        statusText: "[0] 0:codex*",
+                        detachStyled: false,
+                        isSelected: tmuxStyle == .inherit
+                    ) {
+                        Task { await saveTmuxStyle(.inherit) }
+                    }
+                    Spacer(minLength: 0)
                 }
-                if selectedTerminalIsMissing {
-                    Text(L10n.string("Unavailable — choose another"))
-                        .tag(terminalBundleIdentifier)
-                }
-            }
-            .pickerStyle(.menu)
-            .disabled(terminalApplications.isEmpty)
-
-            if terminalApplications.isEmpty {
-                Text(L10n.string(
-                    "No installed terminal capable of opening .command files was found."))
-                    .settingsMessage(color: .red)
-            } else if selectedTerminalIsMissing {
-                Text(L10n.string(
-                    "The previously selected app was removed or no longer supports opening commands."))
-                    .settingsMessage(color: .red)
-            } else if let selectedTerminal {
-                Text(L10n.format(
-                    "All interactive actions will open in %@.",
-                    selectedTerminal.displayName))
-                    .settingsMessage()
-            }
-
-            Button {
-                refreshTerminalApplications()
-            } label: {
-                Label(L10n.string("Refresh terminal list"), systemImage: "arrow.clockwise")
-            }
-        }
-    }
-
-    private var tmuxSection: some View {
-        SettingsSectionView(L10n.string("tmux appearance"), systemImage: "paintpalette") {
-            Toggle(
-                L10n.string("Inherit tmux theme"),
-                isOn: Binding(
-                    get: { tmuxStyle == .inherit },
-                    set: { inherit in
-                        Task {
-                            await saveTmuxStyle(inherit ? .inherit : .detach)
-                        }
-                    }))
+                .padding(.vertical, 4)
                 .disabled(tmuxStyle == nil || isUpdatingTmuxStyle)
 
-            if isUpdatingTmuxStyle && tmuxStyle == nil {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.small)
-                    Text(L10n.string("Reading the setting from detach…"))
+                if isUpdatingTmuxStyle && tmuxStyle == nil {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text(L10n.string("Reading the setting from detach…"))
+                    }
+                    .settingsMessage()
+                } else {
+                    Text(tmuxStyle == .inherit
+                         ? L10n.string(
+                            "Detach doesn't change the status bar of managed sessions — your tmux configuration is used.")
+                         : L10n.string(
+                            "Each session gets a stable color shared by tmux and the Detach interface."))
+                        .settingsMessage()
                 }
-                .settingsMessage()
-            } else {
-                Text(tmuxStyle == .inherit
-                     ? L10n.string(
-                        "Detach doesn't change the status bar of managed sessions — your tmux configuration is used.")
-                     : L10n.string(
-                        "Each session gets a stable color shared by tmux and the Detach interface."))
+
+                if let tmuxStyleError {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(tmuxStyleError).settingsMessage(color: .red)
+                        Spacer(minLength: 8)
+                        Button(L10n.string("Try again")) {
+                            Task { await loadTmuxStyle() }
+                        }
+                        .disabled(isUpdatingTmuxStyle)
+                    }
+                }
+            }
+            Section(L10n.string("Terminal")) {
+                Picker(L10n.string("Open commands in"), selection: $terminalBundleIdentifier) {
+                    ForEach(terminalApplications) { application in
+                        Label {
+                            Text(application.displayName)
+                        } icon: {
+                            if let icon = terminalIcons[application.bundleIdentifier] {
+                                Image(nsImage: icon)
+                            }
+                        }
+                        .tag(application.bundleIdentifier)
+                    }
+                    if selectedTerminalIsMissing {
+                        Text(L10n.string("Unavailable — choose another"))
+                            .tag(terminalBundleIdentifier)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(terminalApplications.isEmpty)
+
+                if terminalApplications.isEmpty {
+                    Text(L10n.string(
+                        "No installed terminal capable of opening .command files was found."))
+                        .settingsMessage(color: .red)
+                } else if selectedTerminalIsMissing {
+                    Text(L10n.string(
+                        "The previously selected app was removed or no longer supports opening commands."))
+                        .settingsMessage(color: .red)
+                } else if let selectedTerminal {
+                    Text(L10n.format(
+                        "All interactive actions will open in %@.",
+                        selectedTerminal.displayName))
+                        .settingsMessage()
+                }
+
+                Button {
+                    refreshTerminalApplications()
+                } label: {
+                    Label(L10n.string("Refresh terminal list"), systemImage: "arrow.clockwise")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Notifications
+
+    private var notificationsTab: some View {
+        Form {
+            Section {
+                NotificationBannerIllustration()
+                    .listRowInsets(EdgeInsets())
+            }
+            Section {
+                Toggle(L10n.string(
+                    "Notify me when an agent response is ready or a session finishes"), isOn: Binding(
+                    get: { notificationsEnabled },
+                    set: { value in
+                        notificationsEnabled = value
+                        Task { await notifications.configure(enabled: value) }
+                    }))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Circle()
+                        .fill(notificationStatusColor)
+                        .frame(width: 7, height: 7)
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 2 }
+                    Text(notificationStatusText)
+                        .settingsMessage(color:
+                            notificationsEnabled && notifications.authorizationStatus == .denied
+                                ? .red : nil)
+                }
+
+                if notificationsEnabled,
+                   notifications.authorizationStatus == .notDetermined {
+                    Button {
+                        Task { await notifications.configure(enabled: true) }
+                    } label: {
+                        Label(L10n.string("Allow notifications"), systemImage: "bell.badge")
+                    }
+                } else if notificationsEnabled && notifications.authorizationStatus == .denied {
+                    Button {
+                        openNotificationSettings()
+                    } label: {
+                        Label(L10n.string("Open macOS Settings"), systemImage: "gearshape")
+                    }
+                }
+                if let errorMessage = notifications.errorMessage {
+                    Text(errorMessage).settingsMessage(color: .red)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - System
+
+    private var systemTab: some View {
+        Form {
+            Section {
+                NightSceneIllustration()
+                    .listRowInsets(EdgeInsets())
+                Text(L10n.string(
+                    "The Mac won't sleep with the lid closed while an agent is working."))
+                    .settingsMessage()
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+            }
+            Section(L10n.string("Keep-awake")) {
+                requiredComponentStatus(
+                    id: "amphetamine_app", label: L10n.string("Amphetamine.app"))
+                requiredComponentStatus(
+                    id: "amphetamine_power_protect",
+                    label: L10n.string("Amphetamine Power Protect"))
+                requiredComponentStatus(
+                    label: L10n.string("Detach background service"),
+                    status: installation.watchdogStatus == .enabled ? .ok : .error)
+                Text(L10n.string(
+                    "Amphetamine.app, Power Protect, and the background service are required. Detach automatically starts keep-awake for active sessions and stops it after the last one."))
                     .settingsMessage()
             }
+            Section(L10n.string("Installation")) {
+                Button(L10n.string("Reinstall command-line tools")) {
+                    Task { await installation.repair() }
+                }
+                .disabled(installation.isBusy || !installation.isStableApplicationLocation)
 
-            if let tmuxStyleError {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(tmuxStyleError).settingsMessage(color: .red)
-                    Spacer(minLength: 8)
-                    Button(L10n.string("Try again")) {
-                        Task { await loadTmuxStyle() }
+                Button(L10n.string("Remove installed components…"), role: .destructive) {
+                    confirmUninstall = true
+                }
+                .disabled(installation.isBusy)
+
+                Button(L10n.string("Remove everything, including checkpoints…"), role: .destructive) {
+                    confirmPurge = true
+                }
+                .disabled(installation.isBusy)
+            }
+            if let version = installation.report?.version {
+                Section {
+                    HStack(spacing: 6) {
+                        TriColorDot()
+                        Text(L10n.format("Detach CLI %@ · active", version))
+                            .appFont(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(isUpdatingTmuxStyle)
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
                 }
             }
         }
-    }
-
-    private var notificationsSection: some View {
-        SettingsSectionView(L10n.string("Notifications"), systemImage: "bell.badge") {
-            Toggle(L10n.string(
-                "Notify me when an agent response is ready or a session finishes"), isOn: Binding(
-                get: { notificationsEnabled },
-                set: { value in
-                    notificationsEnabled = value
-                    Task { await notifications.configure(enabled: value) }
-                }))
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(notificationStatusText)
-                .settingsMessage(color:
-                    notificationsEnabled && notifications.authorizationStatus == .denied
-                        ? .red : nil)
-
-            if notificationsEnabled,
-               notifications.authorizationStatus == .notDetermined {
-                Button {
-                    Task { await notifications.configure(enabled: true) }
-                } label: {
-                    Label(L10n.string("Allow notifications"), systemImage: "bell.badge")
-                }
-            } else if notificationsEnabled && notifications.authorizationStatus == .denied {
-                Button {
-                    openNotificationSettings()
-                } label: {
-                    Label(L10n.string("Open macOS Settings"), systemImage: "gearshape")
-                }
-            }
-            if let errorMessage = notifications.errorMessage {
-                Text(errorMessage).settingsMessage(color: .red)
-            }
-        }
-    }
-
-    private var installationSection: some View {
-        SettingsSectionView(L10n.string("Installation"), systemImage: "shippingbox") {
-            fullWidthButton(
-                L10n.string("Reinstall command-line tools"),
-                systemImage: "arrow.clockwise"
-            ) {
-                Task { await installation.repair() }
-            }
-            .disabled(installation.isBusy || !installation.isStableApplicationLocation)
-
-            fullWidthButton(
-                L10n.string("Remove installed components…"),
-                systemImage: "trash",
-                role: .destructive
-            ) {
-                confirmUninstall = true
-            }
-            .disabled(installation.isBusy)
-
-            fullWidthButton(
-                L10n.string("Remove everything, including checkpoints…"),
-                systemImage: "trash.slash",
-                role: .destructive
-            ) {
-                confirmPurge = true
-            }
-            .disabled(installation.isBusy)
-        }
-    }
-
-    private var keepAwakeSection: some View {
-        SettingsSectionView(L10n.string("Keep-awake"), systemImage: "moon.stars") {
-            requiredComponentStatus(
-                id: "amphetamine_app", label: L10n.string("Amphetamine.app"))
-            requiredComponentStatus(
-                id: "amphetamine_power_protect",
-                label: L10n.string("Amphetamine Power Protect"))
-            requiredComponentStatus(
-                label: L10n.string("Detach background service"),
-                status: installation.watchdogStatus == .enabled ? .ok : .error)
-            Text(L10n.string(
-                "Amphetamine.app, Power Protect, and the background service are required. Detach automatically starts keep-awake for active sessions and stops it after the last one."))
-                .settingsMessage()
-        }
+        .formStyle(.grouped)
     }
 
     private func requiredComponentStatus(id: String, label: String) -> some View {
@@ -351,40 +436,86 @@ struct SettingsView: View {
         label: String,
         status: DiagnosticCheck.Status
     ) -> some View {
-        let healthy = status == .ok
-        let description = healthy
-            ? L10n.format("%@: ready", label)
-            : L10n.format("%@: needs attention", label)
-        return Label(
-            description,
-            systemImage: healthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-            .foregroundStyle(healthy ? Brand.teal : Color.orange)
-            .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 12) {
+            Text(label)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 12)
+            StatusIndicator(healthy: status == .ok)
+        }
     }
 
-    private var updatesSection: some View {
-        SettingsSectionView(L10n.string("Updates"), systemImage: "arrow.triangle.2.circlepath") {
-            if updater.isAvailable {
-                Toggle(L10n.string("Automatically check for updates"), isOn: Binding(
-                    get: { updater.automaticallyChecksForUpdates },
-                    set: { updater.setAutomaticallyChecksForUpdates($0) }))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(L10n.string(
-                    "Sparkle checks in the background on its own schedule."))
-                    .settingsMessage()
-            } else {
-                Text(L10n.string("Automatic updates are unavailable"))
-                if let reason = updater.unavailableReason {
-                    Text(reason).settingsMessage()
+    // MARK: - Updates
+
+    private var updatesTab: some View {
+        Form {
+            Section {
+                VStack(spacing: 4) {
+                    Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                    Text(applicationVersionTitle)
+                        .appFont(.headline, weight: .semibold)
+                    if updater.lastCheckFoundNoUpdate {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark")
+                            Text(L10n.string("You're up to date"))
+                        }
+                        .appFont(.caption, weight: .semibold)
+                        .foregroundStyle(Brand.teal)
+                    }
+                    if let checked = updater.lastUpdateCheckDate {
+                        Text(L10n.format(
+                            "Last checked %@",
+                            checked.formatted(date: .abbreviated, time: .shortened)))
+                            .appFont(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .listRowBackground(Color.clear)
+            }
+            Section {
+                if updater.isAvailable {
+                    Toggle(L10n.string("Automatically check for updates"), isOn: Binding(
+                        get: { updater.automaticallyChecksForUpdates },
+                        set: { updater.setAutomaticallyChecksForUpdates($0) }))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L10n.string(
+                        "Sparkle checks in the background on its own schedule."))
+                        .settingsMessage()
+                } else {
+                    Text(L10n.string("Automatic updates are unavailable"))
+                    if let reason = updater.unavailableReason {
+                        Text(reason).settingsMessage()
+                    }
+                }
+                if let errorMessage = updater.updateErrorMessage {
+                    Text(errorMessage).settingsMessage(color: .red)
+                }
+                if updater.shouldOfferManualDownload,
+                   let downloadURL = updater.manualDownloadURL {
+                    Link(L10n.string("Open download page…"), destination: downloadURL)
                 }
             }
-            if let errorMessage = updater.updateErrorMessage {
-                Text(errorMessage).settingsMessage(color: .red)
-            }
-            if updater.shouldOfferManualDownload,
-               let downloadURL = updater.manualDownloadURL {
-                Link(L10n.string("Open download page…"), destination: downloadURL)
-            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var applicationVersionTitle: String {
+        guard let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+            return "Detach"
+        }
+        return L10n.format("Detach %@", version)
+    }
+
+    private var notificationStatusColor: Color {
+        guard notificationsEnabled else { return Color.secondary.opacity(0.5) }
+        switch notifications.authorizationStatus {
+        case .authorized: return Brand.teal
+        case .denied: return .red
+        case .unknown, .notDetermined: return .orange
         }
     }
 
@@ -433,7 +564,7 @@ struct SettingsView: View {
 
     @MainActor
     private func saveTmuxStyle(_ style: TmuxStyle) async {
-        guard !isUpdatingTmuxStyle, let previous = tmuxStyle else { return }
+        guard !isUpdatingTmuxStyle, let previous = tmuxStyle, style != previous else { return }
         let path = activeDetachPath
         tmuxStyle = style
         isUpdatingTmuxStyle = true
@@ -455,29 +586,18 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private func fullWidthButton(
-        _ title: String,
-        systemImage: String,
-        role: ButtonRole? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(role: role, action: action) {
-            Label {
-                Text(title)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: systemImage)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .controlSize(.large)
-    }
-
     @MainActor
     private func refreshTerminalApplications() {
         terminalApplications = TerminalCatalog.installedApplications()
+        var icons: [String: NSImage] = [:]
+        for application in terminalApplications {
+            guard let icon = NSWorkspace.shared
+                .icon(forFile: application.applicationURL.path)
+                .copy() as? NSImage else { continue }
+            icon.size = NSSize(width: 16, height: 16)
+            icons[application.bundleIdentifier] = icon
+        }
+        terminalIcons = icons
     }
 
     @MainActor
@@ -491,50 +611,7 @@ struct SettingsView: View {
     }
 }
 
-private struct SettingsSectionView<Content: View>: View {
-    let title: String
-    let systemImage: String
-    let content: Content
-
-    init(
-        _ title: String,
-        systemImage: String,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.title = title
-        self.systemImage = systemImage
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 9) {
-                Image(systemName: systemImage)
-                    .foregroundStyle(Brand.indigo)
-                    .frame(width: 28, height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Brand.indigo.opacity(0.12)))
-                Text(title).appFont(.headline, weight: .semibold)
-            }
-            VStack(alignment: .leading, spacing: 12) {
-                content
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.78)))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.07)))
-            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private extension View {
+extension View {
     func settingsMessage(color: Color? = nil) -> some View {
         self
             .appFont(.caption)

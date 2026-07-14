@@ -37,8 +37,6 @@
 "Session color: %@" = "Цвет сессии: %@";
 "Session base color: %@" = "Базовый цвет сессии: %@";
 "Session identity color" = "Цвет сессии";
-"tmux appearance" = "Оформление tmux";
-"Inherit tmux theme" = "Наследовать тему tmux";
 "Reading the setting from detach…" = "Читаем настройку из detach…";
 "Detach doesn't change the status bar of managed sessions — your tmux configuration is used." = "Detach не меняет status bar управляемых сессий — действует ваша конфигурация tmux.";
 "Each session gets a stable color shared by tmux and the Detach interface." = "Каждая сессия получает стабильный цвет, одинаковый в tmux и интерфейсе Detach.";
@@ -51,8 +49,6 @@
 "%@ was not found in PATH" = "%@ не найден в PATH";
 "%@ · %@\n%@" = "%@ · %@\n%@";
 "%@ · %d" = "%@ · %d";
-"%@: needs attention" = "%@: требует внимания";
-"%@: ready" = "%@: готов";
 "<empty>" = "<пусто>";
 "Add %@ to PATH" = "Добавьте %@ в PATH";
 "After installing Amphetamine, install Power Protect from the official website." = "После установки Amphetamine установите Power Protect с официального сайта.";
@@ -118,7 +114,6 @@
 "Examples of commands for launching Detach" = "Примеры команд для запуска Detach";
 "Exit code" = "Код выхода";
 "Exit code: %d" = "Код выхода: %d";
-"Font size" = "Размер шрифта";
 "Found: %@" = "Найден: %@";
 "General" = "Основные";
 "Incompatible CLI version—update detach" = "Несовместимая версия CLI — обновите detach";
@@ -174,7 +169,6 @@
 "Recover in Terminal" = "Восстановить в терминале";
 "Recovery from the latest checkpoint is available" = "Доступно восстановление из последнего чекпойнта";
 "Refresh interval" = "Интервал обновления";
-"Refresh interval: %d sec" = "Интервал обновления: %d с";
 "Refresh terminal list" = "Обновить список терминалов";
 "Reinstall command-line tools" = "Переустановить командные инструменты";
 "Remove everything, including checkpoints…" = "Удалить всё, включая чекпойнты…";
@@ -251,9 +245,31 @@
 "macOS is waiting for permission to run in the background" = "macOS ожидает разрешение на фоновую работу";
 "not selected" = "не выбран";
 "optional, for example migration" = "опционально, например migration";
-"pt" = "пт";
 "sqlite3" = "sqlite3";
 "tar" = "tar";
 "the app isn't running from /Applications" = "приложение запущено не из /Applications";
 "tmux" = "tmux";
 "tmux keeps sessions running, while jq helps save their state safely." = "tmux держит сессии запущенными, а jq помогает безопасно сохранять их состояние.";
+
+/* Settings & session detail redesign */
+"Interface" = "Интерфейс";
+"Text size" = "Размер текста";
+"Text size preview" = "Предпросмотр размера текста";
+"%d pt" = "%d пт";
+"%d sec" = "%d с";
+"Command line" = "Командная строка";
+"Answer ready · 2 min ago" = "Ответ готов · 2 мин назад";
+"tmux status line" = "Строка статуса tmux";
+"Detach colors" = "Цвета Detach";
+"My tmux theme" = "Моя тема tmux";
+"The agent replied in “my-project”" = "Агент ответил в «my-project»";
+"System" = "Система";
+"The Mac won't sleep with the lid closed while an agent is working." = "Mac не уснёт с закрытой крышкой, пока работает агент.";
+"Ready" = "Готово";
+"Needs attention" = "Требует внимания";
+"Detach CLI %@ · active" = "Detach CLI %@ · активен";
+"Detach %@" = "Detach %@";
+"You're up to date" = "Установлена актуальная версия";
+"Last checked %@" = "Проверено %@";
+"created %@" = "создана %@";
+"checkpoint %@" = "чекпоинт %@";

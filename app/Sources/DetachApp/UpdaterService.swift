@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor
 private final class UpdateCycleObserver: NSObject, SPUUpdaterDelegate {
     var didFinishUpdateCycle: ((Error?) -> Void)?
+    var didFindValidUpdate: (() -> Void)?
 
     func updater(
         _ updater: SPUUpdater,
@@ -14,6 +15,10 @@ private final class UpdateCycleObserver: NSObject, SPUUpdaterDelegate {
         error: Error?
     ) {
         didFinishUpdateCycle?(error)
+    }
+
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        didFindValidUpdate?()
     }
 }
 
@@ -31,6 +36,7 @@ final class UpdaterService: ObservableObject {
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var automaticallyChecksForUpdates = false
     @Published private(set) var updateErrorMessage: String?
+    @Published private(set) var lastCheckFoundNoUpdate = false
 
     private let updateCycleObserver: UpdateCycleObserver
     private var cancellables: Set<AnyCancellable> = []
@@ -58,6 +64,9 @@ final class UpdaterService: ObservableObject {
 
         updateCycleObserver.didFinishUpdateCycle = { [weak self] error in
             self?.recordUpdateCycleResult(error)
+        }
+        updateCycleObserver.didFindValidUpdate = { [weak self] in
+            self?.lastCheckFoundNoUpdate = false
         }
 
         guard isAvailable else { return }
@@ -96,9 +105,15 @@ final class UpdaterService: ObservableObject {
         !isAvailable || updateErrorMessage != nil
     }
 
+    var lastUpdateCheckDate: Date? {
+        guard isAvailable else { return nil }
+        return updaterController.updater.lastUpdateCheckDate
+    }
+
     func checkForUpdates() {
         guard isAvailable, updaterController.updater.canCheckForUpdates else { return }
         updateErrorMessage = nil
+        lastCheckFoundNoUpdate = false
         updaterController.checkForUpdates(nil)
     }
 
@@ -109,6 +124,23 @@ final class UpdaterService: ObservableObject {
 
     private func recordUpdateCycleResult(_ error: Error?) {
         updateErrorMessage = Self.fallbackMessage(for: error)
+        lastCheckFoundNoUpdate = Self.provesApplicationIsCurrent(error)
+    }
+
+    /// Only Sparkle's explicit "no update found" result with an
+    /// on-latest-version reason proves the app is current: a nil error can
+    /// also end a cycle that installed an update, and code 1001 is likewise
+    /// reported when a newer release exists but was filtered out as
+    /// incompatible with this macOS version or hardware.
+    static func provesApplicationIsCurrent(_ error: Error?) -> Bool {
+        guard let nsError = error as NSError?,
+              nsError.domain == SUSparkleErrorDomain,
+              nsError.code == 1001,
+              let reasonValue = nsError.userInfo[SPUNoUpdateFoundReasonKey] as? NSNumber,
+              let reason = SPUNoUpdateFoundReason(rawValue: reasonValue.int32Value) else {
+            return false
+        }
+        return reason == .onLatestVersion || reason == .onNewerThanLatestVersion
     }
 
     private static func availability(

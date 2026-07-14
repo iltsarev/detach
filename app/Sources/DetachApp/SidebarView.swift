@@ -64,13 +64,7 @@ struct SessionRow: View {
     let session: Session
 
     private var dotColor: Color {
-        if session.isWaitingForUser { return .orange }
-        switch session.effectiveStatus {
-        case .running, .starting, .recovering: return Brand.teal
-        case .completed, .stopped: return .secondary.opacity(0.6)
-        case .failed, .interrupted: return .red
-        case .recoverable, .orphaned, .corrupt, .collision, .unknown: return .orange
-        }
+        SessionIdentity.statusColor(for: session)
     }
 
     private var isCustomName: Bool {

@@ -37,8 +37,6 @@
 "Session color: %@" = "Session color: %@";
 "Session base color: %@" = "Session base color: %@";
 "Session identity color" = "Session identity color";
-"tmux appearance" = "tmux appearance";
-"Inherit tmux theme" = "Inherit tmux theme";
 "Reading the setting from detach…" = "Reading the setting from detach…";
 "Detach doesn't change the status bar of managed sessions — your tmux configuration is used." = "Detach doesn't change the status bar of managed sessions — your tmux configuration is used.";
 "Each session gets a stable color shared by tmux and the Detach interface." = "Each session gets a stable color shared by tmux and the Detach interface.";
@@ -51,8 +49,6 @@
 "%@ was not found in PATH" = "%@ was not found in PATH";
 "%@ · %@\n%@" = "%@ · %@\n%@";
 "%@ · %d" = "%@ · %d";
-"%@: needs attention" = "%@: needs attention";
-"%@: ready" = "%@: ready";
 "<empty>" = "<empty>";
 "Add %@ to PATH" = "Add %@ to PATH";
 "After installing Amphetamine, install Power Protect from the official website." = "After installing Amphetamine, install Power Protect from the official website.";
@@ -118,7 +114,6 @@
 "Examples of commands for launching Detach" = "Examples of commands for launching Detach";
 "Exit code" = "Exit code";
 "Exit code: %d" = "Exit code: %d";
-"Font size" = "Font size";
 "Found: %@" = "Found: %@";
 "General" = "General";
 "Incompatible CLI version—update detach" = "Incompatible CLI version—update detach";
@@ -174,7 +169,6 @@
 "Recover in Terminal" = "Recover in Terminal";
 "Recovery from the latest checkpoint is available" = "Recovery from the latest checkpoint is available";
 "Refresh interval" = "Refresh interval";
-"Refresh interval: %d sec" = "Refresh interval: %d sec";
 "Refresh terminal list" = "Refresh terminal list";
 "Reinstall command-line tools" = "Reinstall command-line tools";
 "Remove everything, including checkpoints…" = "Remove everything, including checkpoints…";
@@ -251,9 +245,31 @@
 "macOS is waiting for permission to run in the background" = "macOS is waiting for permission to run in the background";
 "not selected" = "not selected";
 "optional, for example migration" = "optional, for example migration";
-"pt" = "pt";
 "sqlite3" = "sqlite3";
 "tar" = "tar";
 "the app isn't running from /Applications" = "the app isn't running from /Applications";
 "tmux" = "tmux";
 "tmux keeps sessions running, while jq helps save their state safely." = "tmux keeps sessions running, while jq helps save their state safely.";
+
+/* Settings & session detail redesign */
+"Interface" = "Interface";
+"Text size" = "Text size";
+"Text size preview" = "Text size preview";
+"%d pt" = "%d pt";
+"%d sec" = "%d sec";
+"Command line" = "Command line";
+"Answer ready · 2 min ago" = "Answer ready · 2 min ago";
+"tmux status line" = "tmux status line";
+"Detach colors" = "Detach colors";
+"My tmux theme" = "My tmux theme";
+"The agent replied in “my-project”" = "The agent replied in “my-project”";
+"System" = "System";
+"The Mac won't sleep with the lid closed while an agent is working." = "The Mac won't sleep with the lid closed while an agent is working.";
+"Ready" = "Ready";
+"Needs attention" = "Needs attention";
+"Detach CLI %@ · active" = "Detach CLI %@ · active";
+"Detach %@" = "Detach %@";
+"You're up to date" = "You're up to date";
+"Last checked %@" = "Last checked %@";
+"created %@" = "created %@";
+"checkpoint %@" = "checkpoint %@";
