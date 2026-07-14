@@ -35,7 +35,7 @@ public enum TerminalLauncher {
         guard let terminal = TerminalCatalog.application(
             bundleIdentifier: terminalBundleIdentifier) else {
             return TerminalLaunchFailure(
-                message: L10n.string("The selected terminal was not found or does not support .command files. Choose another terminal in Settings."),
+                message: L10n.string("The selected terminal was not found. Choose another terminal in Settings."),
                 reason: .terminalUnavailable)
         }
         return await open(

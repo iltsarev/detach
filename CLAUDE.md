@@ -133,6 +133,13 @@ again and use the bounded retry for macOS' transient SMAppService Code=1 race.
 The selected terminal is stored by bundle identifier. Interactive actions write
 a private, self-deleting `.command` file and open it in the selected installed
 terminal through `NSWorkspace`; terminal actions must not use Apple Events.
+Terminal auto-detection treats any `CFBundleDocumentTypes` entry with the
+`Shell` role for an executable flavor (shell-script UTIs, `public.unix-executable`,
+or script extensions) as a terminal — editors declare only Editor/Viewer roles
+and must stay excluded. The stored selection may also be an arbitrary app picked
+manually in Settings, so launch-time resolution must not re-filter by
+declarations; incompatible apps are caught by the launch acknowledgement
+timeout.
 Both the app and `DetachWatchdog` retain Automation solely for required
 Amphetamine coordination: app-launched CLI stop/delete paths may release the
 final lease, while the helper reconciles leases in the background. Session

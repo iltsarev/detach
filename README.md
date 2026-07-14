@@ -113,8 +113,11 @@ detach claude
 ## One command center for every session
 
 Detach.app is the control plane for your agents, not another embedded chat UI.
-Interactive work opens in a compatible terminal you choose; the app gives the
-entire lifecycle of every managed session one clear home:
+Interactive work opens in a terminal you choose: Detach detects installed
+terminals automatically (Terminal, iTerm2, Warp, and any app that registers
+itself as a shell-script runner), and Settings can point to any other terminal
+app manually. The app gives the entire lifecycle of every managed session one
+clear home:
 
 - **Start:** choose a project, Codex or Claude Code, and an optional first
   prompt.

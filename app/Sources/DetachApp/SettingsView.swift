@@ -1,6 +1,7 @@
 import AppKit
 import DetachKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum SettingsTab: Hashable {
     case general, terminal, notifications, system, updates
@@ -34,6 +35,11 @@ struct SettingsView: View {
 
     @State private var terminalApplications: [TerminalApplication] = []
     @State private var terminalIcons: [String: NSImage] = [:]
+    // The selected terminal when it is not in the auto-detected list — chosen
+    // through the open panel or detected by an older Detach version.
+    @State private var unlistedSelectedTerminal: TerminalApplication?
+    @State private var isChoosingTerminalApplication = false
+    @State private var terminalChoiceError: String?
     @State private var confirmUninstall = false
     @State private var confirmPurge = false
     @State private var tmuxStyle: TmuxStyle?
@@ -43,6 +49,7 @@ struct SettingsView: View {
 
     private var selectedTerminal: TerminalApplication? {
         terminalApplications.first { $0.bundleIdentifier == terminalBundleIdentifier }
+            ?? unlistedSelectedTerminal
     }
 
     private var selectedTerminalIsMissing: Bool {
@@ -362,22 +369,38 @@ struct SettingsView: View {
                         }
                         .tag(application.bundleIdentifier)
                     }
-                    if selectedTerminalIsMissing {
+                    if let unlisted = unlistedSelectedTerminal {
+                        Label {
+                            Text(unlisted.displayName)
+                        } icon: {
+                            if let icon = terminalIcons[unlisted.bundleIdentifier] {
+                                Image(nsImage: icon)
+                            }
+                        }
+                        .tag(unlisted.bundleIdentifier)
+                    } else if selectedTerminalIsMissing {
                         Text(L10n.string("Unavailable — choose another"))
                             .tag(terminalBundleIdentifier)
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(terminalApplications.isEmpty)
+                .disabled(terminalApplications.isEmpty && unlistedSelectedTerminal == nil)
 
-                if terminalApplications.isEmpty {
+                if let terminalChoiceError {
+                    Text(terminalChoiceError).settingsMessage(color: .red)
+                } else if terminalApplications.isEmpty && unlistedSelectedTerminal == nil {
                     Text(L10n.string(
                         "No installed terminal capable of opening .command files was found."))
                         .settingsMessage(color: .red)
                 } else if selectedTerminalIsMissing {
                     Text(L10n.string(
-                        "The previously selected app was removed or no longer supports opening commands."))
+                        "The previously selected app is no longer installed."))
                         .settingsMessage(color: .red)
+                } else if let unlisted = unlistedSelectedTerminal {
+                    Text(L10n.format(
+                        "%@ was chosen manually. Detach will verify it can run commands the first time one opens.",
+                        unlisted.displayName))
+                        .settingsMessage()
                 } else if let selectedTerminal {
                     Text(L10n.format(
                         "All interactive actions will open in %@.",
@@ -385,14 +408,34 @@ struct SettingsView: View {
                         .settingsMessage()
                 }
 
-                Button {
-                    refreshTerminalApplications()
-                } label: {
-                    Label(L10n.string("Refresh terminal list"), systemImage: "arrow.clockwise")
+                HStack(spacing: 12) {
+                    Button {
+                        terminalChoiceError = nil
+                        isChoosingTerminalApplication = true
+                    } label: {
+                        Label(L10n.string("Choose Another App…"), systemImage: "plus.app")
+                    }
+                    Button {
+                        refreshTerminalApplications()
+                    } label: {
+                        Label(L10n.string("Refresh terminal list"), systemImage: "arrow.clockwise")
+                    }
                 }
+                .fileImporter(
+                    isPresented: $isChoosingTerminalApplication,
+                    allowedContentTypes: [.applicationBundle]
+                ) { result in
+                    guard case .success(let url) = result else { return }
+                    chooseTerminalApplication(at: url)
+                }
+                .fileDialogDefaultDirectory(URL(fileURLWithPath: "/Applications", isDirectory: true))
             }
         }
         .formStyle(.grouped)
+        .onChange(of: terminalBundleIdentifier) {
+            terminalChoiceError = nil
+            refreshTerminalApplications()
+        }
     }
 
     // MARK: - Notifications
@@ -666,8 +709,19 @@ struct SettingsView: View {
     @MainActor
     private func refreshTerminalApplications() {
         terminalApplications = TerminalCatalog.installedApplications()
+        if terminalApplications.contains(
+            where: { $0.bundleIdentifier == terminalBundleIdentifier }) {
+            unlistedSelectedTerminal = nil
+        } else {
+            unlistedSelectedTerminal = TerminalCatalog.application(
+                bundleIdentifier: terminalBundleIdentifier)
+        }
         var icons: [String: NSImage] = [:]
-        for application in terminalApplications {
+        var iconCandidates = terminalApplications
+        if let unlistedSelectedTerminal {
+            iconCandidates.append(unlistedSelectedTerminal)
+        }
+        for application in iconCandidates {
             guard let icon = NSWorkspace.shared
                 .icon(forFile: application.applicationURL.path)
                 .copy() as? NSImage else { continue }
@@ -675,6 +729,20 @@ struct SettingsView: View {
             icons[application.bundleIdentifier] = icon
         }
         terminalIcons = icons
+    }
+
+    @MainActor
+    private func chooseTerminalApplication(at url: URL) {
+        guard let application = TerminalCatalog.application(at: url),
+              !application.bundleIdentifier.isEmpty else {
+            terminalChoiceError = L10n.format(
+                "%@ can't be used as a terminal because it has no bundle identifier.",
+                url.deletingPathExtension().lastPathComponent)
+            return
+        }
+        terminalChoiceError = nil
+        terminalBundleIdentifier = application.bundleIdentifier
+        refreshTerminalApplications()
     }
 
     @MainActor

@@ -62,15 +62,24 @@ public enum TerminalCatalog {
             fileManager: .default)
     }
 
+    /// Resolves the stored terminal preference. The preference is an explicit
+    /// user choice, so no capability filtering happens here: an app that turns
+    /// out not to run commands is reported by the launch acknowledgement
+    /// timeout instead of being silently rejected before launch.
     @MainActor
     public static func application(bundleIdentifier: String) -> TerminalApplication? {
         if let url = NSWorkspace.shared.urlForApplication(
-            withBundleIdentifier: bundleIdentifier),
-           let bundle = Bundle(url: url),
-           declaresShellScriptSupport(bundle.infoDictionary ?? [:]) {
+            withBundleIdentifier: bundleIdentifier) {
             return TerminalApplication(applicationURL: url)
         }
         return installedApplications().first { $0.bundleIdentifier == bundleIdentifier }
+    }
+
+    /// Wraps a user-picked application bundle (for example from an open
+    /// panel) so any installed terminal can be selected, including ones that
+    /// declare no shell-script document types at all.
+    public static func application(at url: URL) -> TerminalApplication? {
+        TerminalApplication(applicationURL: url)
     }
 
     static var defaultSearchRoots: [URL] {
@@ -124,6 +133,24 @@ public enum TerminalCatalog {
         }
     }
 
+    /// Content types and filename extensions whose Shell-role declaration
+    /// marks an application that executes scripts. Terminals differ in which
+    /// flavor they register (Terminal.app and Warp declare
+    /// com.apple.terminal.shell-script, iTerm2 only public.unix-executable),
+    /// so any executable flavor qualifies. Editors declare the same types
+    /// with Editor/Viewer roles and stay excluded by the role check.
+    static let executableContentTypes: Set<String> = [
+        shellScriptContentType,
+        "public.shell-script",
+        "public.unix-executable",
+        "public.executable",
+        "public.script",
+    ]
+
+    static let executableExtensions: Set<String> = [
+        "command", "tool", "sh", "zsh", "bash", "csh", "tcsh", "fish", "dash", "ksh",
+    ]
+
     static func declaresShellScriptSupport(_ info: [String: Any]) -> Bool {
         guard let documentTypes = info["CFBundleDocumentTypes"] as? [[String: Any]] else {
             return false
@@ -134,11 +161,12 @@ public enum TerminalCatalog {
                 return false
             }
             if let contentTypes = documentType["LSItemContentTypes"] as? [String],
-               contentTypes.contains(shellScriptContentType) {
+               contentTypes.contains(where: { executableContentTypes.contains($0.lowercased()) }) {
                 return true
             }
-            if let extensions = documentType["CFBundleTypeExtensions"] as? [String] {
-                return extensions.contains { $0.caseInsensitiveCompare("command") == .orderedSame }
+            if let extensions = documentType["CFBundleTypeExtensions"] as? [String],
+               extensions.contains(where: { executableExtensions.contains($0.lowercased()) }) {
+                return true
             }
             return false
         }

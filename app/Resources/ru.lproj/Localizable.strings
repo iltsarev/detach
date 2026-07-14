@@ -27,7 +27,7 @@
 "CLI installation timed out" = "Истекло время ожидания установки CLI";
 "CLI installer exited with status %d" = "Установщик CLI завершился с кодом %d";
 "detach doctor timed out" = "Истекло время ожидания detach doctor";
-"The selected terminal was not found or does not support .command files. Choose another terminal in Settings." = "Выбранный терминал не найден или не поддерживает файлы .command. Выберите другой терминал в настройках.";
+"The selected terminal was not found. Choose another terminal in Settings." = "Выбранный терминал не найден. Выберите другой терминал в настройках.";
 "Could not safely prepare the temporary command: %@" = "Не удалось безопасно подготовить временную команду: %@";
 "%@ could not open the command: %@" = "%@ не смог открыть команду: %@";
 "%@ opened the file but did not run the command. Choose another terminal in Settings." = "%@ открыл файл, но не запустил команду. Выберите другой терминал в настройках.";
@@ -46,6 +46,8 @@
 
 /* App and shared UI */
 "%@ build %@" = "%@ (сборка %@)";
+"%@ can't be used as a terminal because it has no bundle identifier." = "%@ нельзя использовать как терминал: у приложения нет идентификатора бандла.";
+"%@ was chosen manually. Detach will verify it can run commands the first time one opens." = "%@ выбран вручную. При первом запуске команды Detach проверит, что приложение умеет их выполнять.";
 "%@ was not found in PATH" = "%@ не найден в PATH";
 "%@ · %@\n%@" = "%@ · %@\n%@";
 "%@ · %d" = "%@ · %d";
@@ -85,6 +87,7 @@
 "Check the %@ path in Settings." = "Проверьте путь %@ в настройках.";
 "Checking the system permission…" = "Проверяем системное разрешение…";
 "Checkpoint" = "Чекпойнт";
+"Choose Another App…" = "Выбрать другое приложение…";
 "Choose Another Terminal" = "Выбрать другой терминал";
 "Choose an AI client, install it using the official instructions, and return to Detach." = "Выберите AI-клиент, установите его по официальной инструкции и вернитесь в Detach.";
 "Choose another terminal" = "Выбрать другой терминал";
@@ -208,7 +211,7 @@
 "The manifest matches the CLI" = "Манифест согласован с CLI";
 "The name is used by another tmux session" = "Имя занято чужой tmux-сессией";
 "The payload is damaged or its metadata does not match" = "Payload повреждён или его metadata не согласованы";
-"The previously selected app was removed or no longer supports opening commands." = "Ранее выбранное приложение удалено или больше не поддерживает запуск команд.";
+"The previously selected app is no longer installed." = "Ранее выбранное приложение больше не установлено.";
 "The public CLI does not point to the current immutable version" = "Публичный CLI не указывает на текущую immutable-версию";
 "The required Amphetamine Power Protect is missing." = "Не хватает обязательного Amphetamine Power Protect.";
 "The required Amphetamine.app is missing." = "Не хватает обязательного Amphetamine.app.";

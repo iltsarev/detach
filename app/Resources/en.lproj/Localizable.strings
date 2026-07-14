@@ -27,7 +27,7 @@
 "CLI installation timed out" = "CLI installation timed out";
 "CLI installer exited with status %d" = "CLI installer exited with status %d";
 "detach doctor timed out" = "detach doctor timed out";
-"The selected terminal was not found or does not support .command files. Choose another terminal in Settings." = "The selected terminal was not found or does not support .command files. Choose another terminal in Settings.";
+"The selected terminal was not found. Choose another terminal in Settings." = "The selected terminal was not found. Choose another terminal in Settings.";
 "Could not safely prepare the temporary command: %@" = "Could not safely prepare the temporary command: %@";
 "%@ could not open the command: %@" = "%@ could not open the command: %@";
 "%@ opened the file but did not run the command. Choose another terminal in Settings." = "%@ opened the file but did not run the command. Choose another terminal in Settings.";
@@ -46,6 +46,8 @@
 
 /* App and shared UI */
 "%@ build %@" = "%@ build %@";
+"%@ can't be used as a terminal because it has no bundle identifier." = "%@ can't be used as a terminal because it has no bundle identifier.";
+"%@ was chosen manually. Detach will verify it can run commands the first time one opens." = "%@ was chosen manually. Detach will verify it can run commands the first time one opens.";
 "%@ was not found in PATH" = "%@ was not found in PATH";
 "%@ · %@\n%@" = "%@ · %@\n%@";
 "%@ · %d" = "%@ · %d";
@@ -85,6 +87,7 @@
 "Check the %@ path in Settings." = "Check the %@ path in Settings.";
 "Checking the system permission…" = "Checking the system permission…";
 "Checkpoint" = "Checkpoint";
+"Choose Another App…" = "Choose Another App…";
 "Choose Another Terminal" = "Choose Another Terminal";
 "Choose an AI client, install it using the official instructions, and return to Detach." = "Choose an AI client, install it using the official instructions, and return to Detach.";
 "Choose another terminal" = "Choose another terminal";
@@ -208,7 +211,7 @@
 "The manifest matches the CLI" = "The manifest matches the CLI";
 "The name is used by another tmux session" = "The name is used by another tmux session";
 "The payload is damaged or its metadata does not match" = "The payload is damaged or its metadata does not match";
-"The previously selected app was removed or no longer supports opening commands." = "The previously selected app was removed or no longer supports opening commands.";
+"The previously selected app is no longer installed." = "The previously selected app is no longer installed.";
 "The public CLI does not point to the current immutable version" = "The public CLI does not point to the current immutable version";
 "The required Amphetamine Power Protect is missing." = "The required Amphetamine Power Protect is missing.";
 "The required Amphetamine.app is missing." = "The required Amphetamine.app is missing.";
