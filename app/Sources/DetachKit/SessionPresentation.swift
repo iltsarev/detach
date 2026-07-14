@@ -1,12 +1,14 @@
 import Foundation
 
 public enum SessionSection: String, CaseIterable, Sendable {
+    case answerReady
     case active
     case finished
     case problems
 
     public var displayName: String {
         switch self {
+        case .answerReady: L10n.string("Answer ready")
         case .active: L10n.string("Working")
         case .finished: L10n.string("Finished")
         case .problems: L10n.string("Problems")
@@ -21,6 +23,18 @@ public enum SessionAction: String, CaseIterable, Sendable {
 public extension Session {
     var isWaitingForUser: Bool {
         effectiveStatus == .running && agentTurnState == .waiting
+    }
+
+    /// Whether the provider process is still expected to produce live output.
+    /// This intentionally stays independent from the sidebar section: a live
+    /// session can move between Working and Answer ready without stopping log
+    /// polling.
+    var isLive: Bool {
+        switch effectiveStatus {
+        case .starting, .running, .recovering: true
+        case .completed, .failed, .interrupted, .stopped, .recoverable,
+             .orphaned, .corrupt, .collision, .unknown: false
+        }
     }
 
     var displayStatus: String {
@@ -42,7 +56,8 @@ public extension Session {
     }
 
     var section: SessionSection {
-        switch effectiveStatus {
+        if isWaitingForUser { return .answerReady }
+        return switch effectiveStatus {
         case .running, .starting, .recovering: .active
         case .completed, .failed, .interrupted, .stopped: .finished
         case .recoverable, .orphaned, .corrupt, .collision, .unknown: .problems

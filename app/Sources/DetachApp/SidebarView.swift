@@ -17,10 +17,14 @@ struct SidebarView: View {
             ForEach(SessionSection.allCases, id: \.self) { section in
                 let items = sessions(in: section)
                 if !items.isEmpty {
-                    Section(L10n.format("%@ · %d", section.displayName, items.count)) {
+                    Section {
                         ForEach(items) { session in
-                            SessionRow(session: session).tag(session.id)
+                            sessionRow(session)
                         }
+                    } header: {
+                        Text(L10n.format("%@ · %d", section.displayName, items.count))
+                            .foregroundStyle(
+                                section == .answerReady ? Color.orange : Color.secondary)
                     }
                 }
             }
@@ -58,6 +62,18 @@ struct SidebarView: View {
             min: max(230, fontPointSize * 18),
             ideal: max(260, fontPointSize * 20))
     }
+
+    @ViewBuilder
+    private func sessionRow(_ session: Session) -> some View {
+        if session.isWaitingForUser {
+            SessionRow(session: session)
+                .tag(session.id)
+                .listRowBackground(Color.orange.opacity(0.10))
+        } else {
+            SessionRow(session: session)
+                .tag(session.id)
+        }
+    }
 }
 
 struct SessionRow: View {
@@ -85,6 +101,12 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            if session.isWaitingForUser {
+                Capsule(style: .continuous)
+                    .fill(Color.orange)
+                    .frame(width: 3, height: 30)
+                    .accessibilityHidden(true)
+            }
             if let sessionColor = session.sessionColor {
                 Capsule(style: .continuous)
                     .fill(SessionIdentity.color(sessionColor).opacity(

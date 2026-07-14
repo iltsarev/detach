@@ -16,6 +16,9 @@ final class SessionPresentationTests: XCTestCase {
     }
 
     func testSections() {
+        XCTAssertEqual(
+            SessionSection.allCases,
+            [.answerReady, .active, .finished, .problems])
         XCTAssertEqual(make(.running).section, .active)
         XCTAssertEqual(make(.starting).section, .active)
         XCTAssertEqual(make(.recovering).section, .active)
@@ -45,8 +48,17 @@ final class SessionPresentationTests: XCTestCase {
     func testWaitingTurnHasAttentionStatusWhileRemainingActive() {
         let waiting = make(.running, turnState: .waiting)
         XCTAssertTrue(waiting.isWaitingForUser)
+        XCTAssertTrue(waiting.isLive)
         XCTAssertEqual(waiting.displayStatus, L10n.string("answer ready"))
-        XCTAssertEqual(waiting.section, .active)
+        XCTAssertEqual(waiting.section, .answerReady)
         XCTAssertEqual(waiting.availableActions, [.attach, .stop])
+    }
+
+    func testAnswerReadySectionDoesNotChangeSessionLifecycle() {
+        XCTAssertEqual(make(.running, turnState: .working).section, .active)
+        XCTAssertTrue(make(.starting, turnState: .waiting).isLive)
+        XCTAssertEqual(make(.starting, turnState: .waiting).section, .active)
+        XCTAssertFalse(make(.completed, turnState: .waiting).isLive)
+        XCTAssertEqual(make(.completed, turnState: .waiting).section, .finished)
     }
 }

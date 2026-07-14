@@ -28,7 +28,7 @@ struct SessionDetailView: View {
                 provider: session.provider, sessionName: session.sessionName)
             logPoller = poller
             await poller.fetchOnce()
-            while !Task.isCancelled && session.section == .active {
+            while !Task.isCancelled && session.isLive {
                 do {
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                 } catch {
