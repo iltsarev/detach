@@ -16,9 +16,9 @@ runtime is part of the app as Apple Silicon (`arm64`) code: tmux, the typed `det
 the unprivileged `detach-power` wrapper, the privileged power helper, the
 background monitor, and Sparkle. There are no Homebrew runtime dependencies.
 
-The self-contained runtime update is not released yet. A release is blocked on
+The self-contained runtime debuts in 0.2.0. Every release remains blocked on
 the signed power smoke test and a supervised closed-lid hardware test; never
-describe the update as published until that release actually exists.
+describe a release as published until it actually exists.
 
 README.md is the user-facing contract for setup, lifecycle, recovery, provider
 policy, and power safety. Keep it synchronized whenever behavior changes.
