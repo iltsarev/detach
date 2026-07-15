@@ -343,8 +343,8 @@ for localization in en ru; do
   install -m 0644 "$source_lproj/InfoPlist.strings" \
     "$destination_lproj/InfoPlist.strings"
 done
-cp "$APP_ROOT/Resources/dev.tsarev.detach.watchdog.plist" \
-  "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist"
+cp "$APP_ROOT/Resources/dev.tsarev.detach.power-watchdog.plist" \
+  "$LAUNCH_AGENTS/dev.tsarev.detach.power-watchdog.plist"
 cp "$POWER_DAEMON_SOURCE" "$POWER_DAEMON"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$APP/Contents/Info.plist"
@@ -392,12 +392,12 @@ plutil -lint "$APP/Contents/Info.plist" \
   "$APP/Contents/Resources/en.lproj/InfoPlist.strings" \
   "$APP/Contents/Resources/ru.lproj/Localizable.strings" \
   "$APP/Contents/Resources/ru.lproj/InfoPlist.strings" \
-  "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist" \
+  "$LAUNCH_AGENTS/dev.tsarev.detach.power-watchdog.plist" \
   "$POWER_DAEMON" >/dev/null
 
 normalize_detach_bundle_modes "$APP"
 sign_sparkle_inside_out "$FRAMEWORKS/Sparkle.framework"
-codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.watchdog \
+codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.power-watchdog \
   --entitlements "$APP_ROOT/Resources/DetachWatchdog.entitlements" \
   "$APP/Contents/MacOS/DetachWatchdog"
 app_entitlements="$APP_ROOT/Resources/Detach.entitlements"

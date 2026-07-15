@@ -77,7 +77,7 @@ enum WatchdogServiceError: LocalizedError {
 
 @MainActor
 final class WatchdogService {
-    static let plistName = "dev.tsarev.detach.watchdog.plist"
+    static let plistName = "dev.tsarev.detach.power-watchdog.plist"
 
     private let backend: any WatchdogRegistrationBackend
     private let defaults: UserDefaults

@@ -74,7 +74,7 @@ INSTALL_BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 STATE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
 INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_ROOT}"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
-APP_WATCHDOG_LABEL="${DETACH_APP_WATCHDOG_LABEL:-dev.tsarev.detach.watchdog}"
+APP_WATCHDOG_LABEL="${DETACH_APP_WATCHDOG_LABEL:-dev.tsarev.detach.power-watchdog}"
 
 release_version() {
   local version

@@ -7,7 +7,7 @@ REPO_ROOT="$(cd -P "$APP_ROOT/.." && pwd)"
 APP="${DETACH_APP_PATH:-$APP_ROOT/build/Detach.app}"
 PAYLOAD="$APP/Contents/Resources/DetachCLI"
 INFO="$APP/Contents/Info.plist"
-AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.watchdog.plist"
+AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.power-watchdog.plist"
 POWER_DAEMON="$APP/Contents/Library/LaunchDaemons/dev.tsarev.detach.power-helper.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
@@ -315,7 +315,7 @@ bundle_program="$(plutil -extract BundleProgram raw -o - "$AGENT")"
 }
 [ -x "$APP/$bundle_program" ] || { printf 'BundleProgram is missing: %s\n' "$bundle_program" >&2; exit 1; }
 ! plutil -p "$AGENT" | grep -F '/Users/' >/dev/null
-[ "$(plutil -extract Label raw -o - "$AGENT")" = "dev.tsarev.detach.watchdog" ] || {
+[ "$(plutil -extract Label raw -o - "$AGENT")" = "dev.tsarev.detach.power-watchdog" ] || {
   printf 'Unexpected bundled watchdog label\n' >&2
   exit 1
 }
@@ -378,7 +378,7 @@ POWER_DAEMON_KEYS="$(plutil -p "$POWER_DAEMON" | \
 }
 ! plutil -p "$POWER_DAEMON" | grep -E '(/Users/|ProgramArguments)' >/dev/null
 for leaked_agent in \
-  "$PAYLOAD/dev.tsarev.detach.watchdog.plist" \
+  "$PAYLOAD/dev.tsarev.detach.power-watchdog.plist" \
   "$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist"; do
   [ ! -e "$leaked_agent" ] || {
     printf 'App service definition leaked into the CLI payload: %s\n' \
@@ -497,7 +497,7 @@ verify_signing_identifier "$PAYLOAD/tmux" dev.tsarev.detach.tmux
 
 WATCHDOG_SIGNATURE="$(codesign -d --verbose=4 "$APP/Contents/MacOS/DetachWatchdog" 2>&1)"
 APP_SIGNATURE="$(codesign -d --verbose=4 "$APP" 2>&1)"
-grep -F 'Identifier=dev.tsarev.detach.watchdog' <<<"$WATCHDOG_SIGNATURE" >/dev/null || {
+grep -F 'Identifier=dev.tsarev.detach.power-watchdog' <<<"$WATCHDOG_SIGNATURE" >/dev/null || {
   printf 'Unexpected watchdog signing identifier\n' >&2; exit 1;
 }
 grep -F 'Identifier=dev.tsarev.detach' <<<"$APP_SIGNATURE" >/dev/null || {
@@ -514,7 +514,7 @@ for arch in $(lipo -archs "$APP/Contents/MacOS/DetachWatchdog"); do
     exit 1
   }
   HELPER_STRINGS="$(strings -arch "$arch" "$APP/Contents/MacOS/DetachWatchdog")"
-  grep -F '<string>dev.tsarev.detach.watchdog</string>' <<<"$HELPER_STRINGS" >/dev/null || {
+  grep -F '<string>dev.tsarev.detach.power-watchdog</string>' <<<"$HELPER_STRINGS" >/dev/null || {
     printf 'Unexpected watchdog embedded bundle identifier for %s\n' "$arch" >&2
     exit 1
   }

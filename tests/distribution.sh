@@ -26,7 +26,7 @@ printf '%s\n' "$*" >>"${FAKE_LAUNCHCTL_LOG:?}"
 case "${1:-}" in
   print)
     case "${2:-}" in
-      */dev.tsarev.detach.watchdog)
+      */dev.tsarev.detach.power-watchdog)
         [ "${FAKE_APP_WATCHDOG:-0}" = 1 ] && exit 0
         ;;
       */dev.tsarev.detach.cli-watchdog)

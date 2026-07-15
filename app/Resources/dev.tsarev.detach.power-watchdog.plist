@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>dev.tsarev.detach.watchdog</string>
+  <string>dev.tsarev.detach.power-watchdog</string>
   <key>BundleProgram</key>
   <string>Contents/MacOS/DetachWatchdog</string>
   <key>RunAtLoad</key>
