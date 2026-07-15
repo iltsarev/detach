@@ -6,20 +6,45 @@ APP_ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd -P "$APP_ROOT/.." && pwd)"
 VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
 BUILD_VERSION="${DETACH_BUILD_VERSION:-1}"
-ARCHS="${DETACH_BUILD_ARCHS:-universal}"
+ARCHS="${DETACH_BUILD_ARCHS:-arm64}"
 IDENTITY="${DETACH_CODESIGN_IDENTITY:--}"
 RELEASE_BUILD="${DETACH_RELEASE_BUILD:-0}"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
 SPARKLE_FEED_URL="${DETACH_SPARKLE_FEED_URL:-}"
 SPARKLE_PUBLIC_ED_KEY="${DETACH_SPARKLE_PUBLIC_ED_KEY:-}"
 DOWNLOAD_URL="${DETACH_DOWNLOAD_URL:-}"
+SPARKLE_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/Sparkle/LICENSE.txt"
+SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
 APP="$APP_ROOT/build/Detach.app"
 PAYLOAD="$APP/Contents/Resources/DetachCLI"
 LAUNCH_AGENTS="$APP/Contents/Library/LaunchAgents"
+LAUNCH_DAEMONS="$APP/Contents/Library/LaunchDaemons"
 FRAMEWORKS="$APP/Contents/Frameworks"
+TMUX_BUILDER="$REPO_ROOT/scripts/build-tmux.sh"
+TMUX_BINARY="$APP/Contents/MacOS/tmux"
+STATE_BINARY="$APP/Contents/MacOS/detach-state"
+POWER_BINARY="$APP/Contents/MacOS/detach-power"
+POWER_HELPER_BINARY="$APP/Contents/MacOS/DetachPowerHelper"
+POWER_DAEMON_SOURCE="$APP_ROOT/Resources/dev.tsarev.detach.power-helper.plist"
+POWER_DAEMON="$LAUNCH_DAEMONS/dev.tsarev.detach.power-helper.plist"
+# build-tmux rejects any output whose `otool -L` header contains a user path,
+# just as it rejects such paths in actual dependencies. Keep intermediate
+# products in a process-private system temporary path and copy only the
+# verified arm64 result into the bundle.
+TMUX_PRODUCT_ROOT="/private/tmp/detach-tmux-products.$$"
+TMUX_THIRD_PARTY="$APP/Contents/Resources/ThirdParty/tmux"
+SPARKLE_LICENSE="$APP/Contents/Resources/ThirdParty/Sparkle/LICENSE.txt"
+BUNDLE_MODE_POLICY="$APP_ROOT/scripts/bundle-modes.sh"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$APP_ROOT/.build/module-cache}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$APP_ROOT/.build/module-cache}"
 mkdir -p "$CLANG_MODULE_CACHE_PATH"
+
+cleanup() {
+  case "$TMUX_PRODUCT_ROOT" in
+    /private/tmp/detach-tmux-products.*) rm -rf "$TMUX_PRODUCT_ROOT" ;;
+  esac
+}
+trap cleanup EXIT
 
 [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || {
   printf 'Invalid Detach version: %s\n' "$VERSION" >&2
@@ -27,6 +52,10 @@ mkdir -p "$CLANG_MODULE_CACHE_PATH"
 }
 [[ "$BUILD_VERSION" =~ ^[1-9][0-9]*$ ]] || {
   printf 'DETACH_BUILD_VERSION must be a positive integer\n' >&2
+  exit 1
+}
+[ "$ARCHS" = arm64 ] || {
+  printf 'DETACH_BUILD_ARCHS must be arm64\n' >&2
   exit 1
 }
 [[ "$RELEASE_BUILD" = 0 || "$RELEASE_BUILD" = 1 ]] || {
@@ -59,6 +88,37 @@ if [ "$RELEASE_BUILD" = 1 ] && [ "$IDENTITY" = "-" ]; then
   printf 'A production build cannot use ad-hoc code signing\n' >&2
   exit 1
 fi
+[ -x "$TMUX_BUILDER" ] || {
+  printf 'Bundled tmux builder is missing or not executable: %s\n' "$TMUX_BUILDER" >&2
+  exit 1
+}
+[ -f "$BUNDLE_MODE_POLICY" ] || {
+  printf 'App bundle mode policy is missing: %s\n' "$BUNDLE_MODE_POLICY" >&2
+  exit 1
+}
+# shellcheck source=app/scripts/bundle-modes.sh
+source "$BUNDLE_MODE_POLICY"
+[ -f "$POWER_DAEMON_SOURCE" ] || {
+  printf 'Privileged power helper service definition is missing: %s\n' \
+    "$POWER_DAEMON_SOURCE" >&2
+  exit 1
+}
+[ -f "$SPARKLE_LICENSE_SOURCE" ] || {
+  printf 'Pinned Sparkle license notice is missing: %s\n' \
+    "$SPARKLE_LICENSE_SOURCE" >&2
+  exit 1
+}
+[ "$(/usr/bin/shasum -a 256 "$SPARKLE_LICENSE_SOURCE" | /usr/bin/awk '{print $1}')" = \
+  "$SPARKLE_LICENSE_SHA256" ] || {
+  printf 'Pinned Sparkle license notice does not match Sparkle %s\n' \
+    "$SPARKLE_VERSION" >&2
+  exit 1
+}
+
+codesign_args=(--force --options runtime --sign "$IDENTITY")
+if [ "$IDENTITY" != "-" ]; then
+  codesign_args+=(--timestamp)
+fi
 
 # SwiftPM's standalone launch-agent executable needs an embedded Info.plist.
 # Include the source plist digest in the generated path so any metadata change
@@ -89,16 +149,10 @@ find_sparkle_framework() {
   exit 1
 }
 
-ensure_app_rpath() {
+remove_build_host_rpaths() {
   local binary="$1"
   local rpath
 
-  if ! otool -l "$binary" | awk '
-      $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
-      in_rpath && $1 == "path" { print $2; in_rpath = 0 }
-  ' | grep -Fx '@executable_path/../Frameworks' >/dev/null; then
-    install_name_tool -add_rpath '@executable_path/../Frameworks' "$binary"
-  fi
   # Command-line SwiftPM builds may retain an Xcode-toolchain rpath that is
   # useful only on the build host. All shipped dependencies are either system
   # libraries or inside Contents/Frameworks, so remove that accidental path.
@@ -112,6 +166,18 @@ ensure_app_rpath() {
       $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
       in_rpath && $1 == "path" { print $2; in_rpath = 0 }
     ' | sort -u)
+}
+
+ensure_app_rpath() {
+  local binary="$1"
+
+  if ! otool -l "$binary" | awk '
+      $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+      in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+  ' | grep -Fx '@executable_path/../Frameworks' >/dev/null; then
+    install_name_tool -add_rpath '@executable_path/../Frameworks' "$binary"
+  fi
+  remove_build_host_rpaths "$binary"
 }
 
 sign_sparkle_inside_out() {
@@ -138,7 +204,7 @@ build_arch() {
   local arch="$1"
   # SwiftPM already keeps target triples in separate product directories.
   # Sharing one scratch directory also shares the pinned Sparkle checkout and
-  # binary artifact, so a universal build does not fetch dependencies twice.
+  # binary artifact.
   local scratch="$APP_ROOT/.build"
   local triple="$arch-apple-macosx14.0"
   swift build --disable-sandbox --disable-automatic-resolution \
@@ -150,36 +216,107 @@ build_arch() {
   BUILT_SPARKLE_FRAMEWORK="$(find_sparkle_framework "$scratch" "$BUILT_BIN_PATH")"
 }
 
+build_tmux_runtime() {
+  local TMUX_ARM_BINARY="$TMUX_PRODUCT_ROOT/arm64/tmux"
+
+  rm -rf "$TMUX_PRODUCT_ROOT"
+  mkdir -p "$TMUX_PRODUCT_ROOT/arm64"
+  "$TMUX_BUILDER" build --arch arm64 --output "$TMUX_ARM_BINARY"
+  install -m 0755 "$TMUX_ARM_BINARY" "$TMUX_BINARY"
+
+  chmod 0755 "$TMUX_BINARY"
+  /usr/bin/strip -S "$TMUX_BINARY"
+  "$TMUX_BUILDER" licenses --output-dir "$TMUX_THIRD_PARTY"
+  codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.tmux "$TMUX_BINARY"
+}
+
+thin_binary_to_arm64() {
+  local binary="$1"
+  local archs temporary mode
+
+  archs="$(/usr/bin/lipo -archs "$binary")" || {
+    printf 'Cannot inspect architectures for %s\n' "$binary" >&2
+    exit 1
+  }
+  case " $archs " in
+    *' arm64 '*) ;;
+    *)
+      printf 'Required arm64 slice is missing from %s\n' "$binary" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$archs" != arm64 ]; then
+    temporary="$binary.arm64.$$"
+    mode="$(stat -f '%Lp' "$binary")"
+    rm -f "$temporary"
+    /usr/bin/lipo "$binary" -thin arm64 -output "$temporary"
+    chmod "$mode" "$temporary"
+    mv -f "$temporary" "$binary"
+  fi
+  [ "$(/usr/bin/lipo -archs "$binary")" = arm64 ] || {
+    printf 'Binary is not arm64-only after thinning: %s\n' "$binary" >&2
+    exit 1
+  }
+}
+
+thin_sparkle_to_arm64() {
+  local framework="$1"
+  local current_version version_root binary
+
+  current_version="$(readlink "$framework/Versions/Current")"
+  version_root="$framework/Versions/$current_version"
+  for binary in \
+    "$version_root/Sparkle" \
+    "$version_root/Autoupdate" \
+    "$version_root/Updater.app/Contents/MacOS/Updater" \
+    "$version_root/XPCServices/Installer.xpc/Contents/MacOS/Installer" \
+    "$version_root/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"; do
+    [ -f "$binary" ] || {
+      printf 'Missing Sparkle executable while thinning: %s\n' "$binary" >&2
+      exit 1
+    }
+    thin_binary_to_arm64 "$binary"
+  done
+}
+
+# The caller's umask must never leak into a distributable app. In particular,
+# codesign rewrites Mach-O files and creates CodeResources using this umask.
+umask 022
 mkdir -p "$APP_ROOT/build"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$PAYLOAD" "$LAUNCH_AGENTS" "$FRAMEWORKS"
+mkdir -p \
+  "$APP/Contents/MacOS" \
+  "$APP/Contents/Resources" \
+  "$PAYLOAD" \
+  "$LAUNCH_AGENTS" \
+  "$LAUNCH_DAEMONS" \
+  "$FRAMEWORKS"
 
-case "$ARCHS" in
-  universal)
-    build_arch arm64
-    arm_bin="$BUILT_BIN_PATH"
-    sparkle_framework="$BUILT_SPARKLE_FRAMEWORK"
-    build_arch x86_64
-    intel_bin="$BUILT_BIN_PATH"
-    lipo -create "$arm_bin/DetachApp" "$intel_bin/DetachApp" \
-      -output "$APP/Contents/MacOS/Detach"
-    lipo -create "$arm_bin/DetachWatchdog" "$intel_bin/DetachWatchdog" \
-      -output "$APP/Contents/MacOS/DetachWatchdog"
-    ;;
-  native)
-    swift build --disable-sandbox --disable-automatic-resolution \
-      --package-path "$APP_ROOT" -c release
-    native_bin="$(swift build --disable-sandbox --disable-automatic-resolution \
-      --package-path "$APP_ROOT" -c release --show-bin-path)"
-    cp "$native_bin/DetachApp" "$APP/Contents/MacOS/Detach"
-    cp "$native_bin/DetachWatchdog" "$APP/Contents/MacOS/DetachWatchdog"
-    sparkle_framework="$(find_sparkle_framework "$APP_ROOT/.build" "$native_bin")"
-    ;;
-  *)
-    printf 'DETACH_BUILD_ARCHS must be universal or native\n' >&2
-    exit 1
-    ;;
-esac
+build_arch arm64
+arm_bin="$BUILT_BIN_PATH"
+sparkle_framework="$BUILT_SPARKLE_FRAMEWORK"
+cp "$arm_bin/DetachApp" "$APP/Contents/MacOS/Detach"
+cp "$arm_bin/DetachWatchdog" "$APP/Contents/MacOS/DetachWatchdog"
+cp "$arm_bin/detach-state" "$STATE_BINARY"
+cp "$arm_bin/detach-power" "$POWER_BINARY"
+cp "$arm_bin/detach-power-helper" "$POWER_HELPER_BINARY"
+
+build_tmux_runtime
+
+chmod 0755 "$STATE_BINARY" "$POWER_BINARY" "$POWER_HELPER_BINARY"
+remove_build_host_rpaths "$STATE_BINARY"
+remove_build_host_rpaths "$POWER_BINARY"
+remove_build_host_rpaths "$POWER_HELPER_BINARY"
+remove_build_host_rpaths "$APP/Contents/MacOS/DetachWatchdog"
+# Strip before signing so both the app-local tools and their immutable payload
+# copies have identical, host-path-free bytes.
+/usr/bin/strip -S "$STATE_BINARY" "$POWER_BINARY" "$POWER_HELPER_BINARY"
+codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.state \
+  "$STATE_BINARY"
+codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.power \
+  "$POWER_BINARY"
+codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.power-helper \
+  "$POWER_HELPER_BINARY"
 
 framework_version="$(plutil -extract CFBundleShortVersionString raw -o - "$sparkle_framework/Resources/Info.plist")"
 [ "$framework_version" = "$SPARKLE_VERSION" ] || {
@@ -189,14 +326,13 @@ framework_version="$(plutil -extract CFBundleShortVersionString raw -o - "$spark
 # Sparkle.framework is versioned and relies on its symlink layout. `ditto`
 # preserves that layout while copying the SwiftPM binary artifact.
 ditto "$sparkle_framework" "$FRAMEWORKS/Sparkle.framework"
-[ -L "$FRAMEWORKS/Sparkle.framework/Versions/Current" ] && \
-  [ -L "$FRAMEWORKS/Sparkle.framework/Sparkle" ] || {
-    printf 'Sparkle framework symlinks were not preserved\n' >&2
-    exit 1
-  }
+verify_detach_bundle_symlinks "$APP"
+thin_sparkle_to_arm64 "$FRAMEWORKS/Sparkle.framework"
 ensure_app_rpath "$APP/Contents/MacOS/Detach"
 
 cp "$APP_ROOT/Resources/Detach.icns" "$APP/Contents/Resources/Detach.icns"
+install -d -m 0755 "$(dirname "$SPARKLE_LICENSE")"
+install -m 0644 "$SPARKLE_LICENSE_SOURCE" "$SPARKLE_LICENSE"
 cp "$APP_ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 for localization in en ru; do
   source_lproj="$APP_ROOT/Resources/$localization.lproj"
@@ -209,6 +345,7 @@ for localization in en ru; do
 done
 cp "$APP_ROOT/Resources/dev.tsarev.detach.watchdog.plist" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist"
+cp "$POWER_DAEMON_SOURCE" "$POWER_DAEMON"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$APP/Contents/Info.plist"
 if [ -n "$SPARKLE_FEED_URL" ]; then
@@ -222,21 +359,27 @@ fi
 install -m 0755 "$REPO_ROOT/bin/detach" "$PAYLOAD/detach"
 install -m 0755 "$REPO_ROOT/bin/detach-core" "$PAYLOAD/detach-core"
 install -m 0755 "$REPO_ROOT/scripts/install.sh" "$PAYLOAD/detach-install"
+install -m 0755 "$STATE_BINARY" "$PAYLOAD/detach-state"
+install -m 0755 "$POWER_BINARY" "$PAYLOAD/detach-power"
+install -m 0755 "$TMUX_BINARY" "$PAYLOAD/tmux"
 printf '%s\n' "$VERSION" >"$PAYLOAD/VERSION"
 chmod 0644 "$PAYLOAD/VERSION"
-install -m 0644 "$REPO_ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist" \
-  "$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist"
 printf '%s\n' "$BUILD_VERSION" >"$PAYLOAD/BUILD"
 
 detach_hash="$(shasum -a 256 "$PAYLOAD/detach" | awk '{print $1}')"
 core_hash="$(shasum -a 256 "$PAYLOAD/detach-core" | awk '{print $1}')"
 installer_hash="$(shasum -a 256 "$PAYLOAD/detach-install" | awk '{print $1}')"
-payload_id="$(printf '%s\n%s\n%s\n%s\n%s\n' \
-  "$VERSION" "$BUILD_VERSION" "$detach_hash" "$core_hash" "$installer_hash" | \
+state_hash="$(shasum -a 256 "$PAYLOAD/detach-state" | awk '{print $1}')"
+power_hash="$(shasum -a 256 "$PAYLOAD/detach-power" | awk '{print $1}')"
+tmux_hash="$(shasum -a 256 "$PAYLOAD/tmux" | awk '{print $1}')"
+payload_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+  "$VERSION" "$BUILD_VERSION" "$detach_hash" "$core_hash" "$installer_hash" \
+  "$state_hash" "$power_hash" "$tmux_hash" | \
   shasum -a 256 | awk '{print $1}')"
 printf '%s\n' "$payload_id" >"$PAYLOAD/PAYLOAD_ID"
-printf '{"schema":1,"version":"%s","build":"%s","payload_id":"%s","files":{"detach":"%s","detach_core":"%s","detach_install":"%s"}}\n' \
+printf '{"schema":1,"version":"%s","build":"%s","payload_id":"%s","files":{"detach":"%s","detach_core":"%s","detach_install":"%s","detach_state":"%s","detach_power":"%s","tmux":"%s"}}\n' \
   "$VERSION" "$BUILD_VERSION" "$payload_id" "$detach_hash" "$core_hash" "$installer_hash" \
+  "$state_hash" "$power_hash" "$tmux_hash" \
   >"$PAYLOAD/payload.json"
 
 chmod 0755 "$APP/Contents/MacOS/Detach" "$APP/Contents/MacOS/DetachWatchdog"
@@ -250,12 +393,9 @@ plutil -lint "$APP/Contents/Info.plist" \
   "$APP/Contents/Resources/ru.lproj/Localizable.strings" \
   "$APP/Contents/Resources/ru.lproj/InfoPlist.strings" \
   "$LAUNCH_AGENTS/dev.tsarev.detach.watchdog.plist" \
-  "$PAYLOAD/dev.tsarev.detach.cli-watchdog.plist" >/dev/null
+  "$POWER_DAEMON" >/dev/null
 
-codesign_args=(--force --options runtime --sign "$IDENTITY")
-if [ "$IDENTITY" != "-" ]; then
-  codesign_args+=(--timestamp)
-fi
+normalize_detach_bundle_modes "$APP"
 sign_sparkle_inside_out "$FRAMEWORKS/Sparkle.framework"
 codesign "${codesign_args[@]}" --identifier dev.tsarev.detach.watchdog \
   --entitlements "$APP_ROOT/Resources/DetachWatchdog.entitlements" \
@@ -271,7 +411,6 @@ DETACH_APP_PATH="$APP" DETACH_VERSION="$VERSION" \
   DETACH_SPARKLE_VERSION="$SPARKLE_VERSION" \
   DETACH_REQUIRE_SPARKLE_CONFIG="$RELEASE_BUILD" \
   DETACH_VERIFY_PRODUCTION="$RELEASE_BUILD" \
-  DETACH_VERIFY_UNIVERSAL="$([ "$ARCHS" = universal ] && printf 1 || printf 0)" \
   "$APP_ROOT/scripts/verify-app.sh"
 
 printf 'Built %s %s (%s, %s)\n' "$APP" "$VERSION" "$BUILD_VERSION" "$ARCHS"

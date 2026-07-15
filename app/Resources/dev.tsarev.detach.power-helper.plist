@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.tsarev.detach.power-helper</string>
+  <key>BundleProgram</key>
+  <string>Contents/MacOS/DetachPowerHelper</string>
+  <key>MachServices</key>
+  <dict>
+    <key>dev.tsarev.detach.power-helper</key>
+    <true/>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <!-- Restart after a crash so durable ownership is reconciled and a stale
+         disablesleep setting cannot survive indefinitely. A clean
+         SMAppService unregister exits successfully and is not restarted. -->
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>

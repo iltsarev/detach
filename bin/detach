@@ -21,6 +21,7 @@ usage() {
     '  detach claude [COMMAND] [ARGS...]' \
     '  detach list [--json]' \
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
+    '  detach power status --json' \
     '  detach config tmux-style [detach|inherit]' \
     '  detach doctor [--json]' \
     '  detach repair' \
@@ -57,11 +58,11 @@ VERSION_FILE="$SELF_DIR/VERSION"
 [ -f "$VERSION_FILE" ] || VERSION_FILE="$SELF_DIR/../VERSION"
 INSTALLER="$SELF_DIR/detach-install"
 [ -x "$INSTALLER" ] || INSTALLER="$SELF_DIR/../scripts/install.sh"
-JQ_BIN="${DETACH_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
-TMUX_BIN="${DETACH_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}"
+STATE_BIN="${DETACH_STATE_BIN:-$SELF_DIR/detach-state}"
+POWER_BIN="${DETACH_POWER_BIN:-$SELF_DIR/detach-power}"
+TMUX_BIN="${DETACH_TMUX_BIN:-$SELF_DIR/tmux}"
 SQLITE_BIN="${DETACH_SQLITE_BIN:-$(command -v sqlite3 2>/dev/null || true)}"
 TAR_BIN="${DETACH_TAR_BIN:-/usr/bin/tar}"
-CAFFEINATE_BIN="${DETACH_CAFFEINATE_BIN:-/usr/bin/caffeinate}"
 ENV_BIN="${DETACH_ENV_BIN:-/usr/bin/env}"
 LOCKF_BIN="${DETACH_LOCKF_BIN:-/usr/bin/lockf}"
 CODEX_BIN="${DETACH_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
@@ -73,9 +74,6 @@ INSTALL_BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 STATE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
 INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_ROOT}"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
-AMPHETAMINE_APP_PATH="${DETACH_AMPHETAMINE_APP_PATH:-/Applications/Amphetamine.app}"
-AMPHETAMINE_POWER_PROTECT_PATH="${DETACH_AMPHETAMINE_POWER_PROTECT_PATH:-$HOME/Library/Application Scripts/com.if.Amphetamine/powerProtect.scpt}"
-CLI_WATCHDOG_LABEL="${DETACH_CLI_WATCHDOG_LABEL:-dev.tsarev.detach.cli-watchdog}"
 APP_WATCHDOG_LABEL="${DETACH_APP_WATCHDOG_LABEL:-dev.tsarev.detach.watchdog}"
 
 release_version() {
@@ -151,7 +149,8 @@ doctor_env() {
 doctor_report() {
   local json="$1" version build payload_id expected resolved path_command path_resolved
   local manifest_version manifest_build manifest_path manifest_payload payload_file
-  local detach_hash core_hash installer_hash calculated_payload integrity_status
+  local detach_hash core_hash installer_hash state_hash power_hash tmux_hash
+  local calculated_payload integrity_status power_status power_reachable power_state
   local codex_path claude_path watchdog_label
   local index comma required path
 
@@ -159,12 +158,18 @@ doctor_report() {
   build="$(head -n 1 "$SELF_DIR/BUILD" 2>/dev/null || true)"
   payload_id="$(head -n 1 "$SELF_DIR/PAYLOAD_ID" 2>/dev/null || true)"
   integrity_status=error
-  if [[ "$build" =~ ^[1-9][0-9]*$ ]] && [ -x "$INSTALLER" ] && [ -x "$SHASUM_BIN" ]; then
+  if [[ "$build" =~ ^[1-9][0-9]*$ ]] && [ -x "$INSTALLER" ] && \
+     [ -x "$STATE_BIN" ] && [ -x "$POWER_BIN" ] && [ -x "$TMUX_BIN" ] && \
+     [ -x "$SHASUM_BIN" ]; then
     detach_hash="$("$SHASUM_BIN" -a 256 "$SELF" 2>/dev/null | awk '{print $1}')"
     core_hash="$("$SHASUM_BIN" -a 256 "$CORE" 2>/dev/null | awk '{print $1}')"
     installer_hash="$("$SHASUM_BIN" -a 256 "$INSTALLER" 2>/dev/null | awk '{print $1}')"
-    calculated_payload="$(printf '%s\n%s\n%s\n%s\n%s\n' \
-      "$version" "$build" "$detach_hash" "$core_hash" "$installer_hash" | \
+    state_hash="$("$SHASUM_BIN" -a 256 "$STATE_BIN" 2>/dev/null | awk '{print $1}')"
+    power_hash="$("$SHASUM_BIN" -a 256 "$POWER_BIN" 2>/dev/null | awk '{print $1}')"
+    tmux_hash="$("$SHASUM_BIN" -a 256 "$TMUX_BIN" 2>/dev/null | awk '{print $1}')"
+    calculated_payload="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+      "$version" "$build" "$detach_hash" "$core_hash" "$installer_hash" \
+      "$state_hash" "$power_hash" "$tmux_hash" | \
       "$SHASUM_BIN" -a 256 | awk '{print $1}')"
     [ "$calculated_payload" != "$payload_id" ] || integrity_status=ok
   fi
@@ -210,8 +215,45 @@ doctor_report() {
     doctor_add manifest base "Install manifest" true error "$INSTALL_STATE_ROOT/install.json" "Manifest отсутствует, повреждён или содержит другую версию"
   fi
 
-  doctor_command tmux tmux "$TMUX_BIN" true
-  doctor_command jq jq "$JQ_BIN" true
+  if [ -x "$TMUX_BIN" ]; then
+    doctor_add tmux base tmux true ok "$TMUX_BIN" "Встроенный tmux готов"
+  else
+    doctor_add tmux base tmux true error "$TMUX_BIN" "Встроенный tmux отсутствует"
+  fi
+  if [ -x "$STATE_BIN" ]; then
+    doctor_add state_helper base "Detach state helper" true ok "$STATE_BIN" "Typed state helper готов"
+  else
+    doctor_add state_helper base "Detach state helper" true error "$STATE_BIN" "Typed state helper отсутствует"
+  fi
+  if [ -x "$POWER_BIN" ]; then
+    doctor_add power_runtime base "Detach power runtime" true ok "$POWER_BIN" "Встроенный detach-power готов"
+  else
+    doctor_add power_runtime base "Detach power runtime" true error "$POWER_BIN" "Встроенный detach-power отсутствует"
+  fi
+  power_status=""
+  power_reachable=""
+  power_state=""
+  if [ -x "$POWER_BIN" ] && [ -x "$STATE_BIN" ] && \
+     power_status="$("$POWER_BIN" status --json 2>/dev/null)" && \
+     power_reachable="$(printf '%s' "$power_status" | \
+       "$STATE_BIN" meta get /dev/stdin helper_reachable 2>/dev/null)" && \
+     power_state="$(printf '%s' "$power_status" | \
+       "$STATE_BIN" meta get /dev/stdin state 2>/dev/null)" && \
+     [ "$power_reachable" = true ]; then
+    case "$power_state" in
+      allowed|protected|low_battery)
+        doctor_add power_helper base "Detach power helper" true ok "$POWER_BIN" \
+          "Power helper отвечает: $power_state"
+        ;;
+      *)
+        doctor_add power_helper base "Detach power helper" true error "$POWER_BIN" \
+          "Power helper вернул недоступное или неизвестное состояние"
+        ;;
+    esac
+  else
+    doctor_add power_helper base "Detach power helper" true error "$POWER_BIN" \
+      "Power helper недоступен, не одобрен или вернул повреждённый ответ"
+  fi
 
   codex_path="$CODEX_BIN"
   claude_path="$CLAUDE_BIN"
@@ -225,18 +267,13 @@ doctor_report() {
   fi
   if [ -n "$codex_path" ]; then doctor_command sqlite sqlite3 "$SQLITE_BIN" true; fi
   if [ -n "$claude_path" ]; then doctor_command tar tar "$TAR_BIN" true; fi
-  doctor_command caffeinate caffeinate "$CAFFEINATE_BIN" true
   doctor_env
   doctor_command lockf lockf "$LOCKF_BIN" true
 
   watchdog_label=""
-  if [ -x "$LAUNCHCTL_BIN" ]; then
-    for path in "$APP_WATCHDOG_LABEL" "$CLI_WATCHDOG_LABEL"; do
-      if "$LAUNCHCTL_BIN" print "gui/$(id -u)/$path" >/dev/null 2>&1; then
-        watchdog_label="$path"
-        break
-      fi
-    done
+  if [ -x "$LAUNCHCTL_BIN" ] && \
+     "$LAUNCHCTL_BIN" print "gui/$(id -u)/$APP_WATCHDOG_LABEL" >/dev/null 2>&1; then
+    watchdog_label="$APP_WATCHDOG_LABEL"
   fi
   if [ -n "$watchdog_label" ]; then
     doctor_add watchdog base "Фоновая служба Detach" true ok \
@@ -244,21 +281,6 @@ doctor_report() {
   else
     doctor_add watchdog base "Фоновая служба Detach" true error \
       "$APP_WATCHDOG_LABEL" "Обязательная фоновая проверка не зарегистрирована или требует разрешения"
-  fi
-
-  if [ -d "$AMPHETAMINE_APP_PATH" ]; then
-    doctor_add amphetamine_app base "Amphetamine.app" true ok \
-      "$AMPHETAMINE_APP_PATH" "Amphetamine установлен в Applications"
-  else
-    doctor_add amphetamine_app base "Amphetamine.app" true error \
-      "$AMPHETAMINE_APP_PATH" "Установите Amphetamine из Mac App Store в Applications"
-  fi
-  if [ -f "$AMPHETAMINE_POWER_PROTECT_PATH" ]; then
-    doctor_add amphetamine_power_protect base "Amphetamine Power Protect" true ok \
-      "$AMPHETAMINE_POWER_PROTECT_PATH" "Power Protect установлен"
-  else
-    doctor_add amphetamine_power_protect base "Amphetamine Power Protect" true error \
-      "$AMPHETAMINE_POWER_PROTECT_PATH" "Установите Power Protect с официального сайта Amphetamine"
   fi
 
   if [ "$json" -eq 1 ]; then
@@ -307,6 +329,8 @@ repair_source() {
     "$INSTALL_STATE_ROOT/install.json" 2>/dev/null || true)"
   if [ -d "$source" ] && [ "$source" != "$SELF_DIR" ] && \
      [ -x "$source/detach" ] && [ -x "$source/detach-core" ] && \
+     [ -x "$source/detach-state" ] && [ -x "$source/detach-power" ] && \
+     [ -x "$source/tmux" ] && \
      [ -f "$version_file" ] && [ -x "$installer_source" ]; then
     printf '%s\n%s\n%s\n' "$source" "$version_file" "$installer_source"
     return 0
@@ -314,6 +338,8 @@ repair_source() {
 
   fallback="/Applications/Detach.app/Contents/Resources/DetachCLI"
   if [ -x "$fallback/detach" ] && [ -x "$fallback/detach-core" ] && \
+     [ -x "$fallback/detach-state" ] && [ -x "$fallback/detach-power" ] && \
+     [ -x "$fallback/tmux" ] && \
      [ -x "$fallback/detach-install" ] && [ -f "$fallback/VERSION" ]; then
     printf '%s\n%s\n%s\n' "$fallback" "$fallback/VERSION" "$fallback/detach-install"
     return 0
@@ -333,6 +359,9 @@ run_provider() {
   DETACH_CORE_ENTRYPOINT=1 \
     DETACH_PROVIDER="$provider" \
     DETACH_PROGRAM="$PROGRAM $provider" \
+    DETACH_STATE_BIN="$STATE_BIN" \
+    DETACH_POWER_BIN="$POWER_BIN" \
+    DETACH_TMUX_BIN="$TMUX_BIN" \
     "$CORE" "$@"
 }
 
@@ -344,6 +373,9 @@ exec_provider() {
   DETACH_CORE_ENTRYPOINT=1 \
     DETACH_PROVIDER="$provider" \
     DETACH_PROGRAM="$PROGRAM $provider" \
+    DETACH_STATE_BIN="$STATE_BIN" \
+    DETACH_POWER_BIN="$POWER_BIN" \
+    DETACH_TMUX_BIN="$TMUX_BIN" \
     exec "$CORE" "$@"
 }
 
@@ -436,12 +468,12 @@ resume_auto() {
   fi
   [ -n "$provider" ] || die "session UUID not found: $session_id"
 
-  [ -x "$JQ_BIN" ] || die "jq is required to resolve the session context"
+  [ -x "$STATE_BIN" ] || die "detach-state is required to resolve the session context"
   context="$(run_provider "$provider" __session_context "$session_id")" || \
     die "could not resolve project context for session UUID: $session_id"
-  session_name="$(printf '%s' "$context" | "$JQ_BIN" -r '.session_name // empty')"
-  project_dir="$(printf '%s' "$context" | "$JQ_BIN" -r '.project_dir // empty')"
-  live="$(printf '%s' "$context" | "$JQ_BIN" -r '.live // false')"
+  session_name="$(printf '%s' "$context" | "$STATE_BIN" meta get /dev/stdin session_name)"
+  project_dir="$(printf '%s' "$context" | "$STATE_BIN" meta get /dev/stdin project_dir)"
+  live="$(printf '%s' "$context" | "$STATE_BIN" meta get /dev/stdin live)"
 
   if [ "$live" = "true" ] && [ -n "$session_name" ]; then
     if [ "$detach_requested" -eq 1 ]; then
@@ -494,7 +526,7 @@ main() {
       local_repair_version="$(printf '%s\n' "$repair_metadata" | sed -n '2p')"
       local_repair_installer="$(printf '%s\n' "$repair_metadata" | sed -n '3p')"
       exec "$local_repair_installer" install --source repair --payload-dir "$local_repair_source" \
-        --version-file "$local_repair_version" --no-launch-agent --repair
+        --version-file "$local_repair_version" --repair
       ;;
     uninstall)
       shift
@@ -524,14 +556,14 @@ main() {
       shift
       resume_auto "$@"
       ;;
+    power)
+      shift
+      [ -x "$POWER_BIN" ] || die "power helper not found: $POWER_BIN"
+      exec "$POWER_BIN" "$@"
+      ;;
     config)
       shift
       exec_provider codex config "$@"
-      ;;
-    __reconcile_amphetamine)
-      shift
-      [ "$#" -eq 0 ] || die "__reconcile_amphetamine does not accept arguments"
-      exec_provider codex __reconcile_amphetamine
       ;;
     help|-h|--help)
       shift

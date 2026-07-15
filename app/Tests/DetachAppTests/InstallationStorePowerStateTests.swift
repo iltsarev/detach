@@ -1,0 +1,247 @@
+import DetachKit
+import Foundation
+import XCTest
+@testable import DetachApp
+
+@MainActor
+final class InstallationStorePowerStateTests: XCTestCase {
+    func testPowerHelperHandoffErrorPreventsReadyPhase() {
+        let phase = InstallationStore.phaseForReadiness(
+            isStableApplicationLocation: true,
+            distributionMatchesBundle: true,
+            requiredDoctorChecksHealthy: true,
+            watchdogStatus: .enabled,
+            powerHelperStatus: .enabled,
+            powerHelperError: "previous helper has not finished exiting")
+
+        XCTAssertEqual(phase, .actionRequired)
+    }
+
+    func testHealthyReadinessInputsStillProduceReadyPhase() {
+        let phase = InstallationStore.phaseForReadiness(
+            isStableApplicationLocation: true,
+            distributionMatchesBundle: true,
+            requiredDoctorChecksHealthy: true,
+            watchdogStatus: .enabled,
+            powerHelperStatus: .enabled,
+            powerHelperError: nil)
+
+        XCTAssertEqual(phase, .ready)
+    }
+
+    func testFreshHealthyHeartbeatProvidesEffectivePowerState() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected"}"#,
+            to: root)
+
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        XCTAssertEqual(store.powerProtectionState, .protected)
+    }
+
+    func testStaleHeartbeatDoesNotClaimPowerState() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let statusURL = try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed"}"#,
+            to: root)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-300)],
+            ofItemAtPath: statusURL.path)
+
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        XCTAssertEqual(store.powerProtectionState, .unknown)
+    }
+
+    func testFutureDatedHeartbeatDoesNotClaimPowerState() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let statusURL = try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected"}"#,
+            to: root)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(300)],
+            ofItemAtPath: statusURL.path)
+
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        XCTAssertEqual(store.powerProtectionState, .unknown)
+    }
+
+    func testUnhealthyOrMalformedHeartbeatDoesNotClaimPowerState() throws {
+        for body in [
+            #"{"state":"status_failed","power_state":"protected"}"#,
+            #"{"state":"ok","power_state":"future_state"}"#,
+            "not-json",
+        ] {
+            let root = try makeStateRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            try writeHeartbeat(body, to: root)
+            let store = InstallationStore(
+                detachPath: "/tmp/detach-test",
+                powerStateRoot: root)
+
+            XCTAssertEqual(store.powerProtectionState, .unknown)
+        }
+    }
+
+    func testRefreshingSnapshotPublishesAWatchdogStateChange() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+        XCTAssertEqual(store.powerProtectionState, .allowed)
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected"}"#,
+            to: root)
+        store.refreshPowerProtectionState()
+
+        XCTAssertEqual(store.powerProtectionState, .protected)
+    }
+
+    func testRepairQueuesBehindRefreshAndForcesOneFinalRefresh() async {
+        let probe = InstallationContextOperationProbe()
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            contextOperationOverride: { operation in
+                await probe.run(operation)
+            })
+        var firstRefreshFinished = false
+        var repairFinished = false
+        var secondRefreshFinished = false
+
+        let firstRefresh = Task {
+            await store.refreshContext()
+            firstRefreshFinished = true
+        }
+        await waitUntil { probe.operations.count == 1 }
+        XCTAssertEqual(probe.operations, [.refresh])
+        XCTAssertTrue(store.isBusy)
+
+        let repair = Task {
+            await store.repair()
+            repairFinished = true
+        }
+        let secondRefresh = Task {
+            await store.refreshContext()
+            secondRefreshFinished = true
+        }
+        await Task.yield()
+        XCTAssertEqual(probe.operations, [.refresh])
+
+        probe.releaseNext()
+        await waitUntil { probe.operations.count == 2 }
+        XCTAssertEqual(probe.operations, [.refresh, .repair])
+        XCTAssertFalse(firstRefreshFinished)
+        XCTAssertFalse(repairFinished)
+        XCTAssertFalse(secondRefreshFinished)
+
+        probe.releaseNext()
+        await waitUntil { probe.operations.count == 3 }
+        XCTAssertEqual(probe.operations, [.refresh, .repair, .refresh])
+        XCTAssertFalse(firstRefreshFinished)
+        XCTAssertFalse(repairFinished)
+        XCTAssertFalse(secondRefreshFinished)
+
+        probe.releaseNext()
+        await firstRefresh.value
+        await repair.value
+        await secondRefresh.value
+
+        XCTAssertEqual(probe.maximumConcurrentOperations, 1)
+        XCTAssertFalse(store.isBusy)
+        XCTAssertNotEqual(store.phase, .actionRequired)
+        XCTAssertTrue(firstRefreshFinished)
+        XCTAssertTrue(repairFinished)
+        XCTAssertTrue(secondRefreshFinished)
+    }
+
+    func testConcurrentRefreshTriggersCoalesceIntoOneTrailingRefresh() async {
+        let probe = InstallationContextOperationProbe()
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            contextOperationOverride: { operation in
+                await probe.run(operation)
+            })
+
+        let first = Task { await store.refreshContext() }
+        await waitUntil { probe.operations.count == 1 }
+        let duplicates = (0..<4).map { _ in
+            Task { await store.refreshContext() }
+        }
+        await Task.yield()
+
+        probe.releaseNext()
+        await waitUntil { probe.operations.count == 2 }
+        XCTAssertEqual(probe.operations, [.refresh, .refresh])
+
+        probe.releaseNext()
+        await first.value
+        for duplicate in duplicates { await duplicate.value }
+
+        XCTAssertEqual(probe.operations, [.refresh, .refresh])
+        XCTAssertEqual(probe.maximumConcurrentOperations, 1)
+        XCTAssertFalse(store.isBusy)
+    }
+
+    private func makeStateRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func waitUntil(
+        _ predicate: @escaping @MainActor () -> Bool
+    ) async {
+        for _ in 0..<100 where !predicate() {
+            await Task.yield()
+        }
+        XCTAssertTrue(predicate())
+    }
+
+    @discardableResult
+    private func writeHeartbeat(_ body: String, to root: URL) throws -> URL {
+        let url = root.appendingPathComponent("watchdog-status.json")
+        try Data(body.utf8).write(to: url, options: .atomic)
+        return url
+    }
+}
+
+@MainActor
+private final class InstallationContextOperationProbe {
+    private(set) var operations: [InstallationContextOperation] = []
+    private(set) var maximumConcurrentOperations = 0
+    private var activeOperations = 0
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func run(_ operation: InstallationContextOperation) async {
+        operations.append(operation)
+        activeOperations += 1
+        maximumConcurrentOperations = max(
+            maximumConcurrentOperations, activeOperations)
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+        activeOperations -= 1
+    }
+
+    func releaseNext() {
+        continuations.removeFirst().resume()
+    }
+}

@@ -3,6 +3,52 @@ import DetachKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct MacPowerSettingsPresentation: Equatable {
+    enum Action: Equatable {
+        case approveHelper
+        case approveBackground
+        case setup
+        case repair
+        case refresh
+    }
+
+    let state: PowerProtectionState
+    let action: Action?
+
+    init(
+        state: PowerProtectionState,
+        helperStatus: PowerHelperRegistrationStatus,
+        watchdogStatus: WatchdogStatus,
+        distributionMatchesBundle: Bool
+    ) {
+        self.state = state
+        if helperStatus == .requiresApproval {
+            action = .approveHelper
+        } else if watchdogStatus == .requiresApproval {
+            action = .approveBackground
+        } else if helperStatus != .enabled || watchdogStatus != .enabled {
+            action = .setup
+        } else if !distributionMatchesBundle || state == .unavailable {
+            action = .repair
+        } else if state == .unknown {
+            action = .refresh
+        } else {
+            action = nil
+        }
+    }
+
+    var stateLocalizationKey: String {
+        switch state {
+        case .protected: "Mac stays awake"
+        case .allowed: "Mac can sleep"
+        case .transitioning: "Enabling sleep protection"
+        case .lowBattery: "Mac can sleep: low battery"
+        case .unavailable: "Sleep protection unavailable"
+        case .unknown: "Sleep status unknown"
+        }
+    }
+}
+
 private extension SettingsDestination {
     /// Content height measured at the default text size; the window follows
     /// the selected tab like classic AppKit preference panes.
@@ -132,9 +178,21 @@ struct SettingsView: View {
                 detachPath: activeDetachPath,
                 interval: pollInterval)
             await notifications.configure(enabled: notificationsEnabled)
+            await installation.refreshContext()
         }
         .task(id: activeDetachPath) {
             await loadTmuxStyle()
+        }
+        .task(id: navigation.selectedTab) {
+            guard navigation.selectedTab == .system else { return }
+            while !Task.isCancelled {
+                installation.refreshPowerProtectionState()
+                do {
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                } catch {
+                    return
+                }
+            }
         }
         .onChange(of: fontPointSize) { _, value in
             let clamped = AppFontSize.clamped(value)
@@ -158,6 +216,7 @@ struct SettingsView: View {
             guard phase == .active else { return }
             Task {
                 await notifications.refreshAuthorizationStatus()
+                await installation.refreshContext()
                 if !isUpdatingTmuxStyle {
                     await loadTmuxStyle()
                 }
@@ -170,7 +229,10 @@ struct SettingsView: View {
             // A Settings scene can remain open without the main window. The
             // AppKit activation notification reliably fires after the user
             // returns from macOS Notification settings in that configuration.
-            Task { await notifications.refreshAuthorizationStatus() }
+            Task {
+                await notifications.refreshAuthorizationStatus()
+                await installation.refreshContext()
+            }
         }
         .onDisappear {
             fontSizeDraft = nil
@@ -497,22 +559,48 @@ struct SettingsView: View {
                 NightSceneIllustration()
                     .listRowInsets(EdgeInsets())
                 Text(L10n.string(
-                    "The Mac won't sleep with the lid closed while an agent is working."))
+                    "Detach shows whether this Mac stays awake or can sleep while an agent is working."))
                     .settingsMessage()
                     .frame(maxWidth: .infinity)
                     .multilineTextAlignment(.center)
             }
-            Section(L10n.string("Keep-awake")) {
+            Section(L10n.string("Mac Power")) {
+                macPowerStateRow
                 requiredComponentStatus(
-                    id: "amphetamine_app", label: L10n.string("Amphetamine.app"))
+                    label: L10n.string("Sleep Protection Helper"),
+                    status: installation.powerHelperStatus == .enabled ? .ok : .error)
                 requiredComponentStatus(
-                    id: "amphetamine_power_protect",
-                    label: L10n.string("Amphetamine Power Protect"))
-                requiredComponentStatus(
-                    label: L10n.string("Detach background service"),
+                    label: L10n.string("Background Power Monitor"),
                     status: installation.watchdogStatus == .enabled ? .ok : .error)
+                Text(powerHelperStatusText)
+                    .settingsMessage(color:
+                        installation.powerHelperStatus == .enabled ? nil : .red)
+                macPowerAction
+                if let error = installation.powerHelperError {
+                    Text(error).settingsMessage(color: .red)
+                }
+                if let error = installation.watchdogError {
+                    Text(error).settingsMessage(color: .red)
+                }
                 Text(L10n.string(
-                    "Amphetamine.app, Power Protect, and the background service are required. Detach automatically starts keep-awake for active sessions and stops it after the last one."))
+                    "Detach automatically protects active sessions and restores normal sleep after the last one. No third-party keep-awake app is required."))
+                    .settingsMessage()
+                Text(L10n.string(
+                    "At 10% battery or below, Detach releases its sleep protection so the Mac can sleep."))
+                    .settingsMessage()
+                Text(L10n.string(
+                    "The current sleep state comes from the latest background power check."))
+                    .settingsMessage()
+            }
+            Section(L10n.string("Bundled Runtime")) {
+                requiredComponentStatus(
+                    id: "tmux", label: L10n.string("tmux session runtime"))
+                requiredComponentStatus(
+                    id: "state_helper", label: L10n.string("Detach state runtime"))
+                requiredComponentStatus(
+                    id: "power_runtime", label: L10n.string("Detach power runtime"))
+                Text(L10n.string(
+                    "These components are included with Detach. Only Codex CLI or Claude CLI is installed and authenticated separately by you."))
                     .settingsMessage()
             }
             Section(L10n.string("Installation")) {
@@ -547,9 +635,114 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    private var macPowerPresentation: MacPowerSettingsPresentation {
+        MacPowerSettingsPresentation(
+            state: installation.powerProtectionState,
+            helperStatus: installation.powerHelperStatus,
+            watchdogStatus: installation.watchdogStatus,
+            distributionMatchesBundle: installation.distributionMatchesBundle)
+    }
+
+    private var macPowerStateRow: some View {
+        HStack(spacing: 12) {
+            Text(L10n.string("Current Sleep State"))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 12)
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(macPowerStateColor)
+                    .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
+                Text(L10n.string(macPowerPresentation.stateLocalizationKey))
+                    .fontWeight(.medium)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var macPowerStateColor: Color {
+        switch macPowerPresentation.state {
+        case .protected: Brand.teal
+        case .allowed: .secondary
+        case .transitioning, .lowBattery: .orange
+        case .unavailable: .red
+        case .unknown: .secondary.opacity(0.6)
+        }
+    }
+
+    @ViewBuilder
+    private var macPowerAction: some View {
+        switch macPowerPresentation.action {
+        case .approveHelper:
+            Button {
+                installation.openPowerHelperApprovalSettings()
+            } label: {
+                Label(
+                    L10n.string("Open System Settings"),
+                    systemImage: "lock.shield")
+            }
+        case .approveBackground:
+            Button {
+                installation.openLoginItemsSettings()
+            } label: {
+                Label(
+                    L10n.string("Open System Settings"),
+                    systemImage: "gearshape.2")
+            }
+        case .setup:
+            Button {
+                Task { await installation.repair() }
+            } label: {
+                Label(
+                    L10n.string("Set Up Power Protection"),
+                    systemImage: "wrench.and.screwdriver")
+            }
+            .disabled(
+                installation.isBusy
+                    || !installation.isStableApplicationLocation)
+        case .repair:
+            Button {
+                Task { await installation.repair() }
+            } label: {
+                Label(
+                    L10n.string("Repair Power Protection"),
+                    systemImage: "wrench.and.screwdriver")
+            }
+            .disabled(
+                installation.isBusy
+                    || !installation.isStableApplicationLocation)
+        case .refresh:
+            Button {
+                Task { await installation.refreshContext() }
+            } label: {
+                Label(
+                    L10n.string("Check Again"),
+                    systemImage: "arrow.clockwise")
+            }
+            .disabled(installation.isBusy)
+        case nil:
+            EmptyView()
+        }
+    }
+
     private func requiredComponentStatus(id: String, label: String) -> some View {
         let status = installation.report?.checks.first { $0.id == id }?.status ?? .unknown
         return requiredComponentStatus(label: label, status: status)
+    }
+
+    private var powerHelperStatusText: String {
+        switch installation.powerHelperStatus {
+        case .enabled:
+            L10n.string("The native power helper is enabled.")
+        case .requiresApproval:
+            L10n.string(
+                "One-time administrator approval is required for native sleep protection.")
+        case .notRegistered:
+            L10n.string("The native power helper is not registered yet.")
+        case .unavailable:
+            L10n.string("The native power helper is unavailable.")
+        }
     }
 
     private func requiredComponentStatus(

@@ -2,6 +2,17 @@ import XCTest
 @testable import DetachKit
 
 final class SessionDecodingTests: XCTestCase {
+    func testPowerProtectionStateDecodesAndRemainsBackwardCompatible() throws {
+        let protectedLine = #"{"schema":1,"provider":"codex","session_name":"s1","name":"s1","effective_status":"running","power_protection_state":"protected"}"#
+        let legacyLine = #"{"schema":1,"provider":"codex","session_name":"s2","name":"s2","effective_status":"running"}"#
+
+        let result = SessionListParser.parse(protectedLine + "\n" + legacyLine)
+
+        XCTAssertFalse(result.hadInvalidLines)
+        XCTAssertEqual(result.sessions[0].powerProtectionState, .protected)
+        XCTAssertNil(result.sessions[1].powerProtectionState)
+    }
+
     let running = """
     {"schema":1,"provider":"claude","session_name":"detach-claude-harness-a1b2c3d4","name":"harness-a1b2c3d4","effective_status":"running","meta_status":"running","agent_session_id":"11111111-2222-4333-8444-555555555555","project_dir":"/Users/me/dev/harness","created_at":"2026-07-10T18:20:00Z","last_checkpoint_at":"2026-07-10T18:25:00Z","exit_status":null,"finished_at":null}
     """

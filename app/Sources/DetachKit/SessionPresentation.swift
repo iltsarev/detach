@@ -104,4 +104,29 @@ public extension Session {
         }
         return L10n.format("%@ tokens", usedText)
     }
+
+    /// Human-readable sleep policy. Text is the primary signal because a
+    /// moon/shield glyph alone is easy to interpret in opposite ways.
+    var powerProtectionLabel: String {
+        switch powerProtectionState ?? .unknown {
+        case .protected: L10n.string("Mac stays awake")
+        case .allowed: L10n.string("Mac can sleep")
+        case .transitioning: L10n.string("Enabling sleep protection")
+        case .lowBattery: L10n.string("Mac can sleep: low battery")
+        case .unavailable: L10n.string("Sleep protection unavailable")
+        case .unknown: L10n.string("Sleep status unknown")
+        }
+    }
+
+    /// Temporary SF Symbols; the adjacent label carries the meaning.
+    var powerProtectionSystemImage: String {
+        switch powerProtectionState ?? .unknown {
+        case .protected: "shield.fill"
+        case .allowed: "moon.zzz"
+        case .transitioning: "arrow.triangle.2.circlepath"
+        case .lowBattery: "battery.25"
+        case .unavailable: "exclamationmark.triangle"
+        case .unknown: "questionmark.circle"
+        }
+    }
 }

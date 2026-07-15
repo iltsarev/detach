@@ -93,6 +93,7 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
     public var agentTurnState: AgentTurnState?
     public var agentTurnID: String?
     public var sessionColor: SessionColor?
+    public var powerProtectionState: PowerProtectionState?
 
     public var id: String { sessionName }
 
@@ -112,6 +113,7 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
         case agentTurnState = "agent_turn_state"
         case agentTurnID = "agent_turn_id"
         case sessionColor = "session_color"
+        case powerProtectionState = "power_protection_state"
     }
 }
 

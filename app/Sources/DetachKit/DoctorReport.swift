@@ -95,7 +95,6 @@ public struct DistributionClient: Sendable {
             "install", "--source", repair ? "repair" : "app",
             "--payload-dir", payloadDirectory.path,
             "--version-file", versionFile.path,
-            "--no-launch-agent",
         ]
         if repair { arguments.append("--repair") }
         let result = try await installer.run(arguments: arguments, timeout: 30)

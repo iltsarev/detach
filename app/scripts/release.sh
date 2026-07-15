@@ -25,6 +25,8 @@ UPDATE_ZIP="$UPDATE_ASSETS/Detach-$VERSION.zip"
 APPCAST="$UPDATE_ASSETS/appcast.xml"
 RELEASE_MANIFEST="$UPDATE_ASSETS/release-manifest.json"
 NOTARY_EVIDENCE="$APP_ROOT/build/notarization-$VERSION"
+APPCAST_VERIFIER="$APP_ROOT/scripts/verify-appcast.sh"
+DEFAULT_SPARKLE_GENERATE_APPCAST="$APP_ROOT/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$APP_ROOT/.build/module-cache}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$APP_ROOT/.build/module-cache}"
 mkdir -p "$CLANG_MODULE_CACHE_PATH"
@@ -122,26 +124,14 @@ verify_source_provenance() {
 
 verify_source_provenance
 
-find_sparkle_generate_appcast() {
-  local candidate
-  while IFS= read -r candidate; do
-    [ -x "$candidate" ] || continue
-    printf '%s\n' "$candidate"
-    return 0
-  done < <(find "$APP_ROOT/.build" -type f -path '*/Sparkle/bin/generate_appcast' 2>/dev/null | sort)
-  return 1
-}
-
-SPARKLE_GENERATE_APPCAST="${DETACH_SPARKLE_GENERATE_APPCAST:-}"
-if [ -z "$SPARKLE_GENERATE_APPCAST" ]; then
-  SPARKLE_GENERATE_APPCAST="$(find_sparkle_generate_appcast || true)"
-fi
-if [ -z "$SPARKLE_GENERATE_APPCAST" ]; then
+SPARKLE_GENERATE_APPCAST="${DETACH_SPARKLE_GENERATE_APPCAST:-$DEFAULT_SPARKLE_GENERATE_APPCAST}"
+if [ -z "${DETACH_SPARKLE_GENERATE_APPCAST:-}" ] && \
+    [ ! -x "$SPARKLE_GENERATE_APPCAST" ]; then
   # A clean checkout has no binary artifact yet. Resolving the pinned package
   # downloads Sparkle's framework and release tools without doing the much
-  # more expensive universal application build.
+  # more expensive application build.
   swift package --disable-sandbox --package-path "$APP_ROOT" resolve
-  SPARKLE_GENERATE_APPCAST="$(find_sparkle_generate_appcast || true)"
+  SPARKLE_GENERATE_APPCAST="$DEFAULT_SPARKLE_GENERATE_APPCAST"
 fi
 [ -x "$SPARKLE_GENERATE_APPCAST" ] || {
   printf 'Sparkle generate_appcast was not found; resolve SwiftPM dependencies first\n' >&2
@@ -170,7 +160,7 @@ grep -F "\"$IDENTITY\"" <<<"$CODESIGN_IDENTITIES" >/dev/null || {
   printf 'Developer ID signing identity is not installed or valid: %s\n' "$IDENTITY" >&2
   exit 1
 }
-# Authenticate before spending time on the universal build. The history is
+# Authenticate before spending time on the application build. The history is
 # also useful retained evidence about which notary account accepted the run.
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" \
   --output-format json >"$NOTARY_EVIDENCE/notary-history.json"
@@ -223,7 +213,7 @@ submit_for_notarization() {
     --keychain-profile "$NOTARY_PROFILE"
 }
 
-DETACH_BUILD_ARCHS=universal DETACH_BUILD_VERSION="$BUILD_VERSION" \
+DETACH_BUILD_ARCHS=arm64 DETACH_BUILD_VERSION="$BUILD_VERSION" \
   DETACH_RELEASE_BUILD=1 \
   DETACH_CODESIGN_IDENTITY="$IDENTITY" \
   DETACH_SPARKLE_FEED_URL="$SPARKLE_FEED_URL" \
@@ -241,8 +231,10 @@ spctl --assess --type execute --verbose=2 "$APP" >"$NOTARY_EVIDENCE/app-gatekeep
 # Sparkle update archives contain the already notarized and stapled app. The
 # EdDSA signature for this archive is added to the generated appcast below.
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$UPDATE_ZIP"
+chmod 0644 "$UPDATE_ZIP"
 
 DETACH_CODESIGN_IDENTITY="$IDENTITY" DETACH_APP_PATH="$APP" \
+  DETACH_VERSION="$VERSION" DETACH_DMG_VERIFY_PRODUCTION=1 \
   DETACH_DMG_PATH="$DMG" "$APP_ROOT/scripts/make-dmg.sh"
 submit_for_notarization dmg "$DMG"
 xcrun stapler staple "$DMG"
@@ -250,9 +242,11 @@ xcrun stapler validate "$DMG" >"$NOTARY_EVIDENCE/dmg-stapler.txt" 2>&1
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG" \
   >"$NOTARY_EVIDENCE/dmg-gatekeeper.txt" 2>&1
 hdiutil verify "$DMG" >"$NOTARY_EVIDENCE/dmg-hdiutil.txt" 2>&1
+chmod 0644 "$DMG"
 (
   cd -P "$(dirname "$DMG")"
   shasum -a 256 "$(basename "$DMG")" >"$(basename "$DMG").sha256"
+  chmod 0644 "$(basename "$DMG").sha256"
 )
 
 generate_appcast_args=(
@@ -268,7 +262,7 @@ else
   generate_appcast_args+=(--account "$SPARKLE_KEY_ACCOUNT")
 fi
 "$SPARKLE_GENERATE_APPCAST" "${generate_appcast_args[@]}" "$UPDATE_ASSETS"
-xmllint --noout "$APPCAST"
+"$APPCAST_VERIFIER" "$APPCAST"
 grep -F "url=\"$DOWNLOAD_URL_PREFIX$(basename "$UPDATE_ZIP")\"" "$APPCAST" >/dev/null || {
   printf 'Generated appcast has an unexpected update URL\n' >&2
   exit 1
@@ -290,7 +284,9 @@ for update_asset in "$UPDATE_ASSETS"/*; do
   esac
   (
     cd -P "$UPDATE_ASSETS"
+    chmod 0644 "$(basename "$update_asset")"
     shasum -a 256 "$(basename "$update_asset")" >"$(basename "$update_asset").sha256"
+    chmod 0644 "$(basename "$update_asset").sha256"
   )
 done
 
@@ -320,11 +316,32 @@ plutil -insert update_sha256 -string "$UPDATE_SHA256" "$RELEASE_MANIFEST"
 plutil -insert appcast_sha256 -string "$APPCAST_SHA256" "$RELEASE_MANIFEST"
 plutil -convert json "$RELEASE_MANIFEST"
 plutil -p "$RELEASE_MANIFEST" >/dev/null
+chmod 0644 "$RELEASE_MANIFEST"
 (
   cd -P "$UPDATE_ASSETS"
   shasum -a 256 "$(basename "$RELEASE_MANIFEST")" \
     >"$(basename "$RELEASE_MANIFEST").sha256"
+  chmod 0644 "$(basename "$RELEASE_MANIFEST").sha256"
 )
+
+public_artifacts=(
+  "$DMG"
+  "$DMG.sha256"
+  "$UPDATE_ZIP"
+  "$UPDATE_ZIP.sha256"
+  "$APPCAST"
+  "$APPCAST.sha256"
+  "$RELEASE_MANIFEST"
+  "$RELEASE_MANIFEST.sha256"
+)
+for public_artifact in "${public_artifacts[@]}"; do
+  [ -f "$public_artifact" ] && [ ! -L "$public_artifact" ] && \
+    [ "$(stat -f '%Lp' "$public_artifact")" = 644 ] || {
+      printf 'Public release artifact must be a regular file with mode 0644: %s\n' \
+        "$public_artifact" >&2
+      exit 1
+    }
+done
 
 rm -f "$NOTARY_ZIP"
 printf 'Release artifacts ready: %s and %s\n' "$DMG" "$UPDATE_ASSETS"

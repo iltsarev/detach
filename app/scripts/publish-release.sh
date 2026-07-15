@@ -18,6 +18,110 @@ DOWNLOAD_URL="${DETACH_DOWNLOAD_URL:-https://github.com/$REPOSITORY/releases/lat
 FEED_URL="${DETACH_SPARKLE_FEED_URL:-https://github.com/$REPOSITORY/releases/latest/download/appcast.xml}"
 RELEASE_TARGET="${DETACH_GITHUB_RELEASE_TARGET:-}"
 SEPARATE_RELEASE_REPOSITORY="${DETACH_SEPARATE_RELEASE_REPOSITORY:-0}"
+PUBLISH_CONFIRMATION="${DETACH_CONFIRM_PUBLISH:-}"
+APPCAST_VERIFIER="$APP_ROOT/scripts/verify-appcast.sh"
+VERIFY_APP="$APP_ROOT/scripts/verify-app.sh"
+DMG_VALIDATION_ROOT=""
+DMG_MOUNT=""
+DMG_ATTACHED=0
+
+cleanup_dmg_validation() {
+  if [ "$DMG_ATTACHED" = 1 ] && [ -n "$DMG_MOUNT" ]; then
+    hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
+  fi
+  DMG_ATTACHED=0
+  if [ -n "$DMG_VALIDATION_ROOT" ]; then
+    rm -rf "$DMG_VALIDATION_ROOT"
+  fi
+  DMG_VALIDATION_ROOT=""
+  DMG_MOUNT=""
+}
+trap cleanup_dmg_validation EXIT
+
+verify_clean_worktree() {
+  local worktree_status
+
+  worktree_status="$(git -C "$REPO_ROOT" status \
+    --porcelain --untracked-files=all)" || {
+    printf 'Publication could not verify git worktree cleanliness\n' >&2
+    return 1
+  }
+  [ -z "$worktree_status" ] || {
+    printf 'Publication requires a clean git worktree\n' >&2
+    return 1
+  }
+}
+
+verify_publishable_dmg() {
+  local dmg_signature app_signature dmg_team app_team top_level_count
+
+  [ -x "$VERIFY_APP" ] || {
+    printf 'Production app verifier is missing: %s\n' "$VERIFY_APP" >&2
+    return 1
+  }
+
+  hdiutil verify "$DMG"
+  codesign --verify --strict --verbose=2 "$DMG"
+  dmg_signature="$(codesign -d --verbose=4 "$DMG" 2>&1)"
+  grep -F 'Authority=Developer ID Application:' <<<"$dmg_signature" >/dev/null || {
+    printf 'Release DMG is not signed with Developer ID Application\n' >&2
+    return 1
+  }
+  dmg_team="$(sed -n 's/^TeamIdentifier=//p' <<<"$dmg_signature")"
+  [ -n "$dmg_team" ] && [ "$dmg_team" != 'not set' ] || {
+    printf 'Release DMG signature has no TeamIdentifier\n' >&2
+    return 1
+  }
+  xcrun stapler validate "$DMG"
+  spctl --assess --type open --context context:primary-signature --verbose=2 \
+    "$DMG"
+
+  DMG_VALIDATION_ROOT="$(mktemp -d \
+    "${TMPDIR:-/tmp}/detach-publish-dmg.XXXXXX")"
+  DMG_MOUNT="$DMG_VALIDATION_ROOT/mount"
+  mkdir -m 0755 "$DMG_MOUNT"
+  DMG_ATTACHED=1
+  hdiutil attach -readonly -nobrowse -owners on -mountpoint "$DMG_MOUNT" \
+    "$DMG" >"$DMG_VALIDATION_ROOT/attach.txt"
+
+  [ "$(stat -f '%Lp' "$DMG_MOUNT")" = 755 ] || {
+    printf 'Release DMG volume root must have mode 0755\n' >&2
+    return 1
+  }
+  [ -d "$DMG_MOUNT/Detach.app" ] && [ ! -L "$DMG_MOUNT/Detach.app" ] || {
+    printf 'Release DMG must contain one real Detach.app bundle\n' >&2
+    return 1
+  }
+  [ -L "$DMG_MOUNT/Applications" ] && \
+    [ "$(readlink "$DMG_MOUNT/Applications")" = /Applications ] || {
+    printf 'Release DMG must contain the canonical Applications symlink\n' >&2
+    return 1
+  }
+  top_level_count="$(find -P "$DMG_MOUNT" -mindepth 1 -maxdepth 1 \
+    -print | wc -l | tr -d ' ')"
+  [ "$top_level_count" = 2 ] || {
+    printf 'Release DMG contains unexpected top-level content\n' >&2
+    return 1
+  }
+
+  codesign --verify --strict --verbose=2 "$DMG_MOUNT/Detach.app"
+  DETACH_APP_PATH="$DMG_MOUNT/Detach.app" \
+    DETACH_VERSION="$VERSION" \
+    DETACH_REQUIRE_SPARKLE_CONFIG=1 \
+    DETACH_VERIFY_PRODUCTION=1 \
+    "$VERIFY_APP"
+  app_signature="$(codesign -d --verbose=4 \
+    "$DMG_MOUNT/Detach.app" 2>&1)"
+  app_team="$(sed -n 's/^TeamIdentifier=//p' <<<"$app_signature")"
+  [ "$app_team" = "$dmg_team" ] || {
+    printf 'Release DMG and app TeamIdentifier values do not match\n' >&2
+    return 1
+  }
+  xcrun stapler validate "$DMG_MOUNT/Detach.app"
+  spctl --assess --type execute --verbose=2 "$DMG_MOUNT/Detach.app"
+
+  cleanup_dmg_validation
+}
 
 [ -n "$REPOSITORY" ] || {
   printf 'DETACH_GITHUB_REPOSITORY (owner/repository) is required\n' >&2
@@ -57,6 +161,13 @@ fi
   printf 'DETACH_SEPARATE_RELEASE_REPOSITORY must be 0 or 1\n' >&2
   exit 1
 }
+EXPECTED_PUBLISH_CONFIRMATION="$REPOSITORY@$TAG"
+[ "$PUBLISH_CONFIRMATION" = "$EXPECTED_PUBLISH_CONFIRMATION" ] || {
+  printf 'DETACH_CONFIRM_PUBLISH must exactly equal %s\n' \
+    "$EXPECTED_PUBLISH_CONFIRMATION" >&2
+  exit 1
+}
+verify_clean_worktree
 command -v gh >/dev/null 2>&1 || {
   printf 'GitHub CLI (gh) is required\n' >&2
   exit 1
@@ -71,11 +182,47 @@ command -v gh >/dev/null 2>&1 || {
     printf 'Sparkle update assets are missing; run app/scripts/release.sh first\n' >&2
     exit 1
   }
+
+assets=(
+  "$DMG"
+  "$CHECKSUM"
+  "$UPDATE_ZIP"
+  "$UPDATE_ZIP.sha256"
+  "$APPCAST"
+  "$APPCAST.sha256"
+  "$RELEASE_MANIFEST"
+  "$RELEASE_MANIFEST.sha256"
+)
+
+while IFS= read -r -d '' update_asset; do
+  [ -f "$update_asset" ] && [ ! -L "$update_asset" ] || {
+    printf 'Unexpected updater asset: %s\n' "$update_asset" >&2
+    exit 1
+  }
+  case "$(basename "$update_asset")" in
+    "$(basename "$UPDATE_ZIP")"|"$(basename "$UPDATE_ZIP").sha256"|\
+    appcast.xml|appcast.xml.sha256|\
+    release-manifest.json|release-manifest.json.sha256) ;;
+    *)
+      printf 'Refusing unexpected updater asset: %s\n' \
+        "$(basename "$update_asset")" >&2
+      exit 1
+      ;;
+  esac
+done < <(find "$UPDATE_ASSETS" -mindepth 1 -maxdepth 1 -print0)
+for asset in "${assets[@]}"; do
+  [ -f "$asset" ] && [ ! -L "$asset" ] && \
+    [ "$(stat -f '%Lp' "$asset")" = 644 ] || {
+      printf 'Release asset must be a regular file with mode 0644: %s\n' \
+        "$asset" >&2
+      exit 1
+    }
+done
 (
   cd -P "$(dirname "$DMG")"
   shasum -a 256 -c "$(basename "$CHECKSUM")"
 )
-xmllint --noout "$APPCAST"
+"$APPCAST_VERIFIER" "$APPCAST"
 EXPECTED_UPDATE_URL="$DOWNLOAD_URL_PREFIX$(basename "$UPDATE_ZIP")"
 APPCAST_UPDATE_URL="$(xmllint --xpath \
   'string((//*[local-name()="enclosure"]/@url)[1])' "$APPCAST")"
@@ -129,31 +276,17 @@ GIT_COMMIT="$(manifest_value git_commit)"
     exit 1
   }
 
-assets=("$DMG" "$CHECKSUM")
-for update_asset in "$UPDATE_ASSETS"/*; do
-  [ -f "$update_asset" ] && [ ! -L "$update_asset" ] || {
-    printf 'Unexpected updater asset: %s\n' "$update_asset" >&2
-    exit 1
-  }
-  case "$(basename "$update_asset")" in
-    appcast*.xml|*.zip|*.delta|*.md|*.html|*.txt|*.json|*.sha256) ;;
-    *)
-      printf 'Refusing unexpected updater asset: %s\n' "$update_asset" >&2
-      exit 1
-      ;;
-  esac
-  assets+=("$update_asset")
-done
-for update_checksum in "$UPDATE_ASSETS"/*.sha256; do
-  [ -f "$update_checksum" ] || {
-    printf 'Updater checksum is missing\n' >&2
-    exit 1
-  }
+for update_checksum in \
+  "$UPDATE_ZIP.sha256" \
+  "$APPCAST.sha256" \
+  "$RELEASE_MANIFEST.sha256"; do
   (
     cd -P "$UPDATE_ASSETS"
     shasum -a 256 -c "$(basename "$update_checksum")"
   )
 done
+verify_publishable_dmg
+verify_clean_worktree
 gh auth status >/dev/null
 if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
   printf 'Release already exists; refusing to replace assets: %s %s\n' "$REPOSITORY" "$TAG" >&2

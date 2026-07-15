@@ -244,6 +244,11 @@ struct SessionDetailView: View {
                     .font(.system(size: 10, design: .monospaced))
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                Label(
+                    session.powerProtectionLabel,
+                    systemImage: session.powerProtectionSystemImage)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
             }
             .padding(.horizontal, 8)
             .frame(height: 16)

@@ -1,0 +1,3 @@
+# Sparkle 2.9.4's canonical LICENSE contains one intentional trailing space.
+# Preserve its upstream bytes while excluding the vendored notice from whitespace diagnostics.
+app/Resources/ThirdParty/Sparkle/LICENSE.txt -whitespace

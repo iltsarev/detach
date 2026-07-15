@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="https://github.com/iltsarev/detach/releases/latest/download/Detach.dmg">
-    <img src="https://img.shields.io/badge/Download_for_macOS-latest_DMG-545CE0?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Download Detach for macOS — latest DMG">
+    <img src="https://img.shields.io/badge/Current_published_build-latest_DMG-545CE0?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="Download the current published Detach DMG">
   </a>
 </p>
 
@@ -36,7 +36,7 @@
 </p>
 
 <p align="center">
-  <sub>Apple silicon + Intel · Native app + CLI · No separate Detach account · Recovery state stays on your Mac</sub>
+  <sub>Apple Silicon · Native app + CLI · No Homebrew runtime dependencies · Recovery state stays on your Mac</sub>
 </p>
 
 <p align="center">
@@ -52,8 +52,8 @@ leave them. Detach turns Codex or Claude Code runs launched through it into
 managed sessions with a stable home and a clear way back.
 
 - **Leave it running.** Close the terminal window or quit Detach.app. The live
-  process continues in tmux while the Mac is running, and required keep-awake
-  integration can keep it going with the lid closed.
+  process continues in Detach's bundled tmux while the user session and Mac are
+  running. Native sleep protection can keep it going with the lid closed.
 - **Know when to come back.** See what is running, waiting for your next
   message, finished, failed, or recoverable. Inspect logs, model, context use,
   and the latest checkpoint; optionally get notified when a turn completes or
@@ -62,33 +62,43 @@ managed sessions with a stable home and a clear way back.
   provider conversation, or recover an interrupted managed run with explicit,
   provider-specific safeguards.
 - **Use one workflow for both agents.** Codex and Claude Code share the same
-  dashboard, session list, controls, project protection, and universal
-  UUID-based resume command.
+  dashboard, session list, controls, project protection, and one UUID-based
+  resume command.
 
 > tmux keeps the process alive while the Mac is running. Detach adds a recovery
 > layer for the conversation: it tracks provider identity, saves validated
 > local checkpoints, retains logs, coordinates keep-awake, and applies
 > explicit recovery rules.
 
-Detach ships as a Mac product, not a setup recipe: one DMG includes guided
-setup, dependency diagnostics, a bundled CLI, repair, updates, and a background
-watchdog. You keep working in the provider and terminal you already use.
+Detach ships as a Mac product, not a setup recipe: the app includes its CLI,
+Apple Silicon tmux runtime, typed state helper, native sleep-protection components,
+Sparkle updater, guided setup, repair, and background monitoring. You keep
+working in the provider and terminal you already use. Codex and Claude Code are
+deliberately not bundled: install and authenticate either provider yourself
+using its official instructions.
+
 Detach.app is available in English and Russian and follows the language chosen
 for Detach in macOS.
 
 ## Quick start
 
-> [!IMPORTANT]
-> Before the first run, meet the [requirements](#requirements) below. Guided
-> setup checks installed executables and required Mac components, then offers a
-> concrete next step for anything missing. Provider authentication remains in
-> Codex or Claude Code itself.
+> [!NOTE]
+> The self-contained runtime described here is an unreleased update. It must
+> pass the signed, supervised hardware checks described below before it is
+> published; this document does not mean that a release has already shipped.
 
-1. [Download the current **DMG**](https://github.com/iltsarev/detach/releases/latest/download/Detach.dmg),
-   move **Detach.app** to `/Applications`, and open it.
-2. Follow guided setup. Detach installs its bundled CLI, registers its required
-   background service, and checks the rest of the runtime. When Amphetamine or
-   Power Protect is missing, setup opens its official App Store or project page.
+> [!IMPORTANT]
+> Before the first run, install and authenticate Codex CLI or Claude Code.
+> Guided setup checks the provider and every Detach-owned component. Provider
+> authentication remains in Codex or Claude Code itself.
+
+1. Once this update is published, download its **DMG** from the
+   [Releases page](https://github.com/iltsarev/detach/releases), move
+   **Detach.app** to `/Applications`, and open it.
+2. Follow guided setup. Detach installs its bundled command-line runtime and
+   asks once for administrator approval to register its narrowly scoped native
+   power helper. macOS may separately ask you to allow Detach's background
+   monitor.
 3. If needed, install [Codex CLI](https://github.com/openai/codex) or
    [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), then
    return to Detach and recheck. Detach verifies that the CLI is present;
@@ -97,8 +107,11 @@ for Detach in macOS.
    and start the session.
 
 When the session appears as running in the sidebar, you are done. Close the
-terminal window or Detach.app and the managed worker and checkpoints continue;
-reopen Detach whenever you want the dashboard back.
+terminal window or Detach.app and the tmux server, provider process, power
+wrapper, and checkpoints continue; reopen Detach whenever you want the
+dashboard back. This lifetime does not cross logout or reboot, and intentionally
+killing the managed tmux server or provider ends the live run. The last valid
+checkpoint remains available for Resume or Recover.
 
 Prefer to start from a shell? Guided setup also adds `detach` to your login and
 interactive shell. Open a new terminal window, then run:
@@ -139,10 +152,13 @@ turn it off permanently in Settings → General.
 Every managed session gets a stable identity color derived from its provider
 and project. The same accent appears beside the session in Detach.app and in
 that session's tmux status bar, alongside `Detach`, provider, project, and
-state labels. Completed sessions become quieter and failures remain explicit.
-The styling is session-local, so ordinary tmux sessions and global config stay
-untouched; pick **My tmux theme** in Settings → Terminal to remove Detach's
-status bar overrides entirely.
+state labels. Sleep state is text-first as well: the app reports **Mac stays
+awake** or **Mac can sleep**, while the tmux bar uses readable labels such as
+`MAC AWAKE`, `MAC CAN SLEEP`, and `LOW BATTERY`. Icons are secondary and may
+change without changing the status contract. Completed sessions become quieter
+and failures remain explicit. The styling is session-local, so ordinary tmux
+sessions and global config stay untouched; pick **My tmux theme** in Settings →
+Terminal to remove Detach's status bar overrides entirely.
 
 The main app window is not the runtime. A managed session and its checkpoint
 loop continue independently, and the dashboard catches up when you reopen it.
@@ -169,8 +185,10 @@ repair or replace provider state. The exact policies are documented below.
 
 A saved point can be older than the default five-minute interval if a snapshot
 could not complete. Checkpoints protect the agent conversation—not repository
-contents. Detach records Git worktree status for diagnosis but never rolls
-project files back.
+contents. Detach records canonical repository context for diagnosis but never
+rolls project files back. To stay self-contained, it identifies a repository
+by its nearest real `.git` marker and records that root without invoking Git or
+Apple's Command Line Tools shim.
 
 ## How Detach keeps a session durable
 
@@ -180,7 +198,7 @@ flowchart LR
     D --> T["Managed tmux session"]
     T --> P["Codex or Claude Code"]
     T --> O["Status + retained logs"]
-    T --> A["Amphetamine keep-awake"]
+    T --> A["Native sleep protection"]
     P -. "every 5 minutes by default" .-> C["Private local checkpoint"]
     C -. "validated recovery" .-> P
 
@@ -195,22 +213,39 @@ flowchart LR
 ```
 
 Each agent runs under a managed tmux worker, so closing a client does not kill
-the process. Once provider identity is available, Detach attempts an initial
+the process. The tmux binary is an arm64 Detach-owned payload, not a user
+installation. Once provider identity is available, Detach attempts an initial
 checkpoint, repeats every five minutes by default, and attempts a final
 checkpoint when the worker exits. It also retains terminal output and session
 status after the provider process finishes.
 
 When Detach creates the shared tmux server, it anchors the daemon in persistent
-state rather than in the first project that starts it. Every worker also starts
-from that stable location and re-enters its canonical project directory before
-launching the provider. Unmounting one project can still interrupt the agent
-working there, but it does not leave unrelated new Detach sessions with that
-project's stale working directory. Remount the project and use Resume or
-Recover for the interrupted conversation.
+state rather than in the first project that starts it. The server uses one
+private absolute socket under Detach's install state, so Finder, Detach.app,
+and Terminal reach the same server regardless of `TMUX_TMPDIR`. Every worker
+also starts from that stable location and re-enters its canonical project
+directory before launching the provider. Unmounting one project can still
+interrupt the agent working there, but it does not leave unrelated new Detach
+sessions with that project's stale working directory. Remount the project and
+use Resume or Recover for the interrupted conversation.
 
 Checkpoints stay on your Mac with private file permissions. Detach has no
 separate account or hosted session backend; Codex or Claude Code continues to
 use its own normal service and local session storage.
+
+### What you install, and what Detach includes
+
+| Component | Owner | How it works |
+|---|---|---|
+| Codex CLI and/or Claude Code | You | Install and authenticate at least one provider through its official flow. Detach manages it but does not replace or redistribute it. |
+| tmux | Detach | A private Apple Silicon (`arm64`) build is bundled and used for managed sessions. Your own tmux installation and configuration are not required. |
+| Structured state handling | Detach | The typed `detach-state` executable reads and updates Detach JSON/JSONL. It replaces the former `jq` runtime dependency. |
+| Sleep protection | Detach | The unprivileged `detach-power` wrapper, a signed root helper, and a background monitor replace Amphetamine, Power Protect, and `caffeinate`. |
+| App updates | Detach | Sparkle remains embedded and signed inside Detach.app; there is nothing separate to install. |
+
+There are no Homebrew runtime dependencies. Detach still uses utilities that
+ship with macOS for narrowly scoped platform work, and `doctor` verifies the
+complete installed payload before a session starts.
 
 ## Recovery with guardrails
 
@@ -244,8 +279,8 @@ Recovery behavior differs where the provider formats differ:
   checkpoint contents are rejected.
 
 A successful conversation checkpoint publishes metadata and valid provider
-session state. Detach also attempts to capture terminal output and Git
-worktree status, plus provider-specific supporting state when available:
+session state. Detach also attempts to capture terminal output and canonical
+repository context, plus provider-specific supporting state when available:
 
 - **Codex:** session UUID and rollout JSONL. A separate best-effort SQLite
   backup is published only after an integrity check succeeds; it is an
@@ -324,7 +359,7 @@ detach resume --name migration --detach SESSION_UUID
 | `detach <provider> recover [name]` | Restart an interrupted managed run using its saved recovery context. |
 | `detach <provider> delete [name]` | Delete stopped Detach state; leave provider storage untouched. |
 | `detach config tmux-style [mode]` | Select `detach` styling or `inherit` your tmux theme. |
-| `detach doctor` | Check installation integrity, dependencies, providers, Amphetamine, Power Protect, and the background service. |
+| `detach doctor` | Check installation integrity, the bundled tmux/state/power runtime, provider CLIs, native power helper, and background monitor. |
 
 A normal start always creates a new Codex or Claude conversation. Use `attach`
 for a live worker and `resume` for an existing provider conversation. Detach
@@ -338,12 +373,22 @@ detach without closing the window.
 
 ## Close the lid without abandoning the run
 
-Keep-awake protection turns on automatically for every managed session. Detach
-requires [Amphetamine](https://apps.apple.com/app/amphetamine/id937984704), its
-official [Power Protect component](https://x74353.github.io/Amphetamine-Power-Protect/),
-and the Detach background service. Guided setup remains open until all three
-are ready, and macOS may request the required background and Automation
-permissions.
+Keep-awake protection turns on automatically for every managed session. It is
+implemented inside Detach: an unprivileged wrapper holds the normal IOKit
+idle-sleep assertion, while a narrowly scoped signed helper manages closed-lid
+protection. Guided setup registers the helper through macOS and asks for
+administrator approval once. No third-party keep-awake app or Automation
+permission is required.
+
+Detach starts the provider only after both parts of protection are confirmed.
+The app and tmux status bar then show a readable effective state instead of
+making you infer it from an icon. If the helper is unavailable, Detach reports
+that honestly and refuses to claim that the Mac will stay awake.
+
+**Settings → System → Mac Power** shows whether the Mac currently stays awake
+or can sleep, the helper and background-monitor health, and the low-battery
+rule. The same block offers the relevant approval, setup, repair, or refresh
+action when protection needs attention.
 
 > [!CAUTION]
 > Closed-lid sessions may cool less effectively during sustained CPU load, and
@@ -356,21 +401,51 @@ permissions.
 <details>
 <summary><strong>How keep-awake coordination stays safe</strong></summary>
 
-The first live session acquires one compatible closed-lid Amphetamine session.
-If you already started a compatible session, Detach borrows it; otherwise it
-starts one. Additional Detach sessions share the same lease. The last session
-ends it only if Detach created it and its observable properties have not
-changed. A borrowed user session is never replaced or ended.
+Each live session gets a renewable root-helper lease. `detach-power` renews it
+every 30 seconds; the helper expires a lease after 120 seconds without a
+heartbeat. The last live lease restores normal closed-lid sleep. This bounds a
+stale setting if the tmux server or wrapper is killed before it can clean up.
+An orderly `detach stop` and forwarded HUP/INT/TERM release the lease
+immediately; the TTL is the fallback for an uncatchable crash or `SIGKILL`.
+The durable state also records the macOS boot-session UUID, so leases from the
+previous boot are discarded before any power mutation after a restart.
 
-The required per-user helper reconciles stale leases after crashes and at
-login. If Amphetamine's low-battery auto-end setting is enabled, Detach honors
-its configured threshold and will not start a new closed-lid task at or below
-it. Detach warns when that protection is disabled; it does not change the
-setting for you.
+The helper reconciles actual power state every 10 seconds. Status requests read
+that cached snapshot without launching another `pmset` process or waiting for a
+power mutation. A new lease has an eight-second root-side confirmation deadline;
+if protection is not confirmed in time, root rolls back that request and its
+owned setting before reporting failure, and the provider does not start.
 
-Do not replace the Amphetamine session manually while Detach sessions are
-running. Closed-lid coordination is currently single-user; multiple
-simultaneously logged-in users are not supported.
+Ownership is explicit and persisted before a power change. If closed-lid
+protection was already active, Detach borrows it and never turns it off. If
+Detach enabled it, Detach restores it after the last lease, on a stale lease,
+or during an orderly helper shutdown. The helper accepts only signed
+Detach power-client requests from the same Team ID and the current non-root
+macOS console user. Root, loginwindow, and background users after Fast User
+Switching are rejected; Detach opens a fresh connection for each power request,
+so the previous user's next heartbeat no longer renews its lease and the TTL
+restores Detach-owned protection. A request already in flight may finish.
+The helper exposes only status and lease operations—it cannot run provider or
+arbitrary shell commands as root, and session survival across logout is not
+promised.
+
+At 10% battery or below while running on battery power, Detach releases the
+sleep assertions it owns and reports **Mac can sleep: low battery**. It lets the
+provider finish if the Mac remains awake; it does not trade the machine's last
+battery reserve for a hidden claim of protection. A new protected run is not
+started while that safety state is active.
+
+Do not manually change the system `disablesleep` value while Detach sessions
+are active: it is a single machine-wide boolean, so an outside change cannot be
+attributed safely while Detach owns it.
+
+> [!WARNING]
+> Closed-lid protection currently uses `/usr/bin/pmset -a disablesleep`, an
+> undocumented macOS interface. Unit and packaging tests are not sufficient.
+> Before any release, a signed build must pass `tests/power-smoke.sh` with its
+> explicit real-power opt-in and a supervised closed-lid test on actual
+> Apple Silicon hardware. Never run that smoke test as routine
+> verification.
 
 </details>
 
@@ -418,10 +493,24 @@ detach repair
 detach uninstall --keep-state
 ```
 
-Prefer uninstalling from Detach Settings so macOS can unregister the required
-background helper before removing the CLI. Keeping state preserves recovery
-checkpoints for a future reinstall. Uninstall also removes the shell PATH entry
-that Detach owns, without removing a PATH entry you created yourself.
+Prefer uninstalling from Detach Settings so macOS can unregister the privileged
+power helper and background monitor before removing the CLI. Keeping state
+preserves recovery checkpoints for a future reinstall. Uninstall also removes
+the shell PATH entry that Detach owns, without removing a PATH entry you
+created yourself. Helper replacement or removal is deferred while live leases
+exist; once idle, the helper first quiesces new leases and verifies that any
+Detach-owned sleep setting has been restored before macOS unregisters it. That
+gate is durable and does not reopen on a timer while the macOS callback is still
+running. A replacement explicitly reopens it only after the new helper is
+enabled; if the app or helper exits between prepare, unregister, registration,
+and handoff, the next app launch resumes a crash-safe journal. It waits for
+macOS to confirm that the previous helper process is actually gone before it
+registers the replacement, then checks that the new helper answers before
+allowing new protected sessions. Helper replacement is serialized for the whole
+Mac, not only one user account: a root-created kernel lock prevents two logged-in
+users from overlapping an update, and only the current console user may change
+the system registration. If that app crashes, another user must replay and
+finish the interrupted macOS removal before installing a replacement.
 
 To remove Detach checkpoints as well:
 
@@ -430,9 +519,8 @@ detach uninstall --purge-state
 ```
 
 This requires an explicit request and still leaves Codex and Claude local
-storage, Amphetamine Power Protect, and system configuration alone. Uninstall
-refuses to run while a managed session is alive. Detach.app itself remains
-until you move it to Trash.
+storage alone. Uninstall refuses to run while a managed session is alive.
+Detach.app itself remains until you move it to Trash.
 
 </details>
 
@@ -440,16 +528,19 @@ until you move it to Trash.
 
 | Component | Requirement |
 |---|---|
-| Mac | macOS 14 or newer; Apple silicon and Intel are supported |
-| Codex CLI or Claude Code | At least one provider installed and authenticated |
-| `tmux` and `jq` | Required; guided setup checks both and offers a ready next step when missing |
-| Amphetamine + Power Protect | Required for automatic keep-awake and closed-lid coordination |
-| Detach background service | Required for keep-awake reconciliation after crashes and login |
+| Mac | macOS 14 or newer on Apple Silicon (`arm64`); Intel Macs are not supported |
+| Codex CLI and/or Claude Code | Install and authenticate at least one provider yourself |
+| Administrator approval | Required once so macOS can register Detach's bundled native power helper |
+| Detach runtime | Included in the app as Apple Silicon code: tmux, `detach-state`, `detach-power`, root helper, background monitor, and Sparkle |
+
+You do not need Homebrew, a separate tmux or JSON tool, Amphetamine, Power
+Protect, or another keep-awake package. macOS may still require you to approve
+Detach under Login Items for its background monitor.
 
 ## Start the next long run in Detach
 
 Make the terminal a view into the work—not the thing keeping it alive.
 
-[**Download the latest DMG →**](https://github.com/iltsarev/detach/releases/latest/download/Detach.dmg)
+[**See the current published release →**](https://github.com/iltsarev/detach/releases/latest)
 &nbsp;·&nbsp;
 [Report an issue](https://github.com/iltsarev/detach/issues)

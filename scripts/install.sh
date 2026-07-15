@@ -29,20 +29,24 @@ SHASUM_BIN="${DETACH_SHASUM_BIN:-/usr/bin/shasum}"
 XATTR_BIN="${DETACH_XATTR_BIN:-/usr/bin/xattr}"
 LAUNCHCTL_BIN="${DETACH_LAUNCHCTL_BIN:-/bin/launchctl}"
 PLUTIL_BIN="${DETACH_PLUTIL_BIN:-/usr/bin/plutil}"
-TMUX_BIN="${DETACH_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}"
+ENV_BIN="${DETACH_ENV_BIN:-/usr/bin/env}"
+TMUX_BIN="${DETACH_TMUX_BIN:-$SCRIPT_DIR/tmux}"
+TMUX_CONFIG="${DETACH_TMUX_CONFIG:-}"
 
 BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 LIBEXEC_ROOT="${DETACH_INSTALL_LIBEXEC_ROOT:-$HOME/.local/libexec/detach}"
 STATE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
 INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_ROOT}"
+DEFAULT_TMUX_SOCKET_PATH="$INSTALL_STATE_ROOT/tmux/tmux.sock"
+TMUX_SOCKET_PATH="${DETACH_TMUX_SOCKET_PATH:-$DEFAULT_TMUX_SOCKET_PATH}"
+LEGACY_NAMED_TMUX_SOCKET="dev.tsarev.detach"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
 CODEX_STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_ROOT/codex}"
 CLAUDE_STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_ROOT/claude}"
-AMPHETAMINE_ROOT="${DETACH_AMPHETAMINE_STATE_ROOT:-$STATE_ROOT/amphetamine}"
 SHELL_PATH_STATE_ROOT="${DETACH_SHELL_PATH_STATE_ROOT:-$INSTALL_STATE_ROOT/shell-path}"
-CLI_WATCHDOG_PLIST_DEST="${DETACH_CLI_WATCHDOG_PLIST_DEST:-$HOME/Library/LaunchAgents/dev.tsarev.detach.cli-watchdog.plist}"
-CLI_WATCHDOG_LABEL="dev.tsarev.detach.cli-watchdog"
 APP_WATCHDOG_LABEL="dev.tsarev.detach.watchdog"
+LEGACY_CLI_WATCHDOG_LABEL="dev.tsarev.detach.cli-watchdog"
+LEGACY_CLI_WATCHDOG_PLIST_DEST="$HOME/Library/LaunchAgents/$LEGACY_CLI_WATCHDOG_LABEL.plist"
 SHELL_PATH_MARKER="# Detach CLI PATH"
 
 error() {
@@ -64,8 +68,6 @@ usage() {
     '  --source app|install.sh|repair' \
     '  --payload-dir DIR' \
     '  --version-file FILE' \
-    '  --launch-agent-plist FILE' \
-    '  --no-launch-agent' \
     '  --allow-downgrade' \
     '  --repair'
 }
@@ -696,7 +698,7 @@ cleanup_shell_path() {
 validate_managed_paths() {
   local path
   for path in "$BIN_DIR" "$LIBEXEC_ROOT" "$INSTALL_STATE_ROOT" "$CONFIG_ROOT" \
-              "$SHELL_PATH_STATE_ROOT" "$CLI_WATCHDOG_PLIST_DEST"; do
+              "$SHELL_PATH_STATE_ROOT"; do
     case "$path" in
       /*) ;;
       *) die "managed path must be absolute: $path" ;;
@@ -709,6 +711,17 @@ validate_managed_paths() {
   case "$SHELL_PATH_STATE_ROOT" in
     "$INSTALL_STATE_ROOT"/*) ;;
     *) die "shell PATH state must stay inside install state: $SHELL_PATH_STATE_ROOT" ;;
+  esac
+  case "$LEGACY_CLI_WATCHDOG_PLIST_DEST" in
+    /*) ;;
+    *) die "legacy LaunchAgent path must be absolute" ;;
+  esac
+  case "/$LEGACY_CLI_WATCHDOG_PLIST_DEST/" in
+    */../*|*/./*) die "legacy LaunchAgent path contains unsafe components" ;;
+  esac
+  case "$LEGACY_CLI_WATCHDOG_PLIST_DEST" in
+    "$HOME/Library/LaunchAgents/$LEGACY_CLI_WATCHDOG_LABEL.plist") ;;
+    *) die "legacy LaunchAgent path must stay at its exact user-owned location" ;;
   esac
 }
 
@@ -798,11 +811,65 @@ active_payload_dir() {
   esac
 }
 
-managed_sessions_running_on() {
-  local socket="$1" config="$2"
-  local session pane dead managed output
-  local command=("$TMUX_BIN")
-  [ -z "$socket" ] || command+=( -L "$socket" )
+validate_tmux_socket_path() {
+  local expected_parent="$INSTALL_STATE_ROOT/tmux"
+  local byte_count
+
+  case "$INSTALL_STATE_ROOT" in
+    /*) ;;
+    *) die "install state root must be absolute: $INSTALL_STATE_ROOT" ;;
+  esac
+  [ ! -L "$INSTALL_STATE_ROOT" ] || \
+    die "install state root must not be a symlink: $INSTALL_STATE_ROOT"
+  case "$TMUX_SOCKET_PATH" in
+    /*) ;;
+    *) die "tmux socket path must be absolute: $TMUX_SOCKET_PATH" ;;
+  esac
+  case "$TMUX_SOCKET_PATH" in
+    *$'\n'*|*$'\r'*) die "tmux socket path contains a newline" ;;
+    */|*/./*|*/../*) die "tmux socket path is unsafe: $TMUX_SOCKET_PATH" ;;
+  esac
+  [ "$(dirname "$TMUX_SOCKET_PATH")" = "$expected_parent" ] || \
+    die "tmux socket must live in the Detach-owned directory: $expected_parent"
+  byte_count="$(LC_ALL=C printf '%s' "$TMUX_SOCKET_PATH" | /usr/bin/wc -c | /usr/bin/tr -d '[:space:]')"
+  [ -n "$byte_count" ] && [ "$byte_count" -le 103 ] || \
+    die "tmux socket path is too long for macOS: $TMUX_SOCKET_PATH"
+}
+
+ensure_tmux_socket_dir() {
+  local parent="$INSTALL_STATE_ROOT/tmux"
+
+  validate_tmux_socket_path
+  "$MKDIR_BIN" -p "$INSTALL_STATE_ROOT" || \
+    die "cannot create install state directory: $INSTALL_STATE_ROOT"
+  if [ ! -e "$parent" ] && [ ! -L "$parent" ]; then
+    "$MKDIR_BIN" "$parent" || {
+      [ -d "$parent" ] && [ ! -L "$parent" ] || \
+        die "cannot create tmux socket directory: $parent"
+    }
+  fi
+  [ -d "$parent" ] && [ ! -L "$parent" ] || \
+    die "tmux socket directory is unsafe: $parent"
+  chmod 0700 "$parent" || die "cannot secure tmux socket directory: $parent"
+  [ ! -L "$TMUX_SOCKET_PATH" ] || \
+    die "tmux socket path is a symlink: $TMUX_SOCKET_PATH"
+  if [ -e "$TMUX_SOCKET_PATH" ] && [ ! -S "$TMUX_SOCKET_PATH" ]; then
+    die "tmux socket path is occupied by a non-socket: $TMUX_SOCKET_PATH"
+  fi
+}
+
+managed_sessions_present_on() {
+  local kind="$1" socket="$2" config="${3:-}" reset_tmpdir="${4:-0}"
+  local session managed output
+  local command=("$ENV_BIN" -u TMUX -u TMUX_PANE)
+  [ "$reset_tmpdir" = 0 ] || command+=( -u TMUX_TMPDIR )
+  command+=( "$TMUX_BIN" )
+  case "$kind" in
+    path) command+=( -S "$socket" ) ;;
+    named) command+=( -L "$socket" ) ;;
+    default) [ -z "$socket" ] || die "invalid default tmux selector" ;;
+    *) die "invalid tmux socket selector: $kind" ;;
+  esac
   [ -z "$config" ] || command+=( -f "$config" )
 
   if ! output="$("${command[@]}" list-sessions -F '#{session_name}' 2>&1)"; then
@@ -814,18 +881,128 @@ managed_sessions_running_on() {
   while IFS= read -r session; do
     [ -n "$session" ] || continue
     managed="$("${command[@]}" show-options -qv -t "=$session:" @detach 2>/dev/null || true)"
-    [ "$managed" = "1" ] || continue
-    pane="$("${command[@]}" show-options -qv -t "=$session:" @detach_pane_id 2>/dev/null || true)"
-    [ -n "$pane" ] || return 0
-    dead="$("${command[@]}" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null || true)"
-    [ "$dead" = "1" ] || return 0
+    [ "$managed" = "1" ] && return 0
   done <<<"$output"
   return 1
 }
 
-managed_sessions_running() {
+managed_sessions_present() {
   require_executable "$TMUX_BIN" tmux
-  managed_sessions_running_on "${DETACH_TMUX_SOCKET:-}" "${DETACH_TMUX_CONFIG:-}"
+  ensure_tmux_socket_dir
+  managed_sessions_present_on path "$TMUX_SOCKET_PATH" "$TMUX_CONFIG"
+}
+
+legacy_managed_sessions_present() {
+  require_executable "$TMUX_BIN" tmux
+  # Historical releases used both tmux's default socket and the named -L
+  # socket. Inspect the stable default location and an explicit caller override
+  # without allowing an enclosing client to redirect either query.
+  managed_sessions_present_on default "" "" 1 && return 0
+  managed_sessions_present_on named "$LEGACY_NAMED_TMUX_SOCKET" "" 1 && return 0
+  if [ -n "${TMUX_TMPDIR:-}" ]; then
+    managed_sessions_present_on default "" "" 0 && return 0
+    managed_sessions_present_on named "$LEGACY_NAMED_TMUX_SOCKET" "" 0 && return 0
+  fi
+  return 1
+}
+
+legacy_cli_watchdog_plist_is_owned() {
+  local path="$1"
+  local label program shell_flag command run_at_load interval process_type stdout_path
+  local environment_path environment_xml environment_keys top_level_keys top_level_count key
+  local fourth_command="" has_fourth=0
+  local legacy_amphetamine_root rendered_command template_command
+
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  "$PLUTIL_BIN" -lint "$path" >/dev/null 2>&1 || return 1
+  label="$("$PLUTIL_BIN" -extract Label raw -o - "$path" 2>/dev/null || true)"
+  program="$("$PLUTIL_BIN" -extract ProgramArguments.0 raw -o - "$path" 2>/dev/null || true)"
+  shell_flag="$("$PLUTIL_BIN" -extract ProgramArguments.1 raw -o - "$path" 2>/dev/null || true)"
+  command="$("$PLUTIL_BIN" -extract ProgramArguments.2 raw -o - "$path" 2>/dev/null || true)"
+  if fourth_command="$("$PLUTIL_BIN" -extract ProgramArguments.3 raw -o - "$path" 2>/dev/null)"; then
+    has_fourth=1
+  fi
+  if "$PLUTIL_BIN" -extract ProgramArguments.4 raw -o - "$path" >/dev/null 2>&1; then
+    return 1
+  fi
+  run_at_load="$("$PLUTIL_BIN" -extract RunAtLoad raw -o - "$path" 2>/dev/null || true)"
+  interval="$("$PLUTIL_BIN" -extract StartInterval raw -o - "$path" 2>/dev/null || true)"
+  process_type="$("$PLUTIL_BIN" -extract ProcessType raw -o - "$path" 2>/dev/null || true)"
+  stdout_path="$("$PLUTIL_BIN" -extract StandardOutPath raw -o - "$path" 2>/dev/null || true)"
+  environment_path="$("$PLUTIL_BIN" -extract EnvironmentVariables.PATH raw -o - "$path" 2>/dev/null || true)"
+  [ "$label" = "$LEGACY_CLI_WATCHDOG_LABEL" ] || return 1
+  [ "$program" = /bin/sh ] && [ "$shell_flag" = -c ] || return 1
+  [ "$run_at_load" = true ] && [ "$interval" = 60 ] || return 1
+  [ "$process_type" = Background ] && [ "$stdout_path" = /dev/null ] || return 1
+  [ "$environment_path" = /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin ] || return 1
+
+  top_level_keys="$("$PLUTIL_BIN" -p "$path" 2>/dev/null | "$AWK_BIN" '
+    /^  "[^"]+" =>/ {
+      key = $0
+      sub(/^  "/, "", key)
+      sub(/".*$/, "", key)
+      print key
+    }
+  ')" || return 1
+  top_level_count="$(printf '%s\n' "$top_level_keys" | \
+    "$AWK_BIN" 'NF { count++ } END { print count + 0 }')"
+  [ "$top_level_count" = 7 ] || return 1
+  for key in Label ProgramArguments EnvironmentVariables RunAtLoad StartInterval ProcessType StandardOutPath; do
+    [ "$(printf '%s\n' "$top_level_keys" | \
+      "$AWK_BIN" -v expected="$key" '$0 == expected { count++ } END { print count + 0 }')" = 1 ] || return 1
+  done
+
+  environment_xml="$("$PLUTIL_BIN" -extract EnvironmentVariables xml1 -o - "$path" 2>/dev/null)" || return 1
+  environment_keys="$(printf '%s\n' "$environment_xml" | "$AWK_BIN" '
+    /^[[:space:]]*<key>[^<]+<\/key>[[:space:]]*$/ {
+      key = $0
+      sub(/^[[:space:]]*<key>/, "", key)
+      sub(/<\/key>[[:space:]]*$/, "", key)
+      print key
+    }
+  ')"
+  [ "$environment_keys" = PATH ] || return 1
+
+  legacy_amphetamine_root="$STATE_ROOT/amphetamine"
+  rendered_command="/bin/mkdir -p $(shell_quote "$legacy_amphetamine_root") && exec /usr/bin/env DETACH_CONFIG_ROOT=$(shell_quote "$CONFIG_ROOT") DETACH_STATE_ROOT=$(shell_quote "$STATE_ROOT") DETACH_INSTALL_STATE_ROOT=$(shell_quote "$INSTALL_STATE_ROOT") DETACH_AMPHETAMINE_STATE_ROOT=$(shell_quote "$legacy_amphetamine_root") $(shell_quote "$BIN_DIR/detach") __reconcile_amphetamine >>$(shell_quote "$legacy_amphetamine_root/watchdog.log") 2>&1"
+  template_command='mkdir -p "$HOME/.local/state/detach/amphetamine" && exec "$HOME/.local/bin/detach" __reconcile_amphetamine >>"$HOME/.local/state/detach/amphetamine/watchdog.log" 2>&1'
+  if [ "$has_fourth" -eq 1 ]; then
+    # The released renderer used `plutil -replace` on an array index. Some
+    # macOS versions inserted instead, leaving the exact template as argv[3].
+    [ "$command" = "$rendered_command" ] && [ "$fourth_command" = "$template_command" ]
+  else
+    [ "$command" = "$rendered_command" ] || [ "$command" = "$template_command" ]
+  fi
+}
+
+cleanup_legacy_cli_watchdog() {
+  local service="gui/$("$ID_BIN" -u)/$LEGACY_CLI_WATCHDOG_LABEL"
+  local has_plist=0
+
+  if [ -e "$LEGACY_CLI_WATCHDOG_PLIST_DEST" ] || [ -L "$LEGACY_CLI_WATCHDOG_PLIST_DEST" ]; then
+    legacy_cli_watchdog_plist_is_owned "$LEGACY_CLI_WATCHDOG_PLIST_DEST" || \
+      die "refusing to remove an unsafe or foreign legacy LaunchAgent: $LEGACY_CLI_WATCHDOG_PLIST_DEST"
+    has_plist=1
+  fi
+
+  if "$LAUNCHCTL_BIN" print "$service" >/dev/null 2>&1; then
+    [ "$has_plist" -eq 1 ] || \
+      die "refusing to unload legacy LaunchAgent without its exact owned plist: $LEGACY_CLI_WATCHDOG_LABEL"
+    legacy_cli_watchdog_plist_is_owned "$LEGACY_CLI_WATCHDOG_PLIST_DEST" || \
+      die "legacy LaunchAgent changed before unload: $LEGACY_CLI_WATCHDOG_PLIST_DEST"
+    "$LAUNCHCTL_BIN" bootout "$service" >/dev/null 2>&1 || \
+      die "cannot unregister legacy LaunchAgent: $LEGACY_CLI_WATCHDOG_LABEL"
+    if "$LAUNCHCTL_BIN" print "$service" >/dev/null 2>&1; then
+      die "legacy LaunchAgent is still registered: $LEGACY_CLI_WATCHDOG_LABEL"
+    fi
+  fi
+
+  if [ "$has_plist" -eq 1 ]; then
+    legacy_cli_watchdog_plist_is_owned "$LEGACY_CLI_WATCHDOG_PLIST_DEST" || \
+      die "legacy LaunchAgent changed during cleanup: $LEGACY_CLI_WATCHDOG_PLIST_DEST"
+    "$RM_BIN" -f "$LEGACY_CLI_WATCHDOG_PLIST_DEST" || \
+      die "cannot remove legacy LaunchAgent: $LEGACY_CLI_WATCHDOG_PLIST_DEST"
+  fi
 }
 
 write_manifest() {
@@ -841,21 +1018,21 @@ write_manifest() {
   local installed_at
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  printf '{"schema":1,"version":"%s","build":"%s","payload_id":"%s","source":"%s","installed_at":"%s","executable_path":"%s","payload_source_path":"%s","version_file_path":"%s","installer_source_path":"%s","config_root":"%s","amphetamine_state_root":"%s"}\n' \
+  printf '{"schema":1,"version":"%s","build":"%s","payload_id":"%s","source":"%s","installed_at":"%s","executable_path":"%s","payload_source_path":"%s","version_file_path":"%s","installer_source_path":"%s","config_root":"%s"}\n' \
     "$(json_escape "$version")" "$(json_escape "$build")" \
     "$(json_escape "$payload_id")" "$(json_escape "$source")" \
     "$installed_at" "$(json_escape "$target/detach")" \
     "$(json_escape "$payload_source")" "$(json_escape "$source_version_file")" \
     "$(json_escape "$installer_source")" \
-    "$(json_escape "$CONFIG_ROOT")" "$(json_escape "$AMPHETAMINE_ROOT")" >"$tmp" || return 1
+    "$(json_escape "$CONFIG_ROOT")" >"$tmp" || return 1
   chmod 0600 "$tmp" || return 1
   "$MV_BIN" -f "$tmp" "$INSTALL_STATE_ROOT/install.json"
 }
 
-write_required_config() {
+migrate_config() {
   local config="$CONFIG_ROOT/config"
   local tmp="$CONFIG_ROOT/config.tmp.$$"
-  local line found=0
+  local line
   "$MKDIR_BIN" -p "$CONFIG_ROOT" || return 1
   chmod 0700 "$CONFIG_ROOT" || return 1
   if [ -e "$config" ]; then
@@ -863,77 +1040,26 @@ write_required_config() {
     : >"$tmp" || return 1
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
-        AMPHETAMINE=*)
-          if [ "$found" -eq 0 ]; then
-            printf '%s\n' 'AMPHETAMINE=1' >>"$tmp" || return 1
-            found=1
-          fi
-          ;;
+        AMPHETAMINE=*) ;;
         *) printf '%s\n' "$line" >>"$tmp" || return 1 ;;
       esac
     done <"$config"
-    [ "$found" -eq 1 ] || printf '%s\n' 'AMPHETAMINE=1' >>"$tmp" || return 1
   else
-    printf '%s\n' \
-      '# Detach settings. Environment variables override these values.' \
-      'AMPHETAMINE=1' >"$tmp" || return 1
+    printf '%s\n' '# Detach settings. Environment variables override these values.' \
+      >"$tmp" || return 1
   fi
   chmod 0600 "$tmp" || return 1
   "$MV_BIN" -f "$tmp" "$config"
-}
-
-install_cli_watchdog() {
-  local source_plist="$1"
-  local destination_dir
-  local rendered="$INSTALL_STATE_ROOT/watchdog.plist.tmp.$$"
-  local destination_tmp backup
-  local command
-  [ -f "$source_plist" ] || die "LaunchAgent plist not found: $source_plist"
-  require_executable "$PLUTIL_BIN" plutil
-  destination_dir="$(dirname "$CLI_WATCHDOG_PLIST_DEST")"
-  "$INSTALL_BIN" -d -m 0755 "$destination_dir" || die "cannot create $destination_dir"
-  "$INSTALL_BIN" -m 0600 "$source_plist" "$rendered" || die "cannot render LaunchAgent"
-  command="/bin/mkdir -p $(shell_quote "$AMPHETAMINE_ROOT") && exec /usr/bin/env DETACH_CONFIG_ROOT=$(shell_quote "$CONFIG_ROOT") DETACH_STATE_ROOT=$(shell_quote "$STATE_ROOT") DETACH_INSTALL_STATE_ROOT=$(shell_quote "$INSTALL_STATE_ROOT") DETACH_AMPHETAMINE_STATE_ROOT=$(shell_quote "$AMPHETAMINE_ROOT") $(shell_quote "$BIN_DIR/detach") __reconcile_amphetamine >>$(shell_quote "$AMPHETAMINE_ROOT/watchdog.log") 2>&1"
-  "$PLUTIL_BIN" -replace ProgramArguments.2 -string "$command" "$rendered" || \
-    die "cannot set LaunchAgent command"
-  "$PLUTIL_BIN" -lint "$rendered" >/dev/null || die "rendered LaunchAgent is invalid"
-
-  if [ -f "$CLI_WATCHDOG_PLIST_DEST" ] && cmp -s "$rendered" "$CLI_WATCHDOG_PLIST_DEST"; then
-    "$RM_BIN" -f "$rendered"
-    return 0
-  fi
-  destination_tmp="$CLI_WATCHDOG_PLIST_DEST.tmp.$$"
-  backup="$INSTALL_STATE_ROOT/watchdog.plist.backup.$$"
-  "$RM_BIN" -f "$destination_tmp" "$backup"
-  if [ -f "$CLI_WATCHDOG_PLIST_DEST" ]; then
-    "$INSTALL_BIN" -m 0644 "$CLI_WATCHDOG_PLIST_DEST" "$backup" || die "cannot back up LaunchAgent"
-  fi
-  "$INSTALL_BIN" -m 0644 "$rendered" "$destination_tmp" || die "cannot stage LaunchAgent"
-  "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
-  "$MV_BIN" -f "$destination_tmp" "$CLI_WATCHDOG_PLIST_DEST" || die "cannot install LaunchAgent"
-  "$RM_BIN" -f "$rendered"
-  if ! "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$CLI_WATCHDOG_PLIST_DEST"; then
-    if [ -f "$backup" ]; then
-      "$MV_BIN" -f "$backup" "$CLI_WATCHDOG_PLIST_DEST" || true
-      "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$CLI_WATCHDOG_PLIST_DEST" >/dev/null 2>&1 || true
-    else
-      "$RM_BIN" -f "$CLI_WATCHDOG_PLIST_DEST"
-    fi
-    die "cannot register LaunchAgent; previous definition was restored"
-  fi
-  "$RM_BIN" -f "$backup"
-  "$LAUNCHCTL_BIN" kickstart -k "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
 }
 
 install_locked() {
   local source="install.sh"
   local payload_dir=""
   local version_file=""
-  local launch_agent_plist=""
-  local install_launch_agent=1
   local allow_downgrade=0
   local repair=0
-  local version build detach_hash core_hash installer_hash payload_id target
+  local version build detach_hash core_hash installer_hash state_hash power_hash tmux_hash
+  local payload_id target
   local installed_version installed_build installed_payload comparison stage link_tmp current
   local active_dir manifest_version manifest_build manifest_payload manifest_executable
 
@@ -948,10 +1074,6 @@ install_locked() {
       --version-file)
         [ "$#" -ge 2 ] || die "$1 requires a file"
         version_file="$2"; shift 2 ;;
-      --launch-agent-plist)
-        [ "$#" -ge 2 ] || die "$1 requires a file"
-        launch_agent_plist="$2"; shift 2 ;;
-      --no-launch-agent) install_launch_agent=0; shift ;;
       --allow-downgrade) allow_downgrade=1; shift ;;
       --repair) repair=1; shift ;;
       -h|--help) usage; return 0 ;;
@@ -966,26 +1088,26 @@ install_locked() {
   if [ -z "$version_file" ]; then
     if [ -f "$payload_dir/VERSION" ]; then version_file="$payload_dir/VERSION"; else version_file="$REPO_ROOT/VERSION"; fi
   fi
-  if [ -z "$launch_agent_plist" ]; then
-    if [ -f "$payload_dir/dev.tsarev.detach.cli-watchdog.plist" ]; then
-      launch_agent_plist="$payload_dir/dev.tsarev.detach.cli-watchdog.plist"
-    else
-      launch_agent_plist="$REPO_ROOT/launchagents/dev.tsarev.detach.cli-watchdog.plist"
-    fi
-  fi
-
   require_executable "$INSTALL_BIN" install
   require_executable "$MV_BIN" mv
   require_executable "$RM_BIN" rm
   require_executable "$LN_BIN" ln
+  require_executable "$MKDIR_BIN" mkdir
   require_executable "$CAT_BIN" cat
   require_executable "$CP_BIN" cp
   require_executable "$AWK_BIN" awk
   require_executable "$TAIL_BIN" tail
   require_executable "$MKTEMP_BIN" mktemp
   require_executable "$SHASUM_BIN" shasum
+  require_executable "$ENV_BIN" env
+  require_executable "$ID_BIN" id
+  require_executable "$LAUNCHCTL_BIN" launchctl
+  require_executable "$PLUTIL_BIN" plutil
   [ -x "$payload_dir/detach" ] || die "payload detach is missing or not executable"
   [ -x "$payload_dir/detach-core" ] || die "payload detach-core is missing or not executable"
+  [ -x "$payload_dir/detach-state" ] || die "payload detach-state is missing or not executable"
+  [ -x "$payload_dir/detach-power" ] || die "payload detach-power is missing or not executable"
+  [ -x "$payload_dir/tmux" ] || die "payload tmux is missing or not executable"
   [ -f "$version_file" ] || die "version file not found: $version_file"
 
   IFS= read -r version <"$version_file" || die "cannot read version file"
@@ -996,12 +1118,18 @@ install_locked() {
 
   detach_hash="$(sha256_file "$payload_dir/detach")" || die "cannot hash detach"
   core_hash="$(sha256_file "$payload_dir/detach-core")" || die "cannot hash detach-core"
+  state_hash="$(sha256_file "$payload_dir/detach-state")" || die "cannot hash detach-state"
+  power_hash="$(sha256_file "$payload_dir/detach-power")" || die "cannot hash detach-power"
+  tmux_hash="$(sha256_file "$payload_dir/tmux")" || die "cannot hash tmux"
   if [ -x "$payload_dir/detach-install" ]; then
     installer_hash="$(sha256_file "$payload_dir/detach-install")" || die "cannot hash installer"
   else
     installer_hash="$(sha256_file "$SELF")" || die "cannot hash installer"
   fi
-  payload_id="$(printf '%s\n%s\n%s\n%s\n%s\n' "$version" "$build" "$detach_hash" "$core_hash" "$installer_hash" | "$SHASUM_BIN" -a 256 | awk '{print $1}')"
+  payload_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    "$version" "$build" "$detach_hash" "$core_hash" "$installer_hash" \
+    "$state_hash" "$power_hash" "$tmux_hash" | \
+    "$SHASUM_BIN" -a 256 | awk '{print $1}')"
   [ "${#payload_id}" -eq 64 ] || die "cannot calculate payload id"
   target="$LIBEXEC_ROOT/versions/$version-${payload_id:0:12}"
 
@@ -1069,24 +1197,34 @@ install_locked() {
 
   # Reject unsupported shells, unsafe symlinks, edited Detach entries, and
   # unwritable profiles before the immutable payload or public CLI changes.
+  validate_tmux_socket_path
   preflight_shell_path
+  legacy_managed_sessions_present && \
+    die "cannot install while a legacy detach tmux session is present; stop or delete it with the currently installed CLI first"
 
   "$INSTALL_BIN" -d -m 0755 "$BIN_DIR" "$LIBEXEC_ROOT/versions" || die "cannot create installation directories"
   "$INSTALL_BIN" -d -m 0700 "$INSTALL_STATE_ROOT" || die "cannot create install state directory"
+  ensure_tmux_socket_dir
 
   if [ -d "$target" ]; then
     if [ -x "$target/detach" ] && [ -x "$target/detach-core" ] && \
-       [ -x "$target/detach-install" ] && [ -f "$target/VERSION" ] && \
+       [ -x "$target/detach-install" ] && [ -x "$target/detach-state" ] && \
+       [ -x "$target/detach-power" ] && [ -x "$target/tmux" ] && \
+       [ -f "$target/VERSION" ] && \
        [ -f "$target/BUILD" ] && [ "$(head -n 1 "$target/BUILD")" = "$build" ] && \
        [ -f "$target/PAYLOAD_ID" ] && [ "$(head -n 1 "$target/PAYLOAD_ID")" = "$payload_id" ] && \
        [ "$(sha256_file "$target/detach")" = "$detach_hash" ] && \
        [ "$(sha256_file "$target/detach-core")" = "$core_hash" ] && \
        [ "$(sha256_file "$target/detach-install")" = "$installer_hash" ] && \
+       [ "$(sha256_file "$target/detach-state")" = "$state_hash" ] && \
+       [ "$(sha256_file "$target/detach-power")" = "$power_hash" ] && \
+       [ "$(sha256_file "$target/tmux")" = "$tmux_hash" ] && \
        [ "$("$target/detach" __version 2>/dev/null)" = "$version" ]; then
       :
     else
       [ "$repair" -eq 1 ] || die "existing immutable payload is invalid: $target (run Repair)"
-      managed_sessions_running && die "Repair is unsafe while a detach session is running"
+      managed_sessions_present && \
+        die "Repair is unsafe while a detach tmux session is present; stop or delete it first"
       "$RM_BIN" -rf "$target" || die "cannot remove invalid payload"
     fi
   fi
@@ -1098,6 +1236,9 @@ install_locked() {
     "$INSTALL_BIN" -d -m 0755 "$stage" || die "cannot create staging directory"
     "$INSTALL_BIN" -m 0755 "$payload_dir/detach" "$stage/detach" || die "cannot stage detach"
     "$INSTALL_BIN" -m 0755 "$payload_dir/detach-core" "$stage/detach-core" || die "cannot stage detach-core"
+    "$INSTALL_BIN" -m 0755 "$payload_dir/detach-state" "$stage/detach-state" || die "cannot stage detach-state"
+    "$INSTALL_BIN" -m 0755 "$payload_dir/detach-power" "$stage/detach-power" || die "cannot stage detach-power"
+    "$INSTALL_BIN" -m 0755 "$payload_dir/tmux" "$stage/tmux" || die "cannot stage tmux"
     if [ -x "$payload_dir/detach-install" ]; then
       "$INSTALL_BIN" -m 0755 "$payload_dir/detach-install" "$stage/detach-install" || die "cannot stage installer"
     else
@@ -1112,6 +1253,9 @@ install_locked() {
     [ "$(sha256_file "$stage/detach")" = "$detach_hash" ] || die "staged detach hash mismatch"
     [ "$(sha256_file "$stage/detach-core")" = "$core_hash" ] || die "staged detach-core hash mismatch"
     [ "$(sha256_file "$stage/detach-install")" = "$installer_hash" ] || die "staged installer hash mismatch"
+    [ "$(sha256_file "$stage/detach-state")" = "$state_hash" ] || die "staged detach-state hash mismatch"
+    [ "$(sha256_file "$stage/detach-power")" = "$power_hash" ] || die "staged detach-power hash mismatch"
+    [ "$(sha256_file "$stage/tmux")" = "$tmux_hash" ] || die "staged tmux hash mismatch"
     [ "$("$stage/detach" __version 2>/dev/null)" = "$version" ] || die "staged CLI version mismatch"
     "$MV_BIN" "$stage" "$target" || die "cannot activate payload directory"
   fi
@@ -1119,6 +1263,7 @@ install_locked() {
   # Profile setup does not execute the CLI, so finish it before switching the
   # public command. A shell-specific failure cannot leave a new CLI activated.
   configure_shell_path
+  cleanup_legacy_cli_watchdog
 
   link_tmp="$BIN_DIR/.detach-link.$$"
   "$RM_BIN" -f "$link_tmp"
@@ -1126,12 +1271,7 @@ install_locked() {
   "$MV_BIN" -f "$link_tmp" "$BIN_DIR/detach" || die "cannot switch CLI symlink"
   write_manifest "$version" "$build" "$payload_id" "$source" "$target" \
     "$payload_dir" "$version_file" "$SELF" || die "cannot write install manifest"
-  write_required_config || die "cannot configure required Amphetamine integration"
-
-  if [ "$install_launch_agent" -eq 1 ]; then
-    require_executable "$LAUNCHCTL_BIN" launchctl
-    install_cli_watchdog "$launch_agent_plist"
-  fi
+  migrate_config || die "cannot migrate Detach configuration"
 
   current="$("$BIN_DIR/detach" __version 2>/dev/null || true)"
   [ "$current" = "$version" ] || die "activated CLI failed validation"
@@ -1175,13 +1315,21 @@ uninstall_locked() {
 
   require_executable "$MV_BIN" mv
   require_executable "$RM_BIN" rm
+  require_executable "$MKDIR_BIN" mkdir
   require_executable "$CAT_BIN" cat
   require_executable "$CP_BIN" cp
   require_executable "$AWK_BIN" awk
   require_executable "$MKTEMP_BIN" mktemp
   require_executable "$SHASUM_BIN" shasum
+  require_executable "$ENV_BIN" env
+  require_executable "$ID_BIN" id
+  require_executable "$LAUNCHCTL_BIN" launchctl
+  require_executable "$PLUTIL_BIN" plutil
 
-  managed_sessions_running && die "cannot uninstall while a detach session is running; stop it first"
+  managed_sessions_present && \
+    die "cannot uninstall while a detach tmux session is present; stop or delete it first"
+  legacy_managed_sessions_present && \
+    die "cannot uninstall while a legacy detach tmux session is present; stop or delete it first"
 
   if [ -x "$LAUNCHCTL_BIN" ] && \
      "$LAUNCHCTL_BIN" print "gui/$(id -u)/$APP_WATCHDOG_LABEL" >/dev/null 2>&1; then
@@ -1197,6 +1345,8 @@ uninstall_locked() {
     fi
   fi
 
+  cleanup_legacy_cli_watchdog
+
   if [ -L "$BIN_DIR/detach" ]; then
     target="$(cd -P "$(dirname "$BIN_DIR/detach")" >/dev/null 2>&1 && readlink "$BIN_DIR/detach")"
     case "$target" in
@@ -1208,17 +1358,13 @@ uninstall_locked() {
     die "refusing to remove an unmanaged file: $BIN_DIR/detach"
   fi
 
-  if [ -f "$CLI_WATCHDOG_PLIST_DEST" ]; then
-    "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$CLI_WATCHDOG_LABEL" >/dev/null 2>&1 || true
-    "$RM_BIN" -f "$CLI_WATCHDOG_PLIST_DEST"
-  fi
   cleanup_shell_path
   "$RM_BIN" -rf "$LIBEXEC_ROOT/versions"
   "$RM_BIN" -f "$INSTALL_STATE_ROOT/install.json"
   "$RM_BIN" -f "$LIBEXEC_ROOT/detach" "$LIBEXEC_ROOT/detach-core"
 
   if [ "$state_mode" = "purge" ]; then
-    for path in "$CODEX_STATE_ROOT" "$CLAUDE_STATE_ROOT" "$AMPHETAMINE_ROOT"; do
+    for path in "$CODEX_STATE_ROOT" "$CLAUDE_STATE_ROOT"; do
       if ! remove_detach_state_root "$path"; then
         kept_state=1
         error "refusing to purge non-standard or unsafe state path: $path"
@@ -1232,7 +1378,7 @@ uninstall_locked() {
   else
     printf 'Removed Detach CLI. Saved session state was kept.\n'
   fi
-  printf 'Amphetamine Power Protect and sudoers settings were not changed.\n'
+  printf 'The native power helper remains managed by Detach.app.\n'
 }
 
 with_lock() {
@@ -1248,8 +1394,15 @@ main() {
   local operation="${1:-install}"
   validate_managed_paths
   case "$operation" in
-    install|uninstall) shift || true; with_lock "$operation" "$@" ;;
+    install|uninstall)
+      # Validate without writing before with_lock creates/chmods state or opens
+      # install.lock. A symlinked install root must have zero side effects.
+      validate_tmux_socket_path
+      shift || true
+      with_lock "$operation" "$@"
+      ;;
     __locked)
+      validate_tmux_socket_path
       shift
       operation="${1:-}"
       shift || true

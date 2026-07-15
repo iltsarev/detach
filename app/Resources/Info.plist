@@ -31,7 +31,5 @@
   <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
-  <key>NSAppleEventsUsageDescription</key>
-  <string>Detach manages required keep-awake automation through Amphetamine.</string>
 </dict>
 </plist>

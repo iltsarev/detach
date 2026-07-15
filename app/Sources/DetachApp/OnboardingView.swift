@@ -5,10 +5,6 @@ import DetachKit
 struct OnboardingView: View {
     let store: InstallationStore
     @Environment(\.appFontPointSize) private var fontPointSize
-    @AppStorage(AppSettings.terminalBundleIdentifierKey) private var terminalBundleIdentifier =
-        TerminalCatalog.defaultBundleIdentifier
-    @State private var terminalFailure: TerminalLaunchFailure?
-    @State private var isLaunchingTerminal = false
 
     var body: some View {
         ScrollView {
@@ -20,18 +16,6 @@ struct OnboardingView: View {
             }
             .frame(maxWidth: max(560, fontPointSize * 36), alignment: .leading)
             .padding(36)
-        }
-        .alert(L10n.string("Could not open Terminal"), isPresented: .init(
-            get: { terminalFailure != nil },
-            set: { if !$0 { terminalFailure = nil } })) {
-            if terminalFailure?.requiresTerminalSelection == true {
-                SettingsLink {
-                    Text(L10n.string("Choose Another Terminal"))
-                }
-            }
-            Button(L10n.string("Close"), role: .cancel) {}
-        } message: {
-            Text(terminalFailure?.message ?? "")
         }
     }
 
@@ -57,26 +41,30 @@ struct OnboardingView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
-        } else if case .installAmphetamine(let prerequisites) = blocker {
+        } else if store.distributionMatchesBundle
+                    && store.powerHelperStatus == .requiresApproval {
             Label(
-                amphetamineStatusText(prerequisites),
-                systemImage: "bolt.heart")
+                L10n.string("Detach's native sleep protection needs one-time administrator approval."),
+                systemImage: "lock.shield")
+                .foregroundStyle(.secondary)
+        } else if store.distributionMatchesBundle
+                    && (store.powerHelperStatus == .notRegistered
+                        || store.powerHelperStatus == .unavailable) {
+            Label(
+                L10n.string("The bundled native power helper is not available yet."),
+                systemImage: "exclamationmark.shield")
                 .foregroundStyle(.secondary)
         } else if store.watchdogStatus == .requiresApproval {
             Label {
-                Text(L10n.string("The background service is required: it restores keep-awake after failures, even when Detach.app is closed."))
+                Text(L10n.string(
+                    "Allow Detach to record power health while the app is closed."))
             } icon: {
                 Image(systemName: "gearshape.2")
             }
             .foregroundStyle(.secondary)
-        } else if case .installTools(let tools) = blocker {
-            Label(L10n.format(
-                "Missing: %@. Detach can open a ready-to-run installation command.",
-                tools.joined(separator: ", ")),
-                  systemImage: "terminal")
-                .foregroundStyle(.secondary)
         } else if blocker == .chooseProvider {
-            Label(L10n.string("At least one installed and authenticated AI client is required."),
+            Label(L10n.string(
+                "Install and authenticate Codex CLI or Claude CLI; Detach includes tmux, state handling, and sleep protection."),
                   systemImage: "person.crop.circle.badge.questionmark")
                 .foregroundStyle(.secondary)
         } else if case .other(let summary) = blocker {
@@ -99,27 +87,21 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
-            } else if case .installAmphetamine(let prerequisites) = blocker {
-                VStack(alignment: .leading, spacing: 10) {
-                    if prerequisites.contains(.app) {
-                        Button(L10n.string("Open Amphetamine in the Mac App Store")) {
-                            openWebPage("https://apps.apple.com/app/amphetamine/id937984704")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.indigo)
-                    }
-                    if prerequisites.contains(.powerProtect) {
-                        Button(L10n.string("Open the official Power Protect page")) {
-                            openWebPage("https://x74353.github.io/Amphetamine-Power-Protect/")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.indigo)
-                    }
-                    Button(L10n.string("Check Again")) {
-                        Task { await store.refreshContext() }
-                    }
-                        .buttonStyle(.bordered)
+            } else if store.distributionMatchesBundle
+                        && store.powerHelperStatus == .requiresApproval {
+                Button(L10n.string("Open System Settings")) {
+                    store.openPowerHelperApprovalSettings()
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Brand.indigo)
+            } else if store.distributionMatchesBundle
+                        && (store.powerHelperStatus == .notRegistered
+                            || store.powerHelperStatus == .unavailable) {
+                Button(L10n.string("Check Again")) {
+                    Task { await store.refreshContext() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Brand.indigo)
             } else if store.watchdogStatus == .requiresApproval {
                 Button(L10n.string("Open System Settings")) {
                     store.openLoginItemsSettings()
@@ -128,27 +110,6 @@ struct OnboardingView: View {
                     .tint(Brand.indigo)
             } else {
                 switch blocker {
-                case .installAmphetamine:
-                    EmptyView()
-                case .installTools(let tools):
-                    if let brewPath {
-                        Button(L10n.format(
-                            "Install %@",
-                            ListFormatter.localizedString(byJoining: tools))) {
-                            openInTerminal(
-                                "\(shellQuoted(brewPath)) install "
-                                    + tools.map(shellQuoted).joined(separator: " "))
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.indigo)
-                        .disabled(isLaunchingTerminal)
-                    } else {
-                        Button(L10n.string("Install Homebrew")) {
-                            openWebPage("https://brew.sh")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.indigo)
-                    }
                 case .chooseProvider:
                     Menu(L10n.string("Install an AI Client")) {
                         Button(L10n.string("Codex CLI")) {
@@ -232,14 +193,19 @@ struct OnboardingView: View {
         if !store.isStableApplicationLocation {
             return L10n.string("Move Detach to Applications")
         }
-        if case .installAmphetamine = blocker {
-            return L10n.string("Install Amphetamine and Power Protect")
+        if store.distributionMatchesBundle
+            && store.powerHelperStatus == .requiresApproval
+        {
+            return L10n.string("Allow Native Sleep Protection")
+        }
+        if store.distributionMatchesBundle
+            && (store.powerHelperStatus == .notRegistered
+                || store.powerHelperStatus == .unavailable)
+        {
+            return L10n.string("Enable Native Sleep Protection")
         }
         if store.watchdogStatus == .requiresApproval {
             return L10n.string("Allow Background Activity")
-        }
-        if case .installTools = blocker {
-            return L10n.string("Install Required Components")
         }
         if blocker == .chooseProvider { return L10n.string("Connect Codex or Claude") }
         if case .failed = store.phase { return L10n.string("Could Not Complete Setup") }
@@ -251,14 +217,21 @@ struct OnboardingView: View {
         if !store.isStableApplicationLocation {
             return L10n.string("Detach must be in /Applications to update and run in the background.")
         }
-        if case .installAmphetamine = blocker {
-            return L10n.string("Detach uses both components to keep agents running reliably with the lid closed.")
+        if store.distributionMatchesBundle
+            && store.powerHelperStatus == .requiresApproval
+        {
+            return L10n.string(
+                "Detach uses a narrowly scoped bundled helper so active agents can keep running with the lid closed.")
+        }
+        if store.distributionMatchesBundle
+            && (store.powerHelperStatus == .notRegistered
+                || store.powerHelperStatus == .unavailable)
+        {
+            return L10n.string(
+                "The helper is bundled with Detach; no third-party keep-awake app is needed.")
         }
         if store.watchdogStatus == .requiresApproval {
-            return L10n.string("macOS asks you once to allow Detach to run in the background.")
-        }
-        if case .installTools = blocker {
-            return L10n.string("tmux keeps sessions running, while jq helps save their state safely.")
+            return L10n.string("macOS asks you once to allow Detach to monitor power in the background.")
         }
         if blocker == .chooseProvider {
             return L10n.string("Choose an AI client, install it using the official instructions, and return to Detach.")
@@ -269,7 +242,9 @@ struct OnboardingView: View {
     private var headerIcon: String {
         if store.isBusy { return "shippingbox.and.arrow.backward" }
         if !store.isStableApplicationLocation { return "folder.badge.plus" }
-        if case .installAmphetamine = blocker { return "bolt.heart" }
+        if store.distributionMatchesBundle && store.powerHelperStatus != .enabled {
+            return "lock.shield"
+        }
         if store.watchdogStatus == .requiresApproval {
             return "person.badge.key"
         }
@@ -287,30 +262,13 @@ struct OnboardingView: View {
             checks: store.report?.checks ?? [])
     }
 
-    private var brewPath: String? {
-        ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
-
-    private func openInTerminal(_ command: String) {
-        Task { @MainActor in
-            guard !isLaunchingTerminal else { return }
-            isLaunchingTerminal = true
-            defer { isLaunchingTerminal = false }
-            if let failure = await TerminalLauncher.open(
-                command: command,
-                terminalBundleIdentifier: terminalBundleIdentifier) {
-                terminalFailure = failure
-            }
-        }
-    }
-
     private func openWebPage(_ value: String) {
         guard let url = URL(string: value) else { return }
         NSWorkspace.shared.open(url)
     }
 
     private var technicalError: String? {
+        if let powerHelperError = store.powerHelperError { return powerHelperError }
         if let watchdogError = store.watchdogError { return watchdogError }
         if case .failed(let message) = store.phase { return message }
         return nil
@@ -345,25 +303,23 @@ struct OnboardingView: View {
         case "manifest":
             L10n.string("Install Manifest")
         case "tmux":
-            L10n.string("tmux")
-        case "jq":
-            L10n.string("jq")
+            L10n.string("Bundled tmux")
+        case "state_helper":
+            L10n.string("Detach state runtime")
+        case "power_runtime":
+            L10n.string("Detach power runtime")
+        case "power_helper":
+            L10n.string("Native Sleep Protection")
         case "provider":
             L10n.string("Provider CLI")
         case "sqlite":
             L10n.string("sqlite3")
         case "tar":
             L10n.string("tar")
-        case "caffeinate":
-            L10n.string("caffeinate")
         case "lockf":
             L10n.string("lockf")
         case "watchdog":
-            L10n.string("Detach Background Service")
-        case "amphetamine_app":
-            L10n.string("Amphetamine.app")
-        case "amphetamine_power_protect":
-            L10n.string("Amphetamine Power Protect")
+            L10n.string("Detach Background Power Monitor")
         default:
             check.label
         }
@@ -389,12 +345,19 @@ struct OnboardingView: View {
             return L10n.string("The manifest matches the CLI")
         case ("manifest", .error):
             return L10n.string("The manifest is missing, damaged, or contains a different version")
-        case ("tmux", .ok), ("jq", .ok), ("sqlite", .ok), ("tar", .ok),
-             ("caffeinate", .ok), ("lockf", .ok):
+        case ("tmux", .ok), ("state_helper", .ok), ("power_runtime", .ok),
+             ("sqlite", .ok), ("tar", .ok), ("lockf", .ok):
             guard let path = check.path, !path.isEmpty else { return check.summary }
             return L10n.format("Found: %@", path)
-        case ("tmux", .error), ("jq", .error), ("sqlite", .error),
-             ("tar", .error), ("caffeinate", .error), ("lockf", .error):
+        case ("tmux", .error), ("state_helper", .error), ("power_runtime", .error):
+            return L10n.string(
+                "A bundled runtime component is missing or damaged; run Repair.")
+        case ("power_helper", .ok):
+            return L10n.string("The native power helper is reachable")
+        case ("power_helper", .error):
+            return L10n.string(
+                "The native power helper is unavailable or needs approval")
+        case ("sqlite", .error), ("tar", .error), ("lockf", .error):
             return L10n.format(
                 "%@ was not found in PATH",
                 localizedDiagnosticLabel(for: check))
@@ -413,14 +376,6 @@ struct OnboardingView: View {
             return L10n.string("Background checks are active")
         case ("watchdog", .error):
             return L10n.string("The required background check is not registered or needs approval")
-        case ("amphetamine_app", .ok):
-            return L10n.string("Amphetamine is installed in Applications")
-        case ("amphetamine_app", .error):
-            return L10n.string("Install Amphetamine from the Mac App Store into Applications")
-        case ("amphetamine_power_protect", .ok):
-            return L10n.string("Power Protect is installed")
-        case ("amphetamine_power_protect", .error):
-            return L10n.string("Install Power Protect from the official Amphetamine website")
         default:
             return check.summary
         }
@@ -436,35 +391,16 @@ struct OnboardingView: View {
 
     private func remediation(for id: String) -> String? {
         switch id {
-        case "tmux", "jq":
-            L10n.string("Install the dependencies in Terminal: brew install tmux jq")
+        case "tmux", "state_helper", "power_runtime":
+            L10n.string("Run Repair to restore Detach's bundled runtime.")
         case "provider":
             L10n.string("Install and authenticate Codex CLI or Claude CLI, then retry setup.")
         case "cli_path":
             L10n.string("Open a new Terminal window. Repair will configure the detach command for your shell again.")
         case "app_location":
             L10n.string("Running from a DMG or temporary copy is unreliable.")
-        case "amphetamine_app":
-            L10n.string("Install Amphetamine from the Mac App Store.")
-        case "amphetamine_power_protect":
-            L10n.string("After installing Amphetamine, install Power Protect from the official website.")
         default:
             nil
-        }
-    }
-
-    private func amphetamineStatusText(
-        _ prerequisites: [AmphetaminePrerequisite]
-    ) -> String {
-        switch (prerequisites.contains(.app), prerequisites.contains(.powerProtect)) {
-        case (true, true):
-            L10n.string("Two required components are missing: Amphetamine.app and Amphetamine Power Protect.")
-        case (true, false):
-            L10n.string("The required Amphetamine.app is missing.")
-        case (false, true):
-            L10n.string("The required Amphetamine Power Protect is missing.")
-        case (false, false):
-            L10n.string("Required Amphetamine components are missing.")
         }
     }
 }

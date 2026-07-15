@@ -7,11 +7,25 @@ let watchdogInfoPlist = Context.environment["DETACH_WATCHDOG_INFO_PLIST"]
 let package = Package(
     name: "DetachApp",
     platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "detach-power", targets: ["DetachPower"]),
+        .executable(name: "detach-power-helper", targets: ["DetachPowerHelper"]),
+        .executable(name: "detach-state", targets: ["DetachState"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4"),
     ],
     targets: [
         .target(name: "DetachKit"),
+        .executableTarget(
+            name: "DetachPower",
+            dependencies: ["DetachKit"]),
+        .executableTarget(
+            name: "DetachPowerHelper",
+            dependencies: ["DetachKit"]),
+        .executableTarget(
+            name: "DetachState",
+            dependencies: ["DetachKit"]),
         .executableTarget(
             name: "DetachApp",
             dependencies: [

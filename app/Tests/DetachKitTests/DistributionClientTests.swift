@@ -14,14 +14,14 @@ final class DistributionClientTests: XCTestCase {
         let installer = FakeCLI()
         let cli = FakeCLI()
         installer.responses[
-            "install --source app --payload-dir /tmp/payload --version-file /tmp/payload/VERSION --no-launch-agent"
+            "install --source app --payload-dir /tmp/payload --version-file /tmp/payload/VERSION"
         ] = .success(CLIResult(exitCode: 0, stdout: "installed", stderr: "", timedOut: false))
 
         let output = try await client(installer: installer, cli: cli).synchronize()
         XCTAssertEqual(output, "installed")
         XCTAssertEqual(installer.calls.last, [
             "install", "--source", "app", "--payload-dir", "/tmp/payload",
-            "--version-file", "/tmp/payload/VERSION", "--no-launch-agent",
+            "--version-file", "/tmp/payload/VERSION",
         ])
     }
 
@@ -29,7 +29,7 @@ final class DistributionClientTests: XCTestCase {
         let installer = FakeCLI()
         let cli = FakeCLI()
         _ = try await client(installer: installer, cli: cli).synchronize(repair: true)
-        XCTAssertEqual(installer.calls.last?.suffix(2), ["--no-launch-agent", "--repair"])
+        XCTAssertEqual(installer.calls.last?.last, "--repair")
     }
 
     func testDoctorParsesReportEvenWhenChecksFail() async throws {

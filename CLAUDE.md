@@ -1,10 +1,27 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
 ## What this is
 
-A macOS harness that runs Codex or Claude Code detached inside a persistent tmux session, keeps the MacBook awake via Amphetamine Closed-Display Mode, and checkpoints provider session state every 5 minutes so an abrupt shutdown loses at most ~5 minutes of work. Pure Bash — no build, lint, or dependency step. README.md covers user-facing usage, install, recovery semantics, and provider policy; keep it in sync when behavior changes.
+Detach is a macOS 14+ reliability harness for long-running Codex CLI and Claude
+Code sessions. It launches a provider inside a persistent, Detach-owned tmux
+server, keeps private recovery checkpoints every five minutes by default, and
+can protect an active session from idle and closed-lid sleep.
+
+The user installs and authenticates Codex and/or Claude separately. Detach does
+not replace or redistribute either provider. Everything else required at
+runtime is part of the app as Apple Silicon (`arm64`) code: tmux, the typed `detach-state` helper,
+the unprivileged `detach-power` wrapper, the privileged power helper, the
+background monitor, and Sparkle. There are no Homebrew runtime dependencies.
+
+The self-contained runtime update is not released yet. A release is blocked on
+the signed power smoke test and a supervised closed-lid hardware test; never
+describe the update as published until that release actually exists.
+
+README.md is the user-facing contract for setup, lifecycle, recovery, provider
+policy, and power safety. Keep it synchronized whenever behavior changes.
 
 ## Public repository and local-only material
 
@@ -24,150 +41,329 @@ including this file, must not contain private context.
   Before each commit and release, inspect the staged diff, tracked-file list,
   artifact contents, and metadata for private or machine-specific data.
 - If private data appears in a commit or artifact, stop before pushing or
-  publishing and remove it from the history or artifact. Deleting it in a
-  later public commit is not sufficient.
+  publishing and remove it from the history or artifact. Deleting it in a later
+  public commit is not sufficient.
 
-## Commands
+## Verification commands
 
-- `tests/run.sh` — integration test for the Codex adapter. Hermetic: fake provider binary (`tests/fake-codex`), private tmux server (own `-L` socket and `TMUX_TMPDIR`), temp state roots, Amphetamine disabled.
-- `tests/run-claude.sh` — the same for the Claude adapter (`tests/fake-claude`).
-- `tests/distribution.sh` — hermetic versioned install/upgrade/doctor/uninstall
-  and portable CLI LaunchAgent coverage (fake tmux/launchctl, temp HOME). It
-  also runs the hermetic Sparkle release preflight.
-- `DETACH_CODEX_TEST_KEEP=1 tests/run.sh` — preserve the temp state and tmux server after a run for inspection (`DETACH_CLAUDE_TEST_KEEP=1` does the same for `run-claude.sh`).
-- `tests/amphetamine-smoke.sh` — optional system smoke test that enables REAL Amphetamine Closed-Display Mode and toggles real system sleep via Power Protect. Do not run it as routine verification.
+- `tests/run.sh` — hermetic Codex integration with a fake provider, private tmux
+  socket/state roots, and a fake native power wrapper.
+- `tests/run-claude.sh` — the equivalent Claude integration.
+- `DETACH_CODEX_TEST_KEEP=1 tests/run.sh` — keep the Codex test's temporary
+  state and tmux server for inspection. Use `DETACH_CLAUDE_TEST_KEEP=1` for the
+  Claude test.
+- `tests/distribution.sh` — immutable install/upgrade/repair/doctor/uninstall
+  coverage for the fixed payload (`detach`, `detach-core`, `detach-install`,
+  `detach-state`, `detach-power`, and `tmux`) with a temporary home.
+- `tests/tmux-runtime.sh` — pinned tmux source/provenance, arm64-only packaging,
+  linkage, signing, and bundled native-helper contract checks.
+- `tests/release-preflight.sh` and `tests/publish-preflight.sh` — hermetic release
+  tooling, arm64 appcast, production-DMG verification, exact artifact allowlist,
+  and explicit publication-confirmation guards.
+- `cd app && swift test` — unit tests for DetachKit, app services, typed state
+  operations, power lifecycle, lease policy, XPC policy, and presentation.
+- `app/scripts/make-app.sh` followed by `app/scripts/verify-app.sh` — build and
+  verify a local app. A normal build must contain only an `arm64` slice for the
+  app, watchdog, tmux, state helper, power client, root helper, and embedded
+  Sparkle executables. Intel Macs are not supported.
+- `DETACH_ALLOW_REAL_POWER_TEST=1 tests/power-smoke.sh` — deliberately changes
+  real system power state through an installed, signed, approved app. Never run
+  it as routine verification. Before a release, run it only on supervised
+  hardware whose initial sleep setting is normal, then separately verify actual
+  closed-lid behavior.
 
-- `cd app && swift test` — unit tests for `DetachKit` and the app-side updater
-  error/fallback policy.
-- `app/scripts/make-app.sh` — build the universal `Detach.app` bundle (release
-  build, bundled CLI/helper/Sparkle, ad-hoc codesign by default) into
-  `app/build/`.
-- `app/scripts/make-dmg.sh` — create a local DMG. `app/scripts/release.sh` is the
-  strict Developer ID + app/DMG notarization + Sparkle appcast pipeline. It
-  requires credentials, a matching Ed25519 key, and a clean tagged commit.
-- `app/scripts/publish-release.sh` — explicit GitHub Release publication; it
-  verifies provenance, appcast destinations and checksums in a draft before
-  publishing, and refuses to replace an existing tag's assets.
+There is no separate linter. Run the relevant shell integrations, Swift tests,
+packaging contracts, shell syntax checks, and `git diff --check` for changes in
+their scope.
 
-There is no separate linter; `run.sh` / `run-claude.sh` are the verification path for any change to `bin/`, `swift test` for `app/`.
+`app/scripts/release.sh` and `app/scripts/publish-release.sh` are explicit,
+strict release operations. They require Developer ID signing, notarization,
+Sparkle credentials and keys, a clean tagged commit, provenance checks, and
+publication confirmation. Publication additionally requires
+`DETACH_CONFIRM_PUBLISH=owner/repository@tag` exactly; no generic confirmation
+is accepted. Do not run, tag, notarize, upload, or publish as part of ordinary
+implementation or verification.
 
-The repo copies are not what runs on the machine. `./install.sh` or Detach.app
-installs immutable payloads under
+## Installed distribution
+
+The repository copies are not what runs on the machine. Detach.app installs an
+immutable payload under
 `~/.local/libexec/detach/versions/<semver>-<hash>/` and atomically switches
-`~/.local/bin/detach`. Installation adds an owned, idempotent PATH entry to the
-user's login and interactive shell profiles (`zsh`, `bash`, `fish`, `csh`/`tcsh`,
-or POSIX `sh`/`dash`/`ksh`) so a new Terminal can invoke `detach` directly.
-Uninstall restores unchanged profiles byte-for-byte and removes only the exact
-Detach-owned entry from a profile that gained unrelated user edits. Edits to
-`bin/` take effect only after Repair/reinstall.
+`~/.local/bin/detach`. The installed payload contains, in fixed manifest and
+hash order:
 
-## Architecture
+1. `detach`
+2. `detach-core`
+3. `detach-install`
+4. `detach-state`
+5. `detach-power`
+6. `tmux`
 
-Two internal executables that must live side by side (`detach` resolves the core as its sibling after following symlinks). Only `detach` is exposed on `PATH`; installation puts both files under `~/.local/libexec/detach` and symlinks the frontend into `~/.local/bin`:
+Installation owns one idempotent PATH entry for login and interactive shells.
+Uninstall restores an unchanged profile byte-for-byte, or removes only the
+exact Detach-owned entry if the user changed other content. Edits to `bin/` or
+the native helpers take effect only after app synchronization or Repair.
 
-- **`bin/detach`** — thin provider multiplexer. Sets `DETACH_PROVIDER=codex|claude` and execs the core. It owns the cross-provider `list`, UUID-aware `resume`, shared `config`, and distribution-wide `doctor`/`repair`/`uninstall` commands.
-- **`bin/detach-core`** — the internal core (~3300 lines). It rejects direct invocation unless the frontend marks the call with `DETACH_CORE_ENTRYPOINT=1`; that marker is propagated into tmux for self-reinvocation. All logic lives here, parameterized by `$PROVIDER`; provider differences (session identity, checkpoint artifacts, resume-flag allowlists, policy defaults) are gated inline, not split into adapter files.
+App installation additionally registers the bundled power LaunchDaemon and
+signed per-user watchdog through `SMAppService`. The root helper needs one-time
+administrator approval. Do not recreate the removed portable CLI LaunchAgent.
 
-### Core patterns
+## Runtime architecture
 
-- **Self-reinvocation dispatch.** The `case` at the bottom of the core routes `__`-prefixed internal commands (`__worker`, `__checkpoint_once_locked`, `__amphetamine_acquire_locked`, `__reconcile_amphetamine`, ...) back into the same script. Critical sections run as `lockf <lockfile> "$SELF" __something_locked ...` so the lock brackets the whole child process. New shared-state mutations should follow this pattern.
-- **Everything is env-injectable.** Every external binary (tmux, jq, sqlite3, tar, osascript, provider CLIs, ...) and every state path has a canonical `DETACH_*` override. Provider-specific overrides use `DETACH_CODEX_*` or `DETACH_CLAUDE_*`. Provider-owned variables such as `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` keep their provider names. This is what makes the tests hermetic — any new external dependency or path must get the same treatment.
-- **Distribution is immutable and locked.** `VERSION` is the logical app/CLI
-  version; `scripts/install.sh` computes a payload hash, stages beside the
-  target, validates frontend/core/version/hashes, atomically switches the
-  public symlink, then writes `~/.local/state/detach/install.json`. App sync,
-  CLI-only install, Repair, and Uninstall share this implementation and
-  `install.lock`; session start takes the same lock before creating its worker,
-  closing the uninstall/start race. Never overwrite an existing payload path,
-  reuse active bytes as a Repair source, or ignore `BUILD` on downgrade checks.
-  Shell PATH setup follows the same ownership rule: preserve existing profile
-  content, track backups/hashes under install state, refuse unsafe paths, and
-  never delete an entry that is not exactly Detach-owned.
-- **Guarded metadata.** Per-session `meta.json` (schema 1) is updated only via jq through `json_update_meta_for_run`, guarded by a `run_token`, so a stale worker or checkpoint loop from a replaced session cannot clobber the current one.
-- **Validate before restore.** Anything that writes into a provider's own store (`~/.claude/projects/...`, `~/.codex/sessions/...`) goes through `safe_*_path` (symlink/traversal rejection) and `valid_*` (session-id match, parseable JSONL) checks, writes to a tmp file, validates, then `mv -f`. A checkpoint never overwrites a valid live transcript that is newer/larger, and the Codex shared SQLite is backed up but never restored automatically.
-- **State is private.** `umask 077`; checkpoints under `~/.local/state/detach/{codex,claude}/sessions/<name>/` contain full conversation data.
-- Error handling is explicit `die`-based with `set -u` and `pipefail`; the `bin/` scripts deliberately do not use `set -e` (tests do use `set -eu`).
+### Shell entry points
 
-### Lifecycle
+- **`bin/detach`** is the only command exposed on PATH. It resolves all owned
+  executables as immutable siblings, selects `codex` or `claude`, owns the
+  cross-provider `list`, UUID-aware `resume`, `power status`, configuration,
+  doctor, repair, and uninstall surfaces, then invokes the core.
+- **`bin/detach-core`** owns the provider-neutral session lifecycle, inline
+  provider adaptations, checkpoint/recovery policy, tmux status, and internal
+  self-reinvocation commands. It rejects direct invocation unless the frontend
+  supplies `DETACH_CORE_ENTRYPOINT=1`.
 
-`start` takes the per-project lock (`DETACH_LOCKS_ROOT` is shared across providers — one detached agent per project root, total), creates a tmux session named `detach-<provider>-<slug>-<8-hex sha256 of project dir>` with `remain-on-exit on`, and runs `__worker` in the pane. Detach-owned tmux metadata and presentation use session-scoped `@detach*` options. The worker starts the checkpoint loop, runs the provider under `caffeinate -s`, and on exit records status into meta/`exit-status`, takes a final checkpoint, and releases the Amphetamine lease. The retained pane keeps `logs`/`status` useful; a new `start` replaces a completed retained pane but refuses a live one.
+Tests may inject binary and state paths with `DETACH_*` variables. Production
+must default tmux, `detach-state`, and `detach-power` to the immutable sibling
+payload, never to Homebrew or another ambient installation. Provider binaries
+remain user-owned and are discovered through `PATH` or provider-specific test
+overrides. macOS-supplied `sqlite3`, `tar`, `env`, and `lockf` remain explicit,
+injectable platform utilities.
 
-When Detach daemonizes the shared tmux server, its client runs from the
-persistent install-state root, never the project directory. Worker launch uses
-`env -C` to enter that stable root and then `cd -P` to enter the project under
-the cleanup trap, so a tmux server holding an unlinked cwd cannot pass that
-dead directory to a new provider or strand startup metadata if the project
-disappears during launch.
+Critical shared-state operations run by self-reinvoking the core under `lockf`,
+for example `__checkpoint_once_locked`, `__delete_locked`, and
+`__start_tmux_session_locked`. New shared mutations should keep the lock around
+the whole child process.
 
-Each session gets a stable color from a fixed palette, hashed from provider and canonical project directory. The color is stored in `meta.json.session_color`, tmux `@detach_color`, and `list --json`; keep those three representations and the Swift `Session` decoder in sync. By default Detach applies only session-local tmux status options, updates them across running/completed/failed states, and leaves global/foreign tmux configuration untouched. `detach config tmux-style inherit` removes those local overrides; the shared config write is serialized by `install.lock`.
+### Typed state boundary
 
-Session identity: Claude gets a preassigned UUID via wrapper-owned `--session-id`; Codex is discovered after launch by matching the `detach_<run_token>` originator (injected via `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`) in rollout files against `~/.codex` SQLite threads, refusing ambiguity. The worker `die`s if user args include wrapper-owned flags (Claude: `--session-id/--resume/--continue/--fork-session/--background/--tmux/--worktree`; Codex: `-C/--cd`), and applies policy defaults only when the user did not pass their own (Codex approval/sandbox, Claude `--permission-mode auto`).
+`detach-state` replaces the former jq dependency. Its stable typed commands
+cover guarded metadata create/get/patch/match operations, JSONL validation and
+summary, and context/session JSON emission. Do not reintroduce ad-hoc JSON text
+editing or a jq runtime requirement.
 
-Checkpoints (every `DETACH_<PROVIDER>_CHECKPOINT_INTERVAL`, default 300s, under a per-session `lockf`): meta, transcript/rollout JSONL, tmux pane capture, git worktree status, plus per provider — Codex SQLite `.backup`; Claude companion dirs (project session dir, file-history, session-env, tasks, teams) packed atomically into `claude-session.tar`. A `/bin/sync` follows unless `DETACH_<PROVIDER>_SYNC=0`.
+Per-session `meta.json` uses schema 1 and a `run_token`. A stale worker or
+checkpoint loop must not overwrite metadata belonging to a replacement run.
+Anything restored into provider storage must pass canonical path, symlink,
+session-ID, and JSONL validation, be written to a temporary file, validated
+again, and only then be moved into place.
 
-Resume: only flags on the allowlist in `write_resume_args` are persisted to `resume-args.bin` and replayed by `resume`/`recover` — a new provider flag that should survive resume must be added there.
+State is private (`umask 077`) under
+`~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
+conversation data. Codex's shared SQLite database may be backed up after an
+integrity check but is never restored automatically.
 
-`list --json` emits one JSON object per session (JSONL, `schema: 1`, derived `effective_status`) for scripting and the Detach.app UI. `delete [--force]` removes a stopped session's state dir, retained pane, and stale lease; its destructive part runs under the session checkpoint lock via `__delete_locked` and never touches the provider stores.
+### Session lifecycle and tmux
 
-### Amphetamine keep-awake
+`start` takes one project lock shared by both providers, creates a session named
+`detach-<provider>-<slug>-<project-hash>`, enables `remain-on-exit`, and launches
+`__worker`. The shared tmux daemon is anchored in persistent install state, not
+the first project directory. It is addressed only through the private absolute
+`$DETACH_INSTALL_STATE_ROOT/tmux/tmux.sock`, never ambient `TMUX_TMPDIR`.
+Install migration checks both the older default socket and the historical
+`-L dev.tsarev.detach` socket before switching payloads. Each worker starts
+from stable install state and then enters the canonical project beneath its
+cleanup trap.
 
-Amphetamine.app, Amphetamine Power Protect, and a registered background
-watchdog are required prerequisites. `detach doctor` reports the app and Power
-Protect script as two separate required base checks; their paths are injectable
-through `DETACH_AMPHETAMINE_APP_PATH` and
-`DETACH_AMPHETAMINE_POWER_PROTECT_PATH`. Installs canonicalize the config to
-`AMPHETAMINE=1`. `DETACH_AMPHETAMINE=0` exists for hermetic integration tests;
-do not use it to build a user-facing optional mode.
+The worker starts checkpoint and power-status loops, then runs the provider only
+through:
 
-Reference-counted lease files under `~/.local/state/detach/amphetamine` are shared by both providers. The first session starts one infinite Closed-Display-Mode Amphetamine session and records ownership in `owner.json`; the last owned lease ends it only if the observable session properties are unchanged, and a pre-existing user session is never replaced or ended. `launchagents/dev.tsarev.detach.cli-watchdog.plist` runs `detach __reconcile_amphetamine` every 60s to expire stale leases after crashes and to leave Amphetamine off at/below the low-battery threshold.
+```text
+detach-power run --session <name> --run-token <token>
+  --ready-file <absolute-path> -- <provider> ...
+```
 
-### Detach.app (`app/`)
+The power wrapper must confirm both protection layers and atomically mark the
+ready file before launching the provider. The starter waits for that handshake
+and must never print `Started` before it arrives. HUP/INT/TERM are forwarded to
+the provider while the wrapper remains alive long enough to release its lease
+and assertion; explicit `detach stop` also performs an idempotent release by
+session/run token. On provider exit, the worker records status, attempts a final
+checkpoint, and leaves the pane retained for logs and diagnosis.
 
-A SwiftPM package: `DetachKit` (tested parsing/process/distribution clients),
-`DetachApp` (SwiftUI, macOS 14+), and the small `DetachWatchdog` helper. The app
-bundles `DetachCLI`, syncs it on bootstrap, renders `doctor --json`, and always
-registers its required static bundled LaunchAgent via `SMAppService`. Missing
-Amphetamine or Power Protect and an unapproved background helper all block
-onboarding readiness. The helper resolves
-the stable per-user CLI at runtime and writes a heartbeat; never put user paths
-into the signed plist. Its signed-service label `dev.tsarev.detach.watchdog`
-is intentionally distinct from the CLI-only label
-`dev.tsarev.detach.cli-watchdog`, so the signed helper and portable script agent
-cannot collide in BackgroundTaskManagement. The standalone helper must retain its embedded
-`__TEXT,__info_plist`. Distribution bootstrap is allowed only from
-`/Applications`, not a DMG/App Translocation path.
-When helper/plist bytes change, await unregister completion before registering
-again and use the bounded retry for macOS' transient SMAppService Code=1 race.
-The selected terminal is stored by bundle identifier. Interactive actions write
-a private, self-deleting `.command` file and open it in the selected installed
-terminal through `NSWorkspace`; terminal actions must not use Apple Events.
-Terminal auto-detection treats any `CFBundleDocumentTypes` entry with the
-`Shell` role for an executable flavor (shell-script UTIs, `public.unix-executable`,
-or script extensions) as a terminal — editors declare only Editor/Viewer roles
-and must stay excluded. The stored selection may also be an arbitrary app picked
-manually in Settings, so launch-time resolution must not re-filter by
-declarations; incompatible apps are caught by the launch acknowledgement
-timeout.
-Both the app and `DetachWatchdog` retain Automation solely for required
-Amphetamine coordination: app-launched CLI stop/delete paths may release the
-final lease, while the helper reconciles leases in the background. Session
-operations still consume only the public CLI surface. App notifications are
-opt-in and use one app-level polling service with a baseline and transition
-deduplication. `list --json` exposes optional `agent_turn_state` and opaque
-`agent_turn_id` fields. Derive them only from structured provider lifecycle
-records: Codex task/turn start, complete, or abort events; and Claude main-chain
-external user plus `system/turn_duration` events. Never infer attention from
-terminal text. A completed turn means the live CLI is waiting for the next user
-message; mid-turn permission and elicitation prompts are not covered by this
-contract. On partially invalid `list --json`, keep the last good list; keep
-`emit_list_json` and `Session` in sync.
+Closing Terminal or Detach.app only removes clients. The Detach tmux server,
+worker, provider, checkpoint loop, and power wrapper continue in the macOS user
+session. They do not promise survival across logout or reboot, and an explicit
+kill of tmux/provider ends the live run. Recovery checkpoints remain available.
+Integration tests must preserve this close-client lifetime contract.
 
-Sparkle 2 is pinned in `Package.resolved`, embedded under `Contents/Frameworks`
-with its symlink layout intact, and signed inside-out before the outer app.
-Ad-hoc development builds alone use
-`com.apple.security.cs.disable-library-validation`; it must never appear in a
-Developer ID build. `UpdaterService` starts only when the packaged app is in
-`/Applications` and has a valid HTTPS `SUFeedURL` plus 32-byte Ed25519 public
-key. User update preferences belong to `SPUUpdater`/NSUserDefaults, not a
-parallel `AppStorage` value. A Sparkle release updates only `.app`; bootstrap
-then activates its immutable CLI payload without changing live sessions.
+Detach status options are session-local and use `@detach*`; do not mutate global
+or foreign tmux configuration. The text status is the primary power signal:
+`MAC AWAKE`, `MAC CAN SLEEP`, `LOW BATTERY`, `POWER UNAVAILABLE`, or a
+transition label. The app uses equivalent readable text such as **Mac stays
+awake** and **Mac can sleep**. Temporary icons are secondary.
+
+`list --json` emits JSONL schema 1 and includes the optional
+`power_protection_state`, `agent_turn_state`, and opaque `agent_turn_id`. Keep
+the emitter and Swift `Session` decoder synchronized. Derive turn state only
+from structured provider lifecycle records, never terminal text.
+
+### Provider identity and checkpoints
+
+Claude gets a wrapper-owned UUID via `--session-id`. Codex identity is resolved
+after launch by matching the run-token originator in rollout files and Codex's
+SQLite threads, refusing ambiguity. Wrapper-owned provider flags are rejected;
+policy defaults apply only when the user did not supply an allowed override.
+
+Checkpoints run every `DETACH_<PROVIDER>_CHECKPOINT_INTERVAL` seconds (300 by
+default) under a per-session lock and include metadata, validated provider
+JSONL, tmux pane capture, and canonical repository-root context found from a
+real `.git` ancestor without invoking Git. Codex adds an integrity-checked
+SQLite backup. Claude atomically archives the matching project session, file
+history, session environment, tasks, and teams. `/bin/sync` follows unless the
+provider-specific `DETACH_*_SYNC=0` test override is set.
+
+Only allowlisted provider flags are serialized to `resume-args.bin`. A provider
+flag that should survive Resume or Recover must be added deliberately.
+
+## Native power protection
+
+Power protection has two required layers and one observable combined state:
+
+1. `detach-power` is an unprivileged, signed wrapper. It holds the public IOKit
+   user-idle-system-sleep assertion, acquires a root-helper lease over XPC, runs
+   the provider with inherited cwd/environment/stdio, and returns its exit code.
+2. `DetachPowerHelper` is a demand-launched root daemon registered from the app.
+   It manages only the machine-wide closed-lid setting through absolute
+   `/usr/bin/pmset` invocations and a renewable lease registry.
+
+The root helper installs a listener-level Foundation code-signing requirement
+before accepting XPC or reconciling power state. It accepts only valid code
+signed as `dev.tsarev.detach.power` by the same Team ID and only when the
+connection's audit-token-derived effective UID matches the non-root owner of
+`/dev/console`. Root, loginwindow/no-console, and other local UIDs are rejected;
+do not replace either audit-token check with PID-based validation. Its XPC
+surface is limited to status, acquire, renew, release, and the typed
+prepare/cancel unregistration lifecycle; it must never execute arbitrary paths,
+shell strings, or provider commands as root.
+
+The client opens a short-lived XPC connection for every request. After Fast
+User Switching, the previous background user's next heartbeat, status, or
+release request is rejected and an unrenewed lease expires through the normal
+TTL; an RPC already in flight may finish before its connection is invalidated.
+At logout/loginwindow `/dev/console` is root-owned, so new helper requests are
+rejected. Detach does not promise session survival across logout.
+
+Helper state is durable at `/var/db/dev.tsarev.detach/power-state.json`, with a
+private `0700` directory, `0600` regular file, symlink rejection, atomic writes,
+and file/directory fsync. Ownership intent is persisted before changing power
+state. A pre-existing enabled setting is borrowed and never disabled. A setting
+Detach enabled is restored after the last live lease, a stale lease, low
+battery, or orderly SIGTERM/SIGINT handling. The state records the current
+`kern.bootsessionuuid`; a different boot clears every old lease before power is
+reconciled, and implausibly future renewal timestamps expire rather than live
+forever. Do not manually change the same machine-wide boolean while Detach owns
+it.
+
+The client lease heartbeat remains every 30 seconds; the helper reconciles
+machine power state every 10 seconds. Leases expire after 120 seconds without
+renewal, with a maximum of 256. Transient renewal failures are retried; an
+active failure is surfaced rather than silently reporting protection. Read-only
+status returns a cached snapshot refreshed at startup, after mutations, and by
+the reconciler. It must never invoke `pmset` or wait behind the root mutation
+lock, so UI, watchdog, and tmux polling remain nonblocking.
+
+The default initial acquire carries an eight-second absolute server deadline.
+If protection is not confirmed before it, root rolls back only that request's
+persisted lease, restores a previous matching lease when applicable, and
+reconciles the owned setting before returning failure. This prevents a timed-out
+caller from activating protection later. The outer XPC timeout remains 30
+seconds so rollback can finish. Root `pmset` invocations have bounded output and
+a two-second timeout. The readable tmux power label refreshes every ten seconds
+rather than spawning one root status request every two seconds per session.
+
+The low-battery threshold is 10% while on battery power. The helper releases
+closed-lid protection it owns, the wrapper releases its IOKit assertion, and the
+provider is allowed to finish only while the Mac remains awake. Initial
+acquisition fails closed at low battery. A borrowed external setting cannot be
+turned off, so status must never falsely report the low-battery safe state while
+that setting remains active.
+
+`pmset -a disablesleep 0|1` and its `SleepDisabled` output are undocumented
+macOS interfaces. Parser/unit tests do not establish real closed-lid behavior.
+Every release candidate must pass the explicitly opted-in signed smoke test and
+a supervised test on real supported Apple Silicon hardware before publication.
+Exact arm64 slice and launch verification remains required.
+
+## Detach.app
+
+`app/` is a SwiftPM package containing `DetachKit`, `DetachApp`,
+`DetachWatchdog`, `DetachState`, `DetachPower`, and `DetachPowerHelper`. The app
+bundles and signs arm64-only versions of every executable, the immutable CLI
+payload, pinned tmux sources/licenses/provenance, Sparkle, and the complete
+pinned Sparkle license notice.
+
+Onboarding is ready only when the bundled distribution matches, at least one
+user-owned provider is installed, the native power daemon is registered and
+approved, and the background monitor is enabled. Registration may truthfully
+remain in `requiresApproval`; never treat it as enabled before macOS does. When
+helper/plist bytes change after an app update, unregister, await completion,
+then use the bounded retry for the transient SMAppService Code=1 race. Do not
+replace a helper with active leases: defer the update.
+
+Helper replacement is a durable fail-closed transaction. One versioned JSON
+journal records `preparing`, `unregisterSubmitted`, `removed`, or `registering`,
+the install/remove goal, target digest, boot UUID, and lifetime-barrier contract.
+Every transition is written by atomic rename and fsynced with its directory
+before the corresponding side effect. A per-user `flock` protects that user's
+journal. In addition, the root helper creates a stable root-owned `0644` inode
+under `/var/run`; every app user opens it read-only and holds one exclusive
+kernel `flock` across the complete asynchronous SMAppService transaction. This
+is the machine-wide single-writer barrier across Fast User Switching, and the
+kernel releases it if the app crashes. Only the current non-root console user's
+app may perform register or unregister mutations, checked again immediately
+before each mutation. Root persists `unregistration_pending`, blocks
+acquire/renew without a wall-clock expiry, and restores and reads back only the
+setting Detach owns.
+
+The helper takes an exclusive, root-owned lifetime `flock` before its listener
+can answer prepare and holds it until process exit. The app writes
+`unregisterSubmitted` only after observing that lock. A fresh successful async
+SMAppService callback is the normal process-reaped barrier. If a crash loses the
+callback, exact `notRegistered` status plus acquisition of the released lifetime
+lock (or a changed boot UUID) is required before registration; generic
+`unavailable` is not sufficient. An unregister error keeps the journal and root
+gate closed for retry rather than reopening it while a callback may still be
+pending. If a different user acquires the system lock after the original app
+crashed and has no local journal, the existing root-created lock/lifetime files
+prove this is not a pristine install: it bootstraps at `unregisterSubmitted`,
+replays asynchronous unregister, and cannot register until that fresh callback
+or the exact absent-job plus released-lifetime recovery barrier completes.
+
+Before registering a replacement the app fsyncs `registering` with the target
+digest. After macOS reports the new helper enabled, a successful cancel XPC
+reply proves launch readiness and reopens the gate; only then is the definition
+recorded and the journal cleared. Approval and retry failures remain pending for
+the next launch. An ordinary helper SIGTERM/SIGINT uses only the process-local
+termination gate and must not create this persistent update state.
+
+Settings → System contains one **Mac Power** block; do not duplicate its status
+or approval controls elsewhere in that tab. It presents the sleep state in
+words, helper and background-monitor health, the 10% battery rule, and the
+appropriate approval, setup, repair, or refresh action. Its effective state is
+read from a healthy watchdog heartbeat newer than three minutes and is
+`unknown` when that snapshot is missing, stale, or malformed. Refresh the
+installation context when Settings appears or the app becomes active. While the
+System tab remains visible, publish a fresh heartbeat snapshot every ten seconds
+so the displayed state cannot remain stale merely because SwiftUI did not
+otherwise re-render.
+
+The watchdog is a signed per-user LaunchAgent with its own embedded
+`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` at runtime, calls
+`detach power status --json`, and writes private health state. The privileged
+daemon is a distinct demand-launched LaunchDaemon. Neither plist may contain a
+user-specific path. Native power protection requires no Apple Events or
+Automation entitlement.
+
+Distribution bootstrap is allowed only from `/Applications`, not a DMG or App
+Translocation path. Terminal actions use a private self-deleting `.command`
+file and `NSWorkspace`; they do not use Apple Events. Notifications are opt-in
+and driven by one app-level poller with baseline and transition deduplication.
+
+Sparkle 2 is pinned in `Package.resolved`, embedded with its symlink layout
+intact, and signed inside-out before the outer app. Ad-hoc development builds
+alone use `com.apple.security.cs.disable-library-validation`; it must never
+appear in a Developer ID build. `UpdaterService` starts only for a packaged app
+in `/Applications` with a valid HTTPS feed URL and 32-byte Ed25519 public key.
+A generated or published appcast must contain exactly one arm64 hardware
+requirement so Intel clients are never offered the unsupported update.
+A Sparkle update replaces only the app; bootstrap atomically activates its new
+immutable CLI payload without rewriting live-session binaries.

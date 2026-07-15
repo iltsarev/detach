@@ -2,12 +2,35 @@ import Foundation
 import Observation
 import DetachKit
 
+enum InstallationContextOperation: Equatable, Sendable {
+    case refresh
+    case repair
+}
+
 @Observable @MainActor
 final class InstallationStore {
     private struct BundledMetadata {
         let version: String
         let build: String
         let payloadID: String
+    }
+
+    private struct WatchdogHeartbeat: Decodable {
+        let state: String
+        let powerState: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case state
+            case powerState = "power_state"
+        }
+    }
+
+    private struct WatchdogHeartbeatSnapshot {
+        let statusURL: URL
+        let heartbeat: WatchdogHeartbeat?
+        let fresh: Bool
+
+        var healthy: Bool { fresh && heartbeat?.state == "ok" }
     }
 
     enum Phase: Equatable {
@@ -22,17 +45,39 @@ final class InstallationStore {
     private(set) var report: DoctorReport?
     private(set) var watchdogStatus: WatchdogStatus = .unavailable
     private(set) var watchdogError: String?
+    private(set) var powerHelperStatus: PowerHelperRegistrationStatus = .unavailable
+    private(set) var powerHelperError: String?
     private(set) var lastInstallMessage: String?
     private(set) var distributionMatchesBundle = false
+    private(set) var powerProtectionState: PowerProtectionState = .unknown
 
     private let detachPath: String
     private let watchdog = WatchdogService()
+    private let powerHelper = PowerHelperService()
     private let payloadDirectory: URL?
     private let bundleURL: URL
     private let bundledMetadata: BundledMetadata?
+    private let powerStateRoot: URL
+    private let contextOperationOverride:
+        (@MainActor (InstallationContextOperation) async -> Void)?
+    private var contextOperationRunning = false
+    @ObservationIgnored private var currentContextOperation:
+        InstallationContextOperation?
+    @ObservationIgnored private var pendingContextRefresh = false
+    @ObservationIgnored private var pendingContextRepair = false
+    @ObservationIgnored private var contextOperationWaiters:
+        [CheckedContinuation<Void, Never>] = []
 
-    init(detachPath: String, bundle: Bundle = .main) {
+    init(
+        detachPath: String,
+        bundle: Bundle = .main,
+        powerStateRoot: URL? = nil,
+        contextOperationOverride:
+            (@MainActor (InstallationContextOperation) async -> Void)? = nil
+    ) {
         self.detachPath = detachPath
+        self.powerStateRoot = powerStateRoot ?? Self.defaultPowerStateRoot
+        self.contextOperationOverride = contextOperationOverride
         bundleURL = bundle.bundleURL.standardizedFileURL
         let candidate = bundle.bundleURL
             .appendingPathComponent("Contents/Resources/DetachCLI", isDirectory: true)
@@ -48,6 +93,7 @@ final class InstallationStore {
         } else {
             bundledMetadata = nil
         }
+        refreshPowerProtectionState()
     }
 
     var hasDistributionPayload: Bool { payloadDirectory != nil }
@@ -55,7 +101,17 @@ final class InstallationStore {
         guard hasDistributionPayload else { return true }
         return UpdateConfiguration.isStableApplicationLocation(bundleURL)
     }
-    var isBusy: Bool { phase == .syncing }
+    var isBusy: Bool { phase == .syncing || contextOperationRunning }
+    func refreshPowerProtectionState() {
+        let snapshot = watchdogHeartbeatSnapshot
+        guard snapshot.healthy,
+              let rawValue = snapshot.heartbeat?.powerState,
+              let state = PowerProtectionState(rawValue: rawValue) else {
+            powerProtectionState = .unknown
+            return
+        }
+        powerProtectionState = state
+    }
 
     func bootstrap() async {
         guard phase == .idle else { return }
@@ -71,12 +127,19 @@ final class InstallationStore {
     }
 
     func repair() async {
-        guard !isBusy, isStableApplicationLocation else { return }
-        await synchronize(repair: true)
+        guard isStableApplicationLocation else { return }
+        // A direct bootstrap/uninstall still owns `.syncing`; context work is
+        // queued only behind another coordinated refresh/repair operation.
+        guard phase != .syncing || contextOperationRunning else { return }
+        await performContextOperation(.repair)
     }
 
     func openLoginItemsSettings() {
         watchdog.openLoginItemsSettings()
+    }
+
+    func openPowerHelperApprovalSettings() {
+        powerHelper.openApprovalSettings()
     }
 
     var appContextChecks: [DiagnosticCheck] {
@@ -96,66 +159,120 @@ final class InstallationStore {
             summary: distributionMatchesBundle
                 ? L10n.string("The active CLI matches the application's version, build, and payload")
                 : L10n.string("The CLI is missing or belongs to another build; run Repair from the intended app version"))
+        let powerHelperCheck: DiagnosticCheck
+        switch powerHelperStatus {
+        case .enabled:
+            powerHelperCheck = DiagnosticCheck(
+                id: "app_power_helper", section: .base,
+                label: L10n.string("Native Sleep Protection"),
+                required: true, status: .ok, path: nil,
+                summary: L10n.string("Native sleep protection is enabled"))
+        case .requiresApproval:
+            powerHelperCheck = DiagnosticCheck(
+                id: "app_power_helper", section: .base,
+                label: L10n.string("Native Sleep Protection"),
+                required: true, status: .error, path: nil,
+                summary: L10n.string(
+                    "macOS is waiting for one-time administrator approval"))
+        case .notRegistered:
+            powerHelperCheck = DiagnosticCheck(
+                id: "app_power_helper", section: .base,
+                label: L10n.string("Native Sleep Protection"),
+                required: true, status: .error, path: nil,
+                summary: L10n.string("Native sleep protection is not enabled yet"))
+        case .unavailable:
+            powerHelperCheck = DiagnosticCheck(
+                id: "app_power_helper", section: .base,
+                label: L10n.string("Native Sleep Protection"),
+                required: true, status: .error, path: nil,
+                summary: L10n.string("macOS could not register the native power helper"))
+        }
+
         let watchdogCheck: DiagnosticCheck
         switch watchdogStatus {
         case .enabled:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base,
-                label: L10n.string("Background Service"),
+                label: L10n.string("Background Power Monitor"),
                 required: true, status: .ok, path: nil,
-                summary: L10n.string("Background checks are enabled"))
+                summary: L10n.string("Background power checks are enabled"))
         case .requiresApproval:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base,
-                label: L10n.string("Background Service"),
+                label: L10n.string("Background Power Monitor"),
                 required: true, status: .error, path: nil,
-                summary: L10n.string("macOS is waiting for permission to run in the background"))
+                summary: L10n.string(
+                    "macOS is waiting for permission to monitor power in the background"))
         case .notRegistered:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base,
-                label: L10n.string("Background Service"),
+                label: L10n.string("Background Power Monitor"),
                 required: true, status: .error, path: nil,
-                summary: L10n.string("Background checks are not enabled yet"))
+                summary: L10n.string("Background power checks are not enabled yet"))
         case .unavailable:
             watchdogCheck = DiagnosticCheck(
                 id: "app_watchdog", section: .base,
-                label: L10n.string("Background Service"),
+                label: L10n.string("Background Power Monitor"),
                 required: true, status: .error, path: nil,
-                summary: L10n.string("macOS has not registered the background check yet"))
+                summary: L10n.string("macOS has not registered the power monitor yet"))
         }
-        return [locationCheck, distributionCheck, watchdogCheck, watchdogHeartbeatCheck]
+        return [
+            locationCheck, distributionCheck, powerHelperCheck, watchdogCheck,
+            watchdogHeartbeatCheck,
+        ]
     }
 
     private var watchdogHeartbeatCheck: DiagnosticCheck {
-        struct Heartbeat: Decodable { let state: String }
-        let statusURL = Self.amphetamineStateRoot
-            .appendingPathComponent("watchdog-status.json")
-        let attributes = try? FileManager.default.attributesOfItem(atPath: statusURL.path)
-        let modified = attributes?[.modificationDate] as? Date
-        let fresh = modified.map { Date().timeIntervalSince($0) < 180 } ?? false
-        let heartbeat = (try? Data(contentsOf: statusURL))
-            .flatMap { try? JSONDecoder().decode(Heartbeat.self, from: $0) }
-        let healthy = fresh && heartbeat?.state == "ok"
+        let snapshot = watchdogHeartbeatSnapshot
         let expected = watchdogStatus == .enabled
+        let healthySummary: String
+        if let powerState = snapshot.heartbeat?.powerState,
+           !powerState.isEmpty {
+            healthySummary = L10n.format(
+                "The background monitor reported power state: %@", powerState)
+        } else {
+            healthySummary = L10n.string(
+                "The background power monitor ran within the last three minutes")
+        }
         return DiagnosticCheck(
             id: "watchdog_heartbeat", section: .base,
-            label: L10n.string("Background Service Launch"),
+            label: L10n.string("Background Power Monitor Launch"),
             required: false,
-            status: healthy ? .ok : (expected ? .warning : .unknown), path: statusURL.path,
-            summary: healthy
-                ? L10n.string("The background service ran within the last three minutes")
+            status: snapshot.healthy ? .ok : (expected ? .warning : .unknown),
+            path: snapshot.statusURL.path,
+            summary: snapshot.healthy
+                ? healthySummary
                 : (expected
-                    ? L10n.string("The background service is starting or needs attention")
-                    : L10n.string("The required background service has not started yet")))
+                    ? L10n.string("The background power monitor is starting or needs attention")
+                    : L10n.string("The background power monitor has not started yet")))
     }
 
-    private static var amphetamineStateRoot: URL {
+    private var watchdogHeartbeatSnapshot: WatchdogHeartbeatSnapshot {
+        let statusURL = powerStateRoot
+            .appendingPathComponent("watchdog-status.json")
+        let attributes = try? FileManager.default.attributesOfItem(
+            atPath: statusURL.path)
+        let modified = attributes?[.modificationDate] as? Date
+        let fresh = modified.map {
+            let age = Date().timeIntervalSince($0)
+            return age >= 0 && age < 180
+        } ?? false
+        let heartbeat = (try? Data(contentsOf: statusURL))
+            .flatMap {
+                try? JSONDecoder().decode(
+                    WatchdogHeartbeat.self, from: $0)
+            }
+        return WatchdogHeartbeatSnapshot(
+            statusURL: statusURL, heartbeat: heartbeat, fresh: fresh)
+    }
+
+    private static var defaultPowerStateRoot: URL {
         let environment = ProcessInfo.processInfo.environment
         func path(_ key: String) -> String? {
             guard let value = environment[key], !value.isEmpty else { return nil }
             return value
         }
-        if let explicit = path("DETACH_AMPHETAMINE_STATE_ROOT") {
+        if let explicit = path("DETACH_POWER_STATE_ROOT") {
             return URL(fileURLWithPath: explicit, isDirectory: true)
         }
         let base: URL
@@ -170,17 +287,89 @@ final class InstallationStore {
             } ?? FileManager.default.homeDirectoryForCurrentUser
             base = home.appendingPathComponent(".local/state/detach", isDirectory: true)
         }
-        return base.appendingPathComponent("amphetamine", isDirectory: true)
+        return base.appendingPathComponent("power", isDirectory: true)
     }
 
     func refreshContext() async {
+        // This read is side-effect free and useful even when a direct
+        // bootstrap/uninstall owns `.syncing`; the coordinated trailing pass
+        // will publish it again after refresh/repair work drains.
+        refreshPowerProtectionState()
+        guard phase != .syncing || contextOperationRunning else { return }
+        await performContextOperation(.refresh)
+    }
+
+    private func performContextOperation(
+        _ requested: InstallationContextOperation
+    ) async {
+        if contextOperationRunning {
+            switch requested {
+            case .refresh:
+                pendingContextRefresh = true
+            case .repair:
+                if currentContextOperation != .repair {
+                    pendingContextRepair = true
+                }
+                // When Repair arrives during a refresh, converge once more
+                // after Repair instead of letting the earlier refresh win.
+                pendingContextRefresh = true
+            }
+            await withCheckedContinuation { continuation in
+                contextOperationWaiters.append(continuation)
+            }
+            return
+        }
+
+        contextOperationRunning = true
+        var operation: InstallationContextOperation? = requested
+        while let current = operation {
+            currentContextOperation = current
+            if let contextOperationOverride {
+                await contextOperationOverride(current)
+            } else {
+                switch current {
+                case .refresh:
+                    await refreshContextUncoordinated()
+                case .repair:
+                    guard isStableApplicationLocation else { break }
+                    await synchronize(repair: true)
+                }
+            }
+            currentContextOperation = nil
+            if pendingContextRepair {
+                pendingContextRepair = false
+                operation = .repair
+            } else if pendingContextRefresh {
+                pendingContextRefresh = false
+                operation = .refresh
+            } else {
+                operation = nil
+            }
+        }
+        contextOperationRunning = false
+        let waiters = contextOperationWaiters
+        contextOperationWaiters.removeAll(keepingCapacity: true)
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func refreshContextUncoordinated() async {
+        refreshPowerProtectionState()
         if phase == .idle {
             await bootstrap()
             return
         }
-        guard !isBusy else { return }
         let wasReady = phase == .ready
         if !wasReady { phase = .syncing }
+        powerHelperStatus = powerHelper.status
+        if distributionMatchesBundle {
+            do {
+                try await powerHelper.reconcileAfterAppUpdate()
+                powerHelperError = nil
+            } catch {
+                powerHelperError = error.localizedDescription
+            }
+            powerHelperStatus = powerHelper.status
+        }
         watchdogStatus = watchdog.status
         if distributionMatchesBundle {
             do {
@@ -211,8 +400,14 @@ final class InstallationStore {
         case .enabled, .requiresApproval: shouldRestoreWatchdog = true
         case .notRegistered, .unavailable: shouldRestoreWatchdog = false
         }
+        let shouldRestorePowerHelper: Bool
+        switch powerHelper.status {
+        case .enabled, .requiresApproval: shouldRestorePowerHelper = true
+        case .notRegistered, .unavailable: shouldRestorePowerHelper = false
+        }
         do {
             try await watchdog.disable()
+            try await powerHelper.disable()
             let installer = ProcessDetachCLI(
                 executable: payloadDirectory.appendingPathComponent("detach-install"))
             let result = try await installer.run(
@@ -226,13 +421,18 @@ final class InstallationStore {
             report = nil
             distributionMatchesBundle = false
             watchdogStatus = watchdog.status
+            powerHelperStatus = powerHelper.status
             lastInstallMessage = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             phase = .actionRequired
         } catch {
+            if shouldRestorePowerHelper {
+                try? await powerHelper.enable()
+            }
             if shouldRestoreWatchdog {
                 try? await watchdog.enable()
             }
             watchdogStatus = watchdog.status
+            powerHelperStatus = powerHelper.status
             phase = .failed(L10n.format(
                 "Could not remove components: %@",
                 error.localizedDescription))
@@ -265,7 +465,7 @@ final class InstallationStore {
                     report?.build ?? unknown)
                 throw DistributionClientError.installerFailed(
                     L10n.format(
-                        "The active CLI (%@) does not match this application's payload; the watchdog rollback was cancelled",
+                        "The active CLI (%@) does not match this application's payload; helper registration was cancelled",
                         active))
             }
             distributionMatchesBundle = true
@@ -274,8 +474,17 @@ final class InstallationStore {
             return
         }
 
-        // Keep-awake is a core prerequisite. The helper must stay registered so
-        // it can reconcile stale Amphetamine leases even when the app is closed.
+        // The privileged daemon owns only the narrow closed-lid setting. Its
+        // renewable leases and timer remain effective when Detach.app closes.
+        powerHelperError = nil
+        do {
+            try await powerHelper.reconcileAfterAppUpdate()
+        } catch {
+            powerHelperError = error.localizedDescription
+        }
+        powerHelperStatus = powerHelper.status
+
+        // The user agent records an independently observable power heartbeat.
         watchdogError = nil
         do {
             try await watchdog.reconcileAfterAppUpdate()
@@ -283,6 +492,17 @@ final class InstallationStore {
             watchdogError = error.localizedDescription
         }
         watchdogStatus = watchdog.status
+
+        // The first doctor run happens before SMAppService registration. Read
+        // readiness again so a newly reachable helper can satisfy onboarding,
+        // while approval or XPC failures remain visible instead of using the
+        // stale pre-registration report.
+        do {
+            report = try await client.doctor()
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return
+        }
         updatePhase()
     }
 
@@ -308,15 +528,38 @@ final class InstallationStore {
     }
 
     private func updatePhase() {
-        guard isStableApplicationLocation, distributionMatchesBundle else {
-            phase = .actionRequired
-            return
+        let requiredDoctorChecksHealthy = report.map { report in
+            report.checks
+                .filter {
+                    $0.required && $0.id != "watchdog" && $0.id != "cli_path"
+                }
+                .allSatisfy { $0.status == .ok }
         }
-        guard let report else { phase = .actionRequired; return }
-        let baseHealthy = report.checks
-            .filter { $0.required && $0.id != "watchdog" && $0.id != "cli_path" }
-            .allSatisfy { $0.status == .ok }
-        let backgroundHealthy = watchdogStatus == .enabled
-        phase = baseHealthy && backgroundHealthy ? .ready : .actionRequired
+        phase = Self.phaseForReadiness(
+            isStableApplicationLocation: isStableApplicationLocation,
+            distributionMatchesBundle: distributionMatchesBundle,
+            requiredDoctorChecksHealthy: requiredDoctorChecksHealthy,
+            watchdogStatus: watchdogStatus,
+            powerHelperStatus: powerHelperStatus,
+            powerHelperError: powerHelperError)
+    }
+
+    static func phaseForReadiness(
+        isStableApplicationLocation: Bool,
+        distributionMatchesBundle: Bool,
+        requiredDoctorChecksHealthy: Bool?,
+        watchdogStatus: WatchdogStatus,
+        powerHelperStatus: PowerHelperRegistrationStatus,
+        powerHelperError: String?
+    ) -> Phase {
+        guard isStableApplicationLocation,
+              distributionMatchesBundle,
+              requiredDoctorChecksHealthy == true,
+              watchdogStatus == .enabled,
+              powerHelperStatus == .enabled,
+              powerHelperError == nil else {
+            return .actionRequired
+        }
+        return .ready
     }
 }

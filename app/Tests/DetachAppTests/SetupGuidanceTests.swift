@@ -3,32 +3,25 @@ import DetachKit
 @testable import DetachApp
 
 final class SetupGuidanceTests: XCTestCase {
-    func testMissingToolsAreGroupedInsteadOfOfferingRepair() {
+    func testMissingBundledRuntimeOffersRepairInsteadOfExternalInstallation() {
+        for id in ["tmux", "state_helper", "power_runtime"] {
+            XCTAssertEqual(
+                blocker(checks: [check(id)]),
+                .repairInstallation,
+                "expected Repair guidance for \(id)")
+        }
+    }
+
+    func testUnreachableRegisteredHelperIsNotMisreportedAsPayloadDamage() {
         XCTAssertEqual(
-            blocker(checks: [check("tmux"), check("jq")]),
-            .installTools(["tmux", "jq"]))
+            blocker(checks: [
+                check("power_helper", summary: "helper unavailable"),
+            ]),
+            .other("helper unavailable"))
     }
 
     func testProviderGetsDedicatedGuidance() {
         XCTAssertEqual(blocker(checks: [check("provider")]), .chooseProvider)
-    }
-
-    func testMissingAmphetaminePrerequisitesGetOfficialInstallGuidance() {
-        XCTAssertEqual(
-            blocker(checks: [
-                check("amphetamine_app"),
-                check("amphetamine_power_protect"),
-            ]),
-            .installAmphetamine([.app, .powerProtect]))
-        XCTAssertEqual(
-            blocker(checks: [check("amphetamine_power_protect")]),
-            .installAmphetamine([.powerProtect]))
-    }
-
-    func testAmphetaminePrerequisitesTakePriorityOverOtherExternalTools() {
-        XCTAssertEqual(
-            blocker(checks: [check("tmux"), check("amphetamine_app")]),
-            .installAmphetamine([.app]))
     }
 
     func testOwnedIntegrityFailureOffersRepair() {
