@@ -6,6 +6,7 @@ struct SidebarView: View {
     let store: SessionStore
     let detachPath: String
     @Binding var selectedID: String?
+    @ObservedObject var navigation: MainNavigation
     @State private var showNewSession = false
 
     private func sessions(in section: SessionSection) -> [Session] {
@@ -57,6 +58,11 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showNewSession) {
             NewSessionSheet(detachPath: detachPath)
+        }
+        .onChange(of: navigation.requestsNewSession) { _, requested in
+            guard requested else { return }
+            showNewSession = true
+            navigation.requestsNewSession = false
         }
         .navigationSplitViewColumnWidth(
             min: max(230, fontPointSize * 18),

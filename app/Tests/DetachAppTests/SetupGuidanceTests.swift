@@ -49,3 +49,84 @@ final class SetupGuidanceTests: XCTestCase {
             status: .error, path: nil, summary: summary)
     }
 }
+
+final class OnboardingStepTests: XCTestCase {
+    func testUnstableLocationOutranksEverything() {
+        var input = readyInput()
+        input.isStableApplicationLocation = false
+        input.failureMessage = "boom"
+        XCTAssertEqual(SetupGuidance.step(for: input), .moveToApplications)
+    }
+
+    func testBusyShowsAutoSetupWithoutFailureDetail() {
+        var input = readyInput()
+        input.isBusy = true
+        input.failureMessage = "stale"
+        XCTAssertEqual(
+            SetupGuidance.step(for: input),
+            .autoSetup(failureMessage: nil))
+    }
+
+    func testFailureOutranksProviderDiscovery() {
+        var input = readyInput()
+        input.failureMessage = "installer failed"
+        input.providerInstalled = false
+        XCTAssertEqual(
+            SetupGuidance.step(for: input),
+            .autoSetup(failureMessage: "installer failed"))
+    }
+
+    func testPayloadMismatchKeepsAutoSetupPending() {
+        var input = readyInput()
+        input.distributionMatchesBundle = false
+        XCTAssertEqual(
+            SetupGuidance.step(for: input),
+            .autoSetup(failureMessage: nil))
+    }
+
+    func testEnabledStatusAloneDoesNotCompletePermissions() {
+        var input = readyInput()
+        input.powerReadinessConfirmed = false
+        XCTAssertEqual(SetupGuidance.step(for: input), .permissions)
+    }
+
+    func testAnyServiceNotEnabledKeepsPermissionsStep() {
+        var watchdogPending = readyInput()
+        watchdogPending.watchdogEnabled = false
+        XCTAssertEqual(SetupGuidance.step(for: watchdogPending), .permissions)
+
+        var helperPending = readyInput()
+        helperPending.powerHelperEnabled = false
+        XCTAssertEqual(SetupGuidance.step(for: helperPending), .permissions)
+    }
+
+    func testMissingProviderBlocksOnlyFirstOnboarding() {
+        var input = readyInput()
+        input.providerInstalled = false
+        XCTAssertEqual(SetupGuidance.step(for: input), .provider)
+
+        input.onboardingEverCompleted = true
+        XCTAssertEqual(SetupGuidance.step(for: input), .mainApp)
+    }
+
+    func testSuccessCardShowsExactlyOnce() {
+        var input = readyInput()
+        XCTAssertEqual(SetupGuidance.step(for: input), .done)
+
+        input.onboardingEverCompleted = true
+        XCTAssertEqual(SetupGuidance.step(for: input), .mainApp)
+    }
+
+    private func readyInput() -> OnboardingStepInput {
+        OnboardingStepInput(
+            isStableApplicationLocation: true,
+            isBusy: false,
+            failureMessage: nil,
+            distributionMatchesBundle: true,
+            powerHelperEnabled: true,
+            watchdogEnabled: true,
+            powerReadinessConfirmed: true,
+            providerInstalled: true,
+            onboardingEverCompleted: false)
+    }
+}

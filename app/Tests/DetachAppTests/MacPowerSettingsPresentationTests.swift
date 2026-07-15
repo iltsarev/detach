@@ -62,16 +62,49 @@ final class MacPowerSettingsPresentationTests: XCTestCase {
         XCTAssertNil(presentation(state: .lowBattery).action)
     }
 
+    func testReasonComesFromHeartbeatStateFirst() {
+        // Session count enriches the protected case…
+        XCTAssertEqual(
+            presentation(state: .protected, activeSessionCount: 2).reason,
+            .activeSessions(2))
+        // …but never contradicts the heartbeat: a cached session list with
+        // zero running entries degrades to a generic protected reason.
+        XCTAssertEqual(
+            presentation(state: .protected, activeSessionCount: 0).reason,
+            .protectionActive)
+        XCTAssertEqual(
+            presentation(state: .protected, activeSessionCount: nil).reason,
+            .protectionActive)
+        // A stale/unknown heartbeat wins over any live session count.
+        XCTAssertEqual(
+            presentation(state: .unknown, activeSessionCount: 3).reason,
+            .noFreshReport)
+    }
+
+    func testReasonsForRemainingStates() {
+        let expected: [(PowerProtectionState, MacPowerSettingsPresentation.Reason)] = [
+            (.allowed, .noActiveSessions),
+            (.lowBattery, .lowBattery),
+            (.transitioning, .confirming),
+            (.unavailable, .helperUnreachable),
+        ]
+        for (state, reason) in expected {
+            XCTAssertEqual(presentation(state: state).reason, reason)
+        }
+    }
+
     private func presentation(
         state: PowerProtectionState = .protected,
         helper: PowerHelperRegistrationStatus = .enabled,
         watchdog: WatchdogStatus = .enabled,
-        distributionMatchesBundle: Bool = true
+        distributionMatchesBundle: Bool = true,
+        activeSessionCount: Int? = nil
     ) -> MacPowerSettingsPresentation {
         MacPowerSettingsPresentation(
             state: state,
             helperStatus: helper,
             watchdogStatus: watchdog,
-            distributionMatchesBundle: distributionMatchesBundle)
+            distributionMatchesBundle: distributionMatchesBundle,
+            activeSessionCount: activeSessionCount)
     }
 }

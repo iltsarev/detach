@@ -95,14 +95,18 @@ for Detach in macOS.
 1. Once this update is published, download its **DMG** from the
    [Releases page](https://github.com/iltsarev/detach/releases), move
    **Detach.app** to `/Applications`, and open it.
-2. Follow guided setup. Detach installs its bundled command-line runtime and
-   asks once for administrator approval to register its narrowly scoped native
-   power helper. macOS may separately ask you to allow Detach's background
-   monitor.
-3. If needed, install [Codex CLI](https://github.com/openai/codex) or
-   [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), then
-   return to Detach and recheck. Detach verifies that the CLI is present;
-   authenticate through the provider's normal flow before the first run.
+2. Follow the setup assistant. Detach installs its bundled command-line
+   runtime automatically, then asks once for the macOS approvals: enable
+   Detach in the Login Items list that opens — macOS may show one or two
+   switches, and the sleep-protection helper needs an administrator password.
+   The assistant checks progress on its own and advances as each step
+   completes.
+3. If neither [Codex CLI](https://github.com/openai/codex) nor
+   [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) is
+   installed yet, the assistant can run the official installer in your own
+   terminal, or open the official instructions; Detach detects the new CLI
+   automatically. Authenticate through the provider's normal flow before the
+   first run.
 4. Choose **＋**, select a project and provider, add an optional opening prompt,
    and start the session.
 
@@ -140,6 +144,14 @@ clear home:
   are still working.
 - **Know:** opt in to notifications when a completed turn is waiting for your
   next message, or when a session finishes, fails, or becomes recoverable.
+- **Glance:** the optional menu bar icon answers the sleep question without
+  opening the app — a filled moon with the active-session count means the Mac
+  is being held awake, an outline moon means it can sleep, a `!` badge means
+  protection needs attention. Its menu lists live sessions with waiting
+  replies first and opens them in Detach. Closing the main window keeps the
+  icon and background checks alive; ⌘Q quits Detach honestly while sessions,
+  checkpoints, and sleep protection continue on their own. Configure it in
+  Settings → General → Menu Bar.
 - **Rejoin:** open a live session, resume a known provider conversation, or
   recover an interrupted managed run in your selected terminal.
 - **Maintain:** inspect setup health, repair the CLI, manage updates, and remove

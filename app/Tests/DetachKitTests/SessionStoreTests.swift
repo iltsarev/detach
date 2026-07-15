@@ -104,4 +104,50 @@ final class SessionStoreTests: XCTestCase {
         let error = await store.perform(.stop, on: store.sessions[0])
         XCTAssertEqual(error, "still busy")
     }
+
+    func testSnapshotObserverReceivesEverySuccessfulPoll() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: cli)
+        var snapshots: [[Session]] = []
+        store.onSnapshot = { snapshots.append($0) }
+
+        await store.refresh()
+        await store.refresh() // unchanged list still advances the observer
+
+        XCTAssertEqual(snapshots.count, 2)
+        XCTAssertEqual(snapshots.last?.count, 1)
+    }
+
+    func testSnapshotObserverIsNotCalledForFailedPolls() async {
+        let cli = FakeCLI()
+        let store = SessionStore(cli: cli)
+        var snapshotCount = 0
+        store.onSnapshot = { _ in snapshotCount += 1 }
+
+        cli.responses["list --json"] = ok("garbage")
+        await store.refresh()
+        cli.responses["list --json"] = .failure(FakeError())
+        await store.refresh()
+        cli.responses["list --json"] =
+            .success(CLIResult(exitCode: 1, stdout: "", stderr: "boom", timedOut: false))
+        await store.refresh()
+
+        XCTAssertEqual(snapshotCount, 0)
+    }
+
+    func testConfigureSwapsCLIAndRefreshesImmediately() async {
+        let first = FakeCLI()
+        first.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: first)
+        await store.refresh()
+        XCTAssertEqual(store.sessions.count, 1)
+
+        let second = FakeCLI()
+        second.responses["list --json"] = ok("")
+        await store.configure(cli: second)
+
+        XCTAssertEqual(store.sessions.count, 0)
+        XCTAssertEqual(second.calls, [["list", "--json"]])
+    }
 }

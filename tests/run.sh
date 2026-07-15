@@ -373,10 +373,15 @@ pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_style_snapshot)" = "1" ]
 session_color="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_color)"
 [[ "$session_color" =~ ^#[[:xdigit:]]{6}$ ]]
-tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style | grep -F "bg=$session_color" >/dev/null
+# Flat style: neutral strip, session color only on the left edge, power on
+# the right side of the status line.
+tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style | grep -F 'bg=#20202B' >/dev/null
 status_left="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left)"
-printf '%s' "$status_left" | grep -F 'Detach | Codex | harness' | grep -F 'RUNNING' >/dev/null
-printf '%s' "$status_left" | grep -F 'MAC AWAKE' >/dev/null
+printf '%s' "$status_left" | grep -F "bg=$session_color" >/dev/null
+printf '%s' "$status_left" | grep -F 'Detach' | grep -F 'Codex' | \
+  grep -F 'harness' | grep -F 'RUNNING' >/dev/null
+tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-right | \
+  grep -F 'MAC AWAKE' >/dev/null
 grep -Fx -- 'run' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- '--session' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$SESSION" "$FAKE_POWER_ARGS_FILE" >/dev/null
@@ -472,7 +477,7 @@ wait_for_process_group_exit "$first_worker_pgid"
 [ "$("$STATE_HELPER" meta get "$meta" exit_status)" = "7" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "failed" ]
 failed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
-printf '%s' "$failed_style" | grep -F "bg=$session_color" >/dev/null
+printf '%s' "$failed_style" | grep -F 'bg=#20202B' >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left | \
   grep -F 'bg=#B91C1C' | grep -F 'FAILED' >/dev/null
 "$DETACH" config tmux-style inherit

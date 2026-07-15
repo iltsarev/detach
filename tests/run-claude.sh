@@ -186,10 +186,14 @@ live_pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_pane_
 session_color="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_color)"
 [[ "$session_color" =~ ^#[[:xdigit:]]{6}$ ]]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_status)" = "running" ]
-tmux -L "$SOCKET" show-options -qv -t "=$session:" status-style | grep -F "bg=$session_color" >/dev/null
+# Flat style: neutral strip, session color only on the left edge, power on
+# the right side of the status line.
+tmux -L "$SOCKET" show-options -qv -t "=$session:" status-style | grep -F 'bg=#20202B' >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
-  grep -F 'Detach | Claude | harness' | grep -F 'RUNNING' >/dev/null
+  grep -F "bg=$session_color" >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
+  grep -F 'Claude' | grep -F 'harness' | grep -F 'RUNNING' >/dev/null
+tmux -L "$SOCKET" show-options -qv -t "=$session:" status-right | \
   grep -F 'MAC AWAKE' >/dev/null
 grep -Fx -- 'run' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- '--session' "$FAKE_POWER_ARGS_FILE" >/dev/null

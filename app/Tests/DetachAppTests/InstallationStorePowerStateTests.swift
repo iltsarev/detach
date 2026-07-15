@@ -33,7 +33,7 @@ final class InstallationStorePowerStateTests: XCTestCase {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try writeHeartbeat(
-            #"{"state":"ok","power_state":"protected"}"#,
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
             to: root)
 
         let store = InstallationStore(
@@ -46,12 +46,9 @@ final class InstallationStorePowerStateTests: XCTestCase {
     func testStaleHeartbeatDoesNotClaimPowerState() throws {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let statusURL = try writeHeartbeat(
-            #"{"state":"ok","power_state":"allowed"}"#,
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp(offset: -300))"}"#,
             to: root)
-        try FileManager.default.setAttributes(
-            [.modificationDate: Date().addingTimeInterval(-300)],
-            ofItemAtPath: statusURL.path)
 
         let store = InstallationStore(
             detachPath: "/tmp/detach-test",
@@ -63,12 +60,9 @@ final class InstallationStorePowerStateTests: XCTestCase {
     func testFutureDatedHeartbeatDoesNotClaimPowerState() throws {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let statusURL = try writeHeartbeat(
-            #"{"state":"ok","power_state":"protected"}"#,
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp(offset: 300))"}"#,
             to: root)
-        try FileManager.default.setAttributes(
-            [.modificationDate: Date().addingTimeInterval(300)],
-            ofItemAtPath: statusURL.path)
 
         let store = InstallationStore(
             detachPath: "/tmp/detach-test",
@@ -79,8 +73,9 @@ final class InstallationStorePowerStateTests: XCTestCase {
 
     func testUnhealthyOrMalformedHeartbeatDoesNotClaimPowerState() throws {
         for body in [
-            #"{"state":"status_failed","power_state":"protected"}"#,
-            #"{"state":"ok","power_state":"future_state"}"#,
+            #"{"state":"status_failed","power_state":"protected","checked_at":"\#(stamp())"}"#,
+            #"{"state":"ok","power_state":"future_state","checked_at":"\#(stamp())"}"#,
+            #"{"state":"ok","power_state":"protected"}"#, // no checked_at → stale
             "not-json",
         ] {
             let root = try makeStateRoot()
@@ -98,7 +93,7 @@ final class InstallationStorePowerStateTests: XCTestCase {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try writeHeartbeat(
-            #"{"state":"ok","power_state":"allowed"}"#,
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
             to: root)
         let store = InstallationStore(
             detachPath: "/tmp/detach-test",
@@ -106,7 +101,7 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(store.powerProtectionState, .allowed)
 
         try writeHeartbeat(
-            #"{"state":"ok","power_state":"protected"}"#,
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
             to: root)
         store.refreshPowerProtectionState()
 
@@ -220,6 +215,10 @@ final class InstallationStorePowerStateTests: XCTestCase {
         let url = root.appendingPathComponent("watchdog-status.json")
         try Data(body.utf8).write(to: url, options: .atomic)
         return url
+    }
+
+    private func stamp(offset: TimeInterval = 0) -> String {
+        ISO8601DateFormatter().string(from: Date().addingTimeInterval(offset))
     }
 }
 

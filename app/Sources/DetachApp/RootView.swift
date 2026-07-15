@@ -11,30 +11,15 @@ struct RootView: View {
     let detachPath: String
     let pollInterval: Double
     let installation: InstallationStore
+    /// App-level shared store: the window only adjusts its cadence and never
+    /// stops it, so notifications and the menu bar stay fed after close.
+    let store: SessionStore
+    @ObservedObject var navigation: MainNavigation
     @ObservedObject var notifications: SessionNotificationService
     @ObservedObject var tips: TipSession
     @ObservedObject var settingsNavigation: SettingsNavigation
 
-    @State private var store: SessionStore
     @State private var selectedID: String?
-
-    init(
-        detachPath: String,
-        pollInterval: Double,
-        installation: InstallationStore,
-        notifications: SessionNotificationService,
-        tips: TipSession,
-        settingsNavigation: SettingsNavigation
-    ) {
-        self.detachPath = detachPath
-        self.pollInterval = pollInterval
-        self.installation = installation
-        self.notifications = notifications
-        self.tips = tips
-        self.settingsNavigation = settingsNavigation
-        _store = State(initialValue: SessionStore(
-            cli: ProcessDetachCLI(executable: URL(fileURLWithPath: detachPath))))
-    }
 
     private var selectedSession: Session? {
         store.sessions.first { $0.id == selectedID }
@@ -42,7 +27,8 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if installation.hasDistributionPayload && installation.phase != .ready {
+            if installation.hasDistributionPayload
+                && installation.onboardingStep != .mainApp {
                 OnboardingView(store: installation)
             } else if store.state == .cliMissing && store.sessions.isEmpty {
                 ContentUnavailableView(
@@ -55,7 +41,8 @@ struct RootView: View {
                         SidebarView(
                             store: store,
                             detachPath: detachPath,
-                            selectedID: $selectedID)
+                            selectedID: $selectedID,
+                            navigation: navigation)
                     } detail: {
                         if store.sessions.isEmpty && store.state == .ok {
                             EmptySessionsView()
@@ -96,16 +83,17 @@ struct RootView: View {
             minWidth: AppFontSize.minimumWindowSize(for: fontPointSize).width,
             minHeight: AppFontSize.minimumWindowSize(for: fontPointSize).height)
         .task(id: pollInterval) { store.startPolling(interval: pollInterval) }
-        .task(id: "\(detachPath)|\(pollInterval)") {
-            // A packaged update can replace the CLI during bootstrap. Wait for
-            // that handoff before establishing the notification baseline so a
-            // historical completed turn is not mistaken for a new one.
+        .task(id: detachPath) {
+            // The store outlives this window; rewire it to the active CLI and
+            // keep notifications fed from the same single poller. The
+            // transition detector baselines on its first successful snapshot,
+            // so historical sessions never fire as fresh notifications.
+            store.onSnapshot = { [weak notifications] sessions in
+                await notifications?.observe(sessions)
+            }
+            await store.configure(cli: ProcessDetachCLI(
+                executable: URL(fileURLWithPath: detachPath)))
             await installation.bootstrap()
-            guard !installation.hasDistributionPayload ||
-                    installation.distributionMatchesBundle else { return }
-            notifications.configureMonitoring(
-                detachPath: detachPath,
-                interval: pollInterval)
         }
         .task(id: notificationsEnabled) {
             await notifications.configure(enabled: notificationsEnabled)
@@ -117,6 +105,12 @@ struct RootView: View {
                 await notifications.refreshAuthorizationStatus()
             }
         }
-        .onDisappear { store.stopPolling() }
+        .onChange(of: navigation.requestedSessionID) { _, requested in
+            guard let requested else { return }
+            selectedID = requested
+            navigation.requestedSessionID = nil
+        }
+        .onAppear { store.updateCadence(foreground: true) }
+        .onDisappear { store.updateCadence(foreground: false) }
     }
 }

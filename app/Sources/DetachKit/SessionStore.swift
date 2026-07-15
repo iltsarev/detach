@@ -14,19 +14,36 @@ public final class SessionStore {
     public private(set) var lastUpdated: Date?
     public private(set) var state: State = .ok
 
-    private let cli: DetachCLIRunning
+    /// Called after every successful poll — including an unchanged list — so
+    /// a transition detector can advance its baseline. The store is the single
+    /// app-level `list --json` poller; notifications and the menu bar consume
+    /// these snapshots instead of running their own subprocess loops.
+    @ObservationIgnored public var onSnapshot: (@MainActor ([Session]) async -> Void)?
+
+    private var cli: DetachCLIRunning
     private var pollTask: Task<Void, Never>?
+    private var baseInterval: TimeInterval = 2
+    private var foreground = true
 
     public init(cli: DetachCLIRunning) {
         self.cli = cli
     }
 
+    /// Swaps the CLI (for example after the installed payload activates) and
+    /// refreshes immediately. The polling cadence is unchanged.
+    public func configure(cli: DetachCLIRunning) async {
+        self.cli = cli
+        await refresh()
+    }
+
     public func startPolling(interval: TimeInterval) {
+        baseInterval = max(interval, 0.5)
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard let delay = self?.currentInterval else { return }
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
     }
@@ -34,6 +51,18 @@ public final class SessionStore {
     public func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+    }
+
+    /// Foreground (a visible window or open menu wants fresh data) polls at
+    /// the base interval. Idle polling slows down but never stops, so
+    /// notifications and the menu bar stay truthful after the last window
+    /// closes.
+    public func updateCadence(foreground: Bool) {
+        self.foreground = foreground
+    }
+
+    private var currentInterval: TimeInterval {
+        foreground ? baseInterval : max(baseInterval * 5, 10)
     }
 
     public func refresh() async {
@@ -54,6 +83,7 @@ public final class SessionStore {
             }
             lastUpdated = Date()
             state = .ok
+            if let onSnapshot { await onSnapshot(sessions) }
         } catch {
             state = .cliMissing
         }

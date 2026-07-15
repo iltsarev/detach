@@ -186,8 +186,13 @@ kill of tmux/provider ends the live run. Recovery checkpoints remain available.
 Integration tests must preserve this close-client lifetime contract.
 
 Detach status options are session-local and use `@detach*`; do not mutate global
-or foreign tmux configuration. The text status is the primary power signal:
-`MAC AWAKE`, `MAC CAN SLEEP`, `LOW BATTERY`, `POWER UNAVAILABLE`, or a
+or foreign tmux configuration. The flat status line paints the session identity
+color only on a painted-space left edge over one neutral strip, keeps every
+label as plain text, and puts the power label and clock in `status-right`. The
+style snapshot saves and restores `status-right` and its length alongside the
+left side; a snapshot from an older Detach that never captured the right side
+must not clear the user's `status-right`. The text status is the primary power
+signal: `MAC AWAKE`, `MAC CAN SLEEP`, `LOW BATTERY`, `POWER UNAVAILABLE`, or a
 transition label. The app uses equivalent readable text such as **Mac stays
 awake** and **Mac can sleep**. Temporary icons are secondary.
 
@@ -291,13 +296,35 @@ bundles and signs arm64-only versions of every executable, the immutable CLI
 payload, pinned tmux sources/licenses/provenance, Sparkle, and the complete
 pinned Sparkle license notice.
 
-Onboarding is ready only when the bundled distribution matches, at least one
-user-owned provider is installed, the native power daemon is registered and
-approved, and the background monitor is enabled. Registration may truthfully
-remain in `requiresApproval`; never treat it as enabled before macOS does. When
-helper/plist bytes change after an app update, unregister, await completion,
-then use the bounded retry for the transient SMAppService Code=1 race. Do not
-replace a helper with active leases: defer the update.
+Onboarding is a card assistant driven by the pure step reducer in
+`SetupGuidance.step(for:)`; a setup failure outranks provider discovery. A bare
+`SMAppService.status == .enabled` read never completes the permissions step:
+the live poller reads statuses without side effects and runs one coordinated
+reconciliation on the enable transition, and only confirmed readiness (helper
+journal finished, root gate reopened) advances the step. Registration may
+truthfully remain in `requiresApproval`; never treat it as enabled before macOS
+does. The success card waits for the first fresh watchdog heartbeat and is
+recorded as completed only by an explicit action, exactly once. After
+onboarding has ever completed, a missing provider shows the dashboard, not
+onboarding. Provider installation is offered only as the official command,
+launched visibly in the user's own terminal through the private `.command`
+mechanism; never claim a guided install failed (there is no outcome channel),
+only that the CLI is not detected yet. When helper/plist bytes change after an
+app update, unregister, await completion, then use the bounded retry for the
+transient SMAppService Code=1 race. Do not replace a helper with active leases:
+defer the update.
+
+The menu bar item is display-only. It derives its shape-first icon and menu
+words from the shared `checked_at`-based heartbeat reader and the app-level
+shared session poller — never `pmset` or root XPC from UI, and freshness comes
+from the document timestamp, not file mtime. One `detach list --json` poller
+serves the window, notifications, and the menu (foreground cadence with the
+window visible, slower idle cadence after it closes — polling never stops
+while the app runs). Closing the last window keeps the app and icon alive;
+⌘Q and Quit genuinely terminate the app while sessions, checkpoints, and
+protection continue. Settings → General owns the two menu bar toggles; the
+Mac Power block in Settings → System remains the single place for power
+status and approval controls.
 
 Helper replacement is a durable fail-closed transaction. One versioned JSON
 journal records `preparing`, `unregisterSubmitted`, `removed`, or `registering`,

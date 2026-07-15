@@ -26,21 +26,16 @@ protocol SessionNotificationCenterBackend {
     func deliver(_ payload: SessionNotificationPayload) async throws
 }
 
-/// App-level notification monitor. Its polling task is owned by this service,
-/// not a window, so closing the main window does not stop notifications.
+/// App-level notification consumer. It observes the shared session snapshot
+/// store (one `detach list --json` poller for the whole app), so closing the
+/// main window does not stop notifications and no second subprocess loop runs.
 @MainActor
 final class SessionNotificationService: ObservableObject {
     @Published private(set) var authorizationStatus: SessionNotificationAuthorizationStatus = .unknown
     @Published private(set) var errorMessage: String?
 
-    private struct MonitorConfiguration: Equatable {
-        let detachPath: String
-        let interval: TimeInterval
-    }
-
     private let center: SessionNotificationCenterBackend
     private let identifierProvider: () -> String
-    private let cliFactory: (String) -> DetachCLIRunning
     private var detector = SessionTransitionDetector()
     private var pendingPayloads: [SessionNotificationPayload] = []
     private var pendingGeneration: UInt64 = 0
@@ -49,37 +44,18 @@ final class SessionNotificationService: ObservableObject {
     private var configurationGeneration: UInt64 = 0
     private var authorizationStatusGeneration: UInt64 = 0
     private var authorizationRequestTask: Task<Bool, Error>?
-    private var monitorConfiguration: MonitorConfiguration?
-    private var monitorTask: Task<Void, Never>?
-    private var monitorGeneration: UInt64 = 0
 
     init(identifierProvider: @escaping () -> String = { UUID().uuidString }) {
         center = SystemSessionNotificationCenter()
         self.identifierProvider = identifierProvider
-        cliFactory = { path in
-            ProcessDetachCLI(executable: URL(fileURLWithPath: path))
-        }
     }
 
     init(
         center: SessionNotificationCenterBackend,
-        identifierProvider: @escaping () -> String = { UUID().uuidString },
-        cliFactory: @escaping (String) -> DetachCLIRunning = { path in
-            ProcessDetachCLI(executable: URL(fileURLWithPath: path))
-        }
+        identifierProvider: @escaping () -> String = { UUID().uuidString }
     ) {
         self.center = center
         self.identifierProvider = identifierProvider
-        self.cliFactory = cliFactory
-    }
-
-    func configureMonitoring(detachPath: String, interval: TimeInterval) {
-        let next = MonitorConfiguration(
-            detachPath: detachPath,
-            interval: min(max(interval, 1), 60))
-        guard next != monitorConfiguration else { return }
-        monitorConfiguration = next
-        restartMonitoring(resetBaseline: true)
     }
 
     /// Synchronizes the app preference with macOS authorization. The system
@@ -93,14 +69,14 @@ final class SessionNotificationService: ObservableObject {
         errorMessage = nil
 
         if !enabled {
-            restartMonitoring(resetBaseline: true)
+            resetBaselineIfNeeded(true)
         }
 
         var status = await center.authorizationStatus()
         guard generation == configurationGeneration,
               statusGeneration == authorizationStatusGeneration else { return }
         authorizationStatus = status
-        restartMonitoring(resetBaseline: status == .denied)
+        resetBaselineIfNeeded(status == .denied)
         guard enabled, status == .notDetermined else {
             if status == .denied { clearPendingPayloads() }
             return
@@ -123,7 +99,7 @@ final class SessionNotificationService: ObservableObject {
             } else {
                 clearPendingPayloads()
             }
-            restartMonitoring(resetBaseline: status == .denied)
+            resetBaselineIfNeeded(status == .denied)
         } catch {
             guard generation == configurationGeneration else { return }
             authorizationStatusGeneration &+= 1
@@ -135,7 +111,7 @@ final class SessionNotificationService: ObservableObject {
             errorMessage = L10n.format(
                 "Could not request notification permission: %@",
                 error.localizedDescription)
-            restartMonitoring(resetBaseline: refreshedStatus == .denied)
+            resetBaselineIfNeeded(refreshedStatus == .denied)
         }
     }
 
@@ -154,29 +130,18 @@ final class SessionNotificationService: ObservableObject {
         } else if refreshedStatus == .denied {
             clearPendingPayloads()
         }
-        restartMonitoring(resetBaseline:
+        resetBaselineIfNeeded(
             refreshedStatus == .denied || previousStatus == .denied)
     }
 
-    /// Kept internal for deterministic tests; production calls it from the
-    /// service-owned polling loop.
+    /// Kept for deterministic tests; production pushes snapshots from the
+    /// shared session store via `observe(_:)`.
     func pollOnce(using cli: DetachCLIRunning) async {
-        await pollOnce(using: cli, expectedMonitorGeneration: nil)
-    }
-
-    private func pollOnce(
-        using cli: DetachCLIRunning,
-        expectedMonitorGeneration: UInt64?
-    ) async {
         do {
             let result = try await cli.run(arguments: ["list", "--json"], timeout: 5)
             guard result.exitCode == 0, !result.timedOut else { return }
             let parsed = SessionListParser.parse(result.stdout)
             guard !parsed.hadInvalidLines else { return }
-            if let expectedMonitorGeneration,
-               expectedMonitorGeneration != monitorGeneration {
-                return
-            }
             await observe(parsed.sessions)
         } catch {
             // Session UI exposes CLI diagnostics; notifications retry quietly.
@@ -219,33 +184,12 @@ final class SessionNotificationService: ObservableObject {
         }
     }
 
-    private func restartMonitoring(resetBaseline: Bool) {
-        monitorTask?.cancel()
-        monitorTask = nil
-        monitorGeneration &+= 1
-        let generation = monitorGeneration
-        if resetBaseline {
-            detector = SessionTransitionDetector()
-            clearPendingPayloads()
-        }
-        guard isEnabled,
-              authorizationStatus != .denied,
-              let configuration = monitorConfiguration else { return }
-
-        let cli = cliFactory(configuration.detachPath)
-        monitorTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.pollOnce(
-                    using: cli,
-                    expectedMonitorGeneration: generation)
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(
-                        configuration.interval * 1_000_000_000))
-                } catch {
-                    return
-                }
-            }
-        }
+    /// Transition history restarts only when the permission situation makes
+    /// queued or future payloads invalid; an ordinary snapshot never resets it.
+    private func resetBaselineIfNeeded(_ reset: Bool) {
+        guard reset else { return }
+        detector = SessionTransitionDetector()
+        clearPendingPayloads()
     }
 
     private func deliverPendingPayloads() async {

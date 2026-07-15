@@ -332,3 +332,61 @@
 "Reinstall the command-line tools from System settings if the CLI needs repair." = "Reinstall the command-line tools from System settings if the CLI needs repair.";
 "Let Detach check automatically for app updates." = "Let Detach check automatically for app updates.";
 "Use ＋ to start Codex or Claude in any project." = "Use ＋ to start Codex or Claude in any project.";
+
+/* Mac Power hero */
+"Held awake by active sessions: %d" = "Held awake by active sessions: %d";
+"Sleep protection is active" = "Sleep protection is active";
+"No active agent sessions" = "No active agent sessions";
+"Protection released until power is connected" = "Protection released until power is connected";
+"Confirming sleep protection…" = "Confirming sleep protection…";
+"The native power helper is unreachable" = "The native power helper is unreachable";
+"No fresh report from the background monitor" = "No fresh report from the background monitor";
+"checked %d s ago" = "checked %d s ago";
+"checked %d min ago" = "checked %d min ago";
+
+/* Onboarding assistant */
+"Drag Detach.app to the Applications folder, then open the installed copy." = "Drag Detach.app to the Applications folder, then open the installed copy.";
+"Open the Applications Folder" = "Open the Applications Folder";
+"Detach is now in Applications — close this window and open the installed copy." = "Detach is now in Applications — close this window and open the installed copy.";
+"This usually takes a few seconds. Nothing to do here." = "This usually takes a few seconds. Nothing to do here.";
+"Command-line runtime" = "Command-line runtime";
+"Background helpers registration" = "Background helpers registration";
+"Allow Detach to Work in the Background" = "Allow Detach to Work in the Background";
+"macOS asks once. Enable Detach in the list that opens — it may show one or two switches. This screen updates automatically." = "macOS asks once. Enable Detach in the list that opens — it may show one or two switches. This screen updates automatically.";
+"Sleep protection — Detach Power Helper" = "Sleep protection — Detach Power Helper";
+"Background power monitor — Detach" = "Background power monitor — Detach";
+"Confirming protection readiness…" = "Confirming protection readiness…";
+"A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery, protection is released so the Mac can sleep. No Apple Events or third-party tools are used." = "A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery, protection is released so the Mac can sleep. No Apple Events or third-party tools are used.";
+"Detach manages Codex CLI and Claude Code sessions. Install at least one — it stays yours; Detach never bundles or replaces it." = "Detach manages Codex CLI and Claude Code sessions. Install at least one — it stays yours; Detach never bundles or replaces it.";
+"Detected — verifying…" = "Detected — verifying…";
+"Not detected yet. Check the Terminal output — network, npm permissions — then try again." = "Not detected yet. Check the Terminal output — network, npm permissions — then try again.";
+"Looking for codex and claude in PATH — this screen updates automatically" = "Looking for codex and claude in PATH — this screen updates automatically";
+"Install via Terminal" = "Install via Terminal";
+"Official instructions" = "Official instructions";
+"I already installed it" = "I already installed it";
+"Detach Is Ready" = "Detach Is Ready";
+"Start long sessions, close the terminal and the lid — the agent keeps working with a checkpoint every 5 minutes." = "Start long sessions, close the terminal and the lid — the agent keeps working with a checkpoint every 5 minutes.";
+"Background monitor is reporting" = "Background monitor is reporting";
+"The monitor has not reported yet — you can continue; health is always visible in Settings → System." = "The monitor has not reported yet — you can continue; health is always visible in Settings → System.";
+"Checking the background monitor…" = "Checking the background monitor…";
+"Remember to authenticate: run codex login or claude → /login before the first session." = "Remember to authenticate: run codex login or claude → /login before the first session.";
+"Open Dashboard" = "Open Dashboard";
+"enabled" = "enabled";
+"waiting for approval" = "waiting for approval";
+"waiting for approval · admin password" = "waiting for approval · admin password";
+"registering…" = "registering…";
+"What exactly is enabled and why?" = "What exactly is enabled and why?";
+
+/* Menu bar item */
+"Open Detach" = "Open Detach";
+"New Session…" = "New Session…";
+"Settings…" = "Settings…";
+"Quit Detach" = "Quit Detach";
+"Show %d more in Detach…" = "Show %d more in Detach…";
+"answer ready" = "answer ready";
+"working" = "working";
+"Open Detach to Repair Protection" = "Open Detach to Repair Protection";
+"Menu Bar" = "Menu Bar";
+"Show Detach in the menu bar" = "Show Detach in the menu bar";
+"Show active session count next to the icon" = "Show active session count next to the icon";
+"You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own." = "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own.";

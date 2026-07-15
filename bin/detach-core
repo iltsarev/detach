@@ -521,6 +521,9 @@ tmux_forget_session_style_snapshot() {
     @detach_saved_status_style \
     @detach_saved_status_left \
     @detach_saved_status_left_length \
+    @detach_saved_status_right \
+    @detach_saved_status_right_length \
+    @detach_style_snapshot_right \
     @detach_style_snapshot; do
     "${TMUX_CMD[@]}" set-option -qu -t "=$session:" "$option" 2>/dev/null || true
   done
@@ -529,17 +532,23 @@ tmux_forget_session_style_snapshot() {
 tmux_snapshot_session_style() {
   local session="$1"
   local saved_status saved_status_style saved_status_left saved_status_left_length
+  local saved_status_right saved_status_right_length
 
   [ "$(tmux_option "$session" '@detach_style_snapshot')" != "1" ] || return 0
   saved_status="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status 2>/dev/null)" || return 1
   saved_status_style="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-style 2>/dev/null)" || return 1
   saved_status_left="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-left 2>/dev/null)" || return 1
   saved_status_left_length="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-left-length 2>/dev/null)" || return 1
+  saved_status_right="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-right 2>/dev/null)" || return 1
+  saved_status_right_length="$("${TMUX_CMD[@]}" show-options -Aqv -t "=$session:" status-right-length 2>/dev/null)" || return 1
 
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status "$saved_status" && \
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_style "$saved_status_style" && \
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_left "$saved_status_left" && \
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_left_length "$saved_status_left_length" && \
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_right "$saved_status_right" && \
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_saved_status_right_length "$saved_status_right_length" && \
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_style_snapshot_right 1 && \
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_style_snapshot 1 && return 0
   tmux_forget_session_style_snapshot "$session"
   return 1
@@ -548,6 +557,7 @@ tmux_snapshot_session_style() {
 tmux_restore_session_style() {
   local session="$1"
   local saved_status saved_status_style saved_status_left saved_status_left_length
+  local saved_status_right saved_status_right_length
 
   [ "$(tmux_option "$session" '@detach_style_snapshot')" = "1" ] || return 0
   saved_status="$(tmux_option "$session" '@detach_saved_status')"
@@ -558,6 +568,14 @@ tmux_restore_session_style() {
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-style "$saved_status_style" || return 1
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left "$saved_status_left" || return 1
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left-length "$saved_status_left_length" || return 1
+  # A snapshot written by an older Detach never saved the right side; restore
+  # it only when this snapshot proves it captured one.
+  if [ "$(tmux_option "$session" '@detach_style_snapshot_right')" = "1" ]; then
+    saved_status_right="$(tmux_option "$session" '@detach_saved_status_right')"
+    saved_status_right_length="$(tmux_option "$session" '@detach_saved_status_right_length')"
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-right "$saved_status_right" || return 1
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-right-length "$saved_status_right_length" || return 1
+  fi
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" status "$saved_status" || return 1
   tmux_forget_session_style_snapshot "$session"
 }
@@ -565,7 +583,8 @@ tmux_restore_session_style() {
 tmux_apply_session_style() {
   local session="$1"
   local status="$2"
-  local provider cwd project color background provider_label state_label status_left power_state power_label
+  local provider cwd project color provider_label state_label status_left status_right power_state power_label
+  local strip_bg text_fg dim_fg edge_color word_color state_color state_attr power_color power_attr
 
   [ "$(tmux_option "$session" '@detach_tmux_style')" = "1" ] || {
     tmux_restore_session_style "$session"
@@ -586,41 +605,63 @@ tmux_apply_session_style() {
   esac
   project="$(basename "${cwd:-project}")"
   [ -n "$project" ] || project='project'
+  # Truncate before escaping so the cut cannot split a doubled hash; the
+  # power label and state never truncate.
+  [ "${#project}" -le 28 ] || project="${project:0:27}…"
   project="$(tmux_status_literal "$project")"
 
-  background="$color"
+  # Flat text on one neutral strip: a session-colored edge (painted space,
+  # not a font-dependent partial block), dim separators, and readable labels
+  # as the primary signal in any terminal theme.
+  strip_bg='#20202B'
+  text_fg='#C8CCE0'
+  dim_fg='#7C82A8'
+  edge_color="$color"
+  word_color="$color"
   state_label="$(printf '%s' "$status" | LC_ALL=C tr '[:lower:]' '[:upper:]')"
+  state_label="${state_label:-UNKNOWN}"
+  state_color='#E6E8F2'
+  state_attr='bold'
   case "$status" in
     completed|interrupted|stopped)
-      background="$(muted_session_color "$color")" || background="$color"
+      edge_color="$(muted_session_color "$color")" || edge_color="$color"
+      word_color="$edge_color"
+      text_fg="$dim_fg"
+      state_color="$dim_fg"
+      state_attr='nobold'
+      ;;
+    failed|start_failed)
+      edge_color='#B91C1C'
+      word_color='#FF8A8E'
+      state_color='#FF8A8E'
       ;;
   esac
 
-  status_left="#[bold] Detach | $provider_label | $project #[nobold]"
-  case "$status" in
-    failed|start_failed)
-      status_left+="#[fg=#FFFFFF,bg=#B91C1C,bold] ${state_label:-FAILED} #[fg=#FFFFFF,bg=$background,nobold]"
-      ;;
-    interrupted)
-      status_left+="#[fg=#111827,bg=#F59E0B,bold] INTERRUPTED #[fg=#FFFFFF,bg=$background,nobold]"
-      ;;
-    *)
-      status_left+=" ${state_label:-UNKNOWN} "
-      ;;
-  esac
   power_state="$(tmux_option "$session" '@detach_power_state')"
   case "$power_state" in
     protected|allowed|transitioning|low_battery|unavailable|unknown) ;;
     *) power_state="$(power_protection_state)" ;;
   esac
   power_label="$(power_protection_label "$power_state")"
-  status_left+=" | $power_label "
+  power_color="$dim_fg"
+  power_attr='nobold'
+  case "$power_state" in
+    protected) power_color='#43D9B8'; power_attr='bold' ;;
+    low_battery) power_color='#FFC24D'; power_attr='bold' ;;
+    transitioning) power_color='#FFC24D' ;;
+    unavailable|unknown) power_color='#FF8A8E' ;;
+  esac
+
+  status_left="#[bg=$edge_color] #[bg=$strip_bg]#[fg=$word_color,bold] Detach #[nobold]#[fg=$dim_fg]· #[fg=$text_fg]$provider_label #[fg=$dim_fg]· #[fg=$text_fg]$project #[fg=$dim_fg]· #[fg=$state_color,$state_attr]$state_label#[nobold] "
+  status_right="#[fg=$power_color,$power_attr]$power_label#[nobold] #[fg=$dim_fg]%H:%M "
 
   tmux_snapshot_session_style "$session" || return 1
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" status on || return 1
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-style "fg=#FFFFFF,bg=$background" || return 1
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left-length 160 || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-style "fg=$text_fg,bg=$strip_bg" || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left-length 120 || return 1
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-left "$status_left" || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-right-length 40 || return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" status-right "$status_right" || return 1
 }
 
 tmux_update_session_status() {

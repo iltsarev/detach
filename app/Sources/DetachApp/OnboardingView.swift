@@ -2,139 +2,496 @@ import AppKit
 import SwiftUI
 import DetachKit
 
+/// Guided install target. Detach never bundles a provider: the command is the
+/// official installer, launched visibly in the user's own terminal.
+private enum GuidedProvider: String, CaseIterable, Identifiable {
+    case codex
+    case claude
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .codex: "Codex CLI"
+        case .claude: "Claude Code"
+        }
+    }
+
+    /// Official installer commands, verbatim from provider documentation.
+    /// Re-verify against the documentation before every release.
+    var installCommand: String {
+        switch self {
+        case .codex: "npm install -g @openai/codex"
+        case .claude: "npm install -g @anthropic-ai/claude-code"
+        }
+    }
+
+    var documentationURL: URL {
+        switch self {
+        case .codex:
+            URL(string: "https://github.com/openai/codex#quickstart")!
+        case .claude:
+            URL(string:
+                "https://docs.anthropic.com/en/docs/claude-code/getting-started")!
+        }
+    }
+}
+
 struct OnboardingView: View {
     let store: InstallationStore
+    @State private var poller: OnboardingLivePoller
+    @AppStorage(AppSettings.terminalBundleIdentifierKey)
+    private var terminalBundleIdentifier = TerminalCatalog.defaultBundleIdentifier
+    @State private var selectedProvider: GuidedProvider = .claude
+    @State private var guidedInstallMessage: String?
+    @State private var guidedInstallStartedAt: Date?
+    @State private var showsPermissionsExplainer = false
     @Environment(\.appFontPointSize) private var fontPointSize
+
+    init(store: InstallationStore) {
+        self.store = store
+        _poller = State(initialValue: OnboardingLivePoller(store: store))
+    }
+
+    private var step: OnboardingStep { store.onboardingStep }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                header
-                primaryStatus
+            VStack(spacing: 0) {
+                if step != .moveToApplications {
+                    progressDots
+                        .padding(.bottom, 28)
+                }
+                heroIcon
+                    .padding(.bottom, 16)
+                Text(title)
+                    .appFont(.title2, weight: .bold)
+                    .multilineTextAlignment(.center)
+                Text(subtitle)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                    .padding(.top, 8)
+                stepContent
+                    .padding(.top, 20)
                 actions
+                    .padding(.top, 22)
                 technicalDetails
+                    .padding(.top, 30)
             }
-            .frame(maxWidth: max(560, fontPointSize * 36), alignment: .leading)
+            .frame(maxWidth: max(560, fontPointSize * 36))
             .padding(36)
+            .frame(maxWidth: .infinity)
+        }
+        .task(id: step) { poller.update(for: step) }
+        .onDisappear { poller.stop() }
+    }
+
+    // MARK: - Progress
+
+    private var stepIndex: Int {
+        switch step {
+        case .moveToApplications, .autoSetup: 0
+        case .permissions: 1
+        case .provider: 2
+        case .done, .mainApp: 3
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 16) {
-            Image(systemName: headerIcon)
-                .appFont(.heroIcon)
-                .foregroundStyle(Brand.gradient)
-                .frame(width: max(52, AppFontRole.heroIcon.pointSize(base: fontPointSize)))
-            VStack(alignment: .leading, spacing: 5) {
-                Text(headerTitle).appFont(.title2, weight: .bold)
-                Text(headerSubtitle).foregroundStyle(.secondary)
+    private var progressDots: some View {
+        HStack(spacing: 8) {
+            ForEach(0..<4, id: \.self) { index in
+                Circle()
+                    .fill(dotColor(index))
+                    .frame(width: 7, height: 7)
+                    .overlay {
+                        if index == stepIndex && step != .done {
+                            Circle()
+                                .stroke(Brand.indigo.opacity(0.3), lineWidth: 3)
+                                .frame(width: 13, height: 13)
+                        }
+                    }
             }
         }
+        .accessibilityHidden(true)
     }
+
+    private func dotColor(_ index: Int) -> Color {
+        if step == .done { return Brand.teal }
+        if index < stepIndex { return Brand.teal }
+        if index == stepIndex { return Brand.indigo }
+        return Color.secondary.opacity(0.25)
+    }
+
+    // MARK: - Hero
+
+    private var heroIcon: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(heroGradient)
+                .frame(width: 62, height: 62)
+                .shadow(color: heroShadow, radius: 10, y: 5)
+            Image(systemName: heroSymbol)
+                .appFont(.title2, weight: .semibold)
+                .foregroundStyle(.white)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var heroGradient: LinearGradient {
+        let colors: [Color]
+        switch step {
+        case .moveToApplications: colors = [Color(.systemGray), Color(.darkGray)]
+        case .autoSetup(let failure):
+            colors = failure == nil
+                ? [Brand.indigo, Brand.indigo.opacity(0.75)]
+                : [Color.red, Color.red.opacity(0.75)]
+        case .permissions: colors = [Brand.indigo, Color.purple.opacity(0.85)]
+        case .provider: colors = [Brand.teal, Brand.teal.opacity(0.7)]
+        case .done, .mainApp: colors = [Brand.teal, Color.green.opacity(0.7)]
+        }
+        return LinearGradient(
+            colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private var heroShadow: Color {
+        switch step {
+        case .done, .mainApp, .provider: Brand.teal.opacity(0.35)
+        default: Brand.indigo.opacity(0.3)
+        }
+    }
+
+    private var heroSymbol: String {
+        switch step {
+        case .moveToApplications: "folder.badge.plus"
+        case .autoSetup(let failure):
+            failure == nil ? "shippingbox.and.arrow.backward" : "wrench.and.screwdriver"
+        case .permissions: "moon.stars.fill"
+        case .provider: "terminal.fill"
+        case .done, .mainApp: "checkmark"
+        }
+    }
+
+    // MARK: - Copy
+
+    private var title: String {
+        switch step {
+        case .moveToApplications:
+            L10n.string("Move Detach to Applications")
+        case .autoSetup(let failure):
+            failure == nil
+                ? L10n.string("Setting Up Detach…")
+                : L10n.string("Could Not Complete Setup")
+        case .permissions:
+            L10n.string("Allow Detach to Work in the Background")
+        case .provider:
+            L10n.string("Connect Codex or Claude")
+        case .done, .mainApp:
+            L10n.string("Detach Is Ready")
+        }
+    }
+
+    private var subtitle: String {
+        switch step {
+        case .moveToApplications:
+            L10n.string(
+                "Drag Detach.app to the Applications folder, then open the installed copy.")
+        case .autoSetup(let failure):
+            failure == nil
+                ? L10n.string("This usually takes a few seconds. Nothing to do here.")
+                : L10n.string("The installed CLI version will remain functional — retrying is safe.")
+        case .permissions:
+            L10n.string(
+                "macOS asks once. Enable Detach in the list that opens — it may show one or two switches. This screen updates automatically.")
+        case .provider:
+            L10n.string(
+                "Detach manages Codex CLI and Claude Code sessions. Install at least one — it stays yours; Detach never bundles or replaces it.")
+        case .done, .mainApp:
+            L10n.string(
+                "Start long sessions, close the terminal and the lid — the agent keeps working with a checkpoint every 5 minutes.")
+        }
+    }
+
+    // MARK: - Step content
 
     @ViewBuilder
-    private var primaryStatus: some View {
-        if store.isBusy {
-            HStack(spacing: 12) {
-                ProgressView().controlSize(.small)
-                Text(L10n.string("Installing command-line tools and checking components…"))
-                    .foregroundStyle(.secondary)
+    private var stepContent: some View {
+        switch step {
+        case .moveToApplications:
+            if poller.installedCopyPresent {
+                statusRow(
+                    icon: "checkmark.circle.fill", tint: Brand.teal,
+                    text: L10n.string(
+                        "Detach is now in Applications — close this window and open the installed copy."))
             }
-            .padding(.vertical, 4)
-        } else if store.distributionMatchesBundle
-                    && store.powerHelperStatus == .requiresApproval {
-            Label(
-                L10n.string("Detach's native sleep protection needs one-time administrator approval."),
-                systemImage: "lock.shield")
-                .foregroundStyle(.secondary)
-        } else if store.distributionMatchesBundle
-                    && (store.powerHelperStatus == .notRegistered
-                        || store.powerHelperStatus == .unavailable) {
-            Label(
-                L10n.string("The bundled native power helper is not available yet."),
-                systemImage: "exclamationmark.shield")
-                .foregroundStyle(.secondary)
-        } else if store.watchdogStatus == .requiresApproval {
-            Label {
-                Text(L10n.string(
-                    "Allow Detach to record power health while the app is closed."))
-            } icon: {
-                Image(systemName: "gearshape.2")
+
+        case .autoSetup(let failure):
+            VStack(spacing: 10) {
+                if let failure {
+                    statusRow(
+                        icon: "xmark.circle.fill", tint: .red, text: failure)
+                } else {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .padding(.bottom, 6)
+                    liveRow(
+                        label: L10n.string("Command-line runtime"),
+                        done: store.distributionMatchesBundle)
+                    liveRow(
+                        label: L10n.string("Background helpers registration"),
+                        done: store.powerHelperStatus == .enabled
+                            && store.watchdogStatus == .enabled)
+                }
             }
-            .foregroundStyle(.secondary)
-        } else if blocker == .chooseProvider {
-            Label(L10n.string(
-                "Install and authenticate Codex CLI or Claude CLI; Detach includes tmux, state handling, and sleep protection."),
-                  systemImage: "person.crop.circle.badge.questionmark")
-                .foregroundStyle(.secondary)
-        } else if case .other(let summary) = blocker {
-            Label(localizedOtherSummary(fallback: summary),
-                  systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.secondary)
-        } else if case .failed = store.phase {
-            Label(L10n.string("The installed CLI version will remain functional — retrying is safe."),
-                  systemImage: "arrow.clockwise.circle")
-                .foregroundStyle(.secondary)
+
+        case .permissions:
+            VStack(spacing: 8) {
+                permissionRow(
+                    symbol: "moon.fill",
+                    name: L10n.string("Sleep protection — Detach Power Helper"),
+                    status: store.powerHelperStatus == .enabled
+                        ? .enabled
+                        : (store.powerHelperStatus == .requiresApproval
+                            ? .waitingAdmin : .registering))
+                permissionRow(
+                    symbol: "gearshape.2.fill",
+                    name: L10n.string("Background power monitor — Detach"),
+                    status: store.watchdogStatus == .enabled
+                        ? .enabled
+                        : (store.watchdogStatus == .requiresApproval
+                            ? .waiting : .registering))
+                if store.powerHelperStatus == .enabled,
+                   store.watchdogStatus == .enabled,
+                   !store.powerHelperReadinessConfirmed {
+                    statusRow(
+                        icon: "arrow.triangle.2.circlepath", tint: .orange,
+                        text: L10n.string("Confirming protection readiness…"))
+                }
+                if let error = store.powerHelperError {
+                    statusRow(icon: "xmark.circle.fill", tint: .red, text: error)
+                }
+                if let error = store.watchdogError {
+                    statusRow(icon: "xmark.circle.fill", tint: .red, text: error)
+                }
+                if showsPermissionsExplainer {
+                    Text(L10n.string(
+                        "A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery, protection is released so the Mac can sleep. No Apple Events or third-party tools are used."))
+                        .appFont(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                        .padding(.top, 4)
+                }
+            }
+            .frame(maxWidth: 420)
+
+        case .provider:
+            VStack(spacing: 12) {
+                Picker("", selection: $selectedProvider) {
+                    ForEach(GuidedProvider.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 320)
+
+                if poller.providerAvailability.any {
+                    statusRow(
+                        icon: "checkmark.circle.fill", tint: Brand.teal,
+                        text: L10n.string("Detected — verifying…"))
+                } else if let startedAt = guidedInstallStartedAt,
+                          Date().timeIntervalSince(startedAt) > 120 {
+                    statusRow(
+                        icon: "clock", tint: .orange,
+                        text: L10n.string(
+                            "Not detected yet. Check the Terminal output — network, npm permissions — then try again."))
+                } else {
+                    statusRow(
+                        icon: "magnifyingglass", tint: .secondary,
+                        text: L10n.string(
+                            "Looking for codex and claude in PATH — this screen updates automatically"))
+                }
+                if let message = guidedInstallMessage {
+                    statusRow(icon: "xmark.circle.fill", tint: .red, text: message)
+                }
+            }
+
+        case .done, .mainApp:
+            VStack(spacing: 8) {
+                if poller.heartbeatHealthy {
+                    statusRow(
+                        icon: "checkmark.circle.fill", tint: Brand.teal,
+                        text: L10n.string("Background monitor is reporting"))
+                } else if poller.heartbeatWaitIsLong {
+                    statusRow(
+                        icon: "clock", tint: .orange,
+                        text: L10n.string(
+                            "The monitor has not reported yet — you can continue; health is always visible in Settings → System."))
+                } else {
+                    statusRow(
+                        icon: "arrow.triangle.2.circlepath", tint: .secondary,
+                        text: L10n.string("Checking the background monitor…"))
+                }
+                statusRow(
+                    icon: "person.badge.key", tint: .secondary,
+                    text: L10n.string(
+                        "Remember to authenticate: run codex login or claude → /login before the first session."))
+            }
+            .frame(maxWidth: 440)
         }
     }
+
+    // MARK: - Actions
 
     @ViewBuilder
     private var actions: some View {
-        if !store.isBusy {
-            if !store.isStableApplicationLocation {
-                Button(L10n.string("Open Applications")) {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+        switch step {
+        case .moveToApplications:
+            Button(L10n.string("Open the Applications Folder")) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Brand.indigo)
+
+        case .autoSetup(let failure):
+            if failure != nil {
+                Button(L10n.string("Retry Setup")) {
+                    Task { await store.repair() }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
-            } else if store.distributionMatchesBundle
-                        && store.powerHelperStatus == .requiresApproval {
+            }
+
+        case .permissions:
+            VStack(spacing: 10) {
                 Button(L10n.string("Open System Settings")) {
                     store.openPowerHelperApprovalSettings()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
-            } else if store.distributionMatchesBundle
-                        && (store.powerHelperStatus == .notRegistered
-                            || store.powerHelperStatus == .unavailable) {
-                Button(L10n.string("Check Again")) {
-                    Task { await store.refreshContext() }
+                Button(L10n.string("What exactly is enabled and why?")) {
+                    showsPermissionsExplainer.toggle()
+                }
+                .buttonStyle(.link)
+                .appFont(.caption)
+            }
+
+        case .provider:
+            VStack(spacing: 10) {
+                Button(L10n.string("Install via Terminal")) {
+                    launchGuidedInstall()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Brand.indigo)
-            } else if store.watchdogStatus == .requiresApproval {
-                Button(L10n.string("Open System Settings")) {
-                    store.openLoginItemsSettings()
-                }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Brand.indigo)
-            } else {
-                switch blocker {
-                case .chooseProvider:
-                    Menu(L10n.string("Install an AI Client")) {
-                        Button(L10n.string("Codex CLI")) {
-                            openWebPage("https://github.com/openai/codex#quickstart")
-                        }
-                        Button(L10n.string("Claude Code")) {
-                            openWebPage("https://docs.anthropic.com/en/docs/claude-code/getting-started")
-                        }
+                HStack(spacing: 14) {
+                    Button(L10n.string("Official instructions")) {
+                        NSWorkspace.shared.open(
+                            selectedProvider.documentationURL)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Brand.indigo)
-                case .other:
-                    Button(L10n.string("Check Again")) {
+                    .buttonStyle(.link)
+                    Button(L10n.string("I already installed it")) {
                         Task { await store.refreshContext() }
                     }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.indigo)
-                case .repairInstallation, nil:
-                    Button(buttonTitle) { Task { await store.repair() } }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.indigo)
+                    .buttonStyle(.link)
                 }
+                .appFont(.caption)
+            }
+
+        case .done, .mainApp:
+            Button(L10n.string("Open Dashboard")) {
+                store.markOnboardingCompleted()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Brand.teal)
+        }
+    }
+
+    private func launchGuidedInstall() {
+        guidedInstallMessage = nil
+        guidedInstallStartedAt = Date()
+        let command = selectedProvider.installCommand
+        let terminal = terminalBundleIdentifier
+        Task {
+            if let failure = await TerminalLauncher.open(
+                command: command,
+                terminalBundleIdentifier: terminal) {
+                guidedInstallMessage = failure.message
             }
         }
     }
+
+    // MARK: - Rows
+
+    private enum PermissionStatus {
+        case enabled
+        case waiting
+        case waitingAdmin
+        case registering
+    }
+
+    private func permissionRow(
+        symbol: String,
+        name: String,
+        status: PermissionStatus
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(Brand.indigo)
+                .frame(width: 20)
+            Text(name)
+                .appFont(.body, weight: .medium)
+            Spacer(minLength: 12)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(status == .enabled ? Brand.teal : Color.orange)
+                    .frame(width: 7, height: 7)
+                Text(permissionStatusText(status))
+                    .appFont(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 9)
+            .fill(.quaternary.opacity(0.45)))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func permissionStatusText(_ status: PermissionStatus) -> String {
+        switch status {
+        case .enabled: L10n.string("enabled")
+        case .waiting: L10n.string("waiting for approval")
+        case .waitingAdmin: L10n.string("waiting for approval · admin password")
+        case .registering: L10n.string("registering…")
+        }
+    }
+
+    private func liveRow(label: String, done: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle.dotted")
+                .foregroundStyle(done ? Brand.teal : Color.secondary)
+                .frame(width: 18)
+            Text(label)
+            Spacer(minLength: 0)
+        }
+        .appFont(.body)
+        .frame(maxWidth: 360)
+    }
+
+    private func statusRow(icon: String, tint: Color, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+            Text(text)
+                .appFont(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: 440)
+    }
+
+    // MARK: - Technical details (diagnostics)
 
     private var technicalDetails: some View {
         DisclosureGroup(L10n.string("Technical Details")) {
@@ -186,85 +543,6 @@ struct OnboardingView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.45)))
             }
         }
-    }
-
-    private var headerTitle: String {
-        if store.isBusy { return L10n.string("Setting Up Detach…") }
-        if !store.isStableApplicationLocation {
-            return L10n.string("Move Detach to Applications")
-        }
-        if store.distributionMatchesBundle
-            && store.powerHelperStatus == .requiresApproval
-        {
-            return L10n.string("Allow Native Sleep Protection")
-        }
-        if store.distributionMatchesBundle
-            && (store.powerHelperStatus == .notRegistered
-                || store.powerHelperStatus == .unavailable)
-        {
-            return L10n.string("Enable Native Sleep Protection")
-        }
-        if store.watchdogStatus == .requiresApproval {
-            return L10n.string("Allow Background Activity")
-        }
-        if blocker == .chooseProvider { return L10n.string("Connect Codex or Claude") }
-        if case .failed = store.phase { return L10n.string("Could Not Complete Setup") }
-        return L10n.string("Complete Setup")
-    }
-
-    private var headerSubtitle: String {
-        if store.isBusy { return L10n.string("This usually takes a few seconds.") }
-        if !store.isStableApplicationLocation {
-            return L10n.string("Detach must be in /Applications to update and run in the background.")
-        }
-        if store.distributionMatchesBundle
-            && store.powerHelperStatus == .requiresApproval
-        {
-            return L10n.string(
-                "Detach uses a narrowly scoped bundled helper so active agents can keep running with the lid closed.")
-        }
-        if store.distributionMatchesBundle
-            && (store.powerHelperStatus == .notRegistered
-                || store.powerHelperStatus == .unavailable)
-        {
-            return L10n.string(
-                "The helper is bundled with Detach; no third-party keep-awake app is needed.")
-        }
-        if store.watchdogStatus == .requiresApproval {
-            return L10n.string("macOS asks you once to allow Detach to monitor power in the background.")
-        }
-        if blocker == .chooseProvider {
-            return L10n.string("Choose an AI client, install it using the official instructions, and return to Detach.")
-        }
-        return L10n.string("Click one button — Detach will check and repair the installation.")
-    }
-
-    private var headerIcon: String {
-        if store.isBusy { return "shippingbox.and.arrow.backward" }
-        if !store.isStableApplicationLocation { return "folder.badge.plus" }
-        if store.distributionMatchesBundle && store.powerHelperStatus != .enabled {
-            return "lock.shield"
-        }
-        if store.watchdogStatus == .requiresApproval {
-            return "person.badge.key"
-        }
-        return "wrench.and.screwdriver"
-    }
-
-    private var buttonTitle: String {
-        if case .failed = store.phase { return L10n.string("Retry Setup") }
-        return L10n.string("Set Up Detach")
-    }
-
-    private var blocker: SetupBlocker? {
-        SetupGuidance.blocker(
-            distributionMatchesBundle: store.distributionMatchesBundle,
-            checks: store.report?.checks ?? [])
-    }
-
-    private func openWebPage(_ value: String) {
-        guard let url = URL(string: value) else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private var technicalError: String? {
@@ -379,14 +657,6 @@ struct OnboardingView: View {
         default:
             return check.summary
         }
-    }
-
-    private func localizedOtherSummary(fallback: String) -> String {
-        guard let check = store.report?.checks.first(where: {
-            $0.section == .base && $0.required && $0.status != .ok
-                && $0.summary == fallback
-        }) else { return fallback }
-        return localizedDiagnosticSummary(for: check)
     }
 
     private func remediation(for id: String) -> String? {

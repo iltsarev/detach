@@ -15,24 +15,6 @@ final class InstallationStore {
         let payloadID: String
     }
 
-    private struct WatchdogHeartbeat: Decodable {
-        let state: String
-        let powerState: String?
-
-        private enum CodingKeys: String, CodingKey {
-            case state
-            case powerState = "power_state"
-        }
-    }
-
-    private struct WatchdogHeartbeatSnapshot {
-        let statusURL: URL
-        let heartbeat: WatchdogHeartbeat?
-        let fresh: Bool
-
-        var healthy: Bool { fresh && heartbeat?.state == "ok" }
-    }
-
     enum Phase: Equatable {
         case idle
         case syncing
@@ -50,7 +32,15 @@ final class InstallationStore {
     private(set) var lastInstallMessage: String?
     private(set) var distributionMatchesBundle = false
     private(set) var powerProtectionState: PowerProtectionState = .unknown
+    /// True only after a coordinated reconciliation finished with the helper
+    /// reported `.enabled` and no error — the readiness barrier. A bare
+    /// `SMAppService.status` read is never sufficient: after approval the
+    /// helper journal may still be mid-`registering` with the root gate
+    /// closed, and a session started then would fail to acquire protection.
+    private(set) var powerHelperReadinessConfirmed = false
+    private(set) var onboardingEverCompleted: Bool
 
+    private static let onboardingCompletedKey = "onboardingCompleted"
     private let detachPath: String
     private let watchdog = WatchdogService()
     private let powerHelper = PowerHelperService()
@@ -58,6 +48,8 @@ final class InstallationStore {
     private let bundleURL: URL
     private let bundledMetadata: BundledMetadata?
     private let powerStateRoot: URL
+    private let heartbeatReader: PowerHeartbeatReader
+    private let defaults: UserDefaults
     private let contextOperationOverride:
         (@MainActor (InstallationContextOperation) async -> Void)?
     private var contextOperationRunning = false
@@ -72,11 +64,18 @@ final class InstallationStore {
         detachPath: String,
         bundle: Bundle = .main,
         powerStateRoot: URL? = nil,
+        defaults: UserDefaults = .standard,
         contextOperationOverride:
             (@MainActor (InstallationContextOperation) async -> Void)? = nil
     ) {
         self.detachPath = detachPath
         self.powerStateRoot = powerStateRoot ?? Self.defaultPowerStateRoot
+        heartbeatReader = PowerHeartbeatReader(
+            statusURL: self.powerStateRoot
+                .appendingPathComponent("watchdog-status.json"))
+        self.defaults = defaults
+        onboardingEverCompleted = defaults.bool(
+            forKey: Self.onboardingCompletedKey)
         self.contextOperationOverride = contextOperationOverride
         bundleURL = bundle.bundleURL.standardizedFileURL
         let candidate = bundle.bundleURL
@@ -102,15 +101,54 @@ final class InstallationStore {
         return UpdateConfiguration.isStableApplicationLocation(bundleURL)
     }
     var isBusy: Bool { phase == .syncing || contextOperationRunning }
+
+    /// The shared heartbeat snapshot (checked_at-based freshness). Settings,
+    /// onboarding, and the menu bar must all read through this accessor so
+    /// their freshness verdicts cannot diverge.
+    var watchdogHeartbeat: PowerHeartbeatSnapshot { heartbeatReader.read() }
+
     func refreshPowerProtectionState() {
-        let snapshot = watchdogHeartbeatSnapshot
-        guard snapshot.healthy,
-              let rawValue = snapshot.heartbeat?.powerState,
-              let state = PowerProtectionState(rawValue: rawValue) else {
-            powerProtectionState = .unknown
-            return
+        powerProtectionState = watchdogHeartbeat.effectivePowerState
+    }
+
+    /// Pure registration-status read for live onboarding polling: no
+    /// reconciliation, no doctor run, no XPC. A regression away from
+    /// `.enabled` also withdraws the readiness confirmation so the
+    /// permissions step cannot stay "passed" on stale evidence.
+    func refreshRegistrationStatusesOnly() {
+        powerHelperStatus = powerHelper.status
+        watchdogStatus = watchdog.status
+        if powerHelperStatus != .enabled {
+            powerHelperReadinessConfirmed = false
         }
-        powerProtectionState = state
+    }
+
+    func markOnboardingCompleted() {
+        onboardingEverCompleted = true
+        defaults.set(true, forKey: Self.onboardingCompletedKey)
+    }
+
+    var providerCheckPassed: Bool {
+        report?.checks.first { $0.id == "provider" }?.status == .ok
+    }
+
+    /// The assistant card derived from current state; `.mainApp` means the
+    /// dashboard is shown instead of onboarding.
+    var onboardingStep: OnboardingStep {
+        var failureMessage: String?
+        if case .failed(let message) = phase { failureMessage = message }
+        return SetupGuidance.step(for: OnboardingStepInput(
+            isStableApplicationLocation: isStableApplicationLocation,
+            // `.idle` precedes the automatic bootstrap; both present as the
+            // hands-off setting-up card.
+            isBusy: isBusy || phase == .idle,
+            failureMessage: failureMessage,
+            distributionMatchesBundle: distributionMatchesBundle,
+            powerHelperEnabled: powerHelperStatus == .enabled,
+            watchdogEnabled: watchdogStatus == .enabled,
+            powerReadinessConfirmed: powerHelperReadinessConfirmed,
+            providerInstalled: providerCheckPassed,
+            onboardingEverCompleted: onboardingEverCompleted))
     }
 
     func bootstrap() async {
@@ -223,10 +261,10 @@ final class InstallationStore {
     }
 
     private var watchdogHeartbeatCheck: DiagnosticCheck {
-        let snapshot = watchdogHeartbeatSnapshot
+        let snapshot = watchdogHeartbeat
         let expected = watchdogStatus == .enabled
         let healthySummary: String
-        if let powerState = snapshot.heartbeat?.powerState,
+        if let powerState = snapshot.powerState?.rawValue,
            !powerState.isEmpty {
             healthySummary = L10n.format(
                 "The background monitor reported power state: %@", powerState)
@@ -245,25 +283,6 @@ final class InstallationStore {
                 : (expected
                     ? L10n.string("The background power monitor is starting or needs attention")
                     : L10n.string("The background power monitor has not started yet")))
-    }
-
-    private var watchdogHeartbeatSnapshot: WatchdogHeartbeatSnapshot {
-        let statusURL = powerStateRoot
-            .appendingPathComponent("watchdog-status.json")
-        let attributes = try? FileManager.default.attributesOfItem(
-            atPath: statusURL.path)
-        let modified = attributes?[.modificationDate] as? Date
-        let fresh = modified.map {
-            let age = Date().timeIntervalSince($0)
-            return age >= 0 && age < 180
-        } ?? false
-        let heartbeat = (try? Data(contentsOf: statusURL))
-            .flatMap {
-                try? JSONDecoder().decode(
-                    WatchdogHeartbeat.self, from: $0)
-            }
-        return WatchdogHeartbeatSnapshot(
-            statusURL: statusURL, heartbeat: heartbeat, fresh: fresh)
     }
 
     private static var defaultPowerStateRoot: URL {
@@ -370,6 +389,8 @@ final class InstallationStore {
             }
             powerHelperStatus = powerHelper.status
         }
+        powerHelperReadinessConfirmed = distributionMatchesBundle
+            && powerHelperError == nil && powerHelperStatus == .enabled
         watchdogStatus = watchdog.status
         if distributionMatchesBundle {
             do {
@@ -422,6 +443,7 @@ final class InstallationStore {
             distributionMatchesBundle = false
             watchdogStatus = watchdog.status
             powerHelperStatus = powerHelper.status
+            powerHelperReadinessConfirmed = false
             lastInstallMessage = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             phase = .actionRequired
         } catch {
@@ -483,6 +505,8 @@ final class InstallationStore {
             powerHelperError = error.localizedDescription
         }
         powerHelperStatus = powerHelper.status
+        powerHelperReadinessConfirmed = powerHelperError == nil
+            && powerHelperStatus == .enabled
 
         // The user agent records an independently observable power heartbeat.
         watchdogError = nil

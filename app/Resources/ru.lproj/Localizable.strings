@@ -332,3 +332,61 @@
 "Reinstall the command-line tools from System settings if the CLI needs repair." = "Если CLI нужно восстановить, переустановите командные инструменты во вкладке «Система».";
 "Let Detach check automatically for app updates." = "Разрешите Detach автоматически проверять обновления приложения.";
 "Use ＋ to start Codex or Claude in any project." = "Нажмите ＋, чтобы запустить Codex или Claude в любом проекте.";
+
+/* Mac Power hero */
+"Held awake by active sessions: %d" = "Mac держат активные сессии: %d";
+"Sleep protection is active" = "Защита от сна активна";
+"No active agent sessions" = "Нет активных сессий агентов";
+"Protection released until power is connected" = "Защита снята до подключения питания";
+"Confirming sleep protection…" = "Подтверждаем защиту от сна…";
+"The native power helper is unreachable" = "Нативный помощник питания недоступен";
+"No fresh report from the background monitor" = "Нет свежего отчёта фонового монитора";
+"checked %d s ago" = "проверено %d с назад";
+"checked %d min ago" = "проверено %d мин назад";
+
+/* Onboarding assistant */
+"Drag Detach.app to the Applications folder, then open the installed copy." = "Перетащите Detach.app в папку «Программы», затем откройте установленную копию.";
+"Open the Applications Folder" = "Открыть папку «Программы»";
+"Detach is now in Applications — close this window and open the installed copy." = "Detach уже в «Программах» — закройте это окно и откройте установленную копию.";
+"This usually takes a few seconds. Nothing to do here." = "Обычно это занимает несколько секунд. Делать ничего не нужно.";
+"Command-line runtime" = "Командные инструменты и рантайм";
+"Background helpers registration" = "Регистрация системных помощников";
+"Allow Detach to Work in the Background" = "Разрешите Detach работать в фоне";
+"macOS asks once. Enable Detach in the list that opens — it may show one or two switches. This screen updates automatically." = "macOS спросит один раз. Включите Detach в открывшемся списке — пунктов может быть один или два. Экран обновится сам.";
+"Sleep protection — Detach Power Helper" = "Защита от сна — Detach Power Helper";
+"Background power monitor — Detach" = "Фоновый монитор питания — Detach";
+"Confirming protection readiness…" = "Подтверждаем готовность защиты…";
+"A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery, protection is released so the Mac can sleep. No Apple Events or third-party tools are used." = "Узкий системный помощник не даёт Mac уснуть с закрытой крышкой, пока работает агент. При 10% заряда защита снимается, чтобы Mac мог уснуть. Apple Events и сторонние инструменты не используются.";
+"Detach manages Codex CLI and Claude Code sessions. Install at least one — it stays yours; Detach never bundles or replaces it." = "Detach управляет сессиями Codex CLI и Claude Code. Установите хотя бы один клиент — он остаётся вашим; Detach его не подменяет и не распространяет.";
+"Detected — verifying…" = "Обнаружен — проверяем…";
+"Not detected yet. Check the Terminal output — network, npm permissions — then try again." = "Клиент ещё не обнаружен. Проверьте вывод в Terminal — сеть, права npm — и попробуйте ещё раз.";
+"Looking for codex and claude in PATH — this screen updates automatically" = "Ищем codex и claude в PATH — экран обновится сам";
+"Install via Terminal" = "Установить через Terminal";
+"Official instructions" = "Официальная инструкция";
+"I already installed it" = "У меня уже установлен";
+"Detach Is Ready" = "Detach готов";
+"Start long sessions, close the terminal and the lid — the agent keeps working with a checkpoint every 5 minutes." = "Запускайте долгие сессии, закрывайте терминал и крышку — агент продолжит работать, а раз в 5 минут сохраняется контрольная точка.";
+"Background monitor is reporting" = "Фоновый монитор отчитывается";
+"The monitor has not reported yet — you can continue; health is always visible in Settings → System." = "Монитор ещё не отчитался — можно продолжить; здоровье всегда видно в Настройках → Система.";
+"Checking the background monitor…" = "Проверяем фоновый монитор…";
+"Remember to authenticate: run codex login or claude → /login before the first session." = "Не забудьте авторизоваться: выполните codex login или claude → /login перед первой сессией.";
+"Open Dashboard" = "Открыть дашборд";
+"enabled" = "включено";
+"waiting for approval" = "ждёт разрешения";
+"waiting for approval · admin password" = "ждёт разрешения · пароль администратора";
+"registering…" = "регистрируется…";
+"What exactly is enabled and why?" = "Что именно включается и зачем?";
+
+/* Menu bar item */
+"Open Detach" = "Открыть Detach";
+"New Session…" = "Новая сессия…";
+"Settings…" = "Настройки…";
+"Quit Detach" = "Завершить Detach";
+"Show %d more in Detach…" = "Ещё %d — в Detach…";
+"answer ready" = "ответ готов";
+"working" = "работает";
+"Open Detach to Repair Protection" = "Открыть Detach и починить защиту";
+"Menu Bar" = "Строка меню";
+"Show Detach in the menu bar" = "Показывать Detach в строке меню";
+"Show active session count next to the icon" = "Число активных сессий рядом со значком";
+"You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own." = "Окно можно закрывать — значок продолжит показывать состояние сна. ⌘Q завершает Detach; сессии и защита от сна продолжаются сами.";

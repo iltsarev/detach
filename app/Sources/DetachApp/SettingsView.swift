@@ -12,14 +12,29 @@ struct MacPowerSettingsPresentation: Equatable {
         case refresh
     }
 
+    /// Why the Mac is in its current sleep state. Derived from the effective
+    /// heartbeat state first; the live session count only enriches the
+    /// protected case and never contradicts the heartbeat.
+    enum Reason: Equatable {
+        case activeSessions(Int)
+        case protectionActive
+        case noActiveSessions
+        case lowBattery
+        case confirming
+        case helperUnreachable
+        case noFreshReport
+    }
+
     let state: PowerProtectionState
     let action: Action?
+    let reason: Reason
 
     init(
         state: PowerProtectionState,
         helperStatus: PowerHelperRegistrationStatus,
         watchdogStatus: WatchdogStatus,
-        distributionMatchesBundle: Bool
+        distributionMatchesBundle: Bool,
+        activeSessionCount: Int? = nil
     ) {
         self.state = state
         if helperStatus == .requiresApproval {
@@ -34,6 +49,24 @@ struct MacPowerSettingsPresentation: Equatable {
             action = .refresh
         } else {
             action = nil
+        }
+        switch state {
+        case .protected:
+            if let activeSessionCount, activeSessionCount > 0 {
+                reason = .activeSessions(activeSessionCount)
+            } else {
+                reason = .protectionActive
+            }
+        case .allowed:
+            reason = .noActiveSessions
+        case .lowBattery:
+            reason = .lowBattery
+        case .transitioning:
+            reason = .confirming
+        case .unavailable:
+            reason = .helperUnreachable
+        case .unknown:
+            reason = .noFreshReport
         }
     }
 
@@ -66,6 +99,9 @@ private extension SettingsDestination {
 struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     let installation: InstallationStore
+    /// The app-level shared session poller. Settings can be the only open
+    /// scene, so CLI path and cadence changes are applied here as well.
+    let sessionStore: SessionStore
     @ObservedObject var updater: UpdaterService
     @ObservedObject var notifications: SessionNotificationService
     @ObservedObject var navigation: SettingsNavigation
@@ -77,6 +113,10 @@ struct SettingsView: View {
         TerminalCatalog.defaultBundleIdentifier
     @AppStorage(AppSettings.notificationsEnabledKey) private var notificationsEnabled = false
     @AppStorage(AppSettings.tipsEnabledKey) private var tipsEnabled = true
+    @AppStorage(AppSettings.menuBarIconEnabledKey)
+    private var menuBarIconEnabled = true
+    @AppStorage(AppSettings.menuBarShowsSessionCountKey)
+    private var menuBarShowsSessionCount = true
 
     @State private var terminalApplications: [TerminalApplication] = []
     @State private var terminalIcons: [String: NSImage] = [:]
@@ -174,9 +214,6 @@ struct SettingsView: View {
                 fontPointSize = clampedFontPointSize
             }
             refreshTerminalApplications()
-            notifications.configureMonitoring(
-                detachPath: activeDetachPath,
-                interval: pollInterval)
             await notifications.configure(enabled: notificationsEnabled)
             await installation.refreshContext()
         }
@@ -205,12 +242,13 @@ struct SettingsView: View {
             fontSizeDraft = draft
         }
         .onChange(of: pollInterval) { _, value in
-            notifications.configureMonitoring(detachPath: activeDetachPath, interval: value)
+            sessionStore.startPolling(interval: value)
         }
         .onChange(of: detachPath) { _, _ in
-            notifications.configureMonitoring(
-                detachPath: activeDetachPath,
-                interval: pollInterval)
+            Task {
+                await sessionStore.configure(cli: ProcessDetachCLI(
+                    executable: URL(fileURLWithPath: activeDetachPath)))
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -331,6 +369,18 @@ struct SettingsView: View {
                         .frame(minWidth: 44, alignment: .trailing)
                 }
                 Toggle(L10n.string("Show tips"), isOn: $tipsEnabled)
+            }
+            Section(L10n.string("Menu Bar")) {
+                Toggle(
+                    L10n.string("Show Detach in the menu bar"),
+                    isOn: $menuBarIconEnabled)
+                Toggle(
+                    L10n.string("Show active session count next to the icon"),
+                    isOn: $menuBarShowsSessionCount)
+                    .disabled(!menuBarIconEnabled)
+                Text(L10n.string(
+                    "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own."))
+                    .settingsMessage()
             }
             Section(L10n.string("Command line")) {
                 if installation.hasDistributionPayload {
@@ -565,16 +615,17 @@ struct SettingsView: View {
                     .multilineTextAlignment(.center)
             }
             Section(L10n.string("Mac Power")) {
-                macPowerStateRow
+                macPowerHeroRow
                 requiredComponentStatus(
                     label: L10n.string("Sleep Protection Helper"),
                     status: installation.powerHelperStatus == .enabled ? .ok : .error)
                 requiredComponentStatus(
                     label: L10n.string("Background Power Monitor"),
                     status: installation.watchdogStatus == .enabled ? .ok : .error)
-                Text(powerHelperStatusText)
-                    .settingsMessage(color:
-                        installation.powerHelperStatus == .enabled ? nil : .red)
+                if installation.powerHelperStatus != .enabled {
+                    Text(powerHelperStatusText)
+                        .settingsMessage(color: .red)
+                }
                 macPowerAction
                 if let error = installation.powerHelperError {
                     Text(error).settingsMessage(color: .red)
@@ -583,13 +634,7 @@ struct SettingsView: View {
                     Text(error).settingsMessage(color: .red)
                 }
                 Text(L10n.string(
-                    "Detach automatically protects active sessions and restores normal sleep after the last one. No third-party keep-awake app is required."))
-                    .settingsMessage()
-                Text(L10n.string(
                     "At 10% battery or below, Detach releases its sleep protection so the Mac can sleep."))
-                    .settingsMessage()
-                Text(L10n.string(
-                    "The current sleep state comes from the latest background power check."))
                     .settingsMessage()
             }
             Section(L10n.string("Bundled Runtime")) {
@@ -640,25 +685,66 @@ struct SettingsView: View {
             state: installation.powerProtectionState,
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
-            distributionMatchesBundle: installation.distributionMatchesBundle)
+            distributionMatchesBundle: installation.distributionMatchesBundle,
+            activeSessionCount: sessionStore.sessions.filter {
+                $0.effectiveStatus == .running
+            }.count)
     }
 
-    private var macPowerStateRow: some View {
+    private var macPowerHeroRow: some View {
         HStack(spacing: 12) {
-            Text(L10n.string("Current Sleep State"))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 12)
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(macPowerStateColor)
-                    .frame(width: 8, height: 8)
-                    .accessibilityHidden(true)
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(macPowerStateColor.gradient)
+                    .frame(width: 38, height: 38)
+                Image(systemName: macPowerHeroSymbol)
+                    .foregroundStyle(.white)
+                    .appFont(.body, weight: .semibold)
+            }
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(L10n.string(macPowerPresentation.stateLocalizationKey))
-                    .fontWeight(.medium)
+                    .appFont(.headline, weight: .semibold)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(macPowerDetailLine)
+                    .appFont(.caption)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
         }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var macPowerHeroSymbol: String {
+        switch macPowerPresentation.state {
+        case .protected: "lock.shield.fill"
+        case .allowed: "moon.zzz.fill"
+        case .transitioning: "arrow.triangle.2.circlepath"
+        case .lowBattery: "battery.25"
+        case .unavailable: "exclamationmark.shield.fill"
+        case .unknown: "questionmark.circle.fill"
+        }
+    }
+
+    private var macPowerDetailLine: String {
+        var parts = [macPowerReasonText]
+        if let age = macPowerHeartbeatAgeText { parts.append(age) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var macPowerReasonText: String {
+        macPowerPresentation.reason.localizedText
+    }
+
+    private var macPowerHeartbeatAgeText: String? {
+        let snapshot = installation.watchdogHeartbeat
+        guard snapshot.healthy,
+              let age = snapshot.age(relativeTo: Date()), age >= 0 else {
+            return nil
+        }
+        return powerCheckedAgeText(seconds: Int(age))
     }
 
     private var macPowerStateColor: Color {
