@@ -68,6 +68,24 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.problem, .openDetach)
     }
 
+    func testAllActionRequiredStatesOfferTheEquivalentMenuAction() {
+        XCTAssertEqual(
+            makePresentation(
+                powerState: "allowed",
+                watchdogStatus: .notRegistered).problem,
+            .openDetach)
+        XCTAssertEqual(
+            makePresentation(
+                powerState: "allowed",
+                distributionMatchesBundle: false).problem,
+            .openDetach)
+        XCTAssertEqual(
+            makePresentation(
+                powerState: "protected",
+                heartbeatFresh: false).problem,
+            .openDetach)
+    }
+
     func testLowBatteryIcon() {
         let presentation = makePresentation(powerState: "low_battery")
 
@@ -112,7 +130,8 @@ final class MenuBarPresentationTests: XCTestCase {
         helperStatus: PowerHelperRegistrationStatus = .enabled,
         watchdogStatus: WatchdogStatus = .enabled,
         sessions: [Session] = [],
-        showsSessionCount: Bool = true
+        showsSessionCount: Bool = true,
+        distributionMatchesBundle: Bool = true
     ) -> MenuBarPresentation {
         let heartbeat = PowerHeartbeatSnapshot(
             statusURL: URL(fileURLWithPath: "/tmp/watchdog-status.json"),
@@ -127,7 +146,7 @@ final class MenuBarPresentationTests: XCTestCase {
             sessions: sessions,
             helperStatus: helperStatus,
             watchdogStatus: watchdogStatus,
-            distributionMatchesBundle: true,
+            distributionMatchesBundle: distributionMatchesBundle,
             showsSessionCount: showsSessionCount,
             now: now)
     }

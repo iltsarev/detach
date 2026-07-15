@@ -17,6 +17,36 @@ final class FakeCLI: DetachCLIRunning, @unchecked Sendable {
 
 struct FakeError: Error {}
 
+private actor DelayedCLI: DetachCLIRunning {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resultContinuation: CheckedContinuation<CLIResult, Never>?
+
+    func run(
+        arguments: [String], timeout: TimeInterval
+    ) async throws -> CLIResult {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        return await withCheckedContinuation { continuation in
+            resultContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func finish(with result: CLIResult) {
+        resultContinuation?.resume(returning: result)
+        resultContinuation = nil
+    }
+}
+
 @MainActor
 final class SessionStoreTests: XCTestCase {
     let line = """
@@ -148,6 +178,24 @@ final class SessionStoreTests: XCTestCase {
         await store.configure(cli: second)
 
         XCTAssertEqual(store.sessions.count, 0)
+        XCTAssertEqual(second.calls, [["list", "--json"]])
+    }
+
+    func testLateResultFromPreviousCLICannotOverwriteReconfiguredStore() async {
+        let first = DelayedCLI()
+        let store = SessionStore(cli: first)
+        let staleRefresh = Task { await store.refresh() }
+        await first.waitUntilStarted()
+
+        let second = FakeCLI()
+        second.responses["list --json"] = ok("")
+        await store.configure(cli: second)
+        await first.finish(with: CLIResult(
+            exitCode: 0, stdout: line, stderr: "", timedOut: false))
+        await staleRefresh.value
+
+        XCTAssertEqual(store.sessions, [])
+        XCTAssertEqual(store.state, .ok)
         XCTAssertEqual(second.calls, [["list", "--json"]])
     }
 }

@@ -24,6 +24,7 @@ public final class SessionStore {
     private var pollTask: Task<Void, Never>?
     private var baseInterval: TimeInterval = 2
     private var foreground = true
+    private var refreshGeneration: UInt64 = 0
 
     public init(cli: DetachCLIRunning) {
         self.cli = cli
@@ -66,8 +67,15 @@ public final class SessionStore {
     }
 
     public func refresh() async {
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        let cli = self.cli
         do {
             let result = try await cli.run(arguments: ["list", "--json"], timeout: 5)
+            // Polling, explicit refreshes, and CLI reconfiguration may overlap
+            // while their subprocesses are suspended. Only the latest request
+            // may publish state or notify transition consumers.
+            guard generation == refreshGeneration else { return }
             guard result.exitCode == 0, !result.timedOut else {
                 state = .error(result.timedOut ? L10n.string("detach list timed out")
                                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -85,6 +93,7 @@ public final class SessionStore {
             state = .ok
             if let onSnapshot { await onSnapshot(sessions) }
         } catch {
+            guard generation == refreshGeneration else { return }
             state = .cliMissing
         }
     }

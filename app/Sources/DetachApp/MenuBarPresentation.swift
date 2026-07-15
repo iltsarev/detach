@@ -54,18 +54,19 @@ struct MenuBarPresentation: Equatable {
             ? heartbeat.age(relativeTo: now).map { max(0, Int($0)) }
             : nil
 
-        if helperStatus == .requiresApproval
-            || watchdogStatus == .requiresApproval {
+        switch power.action {
+        case .approveHelper, .approveBackground:
             problem = .openSystemSettings
-        } else if state == .unavailable
-            || helperStatus == .unavailable
-            || helperStatus == .notRegistered {
+        case .setup, .repair, .refresh:
             problem = .openDetach
-        } else {
+        case nil:
             problem = nil
         }
 
-        if problem != nil, state != .protected, state != .transitioning {
+        if problem != nil,
+           state != .protected,
+           state != .transitioning,
+           state != .unknown {
             icon = .attention
         } else {
             switch state {

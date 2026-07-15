@@ -59,7 +59,9 @@ struct SidebarView: View {
         .sheet(isPresented: $showNewSession) {
             NewSessionSheet(detachPath: detachPath)
         }
-        .onChange(of: navigation.requestsNewSession) { _, requested in
+        // The menu can request a sheet before reopening the main window, so
+        // consume an already-pending request on the sidebar's first render.
+        .onChange(of: navigation.requestsNewSession, initial: true) { _, requested in
             guard requested else { return }
             showNewSession = true
             navigation.requestsNewSession = false

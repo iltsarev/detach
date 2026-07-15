@@ -105,7 +105,10 @@ struct RootView: View {
                 await notifications.refreshAuthorizationStatus()
             }
         }
-        .onChange(of: navigation.requestedSessionID) { _, requested in
+        // A menu-bar action can set the request before reopening this window.
+        // Process the initial value as well as later changes so that request is
+        // not lost while no RootView exists.
+        .onChange(of: navigation.requestedSessionID, initial: true) { _, requested in
             guard let requested else { return }
             selectedID = requested
             navigation.requestedSessionID = nil
