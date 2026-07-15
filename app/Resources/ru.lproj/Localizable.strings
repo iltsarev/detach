@@ -367,10 +367,11 @@
 "Detach Is Ready" = "Detach готов";
 "Start long sessions, close the terminal and the lid — the agent keeps working with a checkpoint every 5 minutes." = "Запускайте долгие сессии, закрывайте терминал и крышку — агент продолжит работать, а раз в 5 минут сохраняется контрольная точка.";
 "Background monitor is reporting" = "Фоновый монитор отчитывается";
-"The monitor has not reported yet — you can continue; health is always visible in Settings → System." = "Монитор ещё не отчитался — можно продолжить; здоровье всегда видно в Настройках → Система.";
+"The monitor has not reported yet. Retry it before opening the dashboard." = "Фоновый монитор ещё не отчитался. Перезапустите его перед открытием дашборда.";
 "Checking the background monitor…" = "Проверяем фоновый монитор…";
 "Remember to authenticate: run codex login or claude → /login before the first session." = "Не забудьте авторизоваться: выполните codex login или claude → /login перед первой сессией.";
 "Open Dashboard" = "Открыть дашборд";
+"Retry Background Monitor" = "Перезапустить фоновый монитор";
 "enabled" = "включено";
 "waiting for approval" = "ждёт разрешения";
 "waiting for approval · admin password" = "ждёт разрешения · пароль администратора";

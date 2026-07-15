@@ -80,19 +80,37 @@ using its official instructions.
 Detach.app is available in English and Russian and follows the language chosen
 for Detach in macOS.
 
-## Quick start
+## What's new in 0.2.0
 
-> [!NOTE]
-> The self-contained runtime described here is an unreleased update. It must
-> pass the signed, supervised hardware checks described below before it is
-> published; this document does not mean that a release has already shipped.
+Detach 0.2.0 is the first self-contained release:
+
+- The app bundles its own Apple Silicon tmux, typed state runtime, native power
+  client and helpers, background monitor, and Sparkle updater. Homebrew,
+  Amphetamine, Power Protect, `caffeinate`, a separate tmux, and `jq` are no
+  longer runtime requirements.
+- A guided assistant installs and verifies the immutable CLI payload, walks
+  through the macOS approvals, detects Codex CLI and Claude Code, and does not
+  unlock the dashboard until the background monitor has produced a fresh
+  health report.
+- An optional menu bar companion shows the effective sleep state and live
+  session count, prioritizes sessions waiting for an answer, and reopens the
+  selected session in the dashboard.
+- Native keep-awake coordination protects both idle sleep and closed-lid runs,
+  releases Detach-owned protection at 10% battery, and exposes one consistent
+  status in the app, menu bar, and tmux.
+- Once setup has completed, later launches show the dashboard immediately.
+  Startup and app-activation health refreshes run in the background without
+  flashing the onboarding assistant; a confirmed setup problem still surfaces
+  with an explicit repair path.
+
+## Quick start
 
 > [!IMPORTANT]
 > Before the first run, install and authenticate Codex CLI or Claude Code.
 > Guided setup checks the provider and every Detach-owned component. Provider
 > authentication remains in Codex or Claude Code itself.
 
-1. Once this update is published, download its **DMG** from the
+1. Download the **Detach 0.2.0 DMG** from the
    [Releases page](https://github.com/iltsarev/detach/releases), move
    **Detach.app** to `/Applications`, and open it.
 2. Follow the setup assistant. Detach installs its bundled command-line
@@ -100,7 +118,9 @@ for Detach in macOS.
    Detach in the Login Items list that opens — macOS may show one or two
    switches, and the sleep-protection helper needs an administrator password.
    The assistant checks progress on its own and advances as each step
-   completes.
+   completes. **Open Dashboard** becomes available only after the background
+   monitor sends its first fresh health report. If that takes longer than 90
+   seconds, use **Retry Background Monitor** on the same card.
 3. If neither [Codex CLI](https://github.com/openai/codex) nor
    [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) is
    installed yet, the assistant can run the official installer in your own
@@ -174,6 +194,11 @@ Terminal to remove Detach's status bar overrides entirely.
 
 The main app window is not the runtime. A managed session and its checkpoint
 loop continue independently, and the dashboard catches up when you reopen it.
+After onboarding has completed, Detach renders the dashboard on the first frame
+of every later launch and keeps it mounted during activation refreshes. It
+returns to setup only after a completed health check finds a real repair or
+approval requirement.
+
 Turn-ready status is derived from structured provider lifecycle records rather
 than terminal-text guesses; mid-turn permission prompts are not covered by
 that signal.
@@ -401,6 +426,13 @@ that honestly and refuses to claim that the Mac will stay awake.
 or can sleep, the helper and background-monitor health, and the low-battery
 rule. The same block offers the relevant approval, setup, repair, or refresh
 action when protection needs attention.
+
+The signed per-user background monitor writes a health report once a minute.
+The app and menu bar accept only a healthy report newer than three minutes; a
+missing, stale, malformed, or failed report is shown as unknown instead of
+claiming protection. During first setup and an explicit Repair, Detach safely
+re-registers an enabled monitor that macOS has approved but launchd has not
+loaded.
 
 > [!CAUTION]
 > Closed-lid sessions may cool less effectively during sustained CPU load, and

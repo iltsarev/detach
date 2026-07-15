@@ -22,6 +22,40 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
     }
 
+    func testForcedReplacementRestartsMatchingEnabledRegistration() async throws {
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-current", forKey: "watchdogDefinitionDigest")
+
+        try await fixture.service.reconcileAfterAppUpdate(
+            forceReplacement: true)
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(fixture.service.status, .enabled)
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "watchdogDefinitionReconcilePending"))
+    }
+
+    func testMatchingEnabledRegistrationStillNormallyNoOps() async throws {
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-current", forKey: "watchdogDefinitionDigest")
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 0)
+    }
+
     func testChangedDefinitionRetriesTransientRegisterFailure() async throws {
         let transient = NSError(
             domain: "SMAppServiceErrorDomain", code: 1,

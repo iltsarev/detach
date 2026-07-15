@@ -124,6 +124,7 @@ final class InstallationStore {
     }
 
     func markOnboardingCompleted() {
+        guard watchdogHeartbeat.healthy else { return }
         onboardingEverCompleted = true
         defaults.set(true, forKey: Self.onboardingCompletedKey)
     }
@@ -135,6 +136,13 @@ final class InstallationStore {
     /// The assistant card derived from current state; `.mainApp` means the
     /// dashboard is shown instead of onboarding.
     var onboardingStep: OnboardingStep {
+        // A returning user must never see a transient setup card while the
+        // app bootstraps or refreshes on activation. Keep the dashboard
+        // mounted until a completed check publishes a real actionable state.
+        if onboardingEverCompleted,
+           phase == .idle || phase == .syncing || phase == .ready {
+            return .mainApp
+        }
         var failureMessage: String?
         if case .failed(let message) = phase { failureMessage = message }
         return SetupGuidance.step(for: OnboardingStepInput(
@@ -394,7 +402,11 @@ final class InstallationStore {
         watchdogStatus = watchdog.status
         if distributionMatchesBundle {
             do {
-                try await watchdog.reconcileAfterAppUpdate()
+                let replaceSilentRegistration = !onboardingEverCompleted
+                    && watchdogStatus == .enabled
+                    && !watchdogHeartbeat.healthy
+                try await watchdog.reconcileAfterAppUpdate(
+                    forceReplacement: replaceSilentRegistration)
                 watchdogError = nil
             } catch {
                 watchdogError = error.localizedDescription
@@ -511,7 +523,12 @@ final class InstallationStore {
         // The user agent records an independently observable power heartbeat.
         watchdogError = nil
         do {
-            try await watchdog.reconcileAfterAppUpdate()
+            let watchdogStatusBeforeReconcile = watchdog.status
+            let replaceSilentRegistration = watchdogStatusBeforeReconcile == .enabled
+                && !watchdogHeartbeat.healthy
+                && (repair || !onboardingEverCompleted)
+            try await watchdog.reconcileAfterAppUpdate(
+                forceReplacement: replaceSilentRegistration)
         } catch {
             watchdogError = error.localizedDescription
         }

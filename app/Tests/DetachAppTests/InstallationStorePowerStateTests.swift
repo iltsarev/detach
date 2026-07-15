@@ -108,6 +108,55 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(store.powerProtectionState, .protected)
     }
 
+    func testCompletedOnboardingColdLaunchStartsOnDashboard() {
+        let fixture = makeCompletedOnboardingStore()
+        defer { fixture.cleanup() }
+
+        XCTAssertEqual(fixture.store.onboardingStep, .mainApp)
+    }
+
+    func testCompletedOnboardingRefreshKeepsDashboardMounted() async {
+        let probe = InstallationContextOperationProbe()
+        let fixture = makeCompletedOnboardingStore(
+            contextOperationOverride: { operation in
+                await probe.run(operation)
+            })
+        defer { fixture.cleanup() }
+        await fixture.store.bootstrap()
+        XCTAssertEqual(fixture.store.onboardingStep, .mainApp)
+
+        let refresh = Task { await fixture.store.refreshContext() }
+        await waitUntil { probe.operations == [.refresh] }
+
+        XCTAssertTrue(fixture.store.isBusy)
+        XCTAssertEqual(fixture.store.onboardingStep, .mainApp)
+
+        probe.releaseNext()
+        await refresh.value
+        XCTAssertEqual(fixture.store.onboardingStep, .mainApp)
+    }
+
+    func testOnboardingCannotCompleteBeforeFreshHeartbeat() throws {
+        let suite = "InstallationStorePowerStateTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root,
+            defaults: defaults)
+
+        store.markOnboardingCompleted()
+        XCTAssertFalse(defaults.bool(forKey: "onboardingCompleted"))
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
+            to: root)
+        store.markOnboardingCompleted()
+        XCTAssertTrue(defaults.bool(forKey: "onboardingCompleted"))
+    }
+
     func testRepairQueuesBehindRefreshAndForcesOneFinalRefresh() async {
         let probe = InstallationContextOperationProbe()
         let store = InstallationStore(
@@ -201,6 +250,21 @@ final class InstallationStorePowerStateTests: XCTestCase {
         return root
     }
 
+    private func makeCompletedOnboardingStore(
+        contextOperationOverride:
+            (@MainActor (InstallationContextOperation) async -> Void)? = nil
+    ) -> CompletedOnboardingFixture {
+        let suite = "InstallationStorePowerStateTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "onboardingCompleted")
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            defaults: defaults,
+            contextOperationOverride: contextOperationOverride)
+        return CompletedOnboardingFixture(
+            store: store, defaults: defaults, suite: suite)
+    }
+
     private func waitUntil(
         _ predicate: @escaping @MainActor () -> Bool
     ) async {
@@ -219,6 +283,17 @@ final class InstallationStorePowerStateTests: XCTestCase {
 
     private func stamp(offset: TimeInterval = 0) -> String {
         ISO8601DateFormatter().string(from: Date().addingTimeInterval(offset))
+    }
+}
+
+@MainActor
+private struct CompletedOnboardingFixture {
+    let store: InstallationStore
+    let defaults: UserDefaults
+    let suite: String
+
+    func cleanup() {
+        defaults.removePersistentDomain(forName: suite)
     }
 }
 

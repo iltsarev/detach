@@ -46,12 +46,16 @@ including this file, must not contain private context.
 
 ## Verification commands
 
-- `tests/run.sh` — hermetic Codex integration with a fake provider, private tmux
-  socket/state roots, and a fake native power wrapper.
-- `tests/run-claude.sh` — the equivalent Claude integration.
-- `DETACH_CODEX_TEST_KEEP=1 tests/run.sh` — keep the Codex test's temporary
-  state and tmux server for inspection. Use `DETACH_CLAUDE_TEST_KEEP=1` for the
-  Claude test.
+- `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run.sh`
+  — hermetic Codex integration with a fake provider, private tmux
+  socket/state roots, a fake native power wrapper, and an explicitly selected
+  bundled tmux artifact.
+- `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run-claude.sh`
+  — the equivalent Claude integration. Build and verify the
+  app first; repository integrations must not fall back to an ambient tmux.
+- Add `DETACH_CODEX_TEST_KEEP=1` to the Codex command above to keep its
+  temporary state and tmux server for inspection. Use
+  `DETACH_CLAUDE_TEST_KEEP=1` with the Claude command.
 - `tests/distribution.sh` — immutable install/upgrade/repair/doctor/uninstall
   coverage for the fixed payload (`detach`, `detach-core`, `detach-install`,
   `detach-state`, `detach-power`, and `tmux`) with a temporary home.
@@ -303,9 +307,16 @@ the live poller reads statuses without side effects and runs one coordinated
 reconciliation on the enable transition, and only confirmed readiness (helper
 journal finished, root gate reopened) advances the step. Registration may
 truthfully remain in `requiresApproval`; never treat it as enabled before macOS
-does. The success card waits for the first fresh watchdog heartbeat and is
-recorded as completed only by an explicit action, exactly once. After
-onboarding has ever completed, a missing provider shows the dashboard, not
+does. The success card waits for the first fresh watchdog heartbeat; its
+dashboard action remains disabled until then, and after a long wait it offers
+an explicit monitor retry instead of a bypass. Completion is guarded again in
+the store and is recorded only by that explicit action, exactly once.
+
+After onboarding has ever completed, `.idle`, `.syncing`, and `.ready` all
+present `.mainApp`. This is a first-frame invariant: cold-launch bootstrap and
+scene-activation refresh must keep the existing dashboard mounted and must not
+flash onboarding. Only a completed `.actionRequired` or `.failed` result may
+surface setup again. A missing provider also shows the dashboard, not
 onboarding. Provider installation is offered only as the official command,
 launched visibly in the user's own terminal through the private `.command`
 mechanism; never claim a guided install failed (there is no outcome channel),
@@ -313,6 +324,13 @@ only that the CLI is not detected yet. When helper/plist bytes change after an
 app update, unregister, await completion, then use the bounded retry for the
 transient SMAppService Code=1 race. Do not replace a helper with active leases:
 defer the update.
+
+The per-user watchdog has an additional launch-readiness rule. macOS can report
+an approved agent as enabled while no launchd job was loaded after the approval
+transition. During first onboarding, or an explicit Repair, an enabled watchdog
+without a fresh heartbeat must be replaced through the same durable
+unregister/barrier/register transaction. Ordinary activation refreshes must not
+force replacement merely because a heartbeat is temporarily stale.
 
 The menu bar item is display-only. It derives its shape-first icon and menu
 words from the shared `checked_at`-based heartbeat reader and the app-level

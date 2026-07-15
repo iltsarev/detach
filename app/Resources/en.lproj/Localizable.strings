@@ -367,10 +367,11 @@
 "Detach Is Ready" = "Detach Is Ready";
 "Start long sessions, close the terminal and the lid — the agent keeps working with a checkpoint every 5 minutes." = "Start long sessions, close the terminal and the lid — the agent keeps working with a checkpoint every 5 minutes.";
 "Background monitor is reporting" = "Background monitor is reporting";
-"The monitor has not reported yet — you can continue; health is always visible in Settings → System." = "The monitor has not reported yet — you can continue; health is always visible in Settings → System.";
+"The monitor has not reported yet. Retry it before opening the dashboard." = "The monitor has not reported yet. Retry it before opening the dashboard.";
 "Checking the background monitor…" = "Checking the background monitor…";
 "Remember to authenticate: run codex login or claude → /login before the first session." = "Remember to authenticate: run codex login or claude → /login before the first session.";
 "Open Dashboard" = "Open Dashboard";
+"Retry Background Monitor" = "Retry Background Monitor";
 "enabled" = "enabled";
 "waiting for approval" = "waiting for approval";
 "waiting for approval · admin password" = "waiting for approval · admin password";

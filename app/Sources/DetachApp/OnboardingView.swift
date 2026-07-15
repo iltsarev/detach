@@ -327,7 +327,7 @@ struct OnboardingView: View {
                     statusRow(
                         icon: "clock", tint: .orange,
                         text: L10n.string(
-                            "The monitor has not reported yet — you can continue; health is always visible in Settings → System."))
+                            "The monitor has not reported yet. Retry it before opening the dashboard."))
                 } else {
                     statusRow(
                         icon: "arrow.triangle.2.circlepath", tint: .secondary,
@@ -398,7 +398,23 @@ struct OnboardingView: View {
                 .appFont(.caption)
             }
 
-        case .done, .mainApp:
+        case .done:
+            if poller.heartbeatWaitIsLong && !poller.heartbeatHealthy {
+                Button(L10n.string("Retry Background Monitor")) {
+                    Task { await store.repair() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Brand.indigo)
+            } else {
+                Button(L10n.string("Open Dashboard")) {
+                    store.markOnboardingCompleted()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Brand.teal)
+                .disabled(!poller.heartbeatHealthy)
+            }
+
+        case .mainApp:
             Button(L10n.string("Open Dashboard")) {
                 store.markOnboardingCompleted()
             }

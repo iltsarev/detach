@@ -124,12 +124,12 @@ final class WatchdogService {
 
     var status: WatchdogStatus { backend.status }
 
-    func reconcileAfterAppUpdate() async throws {
+    func reconcileAfterAppUpdate(forceReplacement: Bool = false) async throws {
         guard let digest = digestProvider() else {
             throw WatchdogServiceError.bundledDefinitionMissing
         }
         try await performExclusiveOperation {
-            try await drive(to: digest)
+            try await drive(to: digest, forceReplacement: forceReplacement)
         }
     }
 
@@ -139,7 +139,7 @@ final class WatchdogService {
 
     func disable() async throws {
         try await performExclusiveOperation {
-            try await drive(to: nil)
+            try await drive(to: nil, forceReplacement: false)
         }
     }
 
@@ -166,10 +166,15 @@ final class WatchdogService {
     /// nil target means removal; a digest means the bundled agent must be
     /// registered only after any submitted unregister has crossed a process-
     /// lifetime barrier.
-    private func drive(to targetDigest: String?) async throws {
+    private func drive(
+        to targetDigest: String?,
+        forceReplacement: Bool
+    ) async throws {
         var transaction: WatchdogHandoffTransaction?
         if let targetDigest {
-            transaction = try transactionForInstall(targetDigest)
+            transaction = try transactionForInstall(
+                targetDigest,
+                forceReplacement: forceReplacement)
         } else {
             transaction = try transactionForRemoval()
         }
@@ -228,7 +233,8 @@ final class WatchdogService {
     }
 
     private func transactionForInstall(
-        _ digest: String
+        _ digest: String,
+        forceReplacement: Bool
     ) throws -> WatchdogHandoffTransaction? {
         if var transaction = try handoffStore.load() {
             if transaction.targetDigest != digest {
@@ -253,7 +259,7 @@ final class WatchdogService {
         let previous = defaults.string(forKey: digestKey)
         let pending = defaults.bool(forKey: pendingDigestKey)
         let definitionChanged = previous != digest
-        if !definitionChanged, !pending,
+        if !forceReplacement, !definitionChanged, !pending,
            status == .enabled || status == .requiresApproval {
             return nil
         }
@@ -261,7 +267,8 @@ final class WatchdogService {
         // A legacy pending marker can represent the interval after async
         // unregister submission. Replaying from `unregisterSubmitted` is the
         // only safe migration even when status already says notRegistered.
-        let priorRegistrationMayNeedRemoval = pending
+        let priorRegistrationMayNeedRemoval = forceReplacement
+            || pending
             || (previous != nil && definitionChanged)
             || (definitionChanged
                 && (status == .enabled || status == .requiresApproval))
