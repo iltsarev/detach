@@ -89,7 +89,7 @@ final class FileWatchdogHandoffStore: WatchdogHandoffStoring {
             .appendingPathComponent("Library/Application Support", isDirectory: true)
         return applicationSupport
             .appendingPathComponent("Detach", isDirectory: true)
-            .appendingPathComponent("watchdog-handoff.json")
+            .appendingPathComponent("power-watchdog-handoff.json")
     }
 
     private let fileURL: URL
@@ -106,7 +106,8 @@ final class FileWatchdogHandoffStore: WatchdogHandoffStoring {
     func acquireTransactionLock() throws -> any WatchdogHandoffLocking {
         let directory = fileURL.deletingLastPathComponent()
         try ensurePrivateDirectory(directory)
-        let lockURL = directory.appendingPathComponent("watchdog-handoff.lock")
+        let lockURL = directory.appendingPathComponent(
+            "power-watchdog-handoff.lock")
         let descriptor = Darwin.open(
             lockURL.path,
             O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC,

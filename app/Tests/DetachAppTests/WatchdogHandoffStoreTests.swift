@@ -121,6 +121,12 @@ final class WatchdogHandoffStoreTests: XCTestCase {
             "/fallback-home/.local/state/detach/power/watchdog-lifetime.lock")
     }
 
+    func testProductionJournalDoesNotReusePreReleaseWatchdogState() {
+        XCTAssertEqual(
+            FileWatchdogHandoffStore.defaultFileURL.lastPathComponent,
+            "power-watchdog-handoff.json")
+    }
+
     private func makeFixture() -> WatchdogStoreFixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(

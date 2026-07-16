@@ -17,9 +17,32 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(backend.unregisterCalls, 0)
         XCTAssertEqual(
-            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
             "digest-current")
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
+    }
+
+    func testProductionRegistrationIgnoresPreReleaseDefinitionState() async throws {
+        let backend = FakeWatchdogBackend(
+            status: .notRegistered,
+            registrations: [.success(.enabled)])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "pre-release-digest", forKey: "watchdogDefinitionDigest")
+        fixture.defaults.set(
+            true, forKey: "watchdogDefinitionReconcilePending")
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
+            "digest-current")
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testForcedReplacementRestartsMatchingEnabledRegistration() async throws {
@@ -29,7 +52,7 @@ final class WatchdogServiceTests: XCTestCase {
         let fixture = makeFixture(backend: backend)
         defer { fixture.cleanup() }
         fixture.defaults.set(
-            "digest-current", forKey: "watchdogDefinitionDigest")
+            "digest-current", forKey: "powerWatchdogDefinitionDigest")
 
         try await fixture.service.reconcileAfterAppUpdate(
             forceReplacement: true)
@@ -38,7 +61,7 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(fixture.service.status, .enabled)
         XCTAssertFalse(fixture.defaults.bool(
-            forKey: "watchdogDefinitionReconcilePending"))
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testMatchingEnabledRegistrationStillNormallyNoOps() async throws {
@@ -48,7 +71,7 @@ final class WatchdogServiceTests: XCTestCase {
         let fixture = makeFixture(backend: backend)
         defer { fixture.cleanup() }
         fixture.defaults.set(
-            "digest-current", forKey: "watchdogDefinitionDigest")
+            "digest-current", forKey: "powerWatchdogDefinitionDigest")
 
         try await fixture.service.reconcileAfterAppUpdate()
 
@@ -68,7 +91,8 @@ final class WatchdogServiceTests: XCTestCase {
             backend: backend,
             sleep: { delays.append($0) })
         defer { fixture.cleanup() }
-        fixture.defaults.set("digest-previous", forKey: "watchdogDefinitionDigest")
+        fixture.defaults.set(
+            "digest-previous", forKey: "powerWatchdogDefinitionDigest")
 
         try await fixture.service.reconcileAfterAppUpdate()
 
@@ -76,9 +100,10 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.registerCalls, 2)
         XCTAssertEqual(delays, [250_000_000])
         XCTAssertEqual(
-            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
             "digest-current")
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testPendingUnavailableStateRecoversInsteadOfDeadEnding() async throws {
@@ -87,14 +112,16 @@ final class WatchdogServiceTests: XCTestCase {
             registrations: [.success(.enabled)])
         let fixture = makeFixture(backend: backend)
         defer { fixture.cleanup() }
-        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending")
+        fixture.defaults.set(
+            true, forKey: "powerWatchdogDefinitionReconcilePending")
 
         try await fixture.service.reconcileAfterAppUpdate()
 
         XCTAssertEqual(backend.unregisterCalls, 1)
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(fixture.service.status, .enabled)
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testApprovalStateCompletesRegistrationWithoutRetryLoop() async throws {
@@ -112,9 +139,10 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(fixture.service.status, .requiresApproval)
         XCTAssertEqual(
-            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
             "digest-current")
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testNonTransientFailureKeepsRecoveryPending() async {
@@ -132,8 +160,10 @@ final class WatchdogServiceTests: XCTestCase {
             XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
         }
 
-        XCTAssertTrue(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
-        XCTAssertNil(fixture.defaults.string(forKey: "watchdogDefinitionDigest"))
+        XCTAssertTrue(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
+        XCTAssertNil(fixture.defaults.string(
+            forKey: "powerWatchdogDefinitionDigest"))
     }
 
     func testDisableUnregistersServiceAndClearsDefinitionState() async throws {
@@ -143,15 +173,19 @@ final class WatchdogServiceTests: XCTestCase {
             unregistrations: [.success])
         let fixture = makeFixture(backend: backend)
         defer { fixture.cleanup() }
-        fixture.defaults.set("digest-current", forKey: "watchdogDefinitionDigest")
-        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending")
+        fixture.defaults.set(
+            "digest-current", forKey: "powerWatchdogDefinitionDigest")
+        fixture.defaults.set(
+            true, forKey: "powerWatchdogDefinitionReconcilePending")
 
         try await fixture.service.disable()
 
         XCTAssertEqual(backend.unregisterCalls, 1)
         XCTAssertEqual(fixture.service.status, .notRegistered)
-        XCTAssertNil(fixture.defaults.string(forKey: "watchdogDefinitionDigest"))
-        XCTAssertFalse(fixture.defaults.bool(forKey: "watchdogDefinitionReconcilePending"))
+        XCTAssertNil(fixture.defaults.string(
+            forKey: "powerWatchdogDefinitionDigest"))
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testRelaunchAfterRegisterSuccessFinishesJournalWithoutReregistering() async throws {
@@ -164,7 +198,8 @@ final class WatchdogServiceTests: XCTestCase {
             registrations: [])
         let fixture = makeFixture(backend: backend, handoffStore: store)
         defer { fixture.cleanup() }
-        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending")
+        fixture.defaults.set(
+            true, forKey: "powerWatchdogDefinitionReconcilePending")
 
         try await fixture.service.reconcileAfterAppUpdate()
 
@@ -172,10 +207,10 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.registerCalls, 0)
         XCTAssertNil(store.transaction)
         XCTAssertEqual(
-            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
             "digest-current")
         XCTAssertFalse(fixture.defaults.bool(
-            forKey: "watchdogDefinitionReconcilePending"))
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testChangedTargetReplaysRegisteringPhaseThroughUnregister() async throws {
@@ -189,7 +224,8 @@ final class WatchdogServiceTests: XCTestCase {
             unregistrations: [.success])
         let fixture = makeFixture(backend: backend, handoffStore: store)
         defer { fixture.cleanup() }
-        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending")
+        fixture.defaults.set(
+            true, forKey: "powerWatchdogDefinitionReconcilePending")
 
         try await fixture.service.reconcileAfterAppUpdate()
 
@@ -197,7 +233,7 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertNil(store.transaction)
         XCTAssertEqual(
-            fixture.defaults.string(forKey: "watchdogDefinitionDigest"),
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
             "digest-current")
     }
 
@@ -212,8 +248,10 @@ final class WatchdogServiceTests: XCTestCase {
             unregistrations: [.suspended])
         let fixture = makeFixture(backend: backend, handoffStore: store)
         defer { fixture.cleanup() }
-        fixture.defaults.set("digest-previous", forKey: "watchdogDefinitionDigest")
-        fixture.defaults.set(true, forKey: "watchdogDefinitionReconcilePending")
+        fixture.defaults.set(
+            "digest-previous", forKey: "powerWatchdogDefinitionDigest")
+        fixture.defaults.set(
+            true, forKey: "powerWatchdogDefinitionReconcilePending")
 
         let removal = Task { try await fixture.service.disable() }
         await waitUntil { backend.unregisterCalls == 1 }
@@ -228,9 +266,9 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.registerCalls, 0)
         XCTAssertNil(store.transaction)
         XCTAssertNil(fixture.defaults.string(
-            forKey: "watchdogDefinitionDigest"))
+            forKey: "powerWatchdogDefinitionDigest"))
         XCTAssertFalse(fixture.defaults.bool(
-            forKey: "watchdogDefinitionReconcilePending"))
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testRelaunchReplaysLostUnregisterCallbackBeforeRegistering() async throws {
@@ -238,7 +276,8 @@ final class WatchdogServiceTests: XCTestCase {
         let suite = "WatchdogServiceTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("digest-previous", forKey: "watchdogDefinitionDigest")
+        defaults.set(
+            "digest-previous", forKey: "powerWatchdogDefinitionDigest")
 
         let oldBackend = FakeWatchdogBackend(
             status: .enabled,
@@ -293,7 +332,7 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(relaunchedBackend.registerCalls, 1)
         XCTAssertNil(store.transaction)
         XCTAssertEqual(
-            defaults.string(forKey: "watchdogDefinitionDigest"),
+            defaults.string(forKey: "powerWatchdogDefinitionDigest"),
             "digest-current")
     }
 

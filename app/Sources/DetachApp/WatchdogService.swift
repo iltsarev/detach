@@ -88,8 +88,12 @@ final class WatchdogService {
     private let sleep: (UInt64) async throws -> Void
     private var operationInFlight = false
 
-    private let digestKey = "watchdogDefinitionDigest"
-    private let pendingDigestKey = "watchdogDefinitionReconcilePending"
+    // This service identity first ships with the self-contained runtime.
+    // Keep its durable state separate from pre-release watchdog registrations:
+    // replaying an old label's unregister phase against this label fails with
+    // "Operation not permitted" before the new agent can be registered.
+    private let digestKey = "powerWatchdogDefinitionDigest"
+    private let pendingDigestKey = "powerWatchdogDefinitionReconcilePending"
 
     init() {
         backend = SystemWatchdogRegistrationBackend(plistName: Self.plistName)
