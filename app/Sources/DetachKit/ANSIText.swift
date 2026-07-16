@@ -3,25 +3,54 @@ import AppKit
 /// Converts terminal output with ANSI SGR escape sequences (tmux capture-pane -e)
 /// into an NSAttributedString. Non-SGR CSI sequences and OSC sequences are stripped.
 public enum ANSIParser {
+    /// The dark canvas every terminal preview draws on; reverse video swaps
+    /// against it so highlights survive outside a real terminal.
+    public static let terminalBackground = NSColor(
+        srgbRed: 0.05, green: 0.05, blue: 0.06, alpha: 1)
+
+    private struct SGRState {
+        var fg: NSColor?
+        var bg: NSColor?
+        var bold = false
+        var dim = false
+        var italic = false
+        var underline = false
+        var reverse = false
+        var strikethrough = false
+    }
+
     public static func parse(
         _ raw: String,
         font: NSFont,
         boldFont: NSFont,
-        defaultColor: NSColor
+        defaultColor: NSColor,
+        defaultBackground: NSColor = ANSIParser.terminalBackground
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        var fg: NSColor?
-        var bg: NSColor?
-        var bold = false
+        var state = SGRState()
         var buffer = ""
 
         func flush() {
             guard !buffer.isEmpty else { return }
+            var foreground = state.fg ?? defaultColor
+            var background = state.bg
+            if state.reverse {
+                background = state.fg ?? defaultColor
+                foreground = state.bg ?? defaultBackground
+            }
+            if state.dim { foreground = foreground.withAlphaComponent(0.55) }
             var attributes: [NSAttributedString.Key: Any] = [
-                .font: bold ? boldFont : font,
-                .foregroundColor: fg ?? defaultColor,
+                .font: state.bold ? boldFont : font,
+                .foregroundColor: foreground,
             ]
-            if let bg { attributes[.backgroundColor] = bg }
+            if let background { attributes[.backgroundColor] = background }
+            if state.italic { attributes[.obliqueness] = 0.18 }
+            if state.underline {
+                attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            }
+            if state.strikethrough {
+                attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
             result.append(NSAttributedString(string: buffer, attributes: attributes))
             buffer = ""
         }
@@ -43,7 +72,7 @@ public enum ANSIParser {
                     if scan < raw.endIndex {
                         if raw[scan] == "m" {
                             flush()
-                            apply(params, fg: &fg, bg: &bg, bold: &bold)
+                            apply(params, state: &state)
                         }
                         index = raw.index(after: scan)
                     } else {
@@ -77,33 +106,42 @@ public enum ANSIParser {
         return result
     }
 
-    private static func apply(_ params: String, fg: inout NSColor?, bg: inout NSColor?, bold: inout Bool) {
+    private static func apply(_ params: String, state: inout SGRState) {
         var codes = params.split(separator: ";", omittingEmptySubsequences: false)
             .map { Int($0) ?? 0 }
         if codes.isEmpty { codes = [0] }
         var i = 0
         while i < codes.count {
             switch codes[i] {
-            case 0: fg = nil; bg = nil; bold = false
-            case 1: bold = true
-            case 22: bold = false
-            case 30...37: fg = basic[codes[i] - 30]
-            case 90...97: fg = bright[codes[i] - 90]
-            case 39: fg = nil
-            case 40...47: bg = basic[codes[i] - 40]
-            case 100...107: bg = bright[codes[i] - 100]
-            case 49: bg = nil
+            case 0: state = SGRState()
+            case 1: state.bold = true
+            case 2: state.dim = true
+            case 3: state.italic = true
+            case 4: state.underline = true
+            case 7: state.reverse = true
+            case 9: state.strikethrough = true
+            case 22: state.bold = false; state.dim = false
+            case 23: state.italic = false
+            case 24: state.underline = false
+            case 27: state.reverse = false
+            case 29: state.strikethrough = false
+            case 30...37: state.fg = basic[codes[i] - 30]
+            case 90...97: state.fg = bright[codes[i] - 90]
+            case 39: state.fg = nil
+            case 40...47: state.bg = basic[codes[i] - 40]
+            case 100...107: state.bg = bright[codes[i] - 100]
+            case 49: state.bg = nil
             case 38, 48:
                 let isForeground = codes[i] == 38
                 if i + 2 < codes.count, codes[i + 1] == 5 {
                     let color = xterm(codes[i + 2])
-                    if isForeground { fg = color } else { bg = color }
+                    if isForeground { state.fg = color } else { state.bg = color }
                     i += 2
                 } else if i + 4 < codes.count, codes[i + 1] == 2 {
                     let color = NSColor(srgbRed: CGFloat(codes[i + 2]) / 255,
                                         green: CGFloat(codes[i + 3]) / 255,
                                         blue: CGFloat(codes[i + 4]) / 255, alpha: 1)
-                    if isForeground { fg = color } else { bg = color }
+                    if isForeground { state.fg = color } else { state.bg = color }
                     i += 4
                 }
             default: break

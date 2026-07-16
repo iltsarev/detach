@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import DetachKit
 
 /// Non-wrapping NSTextView-backed log view: text is laid out once per content
 /// update, so window resizes stay cheap even with thousands of styled runs.
@@ -13,7 +14,7 @@ struct LogTextView: NSViewRepresentable {
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = true
-        textView.backgroundColor = NSColor(srgbRed: 0.05, green: 0.05, blue: 0.06, alpha: 1)
+        textView.backgroundColor = ANSIParser.terminalBackground
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isHorizontallyResizable = true
         textView.textContainer?.widthTracksTextView = false
