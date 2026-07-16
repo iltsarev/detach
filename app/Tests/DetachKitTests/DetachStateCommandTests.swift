@@ -314,4 +314,290 @@ final class DetachStateCommandTests: XCTestCase {
 
         """)
     }
+
+    func testStorageReportUsesAllocatedBytesAndOnlyAllowsStoppedOrOrphanedCleanup() throws {
+        let state = temporaryDirectory.appendingPathComponent("state", isDirectory: true)
+        let stopped = try makeStorageSession(
+            state: state, provider: .codex, name: "detach-codex-stopped", status: .stopped)
+        let running = try makeStorageSession(
+            state: state, provider: .claude, name: "detach-claude-running", status: .running)
+        try Data(repeating: 0x61, count: 12_000).write(
+            to: stopped.appendingPathComponent("checkpoint/rollout.jsonl"))
+        try Data(repeating: 0x62, count: 3_000).write(
+            to: stopped.appendingPathComponent("checkpoint/pane.txt"))
+        try Data("log\n".utf8).write(to: stopped.appendingPathComponent("checkpoint.log"))
+        try Data(repeating: 0x63, count: 1_000).write(
+            to: running.appendingPathComponent("checkpoint/transcript.jsonl"))
+
+        let report = try storageReport(
+            state: state,
+            sessions: [
+                storageInventoryLine(.codex, "detach-codex-stopped", .stopped),
+                storageInventoryLine(.claude, "detach-claude-running", .running),
+            ])
+        XCTAssertTrue(report.complete)
+        XCTAssertGreaterThan(report.allocatedBytes, 0)
+        XCTAssertGreaterThan(report.categories.checkpointBytes, 0)
+        XCTAssertGreaterThan(report.categories.logBytes, 0)
+        XCTAssertEqual(report.sessions.count, 2)
+        XCTAssertTrue(try XCTUnwrap(report.sessions.first {
+            $0.sessionName == "detach-codex-stopped"
+        }).deletable)
+        XCTAssertFalse(try XCTUnwrap(report.sessions.first {
+            $0.sessionName == "detach-claude-running"
+        }).deletable)
+
+        let encoded = try JSONEncoder().encode(report)
+        let planData = try DetachStateCommand.run(
+            arguments: ["storage", "plan", "-", "--all"],
+            standardInput: encoded)
+        let plan = try JSONDecoder().decode(StorageCleanupPlan.self, from: planData)
+        XCTAssertEqual(plan.sessions.map(\.sessionName), ["detach-codex-stopped"])
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: [
+                "storage", "plan", "-", "--session", "detach-claude-running",
+            ],
+            standardInput: encoded)) { error in
+            XCTAssertEqual(
+                error as? DetachStateCommandError,
+                .unsafeStorageSelection("detach-claude-running"))
+        }
+    }
+
+    func testStorageReportSupportsAnEmptyMissingStateRoot() throws {
+        let state = temporaryDirectory.appendingPathComponent("missing-state", isDirectory: true)
+        let report = try storageReport(state: state, sessions: [])
+
+        XCTAssertTrue(report.complete)
+        XCTAssertEqual(report.allocatedBytes, 0)
+        XCTAssertEqual(report.logicalBytes, 0)
+        XCTAssertTrue(report.sessions.isEmpty)
+        XCTAssertTrue(report.issues.isEmpty)
+    }
+
+    func testStorageReportDoesNotInflateSparseFiles() throws {
+        let state = temporaryDirectory.appendingPathComponent("sparse-state", isDirectory: true)
+        let session = try makeStorageSession(
+            state: state, provider: .codex, name: "detach-codex-sparse", status: .stopped)
+        let sparse = session.appendingPathComponent("checkpoint/codex-state.sqlite")
+        FileManager.default.createFile(atPath: sparse.path, contents: Data())
+        let handle = try FileHandle(forWritingTo: sparse)
+        try handle.truncate(atOffset: 128 * 1_024 * 1_024)
+        try handle.close()
+
+        let report = try storageReport(
+            state: state,
+            sessions: [storageInventoryLine(.codex, "detach-codex-sparse", .stopped)])
+        let measured = try XCTUnwrap(report.sessions.first)
+        XCTAssertGreaterThanOrEqual(measured.logicalBytes, 128 * 1_024 * 1_024)
+        XCTAssertLessThan(measured.allocatedBytes, measured.logicalBytes)
+    }
+
+    func testStorageReportNeverFollowsSymlinksOrScansProviderStorage() throws {
+        let state = temporaryDirectory.appendingPathComponent("links-state", isDirectory: true)
+        let session = try makeStorageSession(
+            state: state, provider: .codex, name: "detach-codex-links", status: .orphaned)
+        let external = temporaryDirectory.appendingPathComponent("provider", isDirectory: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try Data(repeating: 0x65, count: 2_000_000).write(
+            to: external.appendingPathComponent("provider-transcript.jsonl"))
+        try FileManager.default.createSymbolicLink(
+            at: session.appendingPathComponent("checkpoint/external"),
+            withDestinationURL: external)
+
+        let report = try storageReport(
+            state: state,
+            excluded: [external.path],
+            sessions: [storageInventoryLine(.codex, "detach-codex-links", .orphaned)])
+        let measured = try XCTUnwrap(report.sessions.first)
+        XCTAssertEqual(measured.symlinkCount, 1)
+        XCTAssertLessThan(measured.logicalBytes, 2_000_000)
+        XCTAssertTrue(measured.deletable)
+
+        let providerState = external.appendingPathComponent("detach-state", isDirectory: true)
+        let providerSession = try makeStorageSession(
+            state: providerState,
+            provider: .codex,
+            name: "detach-codex-provider-owned",
+            status: .stopped)
+        try Data(repeating: 0x66, count: 40_000).write(
+            to: providerSession.appendingPathComponent("checkpoint/rollout.jsonl"))
+        let refused = try storageReport(
+            state: providerState,
+            codexRoot: providerState.appendingPathComponent("codex").path,
+            excluded: [providerState.path],
+            sessions: [storageInventoryLine(.codex, "detach-codex-provider-owned", .stopped)])
+        XCTAssertTrue(refused.sessions.isEmpty)
+        XCTAssertFalse(refused.complete)
+        XCTAssertTrue(refused.issues.contains { $0.code == "sessions_root_overlaps_excluded_storage" })
+
+        let nestedProviderStorage = state.appendingPathComponent(
+            "codex/sessions/detach-codex-links/checkpoint/provider-store",
+            isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: nestedProviderStorage, withIntermediateDirectories: true)
+        let nestedRefused = try storageReport(
+            state: state,
+            excluded: [nestedProviderStorage.path],
+            sessions: [storageInventoryLine(.codex, "detach-codex-links", .orphaned)])
+        XCTAssertTrue(nestedRefused.sessions.isEmpty)
+        XCTAssertFalse(nestedRefused.complete)
+        XCTAssertTrue(nestedRefused.issues.contains {
+            $0.code == "sessions_root_overlaps_excluded_storage"
+        })
+
+        let providerParent = temporaryDirectory.appendingPathComponent(
+            "provider-parent", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: providerParent, withIntermediateDirectories: true)
+        let stateInsideProvider = providerParent.appendingPathComponent("state", isDirectory: true)
+        let stateRefused = try storageReport(
+            state: stateInsideProvider,
+            excluded: [providerParent.path],
+            sessions: [])
+        XCTAssertFalse(stateRefused.complete)
+        XCTAssertTrue(stateRefused.issues.contains {
+            $0.code == "state_root_overlaps_excluded_storage"
+        })
+    }
+
+    func testStorageReportRefusesASymlinkedProviderStateRoot() throws {
+        let state = temporaryDirectory.appendingPathComponent("provider-link-state", isDirectory: true)
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let external = temporaryDirectory.appendingPathComponent(
+            "provider-link-target", isDirectory: true)
+        _ = try makeStorageSession(
+            state: external,
+            provider: .codex,
+            name: "detach-codex-provider-link",
+            status: .stopped)
+        let providerLink = state.appendingPathComponent("codex", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: providerLink,
+            withDestinationURL: external.appendingPathComponent("codex", isDirectory: true))
+
+        let report = try storageReport(
+            state: state,
+            sessions: [storageInventoryLine(.codex, "detach-codex-provider-link", .stopped)])
+
+        XCTAssertTrue(report.sessions.isEmpty)
+        XCTAssertFalse(report.complete)
+        XCTAssertTrue(report.issues.contains { $0.code == "provider_state_root_unsafe" })
+    }
+
+    func testStorageReportHandlesUnreadableAndHardLinkedEntriesWithoutCrashing() throws {
+        let state = temporaryDirectory.appendingPathComponent("edge-state", isDirectory: true)
+        let session = try makeStorageSession(
+            state: state, provider: .codex, name: "detach-codex-edge", status: .stopped)
+        let original = session.appendingPathComponent("checkpoint/rollout.jsonl")
+        let linked = session.appendingPathComponent("checkpoint/rollout-copy.jsonl")
+        try Data(repeating: 0x67, count: 8_000).write(to: original)
+        try FileManager.default.linkItem(at: original, to: linked)
+        let unreadable = session.appendingPathComponent("checkpoint/unreadable", isDirectory: true)
+        try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0], ofItemAtPath: unreadable.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: unreadable.path)
+        }
+
+        let report = try storageReport(
+            state: state,
+            sessions: [storageInventoryLine(.codex, "detach-codex-edge", .stopped)])
+        let measured = try XCTUnwrap(report.sessions.first)
+        XCTAssertGreaterThanOrEqual(measured.hardLinkCount, 2)
+        XCTAssertFalse(measured.deletable)
+        XCTAssertEqual(
+            measured.blockedReason,
+            measured.scanComplete ? "hard_links" : "incomplete_scan")
+        if !measured.scanComplete {
+            XCTAssertTrue(report.issues.contains { $0.code == "directory_unreadable" })
+        }
+    }
+
+    func testStorageReportHandlesLargeDirectoriesDeterministically() throws {
+        let state = temporaryDirectory.appendingPathComponent("large-state", isDirectory: true)
+        let session = try makeStorageSession(
+            state: state, provider: .claude, name: "detach-claude-large", status: .stopped)
+        let directory = session.appendingPathComponent("checkpoint/many", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        for index in 0..<512 {
+            try Data([UInt8(index % 251)]).write(
+                to: directory.appendingPathComponent(String(format: "%04d", index)))
+        }
+
+        let first = try storageReport(
+            state: state,
+            sessions: [storageInventoryLine(.claude, "detach-claude-large", .stopped)])
+        let second = try storageReport(
+            state: state,
+            sessions: [storageInventoryLine(.claude, "detach-claude-large", .stopped)])
+
+        XCTAssertEqual(first, second)
+        XCTAssertTrue(try XCTUnwrap(first.sessions.first).deletable)
+        XCTAssertGreaterThan(first.allocatedBytes, 0)
+    }
+
+    private func makeStorageSession(
+        state: URL,
+        provider: Provider,
+        name: String,
+        status: EffectiveStatus
+    ) throws -> URL {
+        let root = state.appendingPathComponent(provider.rawValue)
+            .appendingPathComponent("sessions", isDirectory: true)
+        let session = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session.appendingPathComponent("checkpoint", isDirectory: true),
+            withIntermediateDirectories: true)
+        let metadata: [String: Any] = [
+            "schema": 1,
+            "provider": provider.rawValue,
+            "session_name": name,
+            "project_dir": "/tmp/project",
+            "status": status.rawValue,
+        ]
+        try JSONSerialization.data(withJSONObject: metadata)
+            .write(to: session.appendingPathComponent("meta.json"))
+        return session
+    }
+
+    private func storageInventoryLine(
+        _ provider: Provider,
+        _ name: String,
+        _ status: EffectiveStatus
+    ) -> String {
+        let object: [String: Any] = [
+            "schema": 1,
+            "provider": provider.rawValue,
+            "session_name": name,
+            "name": name,
+            "effective_status": status.rawValue,
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func storageReport(
+        state: URL,
+        codexRoot: String? = nil,
+        excluded: [String] = [],
+        sessions: [String]
+    ) throws -> StorageReport {
+        var arguments = [
+            "storage", "report",
+            "--state-root", state.path,
+            "--codex-root", codexRoot ?? state.appendingPathComponent("codex").path,
+            "--claude-root", state.appendingPathComponent("claude").path,
+        ]
+        for path in excluded {
+            arguments += ["--exclude-root", path]
+        }
+        arguments += ["--sessions", "-"]
+        let output = try DetachStateCommand.run(
+            arguments: arguments,
+            standardInput: Data((sessions.joined(separator: "\n") + "\n").utf8))
+        return try JSONDecoder().decode(StorageReport.self, from: output)
+    }
 }

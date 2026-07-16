@@ -21,6 +21,8 @@ usage() {
     '  detach claude [COMMAND] [ARGS...]' \
     '  detach list [--json]' \
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
+    '  detach storage --json' \
+    '  detach storage cleanup --dry-run --json [--session NAME ...]' \
     '  detach power status --json' \
     '  detach config tmux-style [detach|inherit]' \
     '  detach config tmux-mouse [on|off]' \
@@ -73,6 +75,10 @@ PLUTIL_BIN="${DETACH_PLUTIL_BIN:-/usr/bin/plutil}"
 LAUNCHCTL_BIN="${DETACH_LAUNCHCTL_BIN:-/bin/launchctl}"
 INSTALL_BIN_DIR="${DETACH_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 STATE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+CODEX_STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_ROOT/codex}"
+CLAUDE_STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_ROOT/claude}"
+CODEX_PROVIDER_ROOT="${CODEX_HOME:-$HOME/.codex}"
+CLAUDE_PROVIDER_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_ROOT}"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
 APP_WATCHDOG_LABEL="${DETACH_APP_WATCHDOG_LABEL:-dev.tsarev.detach.power-watchdog}"
@@ -392,6 +398,57 @@ list_all() {
   return "$status"
 }
 
+storage_report() {
+  [ -x "$STATE_BIN" ] || die "state helper not found: $STATE_BIN"
+  list_all --json | "$STATE_BIN" storage report \
+    --state-root "$STATE_ROOT" \
+    --codex-root "$CODEX_STATE_ROOT" \
+    --claude-root "$CLAUDE_STATE_ROOT" \
+    --exclude-root "$CODEX_PROVIDER_ROOT" \
+    --exclude-root "$CLAUDE_PROVIDER_ROOT" \
+    --sessions -
+}
+
+storage_cleanup_dry_run() {
+  local saw_dry_run=0
+  local saw_json=0
+  local sessions=()
+  local plan_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run)
+        [ "$saw_dry_run" -eq 0 ] || die "duplicate storage cleanup option: --dry-run"
+        saw_dry_run=1
+        shift
+        ;;
+      --json)
+        [ "$saw_json" -eq 0 ] || die "duplicate storage cleanup option: --json"
+        saw_json=1
+        shift
+        ;;
+      --session)
+        [ "$#" -ge 2 ] || die "--session requires a managed session name"
+        sessions+=( "$2" )
+        shift 2
+        ;;
+      *)
+        die "unknown storage cleanup option: $1"
+        ;;
+    esac
+  done
+  [ "$saw_dry_run" -eq 1 ] || die "storage cleanup is preview-only; pass --dry-run"
+  [ "$saw_json" -eq 1 ] || die "storage cleanup requires --json"
+  if [ "${#sessions[@]}" -eq 0 ]; then
+    plan_args=( --all )
+  else
+    for session in "${sessions[@]}"; do
+      plan_args+=( --session "$session" )
+    done
+  fi
+  storage_report | "$STATE_BIN" storage plan - "${plan_args[@]}"
+}
+
 resume_auto() {
   local session_id=""
   local codex_match=0
@@ -556,6 +613,22 @@ main() {
     resume)
       shift
       resume_auto "$@"
+      ;;
+    storage)
+      shift
+      case "${1:-}" in
+        --json)
+          [ "$#" -eq 1 ] || die "storage accepts only --json"
+          storage_report
+          ;;
+        cleanup)
+          shift
+          storage_cleanup_dry_run "$@"
+          ;;
+        *)
+          die "usage: detach storage --json | detach storage cleanup --dry-run --json [--session NAME ...]"
+          ;;
+      esac
       ;;
     power)
       shift

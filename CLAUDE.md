@@ -150,8 +150,11 @@ the whole child process.
 
 `detach-state` replaces the former jq dependency. Its stable typed commands
 cover guarded metadata create/get/patch/match operations, JSONL validation and
-summary, and context/session JSON emission. Do not reintroduce ad-hoc JSON text
-editing or a jq runtime requirement.
+summary, context/session JSON emission, and storage report/cleanup-plan JSON.
+Storage accounting uses allocated blocks as the user-facing disk size, keeps
+logical bytes separately for sparse files, never follows symlinks, excludes
+provider storage, and treats an incomplete scan as ineligible for cleanup. Do
+not reintroduce ad-hoc JSON text editing or a jq runtime requirement.
 
 Per-session `meta.json` uses schema 1 and a `run_token`. A stale worker or
 checkpoint loop must not overwrite metadata belonging to a replacement run.
@@ -163,6 +166,13 @@ State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
 conversation data. Codex's shared SQLite database may be backed up after an
 integrity check but is never restored automatically.
+
+Bulk cleanup may select only fully scanned `stopped` or `orphaned` sessions.
+Before deletion the app must re-read and match the displayed status and byte
+counts. Actual deletion continues through the provider command, holds the
+checkpoint lock, rechecks managed tmux liveness/ownership under that lock, and
+refuses symlinked or foreign-owned state/session directories. A partial failure
+must leave every failed session in place and continue reporting it explicitly.
 
 ### Session lifecycle and tmux
 

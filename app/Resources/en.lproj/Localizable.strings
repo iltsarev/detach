@@ -379,6 +379,29 @@
 "registering…" = "registering…";
 "What exactly is enabled and why?" = "What exactly is enabled and why?";
 
+/* Storage */
+"Storage" = "Storage";
+"Detach data" = "Detach data";
+"Checkpoints" = "Checkpoints";
+"Logs" = "Logs";
+"Largest sessions" = "Largest sessions";
+"Refresh" = "Refresh";
+"Show in Finder" = "Show in Finder";
+"Delete selected…" = "Delete selected…";
+"Delete all safe…" = "Delete all safe…";
+"Protected from cleanup" = "Protected from cleanup";
+"Measuring Detach storage…" = "Measuring Detach storage…";
+"Measure Detach storage" = "Measure Detach storage";
+"Delete selected Detach session data?" = "Delete selected Detach session data?";
+"Delete %@" = "Delete %@";
+"Storage scan timed out" = "Storage scan timed out";
+"Storage changed before cleanup; review it again." = "Storage changed before cleanup; review it again.";
+"Some entries could not be measured safely and are excluded from cleanup." = "Some entries could not be measured safely and are excluded from cleanup.";
+"No saved Detach sessions use disk space." = "No saved Detach sessions use disk space.";
+"The installed Detach CLI returned incompatible storage data." = "The installed Detach CLI returned incompatible storage data.";
+"%@ across %d stopped or orphaned sessions will be deleted: %@. Provider storage is not affected." = "%@ across %d stopped or orphaned sessions will be deleted: %@. Provider storage is not affected.";
+"timed out" = "timed out";
+
 /* Menu bar item */
 "Open Detach" = "Open Detach";
 "New Session…" = "New Session…";

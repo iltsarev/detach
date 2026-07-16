@@ -379,6 +379,29 @@
 "registering…" = "регистрируется…";
 "What exactly is enabled and why?" = "Что именно включается и зачем?";
 
+/* Storage */
+"Storage" = "Хранилище";
+"Detach data" = "Данные Detach";
+"Checkpoints" = "Контрольные точки";
+"Logs" = "Логи";
+"Largest sessions" = "Самые большие сессии";
+"Refresh" = "Обновить";
+"Show in Finder" = "Показать в Finder";
+"Delete selected…" = "Удалить выбранные…";
+"Delete all safe…" = "Удалить всё безопасное…";
+"Protected from cleanup" = "Защищено от очистки";
+"Measuring Detach storage…" = "Измеряем хранилище Detach…";
+"Measure Detach storage" = "Измерить хранилище Detach";
+"Delete selected Detach session data?" = "Удалить данные выбранных сессий Detach?";
+"Delete %@" = "Удалить %@";
+"Storage scan timed out" = "Измерение хранилища превысило время ожидания";
+"Storage changed before cleanup; review it again." = "Хранилище изменилось перед очисткой; проверьте список ещё раз.";
+"Some entries could not be measured safely and are excluded from cleanup." = "Некоторые элементы не удалось безопасно измерить; они исключены из очистки.";
+"No saved Detach sessions use disk space." = "Сохранённые сессии Detach не занимают место.";
+"The installed Detach CLI returned incompatible storage data." = "Установленный Detach CLI вернул несовместимые данные хранилища.";
+"%@ across %d stopped or orphaned sessions will be deleted: %@. Provider storage is not affected." = "Будет удалено %@ из %d остановленных или осиротевших сессий: %@. Хранилища провайдеров не затрагиваются.";
+"timed out" = "превышено время ожидания";
+
 /* Menu bar item */
 "Open Detach" = "Открыть Detach";
 "New Session…" = "Новая сессия…";

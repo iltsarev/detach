@@ -12,6 +12,9 @@ public enum DetachStateCommandError: Error, Equatable, Sendable {
     case invalidTranscript
     case unusableMetadata
     case metadataMismatch
+    case invalidStorageInventory
+    case invalidStorageReport
+    case unsafeStorageSelection(String)
 }
 
 /// The command contract shared by the `detach-state` executable and unit
@@ -69,8 +72,104 @@ public enum DetachStateCommand {
             return try jsonlSummary(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("storage", "report"):
+            return try storageReport(
+                Array(arguments.dropFirst(2)),
+                standardInput: injectedStandardInput)
+        case ("storage", "plan"):
+            return try storagePlan(
+                Array(arguments.dropFirst(2)),
+                standardInput: injectedStandardInput)
         default:
             throw DetachStateCommandError.invalidArguments
+        }
+    }
+
+    private static func storageReport(
+        _ arguments: [String],
+        standardInput: Data?
+    ) throws -> Data {
+        var stateRoot: String?
+        var providerRoots: [Provider: String] = [:]
+        var excludedRoots: [String] = []
+        var inventoryPath: String?
+        var index = 0
+        while index < arguments.count {
+            let option = arguments[index]
+            index += 1
+            guard index < arguments.count else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            let value = arguments[index]
+            index += 1
+            switch option {
+            case "--state-root" where stateRoot == nil:
+                stateRoot = value
+            case "--codex-root" where providerRoots[.codex] == nil:
+                providerRoots[.codex] = value
+            case "--claude-root" where providerRoots[.claude] == nil:
+                providerRoots[.claude] = value
+            case "--exclude-root":
+                excludedRoots.append(value)
+            case "--sessions" where inventoryPath == nil:
+                inventoryPath = value
+            default:
+                throw DetachStateCommandError.invalidArguments
+            }
+        }
+        guard let stateRoot,
+              providerRoots[.codex] != nil,
+              providerRoots[.claude] != nil,
+              let inventoryPath else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let inventory = try inputData(atPath: inventoryPath, standardInput: standardInput)
+        do {
+            return try encodeJSON(StorageInspector.report(
+                stateRoot: stateRoot,
+                providerRoots: providerRoots,
+                excludedRoots: excludedRoots,
+                inventory: inventory))
+        } catch StorageInspectionError.invalidInventory {
+            throw DetachStateCommandError.invalidStorageInventory
+        }
+    }
+
+    private static func storagePlan(
+        _ arguments: [String],
+        standardInput: Data?
+    ) throws -> Data {
+        guard let reportPath = arguments.first else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        var selectAll = false
+        var sessionNames: [String] = []
+        var index = 1
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--all" where !selectAll && sessionNames.isEmpty:
+                selectAll = true
+                index += 1
+            case "--session" where !selectAll && index + 1 < arguments.count:
+                sessionNames.append(arguments[index + 1])
+                index += 2
+            default:
+                throw DetachStateCommandError.invalidArguments
+            }
+        }
+        guard selectAll || !sessionNames.isEmpty else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let reportData = try inputData(atPath: reportPath, standardInput: standardInput)
+        do {
+            return try encodeJSON(StorageInspector.cleanupPlan(
+                reportData: reportData,
+                selectAll: selectAll,
+                sessionNames: sessionNames))
+        } catch StorageInspectionError.unsafeSelection(let name) {
+            throw DetachStateCommandError.unsafeStorageSelection(name)
+        } catch {
+            throw DetachStateCommandError.invalidStorageReport
         }
     }
 
@@ -517,6 +616,14 @@ public enum DetachStateCommand {
         var output = try JSONSerialization.data(
             withJSONObject: object,
             options: [.sortedKeys, .withoutEscapingSlashes])
+        output.append(0x0A)
+        return output
+    }
+
+    private static func encodeJSON<Value: Encodable>(_ value: Value) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var output = try encoder.encode(value)
         output.append(0x0A)
         return output
     }

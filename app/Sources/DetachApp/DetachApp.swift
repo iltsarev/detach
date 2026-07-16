@@ -44,6 +44,9 @@ struct DetachApp: App {
     @State private var sessionStore = SessionStore(
         cli: ProcessDetachCLI(executable: URL(
             fileURLWithPath: AppSettings.defaultDetachPath)))
+    @State private var storageStore = StorageStore(
+        cli: ProcessDetachCLI(executable: URL(
+            fileURLWithPath: AppSettings.defaultDetachPath)))
     @StateObject private var updater = UpdaterService()
     @StateObject private var notifications = SessionNotificationService()
     @StateObject private var tips = TipSession()
@@ -70,6 +73,7 @@ struct DetachApp: App {
             SettingsView(
                 installation: installation,
                 sessionStore: sessionStore,
+                storageStore: storageStore,
                 updater: updater,
                 notifications: notifications,
                 navigation: settingsNavigation)

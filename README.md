@@ -367,6 +367,14 @@ Checkpoint directories contain full conversation data:
 `--keep-state` preserves checkpoints; `--purge-state` removes Detach state.
 None of these commands remove transcripts from `~/.codex` or `~/.claude`.
 
+Settings → System shows Detach's on-disk size, its checkpoint/log breakdown,
+and the largest sessions. Cleanup is deliberately limited to fully measured
+`stopped` or `orphaned` sessions. It previews the exact selection and allocated
+size, rechecks the preview immediately before deletion, and then uses the same
+checkpoint lock and tmux ownership checks as `detach <provider> delete`.
+Symlinks are measured as links and never followed; provider-owned storage is
+excluded.
+
 </details>
 
 ## Prefer the terminal? The CLI is first-class
@@ -417,6 +425,8 @@ detach resume --name migration --detach SESSION_UUID
 | `detach <provider> stop [name]` | Stop a running managed session. |
 | `detach <provider> recover [name]` | Restart an interrupted managed run using its saved recovery context. |
 | `detach <provider> delete [--force] [name]` | Delete stopped Detach state; leave provider storage untouched. |
+| `detach storage --json` | Report logical and allocated Detach storage with per-session and checkpoint/log breakdowns. |
+| `detach storage cleanup --dry-run --json [--session name]` | Preview every safely removable session, or an explicit stopped/orphaned selection; never deletes data. |
 | `detach power status --json` | Read the combined idle-sleep and closed-lid protection state. |
 | `detach config tmux-style [mode]` | Select `detach` styling or `inherit` your tmux theme. |
 | `detach config tmux-mouse [on\|off]` | Enable or disable Detach's tmux mouse scrolling and copy bindings. |

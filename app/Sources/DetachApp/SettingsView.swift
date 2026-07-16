@@ -97,7 +97,7 @@ private extension SettingsDestination {
         case .general: 450
         case .terminal: 460
         case .notifications: 350
-        case .system: 660
+        case .system: 780
         case .updates: 420
         }
     }
@@ -109,6 +109,7 @@ struct SettingsView: View {
     /// The app-level shared session poller. Settings can be the only open
     /// scene, so CLI path and cadence changes are applied here as well.
     let sessionStore: SessionStore
+    let storageStore: StorageStore
     @ObservedObject var updater: UpdaterService
     @ObservedObject var notifications: SessionNotificationService
     @ObservedObject var navigation: SettingsNavigation
@@ -138,6 +139,10 @@ struct SettingsView: View {
     @State private var isUpdatingTmuxStyle = false
     @State private var tmuxStyleError: String?
     @State private var fontSizeDraft: AppFontSizeDraft?
+    @State private var selectedStorageSessionIDs = Set<String>()
+    @State private var pendingStorageCleanup: [StorageSession] = []
+    @State private var confirmStorageCleanup = false
+    @State private var storageCleanupError: String?
 
     private var selectedTerminal: TerminalApplication? {
         terminalApplications.first { $0.bundleIdentifier == terminalBundleIdentifier }
@@ -225,10 +230,13 @@ struct SettingsView: View {
             await installation.refreshContext()
         }
         .task(id: activeDetachPath) {
+            await storageStore.configure(cli: ProcessDetachCLI(
+                executable: URL(fileURLWithPath: activeDetachPath)))
             await loadTmuxStyle()
         }
         .task(id: navigation.selectedTab) {
             guard navigation.selectedTab == .system else { return }
+            await storageStore.refresh()
             while !Task.isCancelled {
                 installation.refreshPowerProtectionState()
                 do {
@@ -255,7 +263,13 @@ struct SettingsView: View {
             Task {
                 await sessionStore.configure(cli: ProcessDetachCLI(
                     executable: URL(fileURLWithPath: activeDetachPath)))
+                await storageStore.configure(cli: ProcessDetachCLI(
+                    executable: URL(fileURLWithPath: activeDetachPath)))
             }
+        }
+        .onChange(of: storageStore.report) { _, report in
+            let eligible = Set(report?.sessions.filter(\.deletable).map(\.id) ?? [])
+            selectedStorageSessionIDs.formIntersection(eligible)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -264,6 +278,9 @@ struct SettingsView: View {
                 await installation.refreshContext()
                 if !isUpdatingTmuxStyle {
                     await loadTmuxStyle()
+                }
+                if navigation.selectedTab == .system {
+                    await storageStore.refresh()
                 }
             }
         }
@@ -304,6 +321,21 @@ struct SettingsView: View {
         } message: {
             Text(L10n.string(
                 "Detach checkpoint/state directories will be deleted. The ~/.codex and ~/.claude stores won't be affected."))
+        }
+        .confirmationDialog(
+            L10n.string("Delete selected Detach session data?"),
+            isPresented: $confirmStorageCleanup,
+            titleVisibility: .visible
+        ) {
+            Button(
+                L10n.format("Delete %@", storageSize(
+                    storageTotal(pendingStorageCleanup))),
+                role: .destructive
+            ) {
+                Task { await performStorageCleanup() }
+            }
+        } message: {
+            Text(storageCleanupDescription)
         }
     }
 
@@ -655,6 +687,7 @@ struct SettingsView: View {
                     "These components are included with Detach. Only Codex CLI or Claude CLI is installed and authenticated separately by you."))
                     .settingsMessage()
             }
+            storageSection
             Section(L10n.string("Installation")) {
                 Button(L10n.string("Reinstall command-line tools")) {
                     Task { await installation.repair() }
@@ -685,6 +718,141 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var storageSection: some View {
+        Section(L10n.string("Storage")) {
+            if let report = storageStore.report {
+                LabeledContent(L10n.string("Detach data"), value: storageSize(report.allocatedBytes))
+                LabeledContent(
+                    L10n.string("Checkpoints"),
+                    value: storageSize(report.categories.checkpointBytes))
+                LabeledContent(L10n.string("Logs"), value: storageSize(report.categories.logBytes))
+
+                if !report.complete {
+                    Text(L10n.string(
+                        "Some entries could not be measured safely and are excluded from cleanup."))
+                        .settingsMessage(color: .orange)
+                }
+
+                if report.sessions.isEmpty {
+                    Text(L10n.string("No saved Detach sessions use disk space."))
+                        .settingsMessage()
+                } else {
+                    Text(L10n.string("Largest sessions"))
+                        .appFont(.caption, weight: .semibold)
+                    ForEach(report.sessions.prefix(5)) { session in
+                        HStack(spacing: 8) {
+                            Toggle("", isOn: storageSelectionBinding(for: session))
+                                .labelsHidden()
+                                .disabled(!session.deletable)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.sessionName)
+                                    .lineLimit(1)
+                                Text(L10n.string(session.effectiveStatus.rawValue))
+                                    .appFont(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(storageSize(session.allocatedBytes))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                            if !session.deletable {
+                                Image(systemName: "lock.fill")
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityLabel(L10n.string("Protected from cleanup"))
+                            }
+                        }
+                    }
+                }
+
+                HStack {
+                    Button(L10n.string("Refresh")) {
+                        Task { await storageStore.refresh() }
+                    }
+                    Button(L10n.string("Show in Finder")) {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: report.stateRoot))
+                    }
+                    Spacer()
+                    Button(L10n.string("Delete selected…"), role: .destructive) {
+                        prepareStorageCleanup(report.sessions.filter {
+                            $0.deletable && selectedStorageSessionIDs.contains($0.id)
+                        })
+                    }
+                    .disabled(selectedStorageSessionIDs.isEmpty)
+                    Button(L10n.string("Delete all safe…"), role: .destructive) {
+                        prepareStorageCleanup(report.sessions.filter(\.deletable))
+                    }
+                    .disabled(!report.sessions.contains(where: \.deletable))
+                }
+            } else if storageStore.state == .loading {
+                ProgressView(L10n.string("Measuring Detach storage…"))
+            } else {
+                Button(L10n.string("Measure Detach storage")) {
+                    Task { await storageStore.refresh() }
+                }
+            }
+
+            if let storageCleanupError {
+                Text(storageCleanupError).settingsMessage(color: .red)
+            } else if case .error(let message) = storageStore.state, !message.isEmpty {
+                Text(message).settingsMessage(color: .red)
+            } else if storageStore.state == .incompatible {
+                Text(L10n.string("The installed Detach CLI returned incompatible storage data."))
+                    .settingsMessage(color: .red)
+            }
+        }
+    }
+
+    private func storageSelectionBinding(for session: StorageSession) -> Binding<Bool> {
+        Binding(
+            get: { selectedStorageSessionIDs.contains(session.id) },
+            set: { selected in
+                if selected {
+                    selectedStorageSessionIDs.insert(session.id)
+                } else {
+                    selectedStorageSessionIDs.remove(session.id)
+                }
+            })
+    }
+
+    private func prepareStorageCleanup(_ sessions: [StorageSession]) {
+        guard !sessions.isEmpty else { return }
+        pendingStorageCleanup = sessions
+        storageCleanupError = nil
+        confirmStorageCleanup = true
+    }
+
+    private var storageCleanupDescription: String {
+        let size = storageSize(storageTotal(pendingStorageCleanup))
+        let names = pendingStorageCleanup.map(\.sessionName).joined(separator: ", ")
+        return L10n.format(
+            "%@ across %d stopped or orphaned sessions will be deleted: %@. Provider storage is not affected.",
+            size, pendingStorageCleanup.count, names)
+    }
+
+    private func performStorageCleanup() async {
+        let expected = pendingStorageCleanup
+        let failures = await storageStore.cleanup(expected: expected)
+        await sessionStore.refresh()
+        let remainingIDs = Set(storageStore.report?.sessions.map(\.id) ?? [])
+        selectedStorageSessionIDs.formIntersection(remainingIDs)
+        pendingStorageCleanup = []
+        storageCleanupError = failures.isEmpty ? nil : failures.joined(separator: "\n")
+    }
+
+    private func storageSize(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(min(bytes, UInt64(Int64.max))),
+            countStyle: .file)
+    }
+
+    private func storageTotal(_ sessions: [StorageSession]) -> UInt64 {
+        sessions.reduce(0) { total, session in
+            let (sum, overflow) = total.addingReportingOverflow(session.allocatedBytes)
+            return overflow ? .max : sum
+        }
     }
 
     private var macPowerPresentation: MacPowerSettingsPresentation {

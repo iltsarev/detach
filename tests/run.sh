@@ -664,14 +664,49 @@ printf '%s' "$json_line" | grep -F '"session_color":null' >/dev/null
 # delete refuses a live session and removes a stopped one.
 run_codex --name integration --detach -- 'delete refusal coverage'
 sleep 1
+live_storage_plan="$("$DETACH" storage cleanup --dry-run --json)"
+! printf '%s' "$live_storage_plan" | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
+if "$DETACH" storage cleanup --dry-run --json --session "$SESSION" >/dev/null 2>&1; then
+  printf 'storage cleanup unexpectedly planned a running session\n' >&2
+  exit 1
+fi
 if run_codex delete --force integration; then
   printf 'delete unexpectedly removed a running session\n' >&2
   exit 1
 fi
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 run_codex stop integration
+storage_report="$("$DETACH" storage --json)"
+[ "$(printf '%s' "$storage_report" | "$STATE_HELPER" meta get /dev/stdin schema)" = 1 ]
+printf '%s' "$storage_report" | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
+storage_plan="$("$DETACH" storage cleanup --dry-run --json --session "$SESSION")"
+[ "$(printf '%s' "$storage_plan" | "$STATE_HELPER" meta get /dev/stdin dry_run)" = true ]
+printf '%s' "$storage_plan" | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
+external_storage="$TMP_ROOT/provider-storage-sentinel"
+mkdir -p "$external_storage"
+printf 'provider data\n' >"$external_storage/keep"
+ln -s "$external_storage" "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint/external"
+storage_report="$("$DETACH" storage --json)"
+printf '%s' "$storage_report" | grep -F '"symlink_count":1' >/dev/null
+checkpoint_lock="$DETACH_LOCKS_ROOT/checkpoint-$SESSION.lock"
+checkpoint_ready="$TMP_ROOT/checkpoint-lock-ready"
+/usr/bin/lockf -k "$checkpoint_lock" /bin/sh -c \
+  'touch "$1"; sleep 1; test -d "$2"' sh \
+  "$checkpoint_ready" "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION" &
+checkpoint_holder=$!
+attempts=0
+while [ ! -f "$checkpoint_ready" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 40 ] || {
+    printf 'checkpoint lock holder did not start\n' >&2
+    exit 1
+  }
+  sleep 0.05
+done
 run_codex delete --force integration
+wait "$checkpoint_holder"
 [ ! -d "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION" ]
+[ "$(<"$external_storage/keep")" = 'provider data' ]
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 ! run_codex list --json | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
 
@@ -703,6 +738,19 @@ tmux -L "$SOCKET" has-session -t "=$SESSION"
 grep -Fx 'foreign sentinel' "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/sentinel" >/dev/null
 tmux -L "$SOCKET" kill-session -t "=$SESSION"
 rm -rf "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION"
+
+# A symlinked sessions root must never redirect locked deletion into another
+# directory, even when the internal command is called directly.
+unsafe_state="$TMP_ROOT/unsafe-delete-state"
+unsafe_target="$TMP_ROOT/unsafe-delete-target"
+mkdir -p "$unsafe_state" "$unsafe_target/$SESSION"
+printf 'do not delete\n' >"$unsafe_target/$SESSION/sentinel"
+ln -s "$unsafe_target" "$unsafe_state/sessions"
+if DETACH_CODEX_STATE_ROOT="$unsafe_state" run_codex __delete_locked "$SESSION"; then
+  printf 'locked delete unexpectedly accepted a symlinked sessions root\n' >&2
+  exit 1
+fi
+grep -Fx 'do not delete' "$unsafe_target/$SESSION/sentinel" >/dev/null
 [ ! -e "$FAKE_GIT_MARKER" ]
 
 printf 'Codex detach integration tests passed\n'

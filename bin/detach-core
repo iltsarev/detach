@@ -3170,8 +3170,19 @@ delete_session() {
 delete_locked() {
   local session="$1"
   local dir
+  local owner_uid
 
   dir="$(session_dir "$session")"
+  owner_uid="$(/usr/bin/id -u)" || die "could not determine the current user"
+  [ -d "$STATE_ROOT" ] && [ ! -L "$STATE_ROOT" ] && \
+    [ "$(/usr/bin/stat -f '%u' "$STATE_ROOT" 2>/dev/null || true)" = "$owner_uid" ] || \
+    die "refusing unsafe provider state root: $STATE_ROOT"
+  [ -d "$SESSIONS_ROOT" ] && [ ! -L "$SESSIONS_ROOT" ] && \
+    [ "$(/usr/bin/stat -f '%u' "$SESSIONS_ROOT" 2>/dev/null || true)" = "$owner_uid" ] || \
+    die "refusing unsafe sessions root: $SESSIONS_ROOT"
+  [ -d "$dir" ] && [ ! -L "$dir" ] && \
+    [ "$(/usr/bin/stat -f '%u' "$dir" 2>/dev/null || true)" = "$owner_uid" ] || \
+    die "refusing unsafe session directory: $dir"
   # Re-check under the lock: a concurrent start may have revived the session.
   if tmux_has_session "$session"; then
     tmux_is_managed "$session" || die "refusing to delete unmanaged tmux session '$session'"
@@ -3182,7 +3193,7 @@ delete_locked() {
   if tmux_has_session "$session"; then
     "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove tmux session '$session'"
   fi
-  rm -rf "$dir"
+  rm -rf -- "$dir"
   printf 'Deleted %s\n' "$session"
 }
 
