@@ -379,7 +379,17 @@ run_full_tests() {
     # process group when a controlling terminal is present.
     run_without_controlling_terminal swift test
   )
-  "$APP_ROOT/scripts/make-app.sh"
+  env \
+    -u DETACH_VERSION \
+    -u DETACH_BUILD_VERSION \
+    -u DETACH_BUILD_ARCHS \
+    -u DETACH_CODESIGN_IDENTITY \
+    -u DETACH_RELEASE_BUILD \
+    -u DETACH_SPARKLE_VERSION \
+    -u DETACH_SPARKLE_FEED_URL \
+    -u DETACH_SPARKLE_PUBLIC_ED_KEY \
+    -u DETACH_DOWNLOAD_URL \
+    "$APP_ROOT/scripts/make-app.sh"
   "$APP_ROOT/scripts/verify-app.sh"
   [ -x "$tmux_bin" ] || die 'bundled tmux is missing after the development build'
   DETACH_TEST_TMUX_BIN="$tmux_bin" "$ROOT/tests/run.sh"

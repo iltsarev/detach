@@ -69,6 +69,15 @@ SH
 #!/bin/bash
 set -eu
 root="$(cd -P "$(dirname "$0")/../.." && pwd)"
+for name in \
+  DETACH_VERSION DETACH_BUILD_VERSION DETACH_BUILD_ARCHS \
+  DETACH_CODESIGN_IDENTITY DETACH_RELEASE_BUILD DETACH_SPARKLE_VERSION \
+  DETACH_SPARKLE_FEED_URL DETACH_SPARKLE_PUBLIC_ED_KEY DETACH_DOWNLOAD_URL; do
+  [ -z "${!name+x}" ] || {
+    printf 'development build inherited release override: %s\n' "$name" >&2
+    exit 1
+  }
+done
 mkdir -p "$root/app/build/Detach.app/Contents/Resources/DetachCLI"
 printf '#!/bin/bash\nexit 0\n' >"$root/app/build/Detach.app/Contents/Resources/DetachCLI/tmux"
 chmod 0755 "$root/app/build/Detach.app/Contents/Resources/DetachCLI/tmux"
