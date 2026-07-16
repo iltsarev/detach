@@ -316,6 +316,13 @@ bundles and signs arm64-only versions of every executable, the immutable CLI
 payload, pinned tmux sources/licenses/provenance, Sparkle, and the complete
 pinned Sparkle license notice.
 
+`ANSIParser` is the single terminal-preview decoder. It strips non-SGR control
+sequences and preserves terminal foreground/background colors, bold, dim,
+italic, underline, strikethrough, and reverse video. Reverse video swaps
+against `ANSIParser.terminalBackground`, which is also the `LogTextView`
+background; do not duplicate that canvas color. Font-size scaling may replace
+only the font attribute and must preserve every ANSI-derived attribute.
+
 Onboarding is a card assistant driven by the pure step reducer in
 `SetupGuidance.step(for:)`; a setup failure outranks provider discovery. A bare
 `SMAppService.status == .enabled` read never completes the permissions step:
@@ -348,17 +355,22 @@ without a fresh heartbeat must be replaced through the same durable
 unregister/barrier/register transaction. Ordinary activation refreshes must not
 force replacement merely because a heartbeat is temporarily stale.
 
-The menu bar item is display-only. It derives its shape-first icon and menu
-words from the shared `checked_at`-based heartbeat reader and the app-level
-shared session poller — never `pmset` or root XPC from UI, and freshness comes
-from the document timestamp, not file mtime. One `detach list --json` poller
-serves the window, notifications, and the menu (foreground cadence with the
-window visible, slower idle cadence after it closes — polling never stops
-while the app runs). Closing the last window keeps the app and icon alive;
-⌘Q and Quit genuinely terminate the app while sessions, checkpoints, and
-protection continue. Settings → General owns the two menu bar toggles; the
-Mac Power block in Settings → System remains the single place for power
-status and approval controls.
+The menu bar item is display-only. Its template image is the Detach prompt mark:
+a filled dot means protected, the dimmed mark means sleep is allowed, an
+exclamation badge means attention, and an outline means unknown. The first menu
+line is `state · reason · freshness`, reusing the Mac Power presentation words.
+An allowed heartbeat with visible running sessions must say they are not
+holding sleep protection, never claim there are no sessions. Both glyph and
+words derive from the shared `checked_at`-based heartbeat reader and the
+app-level shared session poller — never `pmset` or root XPC from UI, and
+freshness comes from the document timestamp, not file mtime. One
+`detach list --json` poller serves the window, notifications, and the menu
+(foreground cadence with the window visible, slower idle cadence after it
+closes — polling never stops while the app runs). Closing the last window keeps
+the app and icon alive; ⌘Q and Quit genuinely terminate the app while sessions,
+checkpoints, and protection continue. Settings → General owns the two menu bar
+toggles; the Mac Power block in Settings → System remains the single place for
+power status and approval controls.
 
 Helper replacement is a durable fail-closed transaction. One versioned JSON
 journal records `preparing`, `unregisterSubmitted`, `removed`, or `registering`,

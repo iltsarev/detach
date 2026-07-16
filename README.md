@@ -92,12 +92,17 @@ Detach 0.2.0 is the first self-contained release:
   through the macOS approvals, detects Codex CLI and Claude Code, and does not
   unlock the dashboard until the background monitor has produced a fresh
   health report.
-- An optional menu bar companion shows the effective sleep state and live
-  session count, prioritizes sessions waiting for an answer, and reopens the
-  selected session in the dashboard.
+- An optional menu bar companion uses the Detach prompt mark to show the
+  effective sleep state by shape, adds the live session count while protection
+  is active, and summarizes state, reason, and report freshness on one line.
+  Its menu prioritizes sessions waiting for an answer and reopens the selected
+  session in the dashboard.
 - Native keep-awake coordination protects both idle sleep and closed-lid runs,
   releases Detach-owned protection at 10% battery, and exposes one consistent
   status in the app, menu bar, and tmux.
+- Managed terminals now get identity-tinted tmux status bars, one-line wheel
+  scrolling and clipboard copy, while dashboard previews preserve terminal
+  colors plus bold, dim, italic, underline, strikethrough, and reverse video.
 - Once setup has completed, later launches show the dashboard immediately.
   Startup and app-activation health refreshes run in the background without
   flashing the onboarding assistant; a confirmed setup problem still surfaces
@@ -159,19 +164,21 @@ clear home:
 - **Start:** choose a project, Codex or Claude Code, and an optional first
   prompt.
 - **Monitor:** see both providers in one sidebar with live status, model and
-  context usage when available, checkpoint time, and ANSI-aware log previews.
-  Sessions waiting for your reply move into **Answer ready**, above agents that
-  are still working.
+  context usage when available, checkpoint time, and ANSI-aware log previews
+  that preserve colors, emphasis, checklist strikethrough, and reverse-video
+  highlights. Sessions waiting for your reply move into **Answer ready**, above
+  agents that are still working.
 - **Know:** opt in to notifications when a completed turn is waiting for your
   next message, or when a session finishes, fails, or becomes recoverable.
 - **Glance:** the optional menu bar icon answers the sleep question without
-  opening the app — a filled moon with the active-session count means the Mac
-  is being held awake, an outline moon means it can sleep, a `!` badge means
-  protection needs attention. Its menu lists live sessions with waiting
-  replies first and opens them in Detach. Closing the main window keeps the
-  icon and background checks alive; ⌘Q quits Detach honestly while sessions,
-  checkpoints, and sleep protection continue on their own. Configure it in
-  Settings → General → Menu Bar.
+  opening the app. The Detach prompt mark has a filled dot while the Mac is
+  being held awake, dims when it can sleep, gains an exclamation mark when
+  protection needs attention, and becomes an outline when the report is
+  unknown or stale. Its first menu line combines the effective state, the
+  reason, and report freshness; live sessions waiting for a reply come first.
+  Closing the main window keeps the icon and background checks alive; ⌘Q quits
+  Detach honestly while sessions, checkpoints, and sleep protection continue
+  on their own. Configure it in Settings → General → Menu Bar.
 - **Rejoin:** open a live session, resume a known provider conversation, or
   recover an interrupted managed run in your selected terminal.
 - **Maintain:** inspect setup health, repair the CLI, manage updates, and remove
@@ -441,7 +448,10 @@ The app and menu bar accept only a healthy report newer than three minutes; a
 missing, stale, malformed, or failed report is shown as unknown instead of
 claiming protection. During first setup and an explicit Repair, Detach safely
 re-registers an enabled monitor that macOS has approved but launchd has not
-loaded.
+loaded. The menu header uses the same state and reason wording as Settings and
+adds the report age when it is fresh. If the session poller sees running agents
+while the latest heartbeat says sleep is allowed, Detach names them as active
+sessions without sleep protection instead of claiming that no sessions exist.
 
 > [!CAUTION]
 > Closed-lid sessions may cool less effectively during sustained CPU load, and
