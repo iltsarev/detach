@@ -32,10 +32,12 @@ public protocol PowerHelperClient: Sendable {
 public struct ChildCommand: Equatable, Sendable {
     public let executable: String
     public let arguments: [String]
+    public let pidFile: String?
 
-    public init(executable: String, arguments: [String]) {
+    public init(executable: String, arguments: [String], pidFile: String? = nil) {
         self.executable = executable
         self.arguments = arguments
+        self.pidFile = pidFile
     }
 }
 
@@ -71,19 +73,22 @@ public struct ChildProcessRequest: Equatable, Sendable {
     public let environment: [String: String]
     public let currentDirectoryURL: URL
     public let inheritsStandardIO: Bool
+    public let pidFile: String?
 
     public init(
         executableURL: URL,
         arguments: [String],
         environment: [String: String],
         currentDirectoryURL: URL,
-        inheritsStandardIO: Bool
+        inheritsStandardIO: Bool,
+        pidFile: String? = nil
     ) {
         self.executableURL = executableURL
         self.arguments = arguments
         self.environment = environment
         self.currentDirectoryURL = currentDirectoryURL
         self.inheritsStandardIO = inheritsStandardIO
+        self.pidFile = pidFile
     }
 }
 
@@ -115,6 +120,17 @@ public struct POSIXChildProcessLauncher: ChildProcessLaunching {
 
     public func run(_ request: ChildProcessRequest) throws -> Int32 {
         let childPID = try spawn(request)
+        do {
+            if let pidFile = request.pidFile {
+                try Data("\(childPID)\n".utf8).write(
+                    to: URL(fileURLWithPath: pidFile),
+                    options: [.atomic])
+            }
+        } catch {
+            _ = Darwin.kill(childPID, SIGKILL)
+            _ = try? wait(for: childPID)
+            throw error
+        }
 
         // Install forwarding only after launch so the provider inherits the
         // default signal dispositions. `detach stop` signals the whole tmux
@@ -311,7 +327,8 @@ public struct ProcessChildCommandRunner: ChildCommandRunning {
             arguments: arguments,
             environment: environment,
             currentDirectoryURL: currentDirectoryURL,
-            inheritsStandardIO: true))
+            inheritsStandardIO: true,
+            pidFile: command.pidFile))
         return ChildCommandResult(exitCode: exitCode)
     }
 }
@@ -540,7 +557,8 @@ public struct DetachPowerCommand: Sendable {
             throw DetachPowerCommandError.usage(
                 "usage: detach-power status --json | detach-power run "
                     + "--session NAME --run-token TOKEN "
-                    + "[--ready-file ABSOLUTE_PATH] -- COMMAND [ARGS...] "
+                    + "[--ready-file ABSOLUTE_PATH] [--pid-file ABSOLUTE_PATH] "
+                    + "-- COMMAND [ARGS...] "
                     + "| detach-power helper "
                     + "prepare-unregistration|cancel-unregistration "
                     + "| detach-power release --session NAME "
@@ -621,6 +639,7 @@ public struct DetachPowerCommand: Sendable {
         var sessionName: String?
         var runToken: String?
         var readyFile: String?
+        var pidFile: String?
         var index = 0
 
         while index < arguments.count {
@@ -638,7 +657,10 @@ public struct DetachPowerCommand: Sendable {
                 }
                 return (
                     PowerLeaseIdentity(sessionName: sessionName, runToken: runToken),
-                    ChildCommand(executable: executable, arguments: Array(child.dropFirst())),
+                    ChildCommand(
+                        executable: executable,
+                        arguments: Array(child.dropFirst()),
+                        pidFile: pidFile),
                     readyFile)
             }
 
@@ -662,6 +684,14 @@ public struct DetachPowerCommand: Sendable {
                         "--ready-file requires one absolute path")
                 }
                 readyFile = arguments[index + 1]
+                index += 2
+            case "--pid-file":
+                guard pidFile == nil, index + 1 < arguments.count,
+                      arguments[index + 1].hasPrefix("/") else {
+                    throw DetachPowerCommandError.usage(
+                        "--pid-file requires one absolute path")
+                }
+                pidFile = arguments[index + 1]
                 index += 2
             default:
                 throw DetachPowerCommandError.usage("unknown run option: \(argument)")

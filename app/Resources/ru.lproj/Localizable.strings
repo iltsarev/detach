@@ -402,6 +402,27 @@
 "%@ across %d stopped or orphaned sessions will be deleted: %@. Provider storage is not affected." = "Будет удалено %@ из %d остановленных или осиротевших сессий: %@. Хранилища провайдеров не затрагиваются.";
 "timed out" = "превышено время ожидания";
 
+/* Session health */
+"hung" = "зависла";
+"The provider is alive; the last checkpoint is old." = "Процесс провайдера работает; последняя контрольная точка устарела.";
+"The provider is alive, but its health heartbeat is stale." = "Процесс провайдера работает, но heartbeat контроля состояния устарел.";
+"The provider is alive, but no health heartbeat is available yet." = "Процесс провайдера работает, но heartbeat контроля состояния ещё не появился.";
+"The managed tmux session disappeared." = "Управляемая tmux-сессия исчезла.";
+"The managed pane exited and was retained for inspection." = "Управляемая панель завершилась и сохранена для диагностики.";
+"Another tmux session uses this name; Detach will not touch it." = "Это имя занято другой tmux-сессией; Detach не будет её трогать.";
+"Session metadata is missing or malformed." = "Метаданные сессии отсутствуют или повреждены.";
+"The live session has no complete run-token proof." = "У живой сессии нет полного подтверждения run-token.";
+"The live session and saved metadata have different run tokens." = "У живой сессии и сохранённых метаданных разные run-token.";
+"The managed worker PID is missing." = "PID управляемого worker-процесса отсутствует.";
+"The managed worker process is no longer running." = "Управляемый worker-процесс больше не работает.";
+"The tmux pane no longer matches the managed worker PID." = "Панель tmux больше не соответствует PID управляемого worker-процесса.";
+"The provider PID is missing." = "PID процесса провайдера отсутствует.";
+"The provider process exited while its worker remained alive." = "Процесс провайдера завершился, но его worker остался запущен.";
+"The recorded provider PID is not owned by this worker." = "Сохранённый PID провайдера не принадлежит этому worker-процессу.";
+"A recorded runtime process is still alive without its managed tmux session; Detach will not signal it." = "Сохранённый runtime-процесс ещё работает без управляемой tmux-сессии; Detach не будет посылать ему сигналы.";
+"The live runtime disappeared, but a valid checkpoint can be recovered." = "Живой runtime исчез, но доступна корректная контрольная точка для восстановления.";
+"The live runtime disappeared without a valid recovery checkpoint." = "Живой runtime исчез без корректной контрольной точки для восстановления.";
+
 /* Menu bar item */
 "Open Detach" = "Открыть Detach";
 "New Session…" = "Новая сессия…";

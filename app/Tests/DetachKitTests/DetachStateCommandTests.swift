@@ -56,7 +56,10 @@ final class DetachStateCommandTests: XCTestCase {
             "effective_status", "meta_status", "agent_session_id", "project_dir",
             "created_at", "last_checkpoint_at", "exit_status", "finished_at", "model",
             "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
-            "power_protection_state",
+            "power_protection_state", "health_reason", "health_actions",
+            "reconcile_action", "ownership_proven", "cleanup_eligible",
+            "worker_pid", "provider_pid", "worker_heartbeat_at",
+            "heartbeat_fresh", "checkpoint_fresh",
         ]))
         XCTAssertEqual(object["schema"] as? Int, 1)
         XCTAssertEqual(object["provider"] as? String, "claude")
@@ -83,7 +86,10 @@ final class DetachStateCommandTests: XCTestCase {
             "session_color", "meta_status", "agent_session_id", "project_dir",
             "created_at", "last_checkpoint_at", "exit_status", "finished_at", "model",
             "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
-            "power_protection_state",
+            "power_protection_state", "health_reason", "health_actions",
+            "reconcile_action", "ownership_proven", "cleanup_eligible",
+            "worker_pid", "provider_pid", "worker_heartbeat_at",
+            "heartbeat_fresh", "checkpoint_fresh",
         ] {
             XCTAssertTrue(object[key] is NSNull, "expected \(key) to be null")
         }

@@ -402,6 +402,27 @@
 "%@ across %d stopped or orphaned sessions will be deleted: %@. Provider storage is not affected." = "%@ across %d stopped or orphaned sessions will be deleted: %@. Provider storage is not affected.";
 "timed out" = "timed out";
 
+/* Session health */
+"hung" = "hung";
+"The provider is alive; the last checkpoint is old." = "The provider is alive; the last checkpoint is old.";
+"The provider is alive, but its health heartbeat is stale." = "The provider is alive, but its health heartbeat is stale.";
+"The provider is alive, but no health heartbeat is available yet." = "The provider is alive, but no health heartbeat is available yet.";
+"The managed tmux session disappeared." = "The managed tmux session disappeared.";
+"The managed pane exited and was retained for inspection." = "The managed pane exited and was retained for inspection.";
+"Another tmux session uses this name; Detach will not touch it." = "Another tmux session uses this name; Detach will not touch it.";
+"Session metadata is missing or malformed." = "Session metadata is missing or malformed.";
+"The live session has no complete run-token proof." = "The live session has no complete run-token proof.";
+"The live session and saved metadata have different run tokens." = "The live session and saved metadata have different run tokens.";
+"The managed worker PID is missing." = "The managed worker PID is missing.";
+"The managed worker process is no longer running." = "The managed worker process is no longer running.";
+"The tmux pane no longer matches the managed worker PID." = "The tmux pane no longer matches the managed worker PID.";
+"The provider PID is missing." = "The provider PID is missing.";
+"The provider process exited while its worker remained alive." = "The provider process exited while its worker remained alive.";
+"The recorded provider PID is not owned by this worker." = "The recorded provider PID is not owned by this worker.";
+"A recorded runtime process is still alive without its managed tmux session; Detach will not signal it." = "A recorded runtime process is still alive without its managed tmux session; Detach will not signal it.";
+"The live runtime disappeared, but a valid checkpoint can be recovered." = "The live runtime disappeared, but a valid checkpoint can be recovered.";
+"The live runtime disappeared without a valid recovery checkpoint." = "The live runtime disappeared without a valid recovery checkpoint.";
+
 /* Menu bar item */
 "Open Detach" = "Open Detach";
 "New Session…" = "New Session…";

@@ -127,8 +127,9 @@ administrator approval. Do not recreate the removed portable CLI LaunchAgent.
 
 - **`bin/detach`** is the only command exposed on PATH. It resolves all owned
   executables as immutable siblings, selects `codex` or `claude`, owns the
-  cross-provider `list`, UUID-aware `resume`, `power status`, configuration,
-  doctor, repair, and uninstall surfaces, then invokes the core.
+  cross-provider `list`, UUID-aware `resume`, storage and reconcile previews,
+  `power status`, configuration, doctor, repair, and uninstall surfaces, then
+  invokes the core.
 - **`bin/detach-core`** owns the provider-neutral session lifecycle, inline
   provider adaptations, checkpoint/recovery policy, tmux status, and internal
   self-reinvocation commands. It rejects direct invocation unless the frontend
@@ -143,14 +144,17 @@ injectable platform utilities.
 
 Critical shared-state operations run by self-reinvoking the core under `lockf`,
 for example `__checkpoint_once_locked`, `__delete_locked`, and
-`__start_tmux_session_locked`. New shared mutations should keep the lock around
-the whole child process.
+`__start_tmux_session_locked`. Start, Resume, Stop, Recover, and Delete also
+share a per-session operation lock so their whole state transitions serialize
+before narrower install/project/checkpoint locks. New shared mutations should
+keep the lock around the whole child process and preserve that lock order.
 
 ### Typed state boundary
 
 `detach-state` replaces the former jq dependency. Its stable typed commands
 cover guarded metadata create/get/patch/match operations, JSONL validation and
-summary, context/session JSON emission, and storage report/cleanup-plan JSON.
+summary, context/session JSON emission, health evaluation, reconcile plans,
+and storage report/cleanup-plan JSON.
 Storage accounting uses allocated blocks as the user-facing disk size, keeps
 logical bytes separately for sparse files, never follows symlinks, excludes
 provider storage, and treats an incomplete scan as ineligible for cleanup. Do
@@ -158,6 +162,14 @@ not reintroduce ad-hoc JSON text editing or a jq runtime requirement.
 
 Per-session `meta.json` uses schema 1 and a `run_token`. A stale worker or
 checkpoint loop must not overwrite metadata belonging to a replacement run.
+New runs also publish `health_schema=1`, the exact worker/provider PIDs, worker
+heartbeat time, and checkpoint epoch. Health is a typed state machine over
+managed tmux/pane state, the matching run token, PID ownership and ancestry,
+metadata validity, and heartbeat/checkpoint freshness. Stale freshness alone
+must never classify a proven live provider as hung. A live recorded runtime
+without managed tmux authorizes no signal, replacement start, recovery, or
+deletion; wait for the exact processes to disappear rather than touching a
+possibly foreign process.
 Anything restored into provider storage must pass canonical path, symlink,
 session-ID, and JSONL validation, be written to a temporary file, validated
 again, and only then be moved into place.
@@ -191,19 +203,20 @@ through:
 
 ```text
 detach-power run --session <name> --run-token <token>
-  --ready-file <absolute-path> -- <provider> ...
+  --ready-file <absolute-path> --pid-file <absolute-path> -- <provider> ...
 ```
 
 The power wrapper must confirm both protection layers and atomically mark the
-ready file before launching the provider. The starter waits for that handshake
-and must never print `Started` before it arrives. HUP/INT/TERM are forwarded to
-the provider while the wrapper remains alive long enough to release its lease
-and assertion; explicit `detach stop` also performs an idempotent release by
-session/run token. The provider must inherit the wrapper's tmux foreground
-process group; launching it in a separate group makes interactive Codex or
-Claude stop on terminal I/O. On provider exit, the worker records status,
-attempts a final checkpoint, and leaves the pane retained for logs and
-diagnosis.
+ready file before launching the provider, then atomically publish the exact
+spawned provider PID. The starter waits for both handshakes and one forced
+runtime heartbeat and must never print `Started` before they arrive.
+HUP/INT/TERM are forwarded to the provider while the wrapper remains alive long
+enough to release its lease and assertion; explicit `detach stop` also performs
+an idempotent release by session/run token. The provider must inherit the
+wrapper's tmux foreground process group; launching it in a separate group makes
+interactive Codex or Claude stop on terminal I/O. On provider exit, the worker
+records status, attempts a final checkpoint, and leaves the pane retained for
+logs and diagnosis.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user
@@ -236,9 +249,12 @@ live only on the private Detach tmux server. `detach config tmux-mouse
 option independently of the visual theme toggle.
 
 `list --json` emits JSONL schema 1 and includes the optional
-`power_protection_state`, `agent_turn_state`, and opaque `agent_turn_id`. Keep
-the emitter and Swift `Session` decoder synchronized. Derive turn state only
-from structured provider lifecycle records, never terminal text.
+`power_protection_state`, `agent_turn_state`, opaque `agent_turn_id`, runtime
+PIDs, health reason/actions, reconcile action, freshness, ownership proof, and
+cleanup eligibility. Keep the emitter and Swift `Session` decoder synchronized.
+Derive turn state only from structured provider lifecycle records, never
+terminal text. Storage cleanup must consume typed `cleanup_eligible`, not infer
+safety again from a display status.
 
 ### Provider identity and checkpoints
 

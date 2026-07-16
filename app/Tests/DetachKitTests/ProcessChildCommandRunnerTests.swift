@@ -111,4 +111,27 @@ final class ProcessChildCommandRunnerTests: XCTestCase {
 
         XCTAssertEqual(exitCode, 128 + SIGTERM)
     }
+
+    func testPOSIXLauncherPublishesTheExactProviderPIDAtomically() throws {
+        let launcher = POSIXChildProcessLauncher()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pidFile = directory.appendingPathComponent("provider.pid")
+        let observedFile = directory.appendingPathComponent("observed.pid")
+
+        let exitCode = try launcher.run(ChildProcessRequest(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "while [ ! -s \"$1\" ]; do sleep 0.01; done; cp \"$1\" \"$2\"; test \"$(cat \"$1\")\" = \"$$\"", "sh", pidFile.path, observedFile.path],
+            environment: ProcessInfo.processInfo.environment,
+            currentDirectoryURL: directory,
+            inheritsStandardIO: false,
+            pidFile: pidFile.path))
+
+        XCTAssertEqual(exitCode, 0)
+        XCTAssertEqual(
+            try String(contentsOf: pidFile, encoding: .utf8),
+            try String(contentsOf: observedFile, encoding: .utf8))
+    }
 }

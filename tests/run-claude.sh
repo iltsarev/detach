@@ -88,14 +88,17 @@ printf '%s\n' \
   'if [ "${1:-}" = run ]; then' \
   '  printf '\''%s\n'\'' "$@" >"$FAKE_POWER_ARGS_FILE"' \
   '  ready_file=' \
+  '  pid_file=' \
   '  shift' \
   '  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do' \
   '    if [ "$1" = --ready-file ]; then ready_file="$2"; shift 2; continue; fi' \
+  '    if [ "$1" = --pid-file ]; then pid_file="$2"; shift 2; continue; fi' \
   '    shift' \
   '  done' \
   '  [ "${1:-}" = -- ] || exit 2' \
   '  [ "${FAKE_POWER_FAIL_RUN:-0}" != 1 ] || exit 1' \
   '  [ -z "$ready_file" ] || : >"$ready_file"' \
+  '  [ -z "$pid_file" ] || printf '\''%s\n'\'' "$$" >"$pid_file"' \
   '  shift' \
   '  exec "$@"' \
   'fi' \

@@ -34,7 +34,7 @@ enum SessionIdentity {
         case .running, .starting, .recovering: return Brand.teal
         case .completed, .stopped: return .secondary.opacity(0.6)
         case .failed, .interrupted: return .red
-        case .recoverable, .orphaned, .corrupt, .collision, .unknown: return .orange
+        case .hung, .recoverable, .orphaned, .corrupt, .collision, .unknown: return .orange
         }
     }
 
@@ -46,7 +46,7 @@ enum SessionIdentity {
             0.52
         case .recoverable, .orphaned, .corrupt, .collision, .unknown:
             0.72
-        case .starting, .running, .recovering, .failed:
+        case .starting, .running, .recovering, .hung, .failed:
             1
         }
     }

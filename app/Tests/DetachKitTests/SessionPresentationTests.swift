@@ -42,6 +42,17 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertEqual(make(.collision).availableActions, [])
     }
 
+    func testTypedHealthActionsOverrideLegacyStatusHeuristics() throws {
+        let line = #"{"schema":1,"provider":"codex","session_name":"detach-codex-orphan","name":"orphan","effective_status":"hung","health_reason":"runtime_process_without_tmux","health_actions":[],"reconcile_action":"none","ownership_proven":false,"cleanup_eligible":false}"#
+        let session = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+
+        XCTAssertTrue(session.isLive)
+        XCTAssertEqual(session.section, .problems)
+        XCTAssertEqual(session.availableActions, [])
+        XCTAssertEqual(session.healthReason, .runtimeProcessWithoutTmux)
+        XCTAssertNotNil(session.healthReasonLabel)
+    }
+
     func testDisplayTitle() {
         XCTAssertEqual(make(.running, project: "/Users/me/dev/harness").displayTitle, "harness")
         XCTAssertEqual(make(.corrupt, project: nil).displayTitle, "proj-abcd1234")

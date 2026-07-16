@@ -23,6 +23,8 @@ usage() {
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
     '  detach storage --json' \
     '  detach storage cleanup --dry-run --json [--session NAME ...]' \
+    '  detach reconcile --dry-run --json' \
+    '  detach cleanup --dry-run --json [--session NAME ...]' \
     '  detach power status --json' \
     '  detach config tmux-style [detach|inherit]' \
     '  detach config tmux-mouse [on|off]' \
@@ -449,6 +451,16 @@ storage_cleanup_dry_run() {
   storage_report | "$STATE_BIN" storage plan - "${plan_args[@]}"
 }
 
+reconcile_dry_run() {
+  [ "$#" -eq 2 ] || \
+    die "usage: detach reconcile --dry-run --json"
+  case "$1 $2" in
+    '--dry-run --json'|'--json --dry-run') ;;
+    *) die "usage: detach reconcile --dry-run --json" ;;
+  esac
+  list_all --json | "$STATE_BIN" maintenance reconcile -
+}
+
 resume_auto() {
   local session_id=""
   local codex_match=0
@@ -629,6 +641,14 @@ main() {
           die "usage: detach storage --json | detach storage cleanup --dry-run --json [--session NAME ...]"
           ;;
       esac
+      ;;
+    reconcile)
+      shift
+      reconcile_dry_run "$@"
+      ;;
+    cleanup)
+      shift
+      storage_cleanup_dry_run "$@"
       ;;
     power)
       shift

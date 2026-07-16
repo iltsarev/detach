@@ -107,6 +107,12 @@ struct SessionDetailView: View {
                 }
                 Spacer()
             }
+            if let reason = session.healthReasonLabel {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .appFont(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             FlowLayout(spacing: 6) {
                 if let projectDir = session.projectDir {
                     metaChip(icon: "folder", abbreviatePath(projectDir), mono: true,

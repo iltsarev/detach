@@ -80,6 +80,12 @@ public enum DetachStateCommand {
             return try storagePlan(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("health", "evaluate"):
+            return try healthEvaluate(Array(arguments.dropFirst(2)))
+        case ("maintenance", "reconcile"):
+            return try maintenanceReconcile(
+                Array(arguments.dropFirst(2)),
+                standardInput: injectedStandardInput)
         default:
             throw DetachStateCommandError.invalidArguments
         }
@@ -173,6 +179,74 @@ public enum DetachStateCommand {
         }
     }
 
+    private static func healthEvaluate(_ arguments: [String]) throws -> Data {
+        let allowed = Set([
+            "--metadata-valid", "--runtime-identity-expected", "--meta-status",
+            "--tmux", "--run-token",
+            "--worker", "--provider-process", "--heartbeat", "--checkpoint",
+            "--checkpoint-recoverable", "--agent-session-known",
+        ])
+        var values: [String: String] = [:]
+        var index = 0
+        while index < arguments.count {
+            guard index + 1 < arguments.count,
+                  allowed.contains(arguments[index]),
+                  values[arguments[index]] == nil else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            values[arguments[index]] = arguments[index + 1]
+            index += 2
+        }
+        guard values.count == allowed.count,
+              let metadataRaw = values["--metadata-valid"],
+              let identityExpectedRaw = values["--runtime-identity-expected"],
+              let statusRaw = values["--meta-status"],
+              let status = EffectiveStatus(rawValue: statusRaw),
+              let tmuxRaw = values["--tmux"],
+              let tmux = TmuxHealthState(rawValue: tmuxRaw),
+              let tokenRaw = values["--run-token"],
+              let token = RunTokenHealthState(rawValue: tokenRaw),
+              let workerRaw = values["--worker"],
+              let worker = ProcessHealthState(rawValue: workerRaw),
+              let providerRaw = values["--provider-process"],
+              let providerProcess = ProcessHealthState(rawValue: providerRaw),
+              let heartbeatRaw = values["--heartbeat"],
+              let heartbeat = FreshnessState(rawValue: heartbeatRaw),
+              let checkpointRaw = values["--checkpoint"],
+              let checkpoint = FreshnessState(rawValue: checkpointRaw),
+              let recoverableRaw = values["--checkpoint-recoverable"],
+              let knownRaw = values["--agent-session-known"] else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        return try encodeJSON(SessionHealthEvaluator.evaluate(SessionHealthEvidence(
+            metadataValid: try boolean(metadataRaw),
+            runtimeIdentityExpected: try boolean(identityExpectedRaw),
+            metaStatus: status,
+            tmuxState: tmux,
+            runTokenState: token,
+            workerState: worker,
+            providerState: providerProcess,
+            heartbeatFreshness: heartbeat,
+            checkpointFreshness: checkpoint,
+            checkpointRecoverable: try boolean(recoverableRaw),
+            agentSessionKnown: try boolean(knownRaw))))
+    }
+
+    private static func maintenanceReconcile(
+        _ arguments: [String],
+        standardInput: Data?
+    ) throws -> Data {
+        guard arguments.count == 1 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let inventory = try inputData(atPath: arguments[0], standardInput: standardInput)
+        do {
+            return try encodeJSON(SessionMaintenancePlanner.reconcile(inventory: inventory))
+        } catch StorageInspectionError.invalidInventory {
+            throw DetachStateCommandError.invalidStorageInventory
+        }
+    }
+
     private static func emitContext(_ arguments: [String]) throws -> Data {
         guard arguments.count == 3 else {
             throw DetachStateCommandError.invalidArguments
@@ -215,6 +289,16 @@ public enum DetachStateCommand {
             "agent_turn_state": NSNull(),
             "agent_turn_id": NSNull(),
             "power_protection_state": NSNull(),
+            "health_reason": NSNull(),
+            "health_actions": NSNull(),
+            "reconcile_action": NSNull(),
+            "ownership_proven": NSNull(),
+            "cleanup_eligible": NSNull(),
+            "worker_pid": NSNull(),
+            "provider_pid": NSNull(),
+            "worker_heartbeat_at": NSNull(),
+            "heartbeat_fresh": NSNull(),
+            "checkpoint_fresh": NSNull(),
         ]
 
         var seen: Set<String> = []
@@ -279,6 +363,29 @@ public enum DetachStateCommand {
                     }
                     object["power_protection_state"] = value
                 }
+            case "--health-json":
+                let decoder = JSONDecoder()
+                guard let data = value.data(using: .utf8),
+                      let health = try? decoder.decode(SessionHealthAssessment.self, from: data),
+                      health.schema == 1,
+                      health.effectiveStatus.rawValue == arguments[2] else {
+                    throw DetachStateCommandError.invalidArguments
+                }
+                object["health_reason"] = health.reason.rawValue
+                object["health_actions"] = health.actions.map(\.rawValue)
+                object["reconcile_action"] = health.reconcileAction.rawValue
+                object["ownership_proven"] = health.ownershipProven
+                object["cleanup_eligible"] = health.cleanupEligible
+                object["heartbeat_fresh"] = health.heartbeatFresh
+                object["checkpoint_fresh"] = health.checkpointFresh
+            case "--worker-pid":
+                object["worker_pid"] = isNullPlaceholder(value)
+                    ? NSNull() : try integer(value)
+            case "--provider-pid":
+                object["provider_pid"] = isNullPlaceholder(value)
+                    ? NSNull() : try integer(value)
+            case "--worker-heartbeat-at":
+                object["worker_heartbeat_at"] = optionalString(value)
             default:
                 throw DetachStateCommandError.invalidArguments
             }

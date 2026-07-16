@@ -133,14 +133,17 @@ printf '%s\n' \
   'if [ "${1:-}" = run ]; then' \
   '  printf '\''%s\n'\'' "$@" >"$FAKE_POWER_ARGS_FILE"' \
   '  ready_file=' \
+  '  pid_file=' \
   '  shift' \
   '  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do' \
   '    if [ "$1" = --ready-file ]; then ready_file="$2"; shift 2; continue; fi' \
+  '    if [ "$1" = --pid-file ]; then pid_file="$2"; shift 2; continue; fi' \
   '    shift' \
   '  done' \
   '  [ "${1:-}" = -- ] || exit 2' \
   '  [ "${FAKE_POWER_FAIL_RUN:-0}" != 1 ] || exit 1' \
   '  [ -z "$ready_file" ] || : >"$ready_file"' \
+  '  [ -z "$pid_file" ] || printf '\''%s\n'\'' "$$" >"$pid_file"' \
   '  shift' \
   '  exec "$@"' \
   'fi' \
@@ -151,6 +154,15 @@ printf '%s\n' \
   'printf '\''%s\n'\'' "$@" >"$FAKE_ENV_ARGS_FILE"' \
   'exit 0' >"$FAKE_ENV_BIN"
 chmod 0755 "$FAKE_ENV_BIN"
+FAKE_CODEX_LONG_BIN="$TMP_ROOT/fake-codex-long"
+printf '%s\n' \
+  '#!/bin/bash' \
+  "trap '' HUP" \
+  'export FAKE_CODEX_INIT_DELAY=0' \
+  'export FAKE_CODEX_SLEEP=20' \
+  'export FAKE_CODEX_EXIT=0' \
+  "exec \"$ROOT/tests/fake-codex\" \"\$@\"" >"$FAKE_CODEX_LONG_BIN"
+chmod 0755 "$FAKE_CODEX_LONG_BIN"
 FAKE_GIT_BIN_DIR="$TMP_ROOT/fake-bin"
 export FAKE_GIT_MARKER="$TMP_ROOT/ambient-git-was-invoked"
 mkdir -p "$FAKE_GIT_BIN_DIR"
@@ -365,6 +377,7 @@ DETACH="$SCRIPT"
 
 marker="$TMP_ROOT/must-not-exist"
 literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
+export FAKE_CODEX_SLEEP=12
 run_codex --name integration --detach -- "$literal_prompt"
 
 sleep 2
@@ -411,6 +424,43 @@ grep -Fx -- '--run-token' "$FAKE_POWER_ARGS_FILE" >/dev/null
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_core_path)" = "$installed_core" ]
 first_worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
 first_worker_pgid="$(ps -o pgid= -p "$first_worker_pid" | tr -d '[:space:]')"
+health_json="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin ownership_proven)" = true ]
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin cleanup_eligible)" = false ]
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin worker_pid)" = "$first_worker_pid" ]
+provider_pid="$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin provider_pid)"
+case "$provider_pid" in ''|*[!0-9]*) printf 'provider PID is missing from health JSON\n' >&2; exit 1 ;; esac
+process_group_exists "$first_worker_pgid"
+
+# A stale observer or checkpoint must not call a live long provider turn hung.
+health_meta="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/meta.json"
+run_token="$("$STATE_HELPER" meta get "$health_meta" run_token)"
+"$STATE_HELPER" meta patch "$health_meta" --run-token "$run_token" \
+  --integer worker_heartbeat_epoch 1 \
+  --string worker_heartbeat_at '1970-01-01T00:00:01Z'
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" @detach_heartbeat_epoch 1
+health_json="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" = heartbeat_stale ]
+
+# A mismatched run-token blocks cleanup and PID assumptions, but never makes
+# Detach signal or delete the still managed pane.
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" @detach_run_token stale-token
+health_json="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = corrupt ]
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" = run_token_mismatch ]
+[ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin cleanup_eligible)" = false ]
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" @detach_run_token "$run_token"
+heartbeat_epoch="$(date '+%s')"
+"$STATE_HELPER" meta patch "$health_meta" --run-token "$run_token" \
+  --integer worker_heartbeat_epoch "$heartbeat_epoch" \
+  --string worker_heartbeat_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+tmux -L "$SOCKET" set-option -q -t "=$SESSION:" @detach_heartbeat_epoch "$heartbeat_epoch"
+
+reconcile_plan="$("$DETACH" reconcile --dry-run --json)"
+[ "$(printf '%s' "$reconcile_plan" | "$STATE_HELPER" meta get /dev/stdin dry_run)" = true ]
+! printf '%s' "$reconcile_plan" | grep -F "$SESSION" >/dev/null
 grep -F -- "$literal_prompt" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 ! grep -Fx -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 [ ! -e "$marker" ]
@@ -488,7 +538,12 @@ rollout="$("$STATE_HELPER" meta get "$meta" rollout_path)"
 [ -s "$checkpoint/rollout.jsonl" ]
 [ -s "$checkpoint/codex-state.sqlite" ]
 
-sleep 4
+attempts=0
+while [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "0" ] && \
+      [ "$attempts" -lt 160 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
 [ -f "$checkpoint/pane.txt" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "1" ]
@@ -710,6 +765,142 @@ wait "$checkpoint_holder"
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 ! run_codex list --json | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
 
+# Killing the worker can leave its provider alive in a retained pane. Detach
+# must expose that uncertainty, refuse every state-changing action, and keep
+# the session out of both cleanup plans until the whole managed process group
+# is gone.
+worker_crash_name=health-worker-crash
+worker_crash_session=detach-codex-health-worker-crash
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$worker_crash_name" --detach -- 'worker crash health coverage'
+worker_crash_meta="$DETACH_CODEX_STATE_ROOT/sessions/$worker_crash_session/meta.json"
+worker_crash_checkpoint="$DETACH_CODEX_STATE_ROOT/sessions/$worker_crash_session/checkpoint/rollout.jsonl"
+attempts=0
+while { [ ! -s "$worker_crash_checkpoint" ] || \
+        [ -z "$("$STATE_HELPER" meta get "$worker_crash_meta" agent_session_id 2>/dev/null || true)" ]; } && \
+      [ "$attempts" -lt 80 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -s "$worker_crash_checkpoint" ]
+worker_crash_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$worker_crash_session:" @detach_pane_id)"
+worker_crash_pid="$("$STATE_HELPER" meta get "$worker_crash_meta" worker_pid)"
+worker_crash_provider_pid="$("$STATE_HELPER" meta get "$worker_crash_meta" provider_pid)"
+worker_crash_pgid="$(ps -o pgid= -p "$worker_crash_pid" | tr -d '[:space:]')"
+kill -KILL "$worker_crash_pid"
+attempts=0
+while [ "$(tmux -L "$SOCKET" display-message -p -t "$worker_crash_pane" '#{pane_dead}')" != "1" ] && \
+      [ "$attempts" -lt 80 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$(tmux -L "$SOCKET" display-message -p -t "$worker_crash_pane" '#{pane_dead}')" = "1" ]
+kill -0 "$worker_crash_provider_pid"
+worker_crash_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$worker_crash_session\"")"
+[ "$(printf '%s' "$worker_crash_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = hung ]
+[ "$(printf '%s' "$worker_crash_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" = \
+  runtime_process_without_tmux ]
+[ "$(printf '%s' "$worker_crash_json" | "$STATE_HELPER" meta get /dev/stdin cleanup_eligible)" = false ]
+printf '%s' "$worker_crash_json" | grep -F '"health_actions":[]' >/dev/null
+if run_codex stop "$worker_crash_name" >/dev/null 2>&1; then
+  printf 'stop unexpectedly changed state while a provider survived its worker\n' >&2
+  exit 1
+fi
+if run_codex recover --detach "$worker_crash_name" >/dev/null 2>&1; then
+  printf 'recover unexpectedly started over a surviving provider\n' >&2
+  exit 1
+fi
+if run_codex delete --force "$worker_crash_name" >/dev/null 2>&1; then
+  printf 'delete unexpectedly removed state for a surviving provider\n' >&2
+  exit 1
+fi
+if run_codex --name "$worker_crash_name" --detach -- \
+    'must not start over a surviving provider' >/dev/null 2>&1; then
+  printf 'start unexpectedly replaced state for a surviving provider\n' >&2
+  exit 1
+fi
+kill -0 "$worker_crash_provider_pid"
+! "$DETACH" reconcile --dry-run --json | grep -F "$worker_crash_session" >/dev/null
+! "$DETACH" cleanup --dry-run --json | grep -F "$worker_crash_session" >/dev/null
+
+kill -KILL -- "-$worker_crash_pgid"
+wait_for_process_group_exit "$worker_crash_pgid"
+attempts=0
+worker_crash_status=""
+while [ "$attempts" -lt 80 ]; do
+  worker_crash_json="$(run_codex list --json | \
+    grep -F "\"session_name\":\"$worker_crash_session\"")"
+  worker_crash_status="$(printf '%s' "$worker_crash_json" | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)"
+  [ "$worker_crash_status" != hung ] && break
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$worker_crash_status" = recoverable ]
+[ "$(printf '%s' "$worker_crash_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" = \
+  recoverable_checkpoint ]
+worker_reconcile_plan="$("$DETACH" reconcile --dry-run --json)"
+printf '%s' "$worker_reconcile_plan" | grep -F "$worker_crash_session" | \
+  grep -F 'remove_dead_tmux_and_mark_recoverable' >/dev/null
+
+# stop/recover/delete share a per-session operation lock. A real race may end
+# in any one of their valid terminal states, but never in deleted live state or
+# an unowned runtime hidden behind stale metadata.
+run_codex recover --detach "$worker_crash_name" >"$TMP_ROOT/race-recover.out" 2>&1 &
+race_recover_pid=$!
+run_codex stop "$worker_crash_name" >"$TMP_ROOT/race-stop.out" 2>&1 &
+race_stop_pid=$!
+run_codex delete --force "$worker_crash_name" >"$TMP_ROOT/race-delete.out" 2>&1 &
+race_delete_pid=$!
+wait "$race_recover_pid" || true
+wait "$race_stop_pid" || true
+wait "$race_delete_pid" || true
+if [ -d "$DETACH_CODEX_STATE_ROOT/sessions/$worker_crash_session" ]; then
+  worker_crash_json="$(run_codex list --json | \
+    grep -F "\"session_name\":\"$worker_crash_session\"")"
+  [ "$(printf '%s' "$worker_crash_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" != \
+    runtime_process_without_tmux ]
+  if tmux -L "$SOCKET" has-session -t "=$worker_crash_session" 2>/dev/null && \
+     [ "$(tmux -L "$SOCKET" display-message -p -t "=$worker_crash_session:" '#{pane_dead}')" = "0" ]; then
+    run_codex stop "$worker_crash_name"
+  fi
+  run_codex delete --force "$worker_crash_name"
+else
+  ! tmux -L "$SOCKET" has-session -t "=$worker_crash_session" 2>/dev/null
+fi
+
+# If the provider itself crashes, the still-owned worker records an
+# interrupted terminal state and leaves a deletable retained pane.
+provider_crash_name=health-provider-crash
+provider_crash_session=detach-codex-health-provider-crash
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$provider_crash_name" --detach -- 'provider crash health coverage'
+provider_crash_meta="$DETACH_CODEX_STATE_ROOT/sessions/$provider_crash_session/meta.json"
+provider_crash_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$provider_crash_session:" @detach_pane_id)"
+provider_crash_worker="$("$STATE_HELPER" meta get "$provider_crash_meta" worker_pid)"
+provider_crash_provider="$("$STATE_HELPER" meta get "$provider_crash_meta" provider_pid)"
+provider_crash_pgid="$(ps -o pgid= -p "$provider_crash_worker" | tr -d '[:space:]')"
+kill -KILL "$provider_crash_provider"
+attempts=0
+while { [ "$(tmux -L "$SOCKET" display-message -p -t "$provider_crash_pane" '#{pane_dead}')" != "1" ] || \
+        [ -z "$("$STATE_HELPER" meta get "$provider_crash_meta" exit_status 2>/dev/null || true)" ]; } && \
+      [ "$attempts" -lt 100 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$("$STATE_HELPER" meta get "$provider_crash_meta" status)" = interrupted ]
+[ "$("$STATE_HELPER" meta get "$provider_crash_meta" exit_status)" = 137 ]
+provider_crash_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$provider_crash_session\"")"
+[ "$(printf '%s' "$provider_crash_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = interrupted ]
+[ "$(printf '%s' "$provider_crash_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" = pane_exited ]
+run_codex delete --force "$provider_crash_name"
+kill -KILL -- "-$provider_crash_pgid" 2>/dev/null || true
+wait_for_process_group_exit "$provider_crash_pgid"
+
 # The destructive phase must repeat the ownership check under its lock. An
 # unmanaged retained pane that appears after the outer check must survive.
 mkdir -p "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION"
@@ -738,6 +929,55 @@ tmux -L "$SOCKET" has-session -t "=$SESSION"
 grep -Fx 'foreign sentinel' "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/sentinel" >/dev/null
 tmux -L "$SOCKET" kill-session -t "=$SESSION"
 rm -rf "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION"
+
+# Abrupt tmux-server loss is treated like worker loss: while the frozen
+# managed process group still exists, no action is authorized. Once those
+# exact recorded processes are gone, the validated checkpoint is recoverable.
+tmux_loss_name=health-tmux-loss
+tmux_loss_session=detach-codex-health-tmux-loss
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$tmux_loss_name" --detach -- 'tmux server loss health coverage'
+tmux_loss_meta="$DETACH_CODEX_STATE_ROOT/sessions/$tmux_loss_session/meta.json"
+tmux_loss_checkpoint="$DETACH_CODEX_STATE_ROOT/sessions/$tmux_loss_session/checkpoint/rollout.jsonl"
+attempts=0
+while [ ! -s "$tmux_loss_checkpoint" ] && [ "$attempts" -lt 80 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -s "$tmux_loss_checkpoint" ]
+tmux_loss_worker="$("$STATE_HELPER" meta get "$tmux_loss_meta" worker_pid)"
+tmux_loss_provider="$("$STATE_HELPER" meta get "$tmux_loss_meta" provider_pid)"
+tmux_loss_pgid="$(ps -o pgid= -p "$tmux_loss_worker" | tr -d '[:space:]')"
+tmux_server_pid="$(tmux -L "$SOCKET" display-message -p '#{pid}')"
+kill -STOP -- "-$tmux_loss_pgid"
+kill -KILL "$tmux_server_pid"
+attempts=0
+while tmux -L "$SOCKET" has-session -t "=$tmux_loss_session" 2>/dev/null && \
+      [ "$attempts" -lt 40 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.05
+done
+kill -0 "$tmux_loss_worker"
+kill -0 "$tmux_loss_provider"
+tmux_loss_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$tmux_loss_session\"")"
+[ "$(printf '%s' "$tmux_loss_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = hung ]
+[ "$(printf '%s' "$tmux_loss_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" = \
+  runtime_process_without_tmux ]
+if run_codex stop "$tmux_loss_name" >/dev/null 2>&1 || \
+   run_codex recover --detach "$tmux_loss_name" >/dev/null 2>&1 || \
+   run_codex delete --force "$tmux_loss_name" >/dev/null 2>&1; then
+  printf 'state-changing action unexpectedly accepted live runtime after tmux loss\n' >&2
+  exit 1
+fi
+kill -KILL -- "-$tmux_loss_pgid"
+wait_for_process_group_exit "$tmux_loss_pgid"
+tmux_loss_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$tmux_loss_session\"")"
+[ "$(printf '%s' "$tmux_loss_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$tmux_loss_json" | "$STATE_HELPER" meta get /dev/stdin reconcile_action)" = \
+  mark_recoverable ]
+run_codex delete --force "$tmux_loss_name"
 
 # A symlinked sessions root must never redirect locked deletion into another
 # directory, even when the internal command is called directly.

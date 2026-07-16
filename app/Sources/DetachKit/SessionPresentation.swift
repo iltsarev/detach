@@ -16,7 +16,7 @@ public enum SessionSection: String, CaseIterable, Sendable {
     }
 }
 
-public enum SessionAction: String, CaseIterable, Sendable {
+public enum SessionAction: String, Codable, CaseIterable, Sendable {
     case attach, stop, resume, recover, delete
 }
 
@@ -31,7 +31,7 @@ public extension Session {
     /// polling.
     var isLive: Bool {
         switch effectiveStatus {
-        case .starting, .running, .recovering: true
+        case .starting, .running, .recovering, .hung: true
         case .completed, .failed, .interrupted, .stopped, .recoverable,
              .orphaned, .corrupt, .collision, .unknown: false
         }
@@ -43,6 +43,7 @@ public extension Session {
         case .starting: L10n.string("starting")
         case .running: L10n.string("running")
         case .recovering: L10n.string("recovering")
+        case .hung: L10n.string("hung")
         case .completed: L10n.string("completed")
         case .failed: L10n.string("failed")
         case .interrupted: L10n.string("interrupted")
@@ -59,14 +60,16 @@ public extension Session {
         if isWaitingForUser { return .answerReady }
         return switch effectiveStatus {
         case .running, .starting, .recovering: .active
+        case .hung: .problems
         case .completed, .failed, .interrupted, .stopped: .finished
         case .recoverable, .orphaned, .corrupt, .collision, .unknown: .problems
         }
     }
 
     var availableActions: [SessionAction] {
-        switch effectiveStatus {
-        case .running, .starting, .recovering:
+        if let healthActions { return healthActions }
+        return switch effectiveStatus {
+        case .running, .starting, .recovering, .hung:
             [.attach, .stop]
         case .completed, .failed, .interrupted, .stopped, .orphaned:
             agentSessionId != nil ? [.resume, .delete] : [.delete]
@@ -84,6 +87,50 @@ public extension Session {
             return String(base)
         }
         return name
+    }
+
+    var healthReasonLabel: String? {
+        guard let healthReason else { return nil }
+        return switch healthReason {
+        case .healthy, .finished:
+            nil
+        case .checkpointStale:
+            L10n.string("The provider is alive; the last checkpoint is old.")
+        case .heartbeatStale:
+            L10n.string("The provider is alive, but its health heartbeat is stale.")
+        case .heartbeatMissing:
+            L10n.string("The provider is alive, but no health heartbeat is available yet.")
+        case .tmuxServerMissing:
+            L10n.string("The managed tmux session disappeared.")
+        case .paneExited:
+            L10n.string("The managed pane exited and was retained for inspection.")
+        case .foreignTmux:
+            L10n.string("Another tmux session uses this name; Detach will not touch it.")
+        case .malformedMetadata:
+            L10n.string("Session metadata is missing or malformed.")
+        case .runTokenMissing:
+            L10n.string("The live session has no complete run-token proof.")
+        case .runTokenMismatch:
+            L10n.string("The live session and saved metadata have different run tokens.")
+        case .workerPIDMissing:
+            L10n.string("The managed worker PID is missing.")
+        case .workerProcessLost:
+            L10n.string("The managed worker process is no longer running.")
+        case .workerPIDMismatch:
+            L10n.string("The tmux pane no longer matches the managed worker PID.")
+        case .providerPIDMissing:
+            L10n.string("The provider PID is missing.")
+        case .providerProcessLost:
+            L10n.string("The provider process exited while its worker remained alive.")
+        case .providerPIDNotDescendant:
+            L10n.string("The recorded provider PID is not owned by this worker.")
+        case .runtimeProcessWithoutTmux:
+            L10n.string("A recorded runtime process is still alive without its managed tmux session; Detach will not signal it.")
+        case .recoverableCheckpoint:
+            L10n.string("The live runtime disappeared, but a valid checkpoint can be recovered.")
+        case .noRecoveryCheckpoint:
+            L10n.string("The live runtime disappeared without a valid recovery checkpoint.")
+        }
     }
 
     /// 0...1 share of the context window in use, when the window size is known.

@@ -503,6 +503,21 @@ final class DetachPowerCommandTests: XCTestCase {
         ])
     }
 
+    func testRunPassesValidatedPIDFileToTheProviderLauncher() throws {
+        let (command, _, _, _, child, _) = fixture()
+
+        _ = try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--pid-file", "/fixture/provider.pid", "--",
+            "/fixture/provider",
+        ])
+
+        XCTAssertEqual(child.commands, [ChildCommand(
+            executable: "/fixture/provider",
+            arguments: [],
+            pidFile: "/fixture/provider.pid")])
+    }
+
     func testReadyFileFailureRefusesChildAndReleasesProtection() {
         let events = EventLog()
         let assertion = FakeAssertionController(events: events)

@@ -6,7 +6,7 @@ public enum Provider: String, Codable, Sendable, CaseIterable {
 }
 
 public enum EffectiveStatus: String, Codable, Sendable {
-    case starting, running, recovering
+    case starting, running, recovering, hung
     case completed, failed, interrupted, stopped
     case recoverable, orphaned, corrupt, collision
     case unknown
@@ -74,7 +74,7 @@ public struct SessionColor: Equatable, Hashable, Sendable, Codable {
     }
 }
 
-public struct Session: Identifiable, Equatable, Sendable, Decodable {
+public struct Session: Identifiable, Equatable, Sendable, Codable {
     public var schema: Int
     public var provider: Provider
     public var sessionName: String
@@ -94,6 +94,16 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
     public var agentTurnID: String?
     public var sessionColor: SessionColor?
     public var powerProtectionState: PowerProtectionState?
+    public var healthReason: SessionHealthReason?
+    public var healthActions: [SessionAction]?
+    public var reconcileAction: SessionReconcileAction?
+    public var ownershipProven: Bool?
+    public var cleanupEligible: Bool?
+    public var workerPID: Int?
+    public var providerPID: Int?
+    public var workerHeartbeatAt: Date?
+    public var heartbeatFresh: Bool?
+    public var checkpointFresh: Bool?
 
     public var id: String { sessionName }
 
@@ -114,6 +124,16 @@ public struct Session: Identifiable, Equatable, Sendable, Decodable {
         case agentTurnID = "agent_turn_id"
         case sessionColor = "session_color"
         case powerProtectionState = "power_protection_state"
+        case healthReason = "health_reason"
+        case healthActions = "health_actions"
+        case reconcileAction = "reconcile_action"
+        case ownershipProven = "ownership_proven"
+        case cleanupEligible = "cleanup_eligible"
+        case workerPID = "worker_pid"
+        case providerPID = "provider_pid"
+        case workerHeartbeatAt = "worker_heartbeat_at"
+        case heartbeatFresh = "heartbeat_fresh"
+        case checkpointFresh = "checkpoint_fresh"
     }
 }
 

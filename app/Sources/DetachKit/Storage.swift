@@ -175,7 +175,14 @@ enum StorageInspector {
         let parsed = SessionListParser.parse(String(decoding: inventory, as: UTF8.self))
         guard !parsed.hadInvalidLines else { throw StorageInspectionError.invalidInventory }
         let statuses = Dictionary(
-            parsed.sessions.map { (SessionKey(provider: $0.provider, name: $0.sessionName), $0.effectiveStatus) },
+            parsed.sessions.map {
+                let legacyEligible = $0.effectiveStatus == .stopped || $0.effectiveStatus == .orphaned
+                return (
+                    SessionKey(provider: $0.provider, name: $0.sessionName),
+                    StorageEligibility(
+                        status: $0.effectiveStatus,
+                        cleanupEligible: $0.cleanupEligible ?? legacyEligible))
+            },
             uniquingKeysWith: { _, latest in latest })
         var scanner = StorageScanner(
             stateRoot: stateRoot,
@@ -227,6 +234,11 @@ private struct SessionKey: Hashable {
     var name: String
 }
 
+private struct StorageEligibility {
+    var status: EffectiveStatus
+    var cleanupEligible: Bool
+}
+
 private enum StorageCategory {
     case sessionData
     case checkpoint
@@ -274,7 +286,7 @@ private struct StorageScanner {
     let stateRoot: String
     let providerRoots: [Provider: String]
     let excludedRoots: [String]
-    let statuses: [SessionKey: EffectiveStatus]
+    let statuses: [SessionKey: StorageEligibility]
     let fileManager = FileManager.default
     let ownerUID = getuid()
     var seenFiles = Set<FileIdentity>()
@@ -380,10 +392,12 @@ private struct StorageScanner {
         let prefix = "detach-\(provider.rawValue)-"
         for name in names {
             let path = "\(root)/\(name)"
-            guard name.hasPrefix(prefix), let status = statuses[SessionKey(provider: provider, name: name)] else {
+            guard name.hasPrefix(prefix),
+                  let eligibility = statuses[SessionKey(provider: provider, name: name)] else {
                 issues.append(StorageIssue(severity: .error, code: "unowned_session_entry", path: path))
                 continue
             }
+            let status = eligibility.status
             guard let directoryMetadata = metadata(at: path),
                   isDirectory(directoryMetadata),
                   !isSymbolicLink(directoryMetadata),
@@ -402,7 +416,7 @@ private struct StorageScanner {
                 continue
             }
             let metrics = walk(path: path, relativeComponents: [])
-            let statusAllowsDeletion = status == .stopped || status == .orphaned
+            let statusAllowsDeletion = eligibility.cleanupEligible
             let deletable = metrics.complete && metrics.hardLinkCount == 0 && statusAllowsDeletion
             let reason: String? = if !metrics.complete {
                 "incomplete_scan"
