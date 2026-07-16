@@ -438,6 +438,13 @@ The app and tmux status bar then show a readable effective state instead of
 making you infer it from an icon. If the helper is unavailable, Detach reports
 that honestly and refuses to claim that the Mac will stay awake.
 
+When the lid changes from open to closed during a protected session, Detach
+also asks macOS to turn the displays off immediately. macOS applies the normal
+Lock Screen policy, so reopening the lid returns to authentication with Touch
+ID, Apple Watch, or the login password while the provider continues running.
+Detach does not change the user's **Require password after screen saver begins
+or display is turned off** setting.
+
 **Settings → System → Mac Power** shows whether the Mac currently stays awake
 or can sleep, the helper and background-monitor health, and the low-battery
 rule. The same block offers the relevant approval, setup, repair, or refresh

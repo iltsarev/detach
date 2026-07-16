@@ -9,6 +9,7 @@ let command = DetachPowerCommand(
     helperClient: helperClient,
     assertionController: PowerAssertionController(),
     childRunner: ProcessChildCommandRunner(),
-    heartbeatRunner: DispatchPowerHeartbeatRunner())
+    heartbeatRunner: DispatchPowerHeartbeatRunner(),
+    clamshellLockRunner: ClamshellLockRunner())
 let executable = DetachPowerExecutable(command: command)
 exit(executable.run(arguments: Array(CommandLine.arguments.dropFirst())))

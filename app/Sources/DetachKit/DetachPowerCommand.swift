@@ -478,6 +478,7 @@ public struct DetachPowerCommand: Sendable {
     private let assertionController: any IdleSleepAssertionControlling
     private let childRunner: any ChildCommandRunning
     private let heartbeatRunner: any PowerHeartbeatRunning
+    private let clamshellLockRunner: ClamshellLockRunner
     private let readinessMarker: any PowerRunReadinessMarking
 
     public init(
@@ -485,12 +486,14 @@ public struct DetachPowerCommand: Sendable {
         assertionController: any IdleSleepAssertionControlling = PowerAssertionController(),
         childRunner: any ChildCommandRunning = ProcessChildCommandRunner(),
         heartbeatRunner: any PowerHeartbeatRunning = DispatchPowerHeartbeatRunner(),
+        clamshellLockRunner: ClamshellLockRunner = ClamshellLockRunner(),
         readinessMarker: any PowerRunReadinessMarking = FilePowerRunReadinessMarker()
     ) {
         self.helperClient = helperClient
         self.assertionController = assertionController
         self.childRunner = childRunner
         self.heartbeatRunner = heartbeatRunner
+        self.clamshellLockRunner = clamshellLockRunner
         self.readinessMarker = readinessMarker
     }
 
@@ -567,17 +570,18 @@ public struct DetachPowerCommand: Sendable {
             throw DetachPowerCommandError.assertionUnavailable
         }
 
-        if let readyFile {
-            try readinessMarker.markReady(atPath: readyFile)
+        let result = try clamshellLockRunner.run {
+            if let readyFile {
+                try readinessMarker.markReady(atPath: readyFile)
+            }
+            return try heartbeatRunner.run(
+                heartbeat: {
+                    try renewProtection(identity: identity)
+                },
+                operation: {
+                    try childRunner.run(command)
+                })
         }
-
-        let result = try heartbeatRunner.run(
-            heartbeat: {
-                try renewProtection(identity: identity)
-            },
-            operation: {
-                try childRunner.run(command)
-            })
         return .child(result)
     }
 

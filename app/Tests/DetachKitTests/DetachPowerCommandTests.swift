@@ -182,6 +182,19 @@ final class DetachPowerCommandTests: XCTestCase {
         }
     }
 
+    private struct FailingClamshellWatcher: ClamshellStateWatching {
+        func run(
+            onStateChange: @escaping @Sendable (Bool) -> Void,
+            operation: @escaping @Sendable () throws -> ChildCommandResult
+        ) throws -> ChildCommandResult {
+            throw ExpectedFailure()
+        }
+    }
+
+    private struct NoopScreenLockRequester: ScreenLockRequesting {
+        func requestLock() throws {}
+    }
+
     private func fixture() -> (
         DetachPowerCommand,
         EventLog,
@@ -419,6 +432,37 @@ final class DetachPowerCommandTests: XCTestCase {
             "heartbeat.start",
             "child.run",
             "heartbeat.end",
+            "helper.release",
+            "assertion.release",
+        ])
+    }
+
+    func testClamshellMonitorFailureRefusesChildAndReleasesProtection() {
+        let events = EventLog()
+        let assertion = FakeAssertionController(events: events)
+        let helper = FakeHelperClient(events: events)
+        let child = FakeChildRunner(events: events)
+        let heartbeat = FakeHeartbeatRunner(events: events)
+        heartbeat.heartbeatCount = 0
+        let command = DetachPowerCommand(
+            helperClient: helper,
+            assertionController: assertion,
+            childRunner: child,
+            heartbeatRunner: heartbeat,
+            clamshellLockRunner: ClamshellLockRunner(
+                watcher: FailingClamshellWatcher(),
+                requester: NoopScreenLockRequester()))
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ]))
+
+        XCTAssertTrue(child.commands.isEmpty)
+        XCTAssertFalse(assertion.isActive)
+        XCTAssertEqual(events.values, [
+            "assertion.acquire",
+            "helper.acquire",
             "helper.release",
             "assertion.release",
         ])

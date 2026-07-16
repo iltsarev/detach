@@ -302,6 +302,17 @@ acquisition fails closed at low battery. A borrowed external setting cannot be
 turned off, so status must never falsely report the low-battery safe state while
 that setting remains active.
 
+While the wrapper holds a confirmed protected run, it observes the documented
+IOPMrootDomain clamshell notification. Each physical open-to-closed transition
+requests `/usr/bin/pmset displaysleepnow` as the unprivileged console user so
+macOS follows the user's normal Lock Screen policy without Apple Events,
+Automation, or synthetic input. The initial clamshell state is only a baseline:
+starting a run while the lid is already closed must not lock an external-display
+workflow. Repeated closed notifications lock only once until the lid reopens.
+This does not rewrite the user's password-delay setting. A MacBook run must
+fail before provider launch if the clamshell notification cannot be installed;
+a desktop Mac with no clamshell property continues without that monitor.
+
 `pmset -a disablesleep 0|1` and its `SleepDisabled` output are undocumented
 macOS interfaces. Parser/unit tests do not establish real closed-lid behavior.
 Every release candidate must pass the explicitly opted-in signed smoke test and
