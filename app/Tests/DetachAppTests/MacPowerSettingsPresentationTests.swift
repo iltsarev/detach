@@ -79,6 +79,14 @@ final class MacPowerSettingsPresentationTests: XCTestCase {
         XCTAssertEqual(
             presentation(state: .unknown, activeSessionCount: 3).reason,
             .noFreshReport)
+        // An allowed heartbeat with visible running sessions must not claim
+        // there are none; it names the mismatch instead.
+        XCTAssertEqual(
+            presentation(state: .allowed, activeSessionCount: 2).reason,
+            .sessionsNotHolding(2))
+        XCTAssertEqual(
+            presentation(state: .allowed, activeSessionCount: 0).reason,
+            .noActiveSessions)
     }
 
     func testReasonsForRemainingStates() {

@@ -103,6 +103,18 @@ struct MenuBarPresentation: Equatable {
     }
 }
 
+extension MenuBarPresentation {
+    /// The single-line menu header: state · reason · freshness. All three
+    /// pieces reuse the Settings wording, so the surfaces cannot disagree.
+    var headerText: String {
+        var parts = [L10n.string(power.stateLocalizationKey), power.reason.localizedText]
+        if let ageSeconds {
+            parts.append(powerCheckedAgeText(seconds: ageSeconds))
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
 extension MacPowerSettingsPresentation.Reason {
     /// Shared wording between Settings → System and the menu bar.
     var localizedText: String {
@@ -113,6 +125,8 @@ extension MacPowerSettingsPresentation.Reason {
             L10n.string("Sleep protection is active")
         case .noActiveSessions:
             L10n.string("No active agent sessions")
+        case let .sessionsNotHolding(count):
+            L10n.format("Active sessions without sleep protection: %d", count)
         case .lowBattery:
             L10n.string("Protection released until power is connected")
         case .confirming:

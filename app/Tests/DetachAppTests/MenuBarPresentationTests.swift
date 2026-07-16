@@ -93,6 +93,37 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.power.reason, .lowBattery)
     }
 
+    func testAllowedStateWithRunningSessionsNamesTheMismatch() {
+        // Heartbeat lag right after a session starts: the menu must not say
+        // "No active agent sessions" above a listed running session.
+        let presentation = makePresentation(
+            powerState: "allowed",
+            sessions: [runningSession(id: "a")])
+
+        XCTAssertEqual(presentation.power.reason, .sessionsNotHolding(1))
+        XCTAssertEqual(presentation.sessions.count, 1)
+    }
+
+    func testHeaderTextJoinsStateReasonAndFreshness() {
+        let presentation = makePresentation(
+            powerState: "protected",
+            sessions: [runningSession(id: "a"), runningSession(id: "b")])
+
+        XCTAssertEqual(
+            presentation.headerText,
+            "Mac stays awake · Held awake by active sessions: 2 · checked 30 s ago")
+    }
+
+    func testHeaderTextOmitsFreshnessWhenHeartbeatIsStale() {
+        let presentation = makePresentation(
+            powerState: "protected",
+            heartbeatFresh: false)
+
+        XCTAssertEqual(
+            presentation.headerText,
+            "Sleep status unknown · No fresh report from the background monitor")
+    }
+
     func testAnswerReadySessionsComeFirstAndListCapsAtSix() {
         var sessions = (0..<7).map {
             runningSession(

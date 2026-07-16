@@ -2,9 +2,10 @@ import AppKit
 import DetachKit
 import SwiftUI
 
-/// The status-item label. Shape encodes the state (filled moon = the Mac is
-/// held awake, outline = it can sleep, "!" badge = needs attention, dotted =
-/// unknown); the optional count shows active sessions.
+/// The status-item label: the Detach template glyph. Shape encodes the state
+/// (solid mark + filled dot = the Mac is held awake, dimmed = it can sleep,
+/// "!" badge = needs attention, outline = unknown); the optional count shows
+/// active sessions.
 struct MenuBarLabel: View {
     let installation: InstallationStore
     let sessionStore: SessionStore
@@ -19,39 +20,19 @@ struct MenuBarLabel: View {
             distributionMatchesBundle: installation.distributionMatchesBundle,
             showsSessionCount: showsSessionCount).icon
         HStack(spacing: 3) {
-            Image(systemName: symbol(for: icon))
-            if let text = badge(for: icon) {
+            Image(nsImage: MenuBarGlyph.image(for: icon))
+            if let text = countBadge(for: icon) {
                 Text(text)
             }
         }
         .accessibilityLabel(accessibilityText(for: icon))
     }
 
-    private func symbol(for icon: MenuBarPresentation.Icon) -> String {
-        let name: String
-        switch icon {
-        case .active: name = "moon.fill"
-        case .canSleep: name = "moon"
-        case .lowBattery, .attention: name = "moon"
-        case .unknown: name = "moon.dotted"
+    private func countBadge(for icon: MenuBarPresentation.Icon) -> String? {
+        if case let .active(sessionCount) = icon, let sessionCount, sessionCount > 0 {
+            return "\(sessionCount)"
         }
-        // Older systems may lack a variant; the plain moon keeps the shape
-        // language intact.
-        if NSImage(systemSymbolName: name, accessibilityDescription: nil) == nil {
-            return "moon"
-        }
-        return name
-    }
-
-    private func badge(for icon: MenuBarPresentation.Icon) -> String? {
-        switch icon {
-        case let .active(sessionCount):
-            if let sessionCount, sessionCount > 0 { return "\(sessionCount)" }
-            return nil
-        case .lowBattery, .attention: return "!"
-        case .canSleep: return nil
-        case .unknown: return "?"
-        }
+        return nil
     }
 
     private func accessibilityText(for icon: MenuBarPresentation.Icon) -> String {
@@ -88,8 +69,7 @@ struct MenuBarMenu: View {
     var body: some View {
         let presentation = presentation
 
-        Text(headline(for: presentation))
-        Text(detail(for: presentation))
+        Text(presentation.headerText)
         if let problem = presentation.problem {
             Button(problemTitle(problem)) { handle(problem) }
         }
@@ -121,18 +101,6 @@ struct MenuBarMenu: View {
         Button(L10n.string("Quit Detach")) {
             NSApp.terminate(nil)
         }
-    }
-
-    private func headline(for presentation: MenuBarPresentation) -> String {
-        L10n.string(presentation.power.stateLocalizationKey)
-    }
-
-    private func detail(for presentation: MenuBarPresentation) -> String {
-        var parts = [presentation.power.reason.localizedText]
-        if let age = presentation.ageSeconds {
-            parts.append(powerCheckedAgeText(seconds: age))
-        }
-        return parts.joined(separator: " · ")
     }
 
     private func sessionLine(_ entry: MenuBarPresentation.SessionEntry) -> String {

@@ -19,6 +19,7 @@ struct MacPowerSettingsPresentation: Equatable {
         case activeSessions(Int)
         case protectionActive
         case noActiveSessions
+        case sessionsNotHolding(Int)
         case lowBattery
         case confirming
         case helperUnreachable
@@ -58,7 +59,13 @@ struct MacPowerSettingsPresentation: Equatable {
                 reason = .protectionActive
             }
         case .allowed:
-            reason = .noActiveSessions
+            // The heartbeat wins, but never claim "no sessions" while the
+            // session poller can see running ones.
+            if let activeSessionCount, activeSessionCount > 0 {
+                reason = .sessionsNotHolding(activeSessionCount)
+            } else {
+                reason = .noActiveSessions
+            }
         case .lowBattery:
             reason = .lowBattery
         case .transitioning:

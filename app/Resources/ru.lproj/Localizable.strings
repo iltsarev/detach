@@ -337,6 +337,7 @@
 "Held awake by active sessions: %d" = "Mac держат активные сессии: %d";
 "Sleep protection is active" = "Защита от сна активна";
 "No active agent sessions" = "Нет активных сессий агентов";
+"Active sessions without sleep protection: %d" = "Активные сессии без защиты от сна: %d";
 "Protection released until power is connected" = "Защита снята до подключения питания";
 "Confirming sleep protection…" = "Подтверждаем защиту от сна…";
 "The native power helper is unreachable" = "Нативный помощник питания недоступен";
