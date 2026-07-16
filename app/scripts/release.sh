@@ -26,10 +26,14 @@ APPCAST="$UPDATE_ASSETS/appcast.xml"
 RELEASE_MANIFEST="$UPDATE_ASSETS/release-manifest.json"
 NOTARY_EVIDENCE="$APP_ROOT/build/notarization-$VERSION"
 APPCAST_VERIFIER="$APP_ROOT/scripts/verify-appcast.sh"
+BUNDLE_MODE_POLICY="$APP_ROOT/scripts/bundle-modes.sh"
 DEFAULT_SPARKLE_GENERATE_APPCAST="$APP_ROOT/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$APP_ROOT/.build/module-cache}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$APP_ROOT/.build/module-cache}"
 mkdir -p "$CLANG_MODULE_CACHE_PATH"
+
+# shellcheck source=app/scripts/bundle-modes.sh
+source "$BUNDLE_MODE_POLICY"
 
 [ -n "$IDENTITY" ] || {
   printf 'DETACH_CODESIGN_IDENTITY is required for a release\n' >&2
@@ -224,8 +228,16 @@ DETACH_BUILD_ARCHS=arm64 DETACH_BUILD_VERSION="$BUILD_VERSION" \
 rm -f "$NOTARY_ZIP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$NOTARY_ZIP"
 submit_for_notarization app "$NOTARY_ZIP"
-xcrun stapler staple "$APP"
+# stapler creates Contents/CodeResources using the caller's umask. Give that
+# new ticket resource its distributable mode at creation time: changing it
+# after stapling invalidates the Developer ID signature.
+(
+  umask 022
+  xcrun stapler staple "$APP"
+)
+verify_detach_bundle_modes "$APP"
 xcrun stapler validate "$APP" >"$NOTARY_EVIDENCE/app-stapler.txt" 2>&1
+codesign --verify --strict --verbose=2 "$APP"
 spctl --assess --type execute --verbose=2 "$APP" >"$NOTARY_EVIDENCE/app-gatekeeper.txt" 2>&1
 
 # Sparkle update archives contain the already notarized and stapled app. The

@@ -6,6 +6,7 @@ set -o pipefail
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 APPCAST_VERIFIER="$ROOT/app/scripts/verify-appcast.sh"
 MAKE_DMG="$ROOT/app/scripts/make-dmg.sh"
+BUNDLE_MODE_POLICY="$ROOT/app/scripts/bundle-modes.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-release-preflight-test.XXXXXX")"
 TEST_REPO="$TMP_ROOT/repo"
 TEST_APP="$TEST_REPO/app"
@@ -21,11 +22,12 @@ trap cleanup EXIT
 mkdir -p "$TEST_APP/scripts" "$SPARKLE_BIN" "$FAKE_BIN" "$TMP_ROOT/home"
 install -m 0755 "$ROOT/app/scripts/release.sh" "$TEST_APP/scripts/release.sh"
 install -m 0755 "$MAKE_DMG" "$TEST_APP/scripts/make-dmg.sh"
+install -m 0644 "$BUNDLE_MODE_POLICY" "$TEST_APP/scripts/bundle-modes.sh"
 install -m 0755 /usr/bin/true "$SPARKLE_BIN/generate_appcast"
 printf '%s\n' 1.2.3 >"$TEST_REPO/VERSION"
 
 [ -x "$APPCAST_VERIFIER" ]
-bash -n "$APPCAST_VERIFIER" "$MAKE_DMG"
+bash -n "$APPCAST_VERIFIER" "$MAKE_DMG" "$BUNDLE_MODE_POLICY"
 
 cat >"$TMP_ROOT/appcast-valid.xml" <<'XML'
 <?xml version="1.0"?>
@@ -120,6 +122,26 @@ for public_mode_contract in \
     exit 1
   }
 done
+
+staple_line="$(grep -nF 'xcrun stapler staple "$APP"' \
+  "$TEST_APP/scripts/release.sh" | cut -d: -f1)"
+staple_umask_line="$(grep -nF 'umask 022' \
+  "$TEST_APP/scripts/release.sh" | tail -1 | cut -d: -f1)"
+validate_modes_line="$(grep -nF 'verify_detach_bundle_modes "$APP"' \
+  "$TEST_APP/scripts/release.sh" | cut -d: -f1)"
+stapler_validate_line="$(grep -nF 'xcrun stapler validate "$APP"' \
+  "$TEST_APP/scripts/release.sh" | cut -d: -f1)"
+[ "$staple_umask_line" -lt "$staple_line" ] && \
+  [ "$staple_line" -lt "$validate_modes_line" ] && \
+  [ "$validate_modes_line" -lt "$stapler_validate_line" ] || {
+  printf 'release must create the stapled ticket under umask 022 and verify its modes\n' >&2
+  exit 1
+}
+grep -F 'codesign --verify --strict --verbose=2 "$APP"' \
+  "$TEST_APP/scripts/release.sh" >/dev/null || {
+  printf 'release must revalidate the app signature after mode normalization\n' >&2
+  exit 1
+}
 
 cat >"$SPARKLE_BIN/generate_keys" <<'SH'
 #!/bin/bash
