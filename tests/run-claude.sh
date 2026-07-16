@@ -46,6 +46,18 @@ tmux() {
   "$TMUX_TEST_BIN" "$@"
 }
 
+# Mirrors blend_session_color in detach-core so the tint contract is pinned
+# independently of the implementation.
+expected_tint() {
+  local color="$1"
+  local percent="$2"
+
+  printf '#%02X%02X%02X' \
+    $(( (16#${color:1:2} * percent + 32 * (100 - percent)) / 100 )) \
+    $(( (16#${color:3:2} * percent + 32 * (100 - percent)) / 100 )) \
+    $(( (16#${color:5:2} * percent + 43 * (100 - percent)) / 100 ))
+}
+
 cleanup() {
   if [ "${DETACH_CLAUDE_TEST_KEEP:-0}" = "1" ]; then
     printf 'Preserved test state: %s (socket=%s, tmux_tmpdir=%s)\n' "$TMP_ROOT" "$SOCKET_PATH" "$TMUX_TMPDIR" >&2
@@ -138,7 +150,7 @@ bash -n "$SCRIPT"
 bash -n "$ROOT/tests/fake-claude"
 [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
 [ "$($SCRIPT config tmux-style)" = "detach" ]
-[ "$("$SCRIPT" claude __session_color /fixtures/harness)" = "#1D4ED8" ]
+[ "$("$SCRIPT" claude __session_color /fixtures/harness)" = "#C2410C" ]
 
 marker="$TMP_ROOT/must-not-exist"
 literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
@@ -186,9 +198,10 @@ live_pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_pane_
 session_color="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_color)"
 [[ "$session_color" =~ ^#[[:xdigit:]]{6}$ ]]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_status)" = "running" ]
-# Flat style: neutral strip, session color only on the left edge, power on
-# the right side of the status line.
-tmux -L "$SOCKET" show-options -qv -t "=$session:" status-style | grep -F 'bg=#20202B' >/dev/null
+# Tinted style: the whole strip carries a dense blend of the session color,
+# the solid edge stays pure, power on the right side of the status line.
+tmux -L "$SOCKET" show-options -qv -t "=$session:" status-style | \
+  grep -F "bg=$(expected_tint "$session_color" 55)" >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
   grep -F "bg=$session_color" >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \

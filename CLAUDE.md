@@ -192,16 +192,29 @@ session. They do not promise survival across logout or reboot, and an explicit
 kill of tmux/provider ends the live run. Recovery checkpoints remain available.
 Integration tests must preserve this close-client lifetime contract.
 
-Detach status options are session-local and use `@detach*`; do not mutate global
-or foreign tmux configuration. The flat status line paints the session identity
-color only on a painted-space left edge over one neutral strip, keeps every
-label as plain text, and puts the power label and clock in `status-right`. The
-style snapshot saves and restores `status-right` and its length alongside the
-left side; a snapshot from an older Detach that never captured the right side
-must not clear the user's `status-right`. The text status is the primary power
-signal: `MAC AWAKE`, `MAC CAN SLEEP`, `LOW BATTERY`, `POWER UNAVAILABLE`, or a
-transition label. The app uses equivalent readable text such as **Mac stays
-awake** and **Mac can sleep**. Temporary icons are secondary.
+Detach status options are session-local and use `@detach*`; never mutate a
+foreign tmux server's configuration. The status line tints its whole strip with
+a dense blend of the session identity color behind light plain-text labels,
+plus a solid painted-space left edge (no font-dependent partial blocks), and
+puts the power label and clock in `status-right`. Finished sessions keep a
+faint tint of the same hue; failures tint the strip with the reserved red. The
+eight-hue identity palette deliberately omits pure red, and every derived
+surface comes from the single `blend_session_color` formula rather than
+per-color pairs. The style snapshot saves and restores `status-right` and its
+length alongside the left side; a snapshot from an older Detach that never
+captured the right side must not clear the user's `status-right`. The text
+status is the primary power signal: `MAC AWAKE`, `MAC CAN SLEEP`,
+`LOW BATTERY`, `POWER UNAVAILABLE`, or a transition label. The app uses
+equivalent readable text such as **Mac stays awake** and **Mac can sleep**.
+Temporary icons are secondary.
+
+Mouse input is on by default for managed sessions: copy-mode wheel steps are
+rebound to one line for smooth scrolling, and mouse selections copy through the
+Detach-owned server's `copy-command` into the macOS clipboard (`pbcopy`, plus
+OSC 52 for terminals that support it). Those server options and key bindings
+live only on the private Detach tmux server. `detach config tmux-mouse
+[on|off]` (env override `DETACH_TMUX_MOUSE`) toggles the session `mouse`
+option independently of the visual theme toggle.
 
 `list --json` emits JSONL schema 1 and includes the optional
 `power_protection_state`, `agent_turn_state`, and opaque `agent_turn_id`. Keep

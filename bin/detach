@@ -23,6 +23,7 @@ usage() {
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
     '  detach power status --json' \
     '  detach config tmux-style [detach|inherit]' \
+    '  detach config tmux-mouse [on|off]' \
     '  detach doctor [--json]' \
     '  detach repair' \
     '  detach uninstall [--keep-state|--purge-state]' \

@@ -56,6 +56,18 @@ run_codex() {
   "$SCRIPT" codex "$@"
 }
 
+# Mirrors blend_session_color in detach-core so the tint contract is pinned
+# independently of the implementation.
+expected_tint() {
+  local color="$1"
+  local percent="$2"
+
+  printf '#%02X%02X%02X' \
+    $(( (16#${color:1:2} * percent + 32 * (100 - percent)) / 100 )) \
+    $(( (16#${color:3:2} * percent + 32 * (100 - percent)) / 100 )) \
+    $(( (16#${color:5:2} * percent + 43 * (100 - percent)) / 100 ))
+}
+
 cleanup() {
   if [ "${DETACH_CODEX_TEST_KEEP:-0}" = "1" ]; then
     printf 'Preserved test state: %s (socket=%s, tmux_tmpdir=%s)\n' "$TMP_ROOT" "$SOCKET_PATH" "$TMUX_TMPDIR" >&2
@@ -252,7 +264,7 @@ tmux -L "$CWD_SOCKET" kill-server >/dev/null 2>&1 || true
   "$SCRIPT" codex delete --force cwd-anchor)
 
 [ "$($SCRIPT config tmux-style)" = "detach" ]
-[ "$(run_codex __session_color /fixtures/harness)" = "#0F766E" ]
+[ "$(run_codex __session_color /fixtures/harness)" = "#1D4ED8" ]
 
 # A repository marker is enough to canonicalize a nested project. Detach must
 # not execute ambient git (which can prompt for Xcode Command Line Tools on a
@@ -373,15 +385,24 @@ pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_style_snapshot)" = "1" ]
 session_color="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_color)"
 [[ "$session_color" =~ ^#[[:xdigit:]]{6}$ ]]
-# Flat style: neutral strip, session color only on the left edge, power on
-# the right side of the status line.
-tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style | grep -F 'bg=#20202B' >/dev/null
+# Tinted style: the whole strip carries a dense blend of the session color,
+# the solid edge stays pure, power on the right side of the status line.
+tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style | \
+  grep -F "bg=$(expected_tint "$session_color" 55)" >/dev/null
 status_left="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left)"
 printf '%s' "$status_left" | grep -F "bg=$session_color" >/dev/null
 printf '%s' "$status_left" | grep -F 'Detach' | grep -F 'Codex' | \
   grep -F 'harness' | grep -F 'RUNNING' >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-right | \
   grep -F 'MAC AWAKE' >/dev/null
+# Mouse input: wheel scrolling stays one line per step and selections land in
+# the macOS clipboard through the Detach-owned server's copy-command.
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" mouse)" = "on" ]
+[ "$(tmux -L "$SOCKET" show-options -sqv copy-command)" = "/usr/bin/pbcopy" ]
+tmux -L "$SOCKET" list-keys -T copy-mode | grep -F 'WheelUpPane' | \
+  grep -F 'scroll-up' >/dev/null
+tmux -L "$SOCKET" list-keys -T copy-mode-vi | grep -F 'MouseDragEnd1Pane' | \
+  grep -F 'copy-pipe-and-cancel' >/dev/null
 grep -Fx -- 'run' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- '--session' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$SESSION" "$FAKE_POWER_ARGS_FILE" >/dev/null
@@ -477,7 +498,7 @@ wait_for_process_group_exit "$first_worker_pgid"
 [ "$("$STATE_HELPER" meta get "$meta" exit_status)" = "7" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "failed" ]
 failed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
-printf '%s' "$failed_style" | grep -F 'bg=#20202B' >/dev/null
+printf '%s' "$failed_style" | grep -F "bg=$(expected_tint '#B91C1C' 55)" >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left | \
   grep -F 'bg=#B91C1C' | grep -F 'FAILED' >/dev/null
 "$DETACH" config tmux-style inherit
@@ -499,6 +520,16 @@ tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left | grep -F 'FAILED
 [ -z "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_style_snapshot)" ]
 "$DETACH" config tmux-style detach
 tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left | grep -F 'FAILED' >/dev/null
+
+# The mouse toggle owns only Detach sessions and round-trips through the
+# same locked config as the style toggle.
+[ "$("$DETACH" config tmux-mouse)" = "on" ]
+"$DETACH" config tmux-mouse off
+[ "$("$DETACH" config tmux-mouse)" = "off" ]
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" mouse)" = "off" ]
+"$DETACH" config tmux-mouse on
+[ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" mouse)" = "on" ]
+
 run_codex logs integration | grep -F 'fake Codex finished' >/dev/null
 
 stopped_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"

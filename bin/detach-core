@@ -89,6 +89,8 @@ config_value() {
 
 CONFIG_TMUX_STYLE="$(config_value TMUX_STYLE 2>/dev/null || true)"
 case "$CONFIG_TMUX_STYLE" in 0|1|'') ;; *) CONFIG_TMUX_STYLE="" ;; esac
+CONFIG_TMUX_MOUSE="$(config_value TMUX_MOUSE 2>/dev/null || true)"
+case "$CONFIG_TMUX_MOUSE" in 0|1|'') ;; *) CONFIG_TMUX_MOUSE="" ;; esac
 if [ "$PROVIDER" = "codex" ]; then
   STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_BASE_ROOT/codex}"
   CHECKPOINT_INTERVAL="${DETACH_CODEX_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
@@ -104,6 +106,11 @@ TMUX_STYLE_ENABLED="${DETACH_TMUX_STYLE:-${CONFIG_TMUX_STYLE:-1}}"
 case "$TMUX_STYLE_ENABLED" in
   0|1) ;;
   *) die "DETACH_TMUX_STYLE must be 0 or 1" ;;
+esac
+TMUX_MOUSE_ENABLED="${DETACH_TMUX_MOUSE:-${CONFIG_TMUX_MOUSE:-1}}"
+case "$TMUX_MOUSE_ENABLED" in
+  0|1) ;;
+  *) die "DETACH_TMUX_MOUSE must be 0 or 1" ;;
 esac
 DEFAULT_TMUX_SOCKET_PATH="$INSTALL_STATE_ROOT/tmux/tmux.sock"
 TMUX_SOCKET_PATH="${DETACH_TMUX_SOCKET_PATH:-$DEFAULT_TMUX_SOCKET_PATH}"
@@ -143,6 +150,7 @@ usage() {
     "  $PROGRAM attach [NAME]" \
     "  $PROGRAM list [--json]" \
     "  $PROGRAM config tmux-style [detach|inherit]" \
+    "  $PROGRAM config tmux-mouse [on|off]" \
     "  $PROGRAM status [NAME]" \
     "  $PROGRAM logs [--ansi] [NAME]" \
     "  $PROGRAM stop [NAME]" \
@@ -460,14 +468,16 @@ session_color_for() {
   local cwd="$2"
   local digest
   local index
+  # Eight hues spaced evenly around the wheel; pure red is reserved for the
+  # FAILED strip so an identity color can never read as an alarm.
   local palette=(
+    '#C2410C'
+    '#4D7C0F'
+    '#15803D'
+    '#0D9488'
+    '#0369A1'
     '#1D4ED8'
     '#6D28D9'
-    '#4D7C0F'
-    '#047857'
-    '#B45309'
-    '#0F766E'
-    '#4338CA'
     '#A21CAF'
   )
 
@@ -477,18 +487,19 @@ session_color_for() {
   printf '%s\n' "${palette[$index]}"
 }
 
-muted_session_color() {
+# Mix the identity color with the neutral strip anchor (#20202B), keeping the
+# hue. Every derived surface (dense tint, faded tint, muted edge) comes from
+# this one formula rather than a hand-picked pair per palette entry.
+blend_session_color() {
   local color="$1"
+  local percent="$2"
   local red green blue
 
   [[ "$color" =~ ^#[0-9A-Fa-f]{6}$ ]] || return 1
-  red=$((16#${color:1:2}))
-  green=$((16#${color:3:2}))
-  blue=$((16#${color:5:2}))
-  # Blend the identity color towards a neutral dark grey while keeping its hue.
-  red=$(((red * 45 + 48 * 55) / 100))
-  green=$(((green * 45 + 52 * 55) / 100))
-  blue=$(((blue * 45 + 59 * 55) / 100))
+  [[ "$percent" =~ ^[0-9]+$ ]] && [ "$percent" -le 100 ] || return 1
+  red=$(((16#${color:1:2} * percent + 32 * (100 - percent)) / 100))
+  green=$(((16#${color:3:2} * percent + 32 * (100 - percent)) / 100))
+  blue=$(((16#${color:5:2} * percent + 43 * (100 - percent)) / 100))
   printf '#%02X%02X%02X\n' "$red" "$green" "$blue"
 }
 
@@ -584,7 +595,7 @@ tmux_apply_session_style() {
   local session="$1"
   local status="$2"
   local provider cwd project color provider_label state_label status_left status_right power_state power_label
-  local strip_bg text_fg dim_fg edge_color word_color state_color state_attr power_color power_attr
+  local strip_bg text_fg dim_fg edge_color project_color state_color state_attr power_color power_attr
 
   [ "$(tmux_option "$session" '@detach_tmux_style')" = "1" ] || {
     tmux_restore_session_style "$session"
@@ -610,30 +621,35 @@ tmux_apply_session_style() {
   [ "${#project}" -le 28 ] || project="${project:0:27}…"
   project="$(tmux_status_literal "$project")"
 
-  # Flat text on one neutral strip: a session-colored edge (painted space,
-  # not a font-dependent partial block), dim separators, and readable labels
-  # as the primary signal in any terminal theme.
-  strip_bg='#20202B'
-  text_fg='#C8CCE0'
-  dim_fg='#7C82A8'
+  # The session identity tints the whole strip: a dense blend of the session
+  # color behind light readable text, plus a solid painted-space edge (not a
+  # font-dependent partial block). Finished sessions keep a faint tint of the
+  # same hue, failures tint the strip red, and the plain-text labels remain
+  # the primary signal in any terminal theme.
+  strip_bg="$(blend_session_color "$color" 55)" || return 1
+  text_fg='#E4E7F2'
+  dim_fg='#A8AECB'
   edge_color="$color"
-  word_color="$color"
+  project_color='#FFFFFF'
   state_label="$(printf '%s' "$status" | LC_ALL=C tr '[:lower:]' '[:upper:]')"
   state_label="${state_label:-UNKNOWN}"
-  state_color='#E6E8F2'
+  state_color='#F5F6FC'
   state_attr='bold'
   case "$status" in
     completed|interrupted|stopped)
-      edge_color="$(muted_session_color "$color")" || edge_color="$color"
-      word_color="$edge_color"
-      text_fg="$dim_fg"
-      state_color="$dim_fg"
+      strip_bg="$(blend_session_color "$color" 25)" || return 1
+      edge_color="$(blend_session_color "$color" 45)" || edge_color="$color"
+      text_fg='#8A90B0'
+      dim_fg='#5F6483'
+      project_color='#B9BED6'
+      state_color='#8A90B0'
       state_attr='nobold'
       ;;
     failed|start_failed)
+      strip_bg="$(blend_session_color '#B91C1C' 55)" || return 1
       edge_color='#B91C1C'
-      word_color='#FF8A8E'
-      state_color='#FF8A8E'
+      dim_fg='#B0A2A8'
+      state_color='#FFB3B6'
       ;;
   esac
 
@@ -646,13 +662,13 @@ tmux_apply_session_style() {
   power_color="$dim_fg"
   power_attr='nobold'
   case "$power_state" in
-    protected) power_color='#43D9B8'; power_attr='bold' ;;
+    protected) power_color='#4FE8C6'; power_attr='bold' ;;
     low_battery) power_color='#FFC24D'; power_attr='bold' ;;
     transitioning) power_color='#FFC24D' ;;
     unavailable|unknown) power_color='#FF8A8E' ;;
   esac
 
-  status_left="#[bg=$edge_color] #[bg=$strip_bg]#[fg=$word_color,bold] Detach #[nobold]#[fg=$dim_fg]· #[fg=$text_fg]$provider_label #[fg=$dim_fg]· #[fg=$text_fg]$project #[fg=$dim_fg]· #[fg=$state_color,$state_attr]$state_label#[nobold] "
+  status_left="#[bg=$edge_color]  #[bg=$strip_bg]#[fg=$text_fg] Detach #[fg=$dim_fg]· #[fg=$text_fg]$provider_label #[fg=$dim_fg]· #[fg=$project_color,bold]$project #[nobold]#[fg=$dim_fg]· #[fg=$state_color,$state_attr]$state_label#[nobold] "
   status_right="#[fg=$power_color,$power_attr]$power_label#[nobold] #[fg=$dim_fg]%H:%M "
 
   tmux_snapshot_session_style "$session" || return 1
@@ -705,6 +721,49 @@ tmux_refresh_managed_styles() {
   done < <("${TMUX_CMD[@]}" list-sessions -F '#{session_name}' 2>/dev/null || true)
 }
 
+# One-line wheel steps in copy mode and mouse selections that land in the
+# macOS clipboard. These are options and key bindings on the private
+# Detach-owned tmux server only; the user's own tmux server is never touched.
+tmux_configure_copy_input() {
+  local table
+
+  "${TMUX_CMD[@]}" set-option -q -s copy-command '/usr/bin/pbcopy' || return 1
+  "${TMUX_CMD[@]}" set-option -q -s set-clipboard on || return 1
+  for table in copy-mode copy-mode-vi; do
+    "${TMUX_CMD[@]}" bind-key -T "$table" WheelUpPane send-keys -X -N 1 scroll-up || return 1
+    "${TMUX_CMD[@]}" bind-key -T "$table" WheelDownPane send-keys -X -N 1 scroll-down || return 1
+    "${TMUX_CMD[@]}" bind-key -T "$table" MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel || return 1
+  done
+}
+
+tmux_apply_mouse_input() {
+  local session="$1"
+
+  if [ "$TMUX_MOUSE_ENABLED" = "1" ]; then
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse on || return 1
+    tmux_configure_copy_input || return 1
+  else
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse off || return 1
+  fi
+}
+
+tmux_refresh_managed_mouse() {
+  local enabled="$1"
+  local session
+
+  [ -n "$TMUX_BIN" ] && [ -x "$TMUX_BIN" ] || return 0
+  [ "$enabled" != "1" ] || tmux_configure_copy_input || true
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    tmux_is_any_managed "$session" || continue
+    if [ "$enabled" = "1" ]; then
+      "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse on || true
+    else
+      "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse off || true
+    fi
+  done < <("${TMUX_CMD[@]}" list-sessions -F '#{session_name}' 2>/dev/null || true)
+}
+
 ensure_config_root() {
   [ -n "$CONFIG_ROOT" ] && [ "$CONFIG_ROOT" != "/" ] || die "unsafe Detach config directory: $CONFIG_ROOT"
   if [ -e "$CONFIG_ROOT" ] || [ -L "$CONFIG_ROOT" ]; then
@@ -716,13 +775,15 @@ ensure_config_root() {
   chmod 0700 "$CONFIG_ROOT" || die "cannot protect Detach config directory: $CONFIG_ROOT"
 }
 
-write_tmux_style_config_locked() {
-  local value="$1"
+write_config_key_locked() {
+  local key="$1"
+  local value="$2"
   local tmp="$CONFIG_FILE.tmp.$$"
   local line
   local found=0
 
-  case "$value" in 0|1) ;; *) die "invalid internal tmux style value" ;; esac
+  case "$key" in TMUX_STYLE|TMUX_MOUSE) ;; *) die "invalid internal config key" ;; esac
+  case "$value" in 0|1) ;; *) die "invalid internal config value" ;; esac
   ensure_config_root
   if [ -e "$CONFIG_FILE" ] || [ -L "$CONFIG_FILE" ]; then
     [ -f "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ] || \
@@ -734,9 +795,9 @@ write_tmux_style_config_locked() {
     : >"$tmp" || die "cannot create temporary Detach config"
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
-        TMUX_STYLE=*)
+        "$key="*)
           if [ "$found" -eq 0 ]; then
-            printf 'TMUX_STYLE=%s\n' "$value" >>"$tmp" || {
+            printf '%s=%s\n' "$key" "$value" >>"$tmp" || {
               rm -f "$tmp"
               die "cannot update Detach config"
             }
@@ -752,7 +813,7 @@ write_tmux_style_config_locked() {
       esac
     done <"$CONFIG_FILE"
     if [ "$found" -eq 0 ]; then
-      printf 'TMUX_STYLE=%s\n' "$value" >>"$tmp" || {
+      printf '%s=%s\n' "$key" "$value" >>"$tmp" || {
         rm -f "$tmp"
         die "cannot update Detach config"
       }
@@ -760,7 +821,7 @@ write_tmux_style_config_locked() {
   else
     printf '%s\n' \
       '# Detach settings. Environment variables override these values.' \
-      "TMUX_STYLE=$value" >"$tmp" || die "cannot create Detach config"
+      "$key=$value" >"$tmp" || die "cannot create Detach config"
   fi
   chmod 0600 "$tmp" || {
     rm -f "$tmp"
@@ -770,7 +831,26 @@ write_tmux_style_config_locked() {
     rm -f "$tmp"
     die "cannot replace Detach config"
   }
-  tmux_refresh_managed_styles "$value"
+  case "$key" in
+    TMUX_STYLE) tmux_refresh_managed_styles "$value" ;;
+    TMUX_MOUSE) tmux_refresh_managed_mouse "$value" ;;
+  esac
+}
+
+write_config_key_under_lock() {
+  local key="$1"
+  local value="$2"
+  local label="$3"
+
+  require_file_or_command "$LOCKF_BIN" "lockf"
+  if [ -e "$INSTALL_STATE_ROOT" ] || [ -L "$INSTALL_STATE_ROOT" ]; then
+    [ -d "$INSTALL_STATE_ROOT" ] && [ ! -L "$INSTALL_STATE_ROOT" ] || \
+      die "install state root is not a regular directory: $INSTALL_STATE_ROOT"
+  else
+    mkdir -p "$INSTALL_STATE_ROOT" || die "cannot create install lock directory"
+  fi
+  "$LOCKF_BIN" -k -t 30 "$INSTALL_LOCK" "$SELF" __write_config_key_locked "$key" "$value" || \
+    die "could not update $label setting"
 }
 
 config_tmux_style() {
@@ -789,16 +869,26 @@ config_tmux_style() {
     inherit) value=0 ;;
     *) die "tmux style must be 'detach' or 'inherit'" ;;
   esac
+  write_config_key_under_lock TMUX_STYLE "$value" "tmux style"
+}
 
-  require_file_or_command "$LOCKF_BIN" "lockf"
-  if [ -e "$INSTALL_STATE_ROOT" ] || [ -L "$INSTALL_STATE_ROOT" ]; then
-    [ -d "$INSTALL_STATE_ROOT" ] && [ ! -L "$INSTALL_STATE_ROOT" ] || \
-      die "install state root is not a regular directory: $INSTALL_STATE_ROOT"
-  else
-    mkdir -p "$INSTALL_STATE_ROOT" || die "cannot create install lock directory"
+config_tmux_mouse() {
+  local requested="${1:-}"
+  local value
+
+  if [ "$#" -eq 0 ]; then
+    if [ "$TMUX_MOUSE_ENABLED" = "1" ]; then printf 'on\n'; else printf 'off\n'; fi
+    return 0
   fi
-  "$LOCKF_BIN" -k -t 30 "$INSTALL_LOCK" "$SELF" __write_tmux_style_config_locked "$value" || \
-    die "could not update tmux style setting"
+  [ "$#" -eq 1 ] || die "config tmux-mouse accepts at most one value"
+  [ "${DETACH_TMUX_MOUSE+x}" != "x" ] || \
+    die "cannot change tmux mouse input while DETACH_TMUX_MOUSE overrides the config"
+  case "$requested" in
+    on) value=1 ;;
+    off) value=0 ;;
+    *) die "tmux mouse input must be 'on' or 'off'" ;;
+  esac
+  write_config_key_under_lock TMUX_MOUSE "$value" "tmux mouse input"
 }
 
 attach_session() {
@@ -2365,7 +2455,7 @@ tmux_environment_args() {
               DETACH_CORE_ENTRYPOINT DETACH_PROVIDER DETACH_PROGRAM DETACH_LOCKS_ROOT \
               DETACH_STATE_ROOT DETACH_INSTALL_STATE_ROOT \
               DETACH_CONFIG_ROOT DETACH_TMUX_SOCKET_PATH DETACH_TMUX_CONFIG \
-              DETACH_TMUX_BIN DETACH_TMUX_STYLE DETACH_STATE_BIN DETACH_POWER_BIN \
+              DETACH_TMUX_BIN DETACH_TMUX_STYLE DETACH_TMUX_MOUSE DETACH_STATE_BIN DETACH_POWER_BIN \
               DETACH_SQLITE_BIN DETACH_TAR_BIN DETACH_ENV_BIN DETACH_LOCKF_BIN \
               DETACH_CODEX_STATE_ROOT DETACH_CODEX_CHECKPOINT_INTERVAL \
               DETACH_CODEX_HISTORY_LIMIT DETACH_CODEX_REQUIREMENTS_FILE \
@@ -2459,7 +2549,8 @@ start_tmux_session() {
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_core_path "$SELF"
   "${TMUX_CMD[@]}" set-option -q -w -t "$pane_id" remain-on-exit on
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" history-limit "$HISTORY_LIMIT"
-  "${TMUX_CMD[@]}" set-option -q -t "=$session:" mouse on
+  tmux_apply_mouse_input "$session" || \
+    error "warning: could not configure Detach mouse input for this session"
   if ! tmux_apply_session_style "$session" starting; then
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_tmux_style 0 2>/dev/null || true
     tmux_restore_session_style "$session" 2>/dev/null || true
@@ -3252,9 +3343,17 @@ main() {
   esac
 
   if [ "$action" = "config" ]; then
-    [ "${1:-}" = "tmux-style" ] || die "unknown config key: ${1:-missing}"
-    shift
-    config_tmux_style "$@"
+    case "${1:-}" in
+      tmux-style)
+        shift
+        config_tmux_style "$@"
+        ;;
+      tmux-mouse)
+        shift
+        config_tmux_mouse "$@"
+        ;;
+      *) die "unknown config key: ${1:-missing}" ;;
+    esac
     exit 0
   elif [ "$action" = "start" ] || [ "$action" = "resume" ]; then
     while [ "$#" -gt 0 ]; do
@@ -3406,10 +3505,10 @@ case "${1:-}" in
     shift
     write_initial_meta "$@"
     ;;
-  __write_tmux_style_config_locked)
+  __write_config_key_locked)
     shift
-    [ "$#" -eq 1 ] || exit 1
-    write_tmux_style_config_locked "$1"
+    [ "$#" -eq 2 ] || exit 1
+    write_config_key_locked "$1" "$2"
     ;;
   __has_session_id)
     shift

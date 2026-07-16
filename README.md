@@ -182,15 +182,24 @@ refer to a setting open its exact tab; hide the strip for the current launch or
 turn it off permanently in Settings → General.
 
 Every managed session gets a stable identity color derived from its provider
-and project. The same accent appears beside the session in Detach.app and in
-that session's tmux status bar, alongside `Detach`, provider, project, and
-state labels. Sleep state is text-first as well: the app reports **Mac stays
+and project. The same accent appears beside the session in Detach.app and
+tints that session's whole tmux status bar, so several running sessions are
+told apart at a glance, alongside `Detach`, provider, project, and state
+labels. Sleep state is text-first as well: the app reports **Mac stays
 awake** or **Mac can sleep**, while the tmux bar uses readable labels such as
 `MAC AWAKE`, `MAC CAN SLEEP`, and `LOW BATTERY`. Icons are secondary and may
-change without changing the status contract. Completed sessions become quieter
-and failures remain explicit. The styling is session-local, so ordinary tmux
-sessions and global config stay untouched; pick **My tmux theme** in Settings →
-Terminal to remove Detach's status bar overrides entirely.
+change without changing the status contract. Completed sessions fade to a
+faint tint of the same hue and failures turn the bar red. The styling is
+session-local, so ordinary tmux sessions and global config stay untouched;
+pick **My tmux theme** in Settings → Terminal to remove Detach's status bar
+overrides entirely.
+
+Inside a managed session the mouse works the way a terminal should: the wheel
+scrolls one line at a time, and selecting text with the mouse copies it to the
+macOS clipboard. These bindings live only on Detach's private tmux server. Use
+`detach config tmux-mouse off` to hand the mouse back to your terminal
+emulator (then select text natively; in Terminal.app, `Option`-drag also
+bypasses tmux at any time).
 
 The main app window is not the runtime. A managed session and its checkpoint
 loop continue independently, and the dashboard catches up when you reopen it.
