@@ -74,6 +74,7 @@ enum AppFontRole {
     case headline
     case title3
     case title2
+    case largeTitle
     case heroIcon
 
     func pointSize(base: CGFloat) -> CGFloat {
@@ -84,6 +85,7 @@ enum AppFontRole {
         case .headline: base * 1.08
         case .title3: base * 1.25
         case .title2: base * 1.5
+        case .largeTitle: base * 1.85
         case .heroIcon: base * 3.2
         }
     }

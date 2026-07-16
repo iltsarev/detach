@@ -60,31 +60,45 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 if step != .moveToApplications {
                     progressDots
-                        .padding(.bottom, 28)
+                        .padding(.bottom, 34)
                 }
                 heroIcon
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 22)
                 Text(title)
-                    .appFont(.title2, weight: .bold)
+                    .appFont(.largeTitle, weight: .bold)
                     .multilineTextAlignment(.center)
                 Text(subtitle)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-                    .padding(.top, 8)
+                    .frame(maxWidth: onboardingFontSize * 26)
+                    .padding(.top, 12)
                 stepContent
-                    .padding(.top, 20)
+                    .padding(.top, 28)
                 actions
-                    .padding(.top, 22)
-                technicalDetails
                     .padding(.top, 30)
+                technicalDetails
+                    .padding(.top, 38)
             }
-            .frame(maxWidth: max(560, fontPointSize * 36))
-            .padding(36)
+            .appFontSize(onboardingFontSize)
+            .frame(maxWidth: max(620, onboardingFontSize * 40))
+            .padding(44)
             .frame(maxWidth: .infinity)
         }
         .task(id: step) { poller.update(for: step) }
         .onDisappear { poller.stop() }
+    }
+
+    /// The one-time onboarding is deliberately larger than the in-app body so
+    /// the hero art and headline read as a proper welcome. It scales with — but
+    /// stays a step above — the user's chosen in-app text size.
+    private var onboardingFontSize: CGFloat {
+        CGFloat(AppFontSize.clamped(Double(fontPointSize) + 5))
+    }
+
+    /// Enlargement factor for the fixed-width secondary rows, relative to the
+    /// default in-app text size.
+    private var scale: CGFloat {
+        onboardingFontSize / CGFloat(AppFontSize.defaultValue)
     }
 
     // MARK: - Progress
@@ -125,14 +139,17 @@ struct OnboardingView: View {
 
     // MARK: - Hero
 
+    private var heroSize: CGFloat { onboardingFontSize * 5.9 }
+    private var heroCornerRadius: CGFloat { heroSize * 0.23 }
+
     private var heroIcon: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: heroCornerRadius, style: .continuous)
                 .fill(heroGradient)
-                .frame(width: 62, height: 62)
-                .shadow(color: heroShadow, radius: 10, y: 5)
+                .frame(width: heroSize, height: heroSize)
+                .shadow(color: heroShadow, radius: 16, y: 8)
             Image(systemName: heroSymbol)
-                .appFont(.title2, weight: .semibold)
+                .appFont(.heroIcon, weight: .semibold)
                 .foregroundStyle(.white)
         }
         .accessibilityHidden(true)
@@ -279,11 +296,11 @@ struct OnboardingView: View {
                         .appFont(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: 400)
+                        .frame(maxWidth: 400 * scale)
                         .padding(.top, 4)
                 }
             }
-            .frame(maxWidth: 420)
+            .frame(maxWidth: 420 * scale)
 
         case .provider:
             VStack(spacing: 12) {
@@ -294,7 +311,7 @@ struct OnboardingView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 320)
+                .frame(maxWidth: 320 * scale)
 
                 if poller.providerAvailability.any {
                     statusRow(
@@ -338,7 +355,7 @@ struct OnboardingView: View {
                     text: L10n.string(
                         "Remember to authenticate: run codex login or claude → /login before the first session."))
             }
-            .frame(maxWidth: 440)
+            .frame(maxWidth: 440 * scale)
         }
     }
 
@@ -491,7 +508,7 @@ struct OnboardingView: View {
             Spacer(minLength: 0)
         }
         .appFont(.body)
-        .frame(maxWidth: 360)
+        .frame(maxWidth: 360 * scale)
     }
 
     private func statusRow(icon: String, tint: Color, text: String) -> some View {
@@ -504,7 +521,7 @@ struct OnboardingView: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: 440)
+        .frame(maxWidth: 440 * scale)
     }
 
     // MARK: - Technical details (diagnostics)
