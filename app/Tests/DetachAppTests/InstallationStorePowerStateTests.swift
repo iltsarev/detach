@@ -1,5 +1,6 @@
 import DetachKit
 import Foundation
+import Observation
 import XCTest
 @testable import DetachApp
 
@@ -89,7 +90,7 @@ final class InstallationStorePowerStateTests: XCTestCase {
         }
     }
 
-    func testRefreshingSnapshotPublishesAWatchdogStateChange() throws {
+    func testRefreshingSnapshotPublishesHeartbeatAndPowerStateChanges() throws {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         try writeHeartbeat(
@@ -99,12 +100,22 @@ final class InstallationStorePowerStateTests: XCTestCase {
             detachPath: "/tmp/detach-test",
             powerStateRoot: root)
         XCTAssertEqual(store.powerProtectionState, .allowed)
+        XCTAssertEqual(store.watchdogHeartbeat.powerState, .allowed)
+
+        nonisolated(unsafe) var heartbeatObservationInvalidated = false
+        withObservationTracking {
+            _ = store.watchdogHeartbeat
+        } onChange: {
+            heartbeatObservationInvalidated = true
+        }
 
         try writeHeartbeat(
             #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
             to: root)
         store.refreshPowerProtectionState()
 
+        XCTAssertTrue(heartbeatObservationInvalidated)
+        XCTAssertEqual(store.watchdogHeartbeat.powerState, .protected)
         XCTAssertEqual(store.powerProtectionState, .protected)
     }
 

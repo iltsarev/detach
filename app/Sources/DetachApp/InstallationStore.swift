@@ -27,6 +27,7 @@ final class InstallationStore {
     private(set) var report: DoctorReport?
     private(set) var watchdogStatus: WatchdogStatus = .unavailable
     private(set) var watchdogError: String?
+    private(set) var watchdogHeartbeat: PowerHeartbeatSnapshot
     private(set) var powerHelperStatus: PowerHelperRegistrationStatus = .unavailable
     private(set) var powerHelperError: String?
     private(set) var lastInstallMessage: String?
@@ -70,9 +71,11 @@ final class InstallationStore {
     ) {
         self.detachPath = detachPath
         self.powerStateRoot = powerStateRoot ?? Self.defaultPowerStateRoot
-        heartbeatReader = PowerHeartbeatReader(
+        let heartbeatReader = PowerHeartbeatReader(
             statusURL: self.powerStateRoot
                 .appendingPathComponent("watchdog-status.json"))
+        self.heartbeatReader = heartbeatReader
+        watchdogHeartbeat = heartbeatReader.read()
         self.defaults = defaults
         onboardingEverCompleted = defaults.bool(
             forKey: Self.onboardingCompletedKey)
@@ -92,7 +95,7 @@ final class InstallationStore {
         } else {
             bundledMetadata = nil
         }
-        refreshPowerProtectionState()
+        powerProtectionState = watchdogHeartbeat.effectivePowerState
     }
 
     var hasDistributionPayload: Bool { payloadDirectory != nil }
@@ -102,13 +105,10 @@ final class InstallationStore {
     }
     var isBusy: Bool { phase == .syncing || contextOperationRunning }
 
-    /// The shared heartbeat snapshot (checked_at-based freshness). Settings,
-    /// onboarding, and the menu bar must all read through this accessor so
-    /// their freshness verdicts cannot diverge.
-    var watchdogHeartbeat: PowerHeartbeatSnapshot { heartbeatReader.read() }
-
     func refreshPowerProtectionState() {
-        powerProtectionState = watchdogHeartbeat.effectivePowerState
+        let snapshot = heartbeatReader.read()
+        watchdogHeartbeat = snapshot
+        powerProtectionState = snapshot.effectivePowerState
     }
 
     /// Pure registration-status read for live onboarding polling: no
@@ -116,6 +116,7 @@ final class InstallationStore {
     /// `.enabled` also withdraws the readiness confirmation so the
     /// permissions step cannot stay "passed" on stale evidence.
     func refreshRegistrationStatusesOnly() {
+        refreshPowerProtectionState()
         powerHelperStatus = powerHelper.status
         watchdogStatus = watchdog.status
         if powerHelperStatus != .enabled {
@@ -124,6 +125,7 @@ final class InstallationStore {
     }
 
     func markOnboardingCompleted() {
+        refreshPowerProtectionState()
         guard watchdogHeartbeat.healthy else { return }
         onboardingEverCompleted = true
         defaults.set(true, forKey: Self.onboardingCompletedKey)

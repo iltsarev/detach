@@ -26,6 +26,20 @@ struct MenuBarLabel: View {
             }
         }
         .accessibilityLabel(accessibilityText(for: icon))
+        // The watchdog writes its heartbeat independently of the app. Keep
+        // the observable snapshot moving even when the session list and every
+        // window are idle, otherwise MenuBarExtra can preserve an obsolete
+        // protected/allowed glyph indefinitely.
+        .task {
+            while !Task.isCancelled {
+                installation.refreshPowerProtectionState()
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                } catch {
+                    return
+                }
+            }
+        }
     }
 
     private func countBadge(for icon: MenuBarPresentation.Icon) -> String? {
