@@ -64,6 +64,9 @@ including this file, must not contain private context.
 - `tests/release-preflight.sh` and `tests/publish-preflight.sh` — hermetic release
   tooling, arm64 appcast, production-DMG verification, exact artifact allowlist,
   and explicit publication-confirmation guards.
+- `tests/release-workflow.sh` — hermetic end-to-end orchestration, including
+  resume after every durable stage, dirty/diverged source rejection, duplicate
+  tag/release rejection, hardware-gate failure, and remote hash mismatch.
 - `cd app && swift test` — unit tests for DetachKit, app services, typed state
   operations, power lifecycle, lease policy, XPC policy, and presentation.
 - `app/scripts/make-app.sh` followed by `app/scripts/verify-app.sh` — build and
@@ -80,13 +83,19 @@ There is no separate linter. Run the relevant shell integrations, Swift tests,
 packaging contracts, shell syntax checks, and `git diff --check` for changes in
 their scope.
 
-`app/scripts/release.sh` and `app/scripts/publish-release.sh` are explicit,
-strict release operations. They require Developer ID signing, notarization,
-Sparkle credentials and keys, a clean tagged commit, provenance checks, and
-publication confirmation. Publication additionally requires
-`DETACH_CONFIRM_PUBLISH=owner/repository@tag` exactly; no generic confirmation
-is accepted. Do not run, tag, notarize, upload, or publish as part of ordinary
-implementation or verification.
+`scripts/release-version X.Y.Z` is the only normal release entry point. It
+requires a clean synchronized `main`, reads literal release settings from the
+ignored owner-only `.env.release`, runs the complete suite before changing Git,
+creates one release commit and annotated tag, and requires an exact
+`owner/repository@tag` confirmation before an atomic push. It then reuses the
+strict `app/scripts/release.sh` and `app/scripts/publish-release.sh`, installs
+the signed candidate, runs the real power smoke, measures a supervised
+closed-lid probe, publishes, and independently downloads and hashes every
+remote asset. Its private resume state lives under ignored `app/build/`.
+Interrupted draft uploads may resume only after every existing asset digest is
+matched; an unexpected or changed asset fails closed. Do not run the two
+low-level scripts manually during a normal release. Do not run, tag, notarize,
+upload, or publish as part of ordinary implementation or verification.
 
 ## Installed distribution
 

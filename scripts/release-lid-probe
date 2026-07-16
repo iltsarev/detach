@@ -1,0 +1,15 @@
+#!/bin/bash
+
+set -eu
+
+OUTPUT="${1:-}"
+[ -n "$OUTPUT" ] || {
+  printf 'usage: release-lid-probe output-file\n' >&2
+  exit 2
+}
+
+umask 077
+while :; do
+  date +%s >>"$OUTPUT"
+  sleep 1
+done

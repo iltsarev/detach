@@ -1,0 +1,839 @@
+#!/bin/bash
+
+set -euo pipefail
+set +x
+umask 077
+export LC_ALL=C
+
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+APP_ROOT="$ROOT/app"
+ENV_FILE="$ROOT/.env.release"
+TEST_MODE="${DETACH_RELEASE_TEST_MODE:-0}"
+LOCKED=0
+LID_WRAPPER_PID=""
+INSTALL_TEMP=""
+INSTALL_BACKUP=""
+
+die() {
+  printf 'release-version: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf '==> %s\n' "$*"
+}
+
+cleanup() {
+  if [ -n "$LID_WRAPPER_PID" ]; then
+    kill -TERM "$LID_WRAPPER_PID" >/dev/null 2>&1 || true
+    wait "$LID_WRAPPER_PID" >/dev/null 2>&1 || true
+    LID_WRAPPER_PID=""
+  fi
+  if [ -n "$INSTALL_TEMP" ] && [ -e "$INSTALL_TEMP" ]; then
+    case "$INSTALL_TEMP" in
+      "${APPLICATIONS_DIR:-}"/.Detach.release-*.app)
+        rm -rf "$INSTALL_TEMP"
+        ;;
+    esac
+  fi
+  if [ -n "$INSTALL_BACKUP" ] && [ -e "$INSTALL_BACKUP" ] && \
+      [ -n "${INSTALLED_APP:-}" ] && [ ! -e "$INSTALLED_APP" ]; then
+    mv "$INSTALL_BACKUP" "$INSTALLED_APP" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+valid_semver() {
+  local version="$1" core prerelease build identifier
+
+  [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?$ ]] || return 1
+  core="${version%%+*}"
+  build=""
+  [ "$core" = "$version" ] || build="${version#*+}"
+  prerelease=""
+  case "$core" in
+    *-*) prerelease="${core#*-}" ;;
+  esac
+  if [ -n "$prerelease" ]; then
+    while IFS= read -r identifier; do
+      if [[ "$identifier" =~ ^[0-9]+$ ]]; then
+        [ "$identifier" = 0 ] || [[ "$identifier" =~ ^[1-9][0-9]*$ ]] || return 1
+      fi
+    done < <(printf '%s\n' "$prerelease" | tr . '\n')
+  fi
+  [ -z "$build" ] || [[ "$build" =~ ^([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+$ ]]
+}
+
+semver_greater_than() {
+  local candidate="$1" baseline="$2"
+  local candidate_core baseline_core candidate_pre baseline_pre
+  local candidate_major candidate_minor candidate_patch
+  local baseline_major baseline_minor baseline_patch
+  local left right
+  local -a candidate_ids baseline_ids
+  local index maximum
+
+  candidate_core="${candidate%%+*}"
+  baseline_core="${baseline%%+*}"
+  candidate_pre=""
+  baseline_pre=""
+  case "$candidate_core" in
+    *-*) candidate_pre="${candidate_core#*-}"; candidate_core="${candidate_core%%-*}" ;;
+  esac
+  case "$baseline_core" in
+    *-*) baseline_pre="${baseline_core#*-}"; baseline_core="${baseline_core%%-*}" ;;
+  esac
+  IFS=. read -r candidate_major candidate_minor candidate_patch <<<"$candidate_core"
+  IFS=. read -r baseline_major baseline_minor baseline_patch <<<"$baseline_core"
+  for index in 0 1 2; do
+    case "$index" in
+      0) left="$candidate_major"; right="$baseline_major" ;;
+      1) left="$candidate_minor"; right="$baseline_minor" ;;
+      *) left="$candidate_patch"; right="$baseline_patch" ;;
+    esac
+    [ "$left" -eq "$right" ] || { [ "$left" -gt "$right" ]; return; }
+  done
+  [ "$candidate_pre" != "$baseline_pre" ] || return 1
+  [ -n "$candidate_pre" ] || return 0
+  [ -n "$baseline_pre" ] || return 1
+  IFS=. read -r -a candidate_ids <<<"$candidate_pre"
+  IFS=. read -r -a baseline_ids <<<"$baseline_pre"
+  maximum=${#candidate_ids[@]}
+  [ "${#baseline_ids[@]}" -le "$maximum" ] || maximum=${#baseline_ids[@]}
+  index=0
+  while [ "$index" -lt "$maximum" ]; do
+    [ "$index" -lt "${#candidate_ids[@]}" ] || return 1
+    [ "$index" -lt "${#baseline_ids[@]}" ] || return 0
+    left="${candidate_ids[$index]}"
+    right="${baseline_ids[$index]}"
+    if [ "$left" != "$right" ]; then
+      if [[ "$left" =~ ^[0-9]+$ ]] && [[ "$right" =~ ^[0-9]+$ ]]; then
+        [ "$left" -gt "$right" ]
+        return
+      fi
+      [[ "$left" =~ ^[0-9]+$ ]] && return 1
+      [[ "$right" =~ ^[0-9]+$ ]] && return 0
+      [[ "$left" > "$right" ]]
+      return
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+load_release_environment() {
+  local line key value mode mode_value
+
+  [ -e "$ENV_FILE" ] || return 0
+  [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || \
+    die '.env.release must be a regular, non-symlink file'
+  git -C "$ROOT" check-ignore -q -- .env.release || \
+    die '.env.release must remain ignored by Git'
+  if git -C "$ROOT" ls-files --error-unmatch -- .env.release >/dev/null 2>&1; then
+    die '.env.release must never be tracked'
+  fi
+  mode="$(stat -f '%Lp' "$ENV_FILE")"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die 'cannot validate .env.release permissions'
+  mode_value=$((8#$mode))
+  [ $((mode_value & 077)) -eq 0 ] || \
+    die '.env.release must not be readable or writable by group/other (chmod 600)'
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#${line%%[![:space:]]*}}"
+    line="${line%${line##*[![:space:]]}}"
+    case "$line" in
+      ''|'#'*) continue ;;
+      export[[:space:]]*) line="${line#export}"; line="${line#${line%%[![:space:]]*}}" ;;
+    esac
+    case "$line" in
+      *=*) ;;
+      *) die 'invalid .env.release line; only literal KEY=VALUE assignments are allowed' ;;
+    esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die 'invalid .env.release variable name'
+    case "$key" in
+      DETACH_CODESIGN_IDENTITY|DETACH_NOTARY_PROFILE|DETACH_SPARKLE_PUBLIC_ED_KEY|\
+      DETACH_SPARKLE_ED_KEY_FILE|DETACH_SPARKLE_KEY_ACCOUNT|\
+      DETACH_GITHUB_REPOSITORY|DETACH_SPARKLE_FEED_URL|\
+      DETACH_SPARKLE_DOWNLOAD_URL_PREFIX|DETACH_DOWNLOAD_URL|\
+      DETACH_GITHUB_RELEASE_TARGET|DETACH_SEPARATE_RELEASE_REPOSITORY)
+        ;;
+      *) die "unsupported variable in .env.release: $key" ;;
+    esac
+    if [[ "$value" == \"*\" ]] && [ "${#value}" -ge 2 ]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' ]] && [ "${#value}" -ge 2 ]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" =~ [[:space:]] ]]; then
+      die "unquoted whitespace in .env.release value: $key"
+    fi
+    case "$value" in
+      *'$('*|*'`'*) die "shell substitutions are not allowed in .env.release: $key" ;;
+    esac
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done <"$ENV_FILE"
+}
+
+validate_configuration() {
+  [ "$TEST_MODE" = 0 ] || [ "$TEST_MODE" = 1 ] || \
+    die 'DETACH_RELEASE_TEST_MODE must be 0 or 1'
+  if [ "$TEST_MODE" = 1 ]; then
+    printf 'release-version: TEST MODE — production path checks are relaxed\n' >&2
+  fi
+  REPOSITORY="${DETACH_GITHUB_REPOSITORY:-}"
+  [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
+    die 'DETACH_GITHUB_REPOSITORY must be owner/repository'
+  TAG="v$VERSION"
+  [[ "$TAG" =~ ^v[0-9A-Za-z._+-]+$ ]] || die 'invalid release tag'
+  BUILD=""
+  SOURCE_COMMIT=""
+  RELEASE_COMMIT=""
+  APPLICATIONS_DIR=/Applications
+  if [ "$TEST_MODE" = 1 ]; then
+    APPLICATIONS_DIR="${DETACH_RELEASE_TEST_APPLICATIONS_DIR:-$APPLICATIONS_DIR}"
+  fi
+  [[ "$APPLICATIONS_DIR" = /* ]] || die 'release candidate application directory must be absolute'
+  INSTALLED_APP="$APPLICATIONS_DIR/Detach.app"
+  STATE_DIR="$APP_ROOT/build/release-workflow/$VERSION"
+  mkdir -p "$STATE_DIR"
+  [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] || die 'invalid release workflow state directory'
+  chmod 0700 "$STATE_DIR"
+}
+
+write_state_value() {
+  local name="$1" value="$2" temporary
+  temporary="$STATE_DIR/.$name.$$"
+  [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || die 'invalid state key'
+  case "$value" in *$'\n'*) die 'release state values cannot contain newlines' ;; esac
+  printf '%s\n' "$value" >"$temporary"
+  chmod 0600 "$temporary"
+  mv -f "$temporary" "$STATE_DIR/$name"
+}
+
+read_state_value() {
+  local name="$1" value
+  [ -f "$STATE_DIR/$name" ] && [ ! -L "$STATE_DIR/$name" ] || return 1
+  IFS= read -r value <"$STATE_DIR/$name" || [ -n "$value" ]
+  printf '%s\n' "$value"
+}
+
+has_stage() {
+  [ -f "$STATE_DIR/stage-$1" ] && [ ! -L "$STATE_DIR/stage-$1" ]
+}
+
+record_stage() {
+  local stage="$1"
+  write_state_value "stage-$stage" "$(git -C "$ROOT" rev-parse --verify HEAD)"
+  note "completed stage: $stage"
+  if [ "${DETACH_RELEASE_TEST_FAIL_AFTER:-}" = "$stage" ]; then
+    printf 'release-version: injected safe failure after %s\n' "$stage" >&2
+    exit 99
+  fi
+}
+
+verify_clean_worktree() {
+  [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ] || \
+    die 'release workflow requires a clean worktree'
+}
+
+verify_main_branch() {
+  [ "$(git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null || true)" = main ] || \
+    die 'release workflow must run on main'
+}
+
+verify_origin_repository() {
+  local remote_url
+  remote_url="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
+  [ -n "$remote_url" ] || die 'origin remote is missing'
+  [ "$TEST_MODE" = 1 ] && return 0
+  case "$remote_url" in
+    "https://github.com/$REPOSITORY"|"https://github.com/$REPOSITORY.git"|\
+    "git@github.com:$REPOSITORY"|"git@github.com:$REPOSITORY.git") ;;
+    *) die "origin does not match configured GitHub repository: $REPOSITORY" ;;
+  esac
+}
+
+fetch_origin() {
+  git -C "$ROOT" fetch --prune origin main
+  git -C "$ROOT" fetch --prune --tags origin
+}
+
+remote_ref_commit() {
+  local ref="$1" output commit
+  output="$(git -C "$ROOT" ls-remote origin "$ref" "$ref^{}")"
+  commit="$(printf '%s\n' "$output" | awk -v peeled="$ref^{}" '$2 == peeled {print $1; found=1} END {if (!found) exit 1}' 2>/dev/null || true)"
+  if [ -z "$commit" ]; then
+    commit="$(printf '%s\n' "$output" | awk -v exact="$ref" '$2 == exact {print $1; exit}')"
+  fi
+  printf '%s\n' "$commit"
+}
+
+release_api_status() {
+  local output_file="$1" http_status
+  http_status="$(curl --silent --show-error --location --max-time 30 \
+    --output "$output_file" --write-out '%{http_code}' \
+    "https://api.github.com/repos/$REPOSITORY/releases/tags/$TAG")" || \
+    die 'cannot query the target GitHub release'
+  case "$http_status" in
+    200|404) printf '%s\n' "$http_status" ;;
+    *) die "unexpected GitHub release API status: $http_status" ;;
+  esac
+}
+
+verify_credentials() {
+  local identity="${DETACH_CODESIGN_IDENTITY:-}"
+  local notary_profile="${DETACH_NOTARY_PROFILE:-}"
+  local public_key="${DETACH_SPARKLE_PUBLIC_ED_KEY:-}"
+  local key_file="${DETACH_SPARKLE_ED_KEY_FILE:-}"
+  local key_account="${DETACH_SPARKLE_KEY_ACCOUNT:-dev.tsarev.detach}"
+  local sparkle_tools signing_key identities key_mode key_mode_value
+
+  case "$identity" in 'Developer ID Application: '*) ;; *) die 'a Developer ID Application identity is required' ;; esac
+  [ -n "$notary_profile" ] || die 'DETACH_NOTARY_PROFILE is required'
+  [[ "$public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]] || \
+    die 'DETACH_SPARKLE_PUBLIC_ED_KEY must be a base64 Ed25519 public key'
+  command -v gh >/dev/null 2>&1 || die 'GitHub CLI (gh) is required'
+  gh auth status >/dev/null
+  identities="$(security find-identity -v -p codesigning)"
+  grep -F "\"$identity\"" <<<"$identities" >/dev/null || \
+    die 'configured Developer ID signing identity is not installed or valid'
+  xcrun notarytool history --keychain-profile "$notary_profile" \
+    --output-format json >"$STATE_DIR/notary-preflight.json"
+  chmod 0600 "$STATE_DIR/notary-preflight.json"
+
+  sparkle_tools="$APP_ROOT/.build/artifacts/sparkle/Sparkle/bin"
+  if [ -n "$key_file" ]; then
+    [ -f "$key_file" ] && [ ! -L "$key_file" ] && [ -r "$key_file" ] || \
+      die 'DETACH_SPARKLE_ED_KEY_FILE must be a readable, non-symlink regular file'
+    key_mode="$(stat -f '%Lp' "$key_file")"
+    [[ "$key_mode" =~ ^[0-7]{3,4}$ ]] || die 'cannot validate Sparkle key file permissions'
+    key_mode_value=$((8#$key_mode))
+    [ $((key_mode_value & 077)) -eq 0 ] || \
+      die 'DETACH_SPARKLE_ED_KEY_FILE must not be accessible by group/other'
+    signing_key="$($APP_ROOT/scripts/sparkle-public-key.sh "$key_file")"
+  else
+    if [ ! -x "$sparkle_tools/generate_keys" ]; then
+      swift package --disable-sandbox --package-path "$APP_ROOT" resolve
+    fi
+    [ -x "$sparkle_tools/generate_keys" ] || die 'pinned Sparkle generate_keys tool is unavailable'
+    signing_key="$("$sparkle_tools/generate_keys" -p --account "$key_account")"
+  fi
+  [ "$signing_key" = "$public_key" ] || \
+    die 'configured Sparkle public key does not match the signing key'
+}
+
+download_latest_manifest() {
+  local destination="$1"
+  curl --fail --silent --show-error --location --max-time 30 \
+    "https://github.com/$REPOSITORY/releases/latest/download/release-manifest.json" \
+    --output "$destination"
+  chmod 0600 "$destination"
+  plutil -p "$destination" >/dev/null
+}
+
+manifest_value() {
+  plutil -extract "$2" raw -o - "$1"
+}
+
+file_line() {
+  local path="$1" value
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  IFS= read -r value <"$path" || [ -n "$value" ]
+  printf '%s\n' "$value"
+}
+
+run_full_tests() {
+  local tmux_bin="$APP_ROOT/build/Detach.app/Contents/Resources/DetachCLI/tmux"
+  note 'running the complete pre-release test suite before Git changes'
+  (
+    cd -P "$APP_ROOT"
+    swift test
+  )
+  "$APP_ROOT/scripts/make-app.sh"
+  "$APP_ROOT/scripts/verify-app.sh"
+  [ -x "$tmux_bin" ] || die 'bundled tmux is missing after the development build'
+  DETACH_TEST_TMUX_BIN="$tmux_bin" "$ROOT/tests/run.sh"
+  DETACH_TEST_TMUX_BIN="$tmux_bin" "$ROOT/tests/run-claude.sh"
+  "$ROOT/tests/distribution.sh"
+  "$ROOT/tests/tmux-runtime.sh"
+  "$ROOT/tests/release-preflight.sh"
+  "$ROOT/tests/publish-preflight.sh"
+  git -C "$ROOT" diff --check
+}
+
+initialize_workflow() {
+  local current_version published_manifest published_version published_build
+  local target_release_status remote_main remote_tag configured_build
+
+  verify_main_branch
+  verify_origin_repository
+  verify_clean_worktree
+  fetch_origin
+  remote_main="$(git -C "$ROOT" rev-parse --verify refs/remotes/origin/main)"
+  SOURCE_COMMIT="$(git -C "$ROOT" rev-parse --verify HEAD)"
+  [ "$SOURCE_COMMIT" = "$remote_main" ] || die 'main must be synchronized with origin/main'
+  current_version="$(<"$ROOT/VERSION")"
+  valid_semver "$current_version" || die 'VERSION does not contain valid SemVer'
+  semver_greater_than "$VERSION" "$current_version" || \
+    die "target version must be greater than current VERSION ($current_version)"
+
+  [ -z "$(git -C "$ROOT" show-ref --verify --hash "refs/tags/$TAG" 2>/dev/null || true)" ] || \
+    die "local tag already exists: $TAG"
+  remote_tag="$(remote_ref_commit "refs/tags/$TAG")"
+  [ -z "$remote_tag" ] || die "remote tag already exists: $TAG"
+  target_release_status="$(release_api_status "$STATE_DIR/target-release.json")"
+  [ "$target_release_status" = 404 ] || die "GitHub release already exists: $TAG"
+
+  verify_credentials
+  published_manifest="$STATE_DIR/published-manifest.json"
+  download_latest_manifest "$published_manifest"
+  published_version="$(manifest_value "$published_manifest" version)"
+  published_build="$(manifest_value "$published_manifest" build)"
+  valid_semver "$published_version" || die 'published release manifest has invalid SemVer'
+  [[ "$published_build" =~ ^[1-9][0-9]*$ ]] || die 'published release manifest has invalid build'
+  semver_greater_than "$VERSION" "$published_version" || \
+    die "target version must be greater than published version ($published_version)"
+  configured_build="${DETACH_BUILD_VERSION:-$((published_build + 1))}"
+  [[ "$configured_build" =~ ^[1-9][0-9]*$ ]] || die 'release build must be a positive integer'
+  [ "$configured_build" -gt "$published_build" ] || \
+    die "release build must exceed published build $published_build"
+  BUILD="$configured_build"
+
+  run_full_tests
+  verify_clean_worktree
+  fetch_origin
+  remote_main="$(git -C "$ROOT" rev-parse --verify refs/remotes/origin/main)"
+  [ "$(git -C "$ROOT" rev-parse HEAD)" = "$SOURCE_COMMIT" ] && \
+    [ "$remote_main" = "$SOURCE_COMMIT" ] || \
+    die 'source or origin/main changed during preflight'
+
+  write_state_value version "$VERSION"
+  write_state_value repository "$REPOSITORY"
+  write_state_value tag "$TAG"
+  write_state_value build "$BUILD"
+  write_state_value source-commit "$SOURCE_COMMIT"
+  write_state_value previous-version "$current_version"
+  write_state_value previous-build "$published_build"
+  record_stage preflight
+}
+
+load_workflow() {
+  local saved_version saved_repository saved_tag
+  saved_version="$(read_state_value version)" || die 'incomplete release workflow state (version)'
+  saved_repository="$(read_state_value repository)" || die 'incomplete release workflow state (repository)'
+  saved_tag="$(read_state_value tag)" || die 'incomplete release workflow state (tag)'
+  BUILD="$(read_state_value build)" || die 'incomplete release workflow state (build)'
+  SOURCE_COMMIT="$(read_state_value source-commit)" || die 'incomplete release workflow state (source commit)'
+  [ "$saved_version" = "$VERSION" ] && [ "$saved_repository" = "$REPOSITORY" ] && \
+    [ "$saved_tag" = "$TAG" ] || die 'release workflow state does not match invocation'
+  [[ "$BUILD" =~ ^[1-9][0-9]*$ ]] || die 'release workflow state has invalid build'
+  [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die 'release workflow state has invalid source commit'
+}
+
+only_version_is_dirty() {
+  local status line saw_version=0
+  status="$(git -C "$ROOT" status --porcelain --untracked-files=all)"
+  [ -n "$status" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      ' M VERSION'|'M  VERSION'|'MM VERSION') saw_version=1 ;;
+      *) return 1 ;;
+    esac
+  done <<<"$status"
+  [ "$saw_version" = 1 ]
+}
+
+prepare_release_commit() {
+  local head commit_parent commit_subject tag_commit tag_type version_temp
+
+  verify_main_branch
+  head="$(git -C "$ROOT" rev-parse --verify HEAD)"
+  if [ -f "$STATE_DIR/release-commit" ]; then
+    RELEASE_COMMIT="$(read_state_value release-commit)"
+  elif [ "$head" = "$SOURCE_COMMIT" ]; then
+    if [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]; then
+      only_version_is_dirty && [ "$(<"$ROOT/VERSION")" = "$VERSION" ] || \
+        die 'unexpected worktree changes while preparing the release commit'
+    else
+      version_temp="$STATE_DIR/VERSION.next"
+      printf '%s\n' "$VERSION" >"$version_temp"
+      chmod 0644 "$version_temp"
+      mv -f "$version_temp" "$ROOT/VERSION"
+    fi
+    git -C "$ROOT" add VERSION
+    git -C "$ROOT" commit -m "Prepare $VERSION release" -- VERSION
+    RELEASE_COMMIT="$(git -C "$ROOT" rev-parse --verify HEAD)"
+    write_state_value release-commit "$RELEASE_COMMIT"
+  else
+    commit_parent="$(git -C "$ROOT" rev-parse "$head^" 2>/dev/null || true)"
+    commit_subject="$(git -C "$ROOT" log -1 --format=%s)"
+    [ "$commit_parent" = "$SOURCE_COMMIT" ] && \
+      [ "$commit_subject" = "Prepare $VERSION release" ] && \
+      [ "$(<"$ROOT/VERSION")" = "$VERSION" ] || \
+      die 'HEAD is not the resumable release commit'
+    RELEASE_COMMIT="$head"
+    write_state_value release-commit "$RELEASE_COMMIT"
+  fi
+
+  [ "$(git -C "$ROOT" rev-parse --verify HEAD)" = "$RELEASE_COMMIT" ] || \
+    die 'release commit is no longer HEAD'
+  [ "$(git -C "$ROOT" rev-parse "$RELEASE_COMMIT^")" = "$SOURCE_COMMIT" ] || \
+    die 'release commit does not directly follow the tested source'
+  [ "$(<"$ROOT/VERSION")" = "$VERSION" ] || die 'VERSION does not match the release target'
+  verify_clean_worktree
+
+  tag_commit="$(git -C "$ROOT" rev-list -n 1 "$TAG" 2>/dev/null || true)"
+  if [ -z "$tag_commit" ]; then
+    git -C "$ROOT" tag -a "$TAG" -m "Detach $VERSION" "$RELEASE_COMMIT"
+  else
+    [ "$tag_commit" = "$RELEASE_COMMIT" ] || die "tag $TAG points to a different commit"
+  fi
+  tag_type="$(git -C "$ROOT" cat-file -t "refs/tags/$TAG")"
+  [ "$tag_type" = tag ] || die "release tag must be annotated: $TAG"
+  has_stage prepared || record_stage prepared
+}
+
+exact_confirmation() {
+  local variable_name="$1" purpose="$2" expected="$REPOSITORY@$TAG" confirmation
+  confirmation="${!variable_name:-}"
+  if [ -z "$confirmation" ]; then
+    [ -r /dev/tty ] || \
+      die "$purpose requires exact confirmation; set $variable_name=$expected"
+    printf '%s\n' "$purpose"
+    printf 'Type exactly %s: ' "$expected" >/dev/tty
+    IFS= read -r confirmation </dev/tty
+  fi
+  [ "$confirmation" = "$expected" ] || die "$purpose confirmation must exactly equal $expected"
+}
+
+push_release_source() {
+  local remote_main remote_tag
+  remote_main="$(remote_ref_commit refs/heads/main)"
+  remote_tag="$(remote_ref_commit "refs/tags/$TAG")"
+  if [ "$remote_main" = "$RELEASE_COMMIT" ] && [ "$remote_tag" = "$RELEASE_COMMIT" ]; then
+    has_stage pushed || record_stage pushed
+    return
+  fi
+  [ "$remote_main" = "$SOURCE_COMMIT" ] || die 'remote main changed before release push'
+  [ -z "$remote_tag" ] || die 'remote release tag appeared with an unexpected state'
+  exact_confirmation DETACH_CONFIRM_RELEASE \
+    "Release commit and annotated tag are ready; the next step pushes and later publishes $REPOSITORY@$TAG."
+  git -C "$ROOT" push --atomic origin \
+    "$RELEASE_COMMIT:refs/heads/main" "refs/tags/$TAG:refs/tags/$TAG"
+  remote_main="$(remote_ref_commit refs/heads/main)"
+  remote_tag="$(remote_ref_commit "refs/tags/$TAG")"
+  [ "$remote_main" = "$RELEASE_COMMIT" ] && [ "$remote_tag" = "$RELEASE_COMMIT" ] || \
+    die 'remote main/tag verification failed after push'
+  record_stage pushed
+}
+
+release_artifacts_valid() {
+  local manifest="$APP_ROOT/build/update-assets/release-manifest.json"
+  local appcast="$APP_ROOT/build/update-assets/appcast.xml"
+  local dmg="$APP_ROOT/build/Detach.dmg"
+  local update="$APP_ROOT/build/update-assets/Detach-$VERSION.zip"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] && \
+    [ -f "$appcast" ] && [ ! -L "$appcast" ] && \
+    [ -f "$dmg" ] && [ ! -L "$dmg" ] && \
+    [ -f "$update" ] && [ ! -L "$update" ] || return 1
+  [ "$(manifest_value "$manifest" version 2>/dev/null || true)" = "$VERSION" ] && \
+    [ "$(manifest_value "$manifest" build 2>/dev/null || true)" = "$BUILD" ] && \
+    [ "$(manifest_value "$manifest" tag 2>/dev/null || true)" = "$TAG" ] && \
+    [ "$(manifest_value "$manifest" git_commit 2>/dev/null || true)" = "$RELEASE_COMMIT" ] || return 1
+  (
+    cd -P "$APP_ROOT/build"
+    shasum -a 256 -c Detach.dmg.sha256 >/dev/null
+  ) || return 1
+  for checksum in "Detach-$VERSION.zip.sha256" appcast.xml.sha256 release-manifest.json.sha256; do
+    (
+      cd -P "$APP_ROOT/build/update-assets"
+      shasum -a 256 -c "$checksum" >/dev/null
+    ) || return 1
+  done
+  "$APP_ROOT/scripts/verify-appcast.sh" "$appcast" >/dev/null || return 1
+}
+
+build_release_artifacts() {
+  if ! release_artifacts_valid; then
+    note "building, signing and notarizing Detach $VERSION (build $BUILD)"
+    DETACH_VERSION="$VERSION" \
+      DETACH_BUILD_VERSION="$BUILD" \
+      DETACH_RELEASE_TAG="$TAG" \
+      DETACH_GITHUB_REPOSITORY="$REPOSITORY" \
+      "$APP_ROOT/scripts/release.sh"
+  fi
+  release_artifacts_valid || die 'release artifact validation failed'
+  has_stage artifacts || record_stage artifacts
+}
+
+installed_candidate_valid() {
+  [ -d "$INSTALLED_APP" ] && [ ! -L "$INSTALLED_APP" ] || return 1
+  [ "$(file_line "$INSTALLED_APP/Contents/Resources/DetachCLI/VERSION" 2>/dev/null || true)" = "$VERSION" ] || return 1
+  [ "$(file_line "$INSTALLED_APP/Contents/Resources/DetachCLI/BUILD" 2>/dev/null || true)" = "$BUILD" ] || return 1
+  DETACH_APP_PATH="$INSTALLED_APP" DETACH_VERSION="$VERSION" \
+    DETACH_REQUIRE_SPARKLE_CONFIG=1 DETACH_VERIFY_PRODUCTION=1 \
+    "$APP_ROOT/scripts/verify-app.sh" >/dev/null 2>&1
+}
+
+remove_install_scratch() {
+  local path="$1"
+  case "$path" in
+    "$APPLICATIONS_DIR"/.Detach.release-"$VERSION".app|\
+    "$APPLICATIONS_DIR"/.Detach.backup-"$VERSION".app|"$INSTALLED_APP")
+      rm -rf "$path"
+      ;;
+    *) die "refusing to remove unexpected release install path: $path" ;;
+  esac
+}
+
+install_release_candidate() {
+  local source_app="$APP_ROOT/build/Detach.app"
+  local candidate="$APPLICATIONS_DIR/.Detach.release-$VERSION.app"
+  local backup="$APPLICATIONS_DIR/.Detach.backup-$VERSION.app"
+
+  mkdir -p "$APPLICATIONS_DIR"
+  [ -d "$APPLICATIONS_DIR" ] && [ ! -L "$APPLICATIONS_DIR" ] || \
+    die 'release candidate application directory is invalid'
+  if installed_candidate_valid; then
+    [ ! -e "$backup" ] || remove_install_scratch "$backup"
+    if ! has_stage installed || ! has_stage power-smoke; then
+      open "$INSTALLED_APP"
+      has_stage installed || record_stage installed
+    fi
+    return
+  fi
+  [ ! -L "$INSTALLED_APP" ] || die 'refusing to replace a symlinked Detach.app'
+  if [ -e "$backup" ]; then
+    if [ ! -e "$INSTALLED_APP" ]; then
+      mv "$backup" "$INSTALLED_APP"
+    elif installed_candidate_valid; then
+      remove_install_scratch "$backup"
+    else
+      die "stale release backup needs inspection: $backup"
+    fi
+  fi
+  [ ! -e "$candidate" ] || remove_install_scratch "$candidate"
+  INSTALL_TEMP="$candidate"
+  ditto "$source_app" "$candidate"
+  [ -d "$candidate" ] && [ ! -L "$candidate" ] || die 'candidate copy is invalid'
+  DETACH_APP_PATH="$candidate" DETACH_VERSION="$VERSION" \
+    DETACH_REQUIRE_SPARKLE_CONFIG=1 DETACH_VERIFY_PRODUCTION=1 \
+    "$APP_ROOT/scripts/verify-app.sh" >/dev/null
+  if [ -e "$INSTALLED_APP" ]; then
+    [ -d "$INSTALLED_APP" ] || die 'existing Detach.app is not a directory'
+    mv "$INSTALLED_APP" "$backup"
+    INSTALL_BACKUP="$backup"
+  fi
+  if ! mv "$candidate" "$INSTALLED_APP"; then
+    [ ! -e "$backup" ] || mv "$backup" "$INSTALLED_APP"
+    INSTALL_BACKUP=""
+    die 'failed to activate the release candidate'
+  fi
+  INSTALL_TEMP=""
+  if ! installed_candidate_valid; then
+    remove_install_scratch "$INSTALLED_APP"
+    [ ! -e "$backup" ] || mv "$backup" "$INSTALLED_APP"
+    INSTALL_BACKUP=""
+    die 'installed release candidate failed production verification'
+  fi
+  [ ! -e "$backup" ] || remove_install_scratch "$backup"
+  INSTALL_BACKUP=""
+  open "$INSTALLED_APP"
+  record_stage installed
+}
+
+run_power_smoke() {
+  if ! has_stage power-smoke; then
+    note 'running the signed real-power lifecycle smoke test'
+    DETACH_ALLOW_REAL_POWER_TEST=1 DETACH_TEST_APP="$INSTALLED_APP" \
+      "$ROOT/tests/power-smoke.sh"
+    record_stage power-smoke
+  fi
+}
+
+run_lid_test() {
+  local power="$INSTALLED_APP/Contents/MacOS/detach-power"
+  local ready="$STATE_DIR/lid-ready" ticks="$STATE_DIR/lid-ticks"
+  local session="detach-release-lid-${VERSION//./-}-$$"
+  local token="release-lid-$$-$(date +%s)"
+  local attempts=0 started finished elapsed minimum maximum_gap
+
+  has_stage lid && return
+  [ -x "$power" ] || die 'installed release candidate has no signed power client'
+  rm -f "$ready" "$ticks"
+  "$power" run --session "$session" --run-token "$token" --ready-file "$ready" -- \
+    "$ROOT/scripts/release-lid-probe" "$ticks" &
+  LID_WRAPPER_PID=$!
+  while [ ! -f "$ready" ] && [ "$attempts" -lt 100 ]; do
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+  [ -f "$ready" ] || die 'closed-lid probe did not acquire both protection layers'
+  attempts=0
+  while [ ! -s "$ticks" ] && [ "$attempts" -lt 20 ]; do
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+  [ -s "$ticks" ] || die 'closed-lid probe did not start its liveness samples'
+  started="$(date +%s)"
+  minimum=30
+  if [ "$TEST_MODE" = 1 ]; then
+    minimum="${DETACH_RELEASE_TEST_LID_MIN_SECONDS:-0}"
+  fi
+  [[ "$minimum" =~ ^[0-9]+$ ]] && [ "$minimum" -le 600 ] || \
+    die 'invalid lid-test minimum duration'
+  printf '%s\n' \
+    "Close the Apple Silicon Mac lid for at least $minimum seconds while this protected probe runs. Reopen it and verify the Mac requires normal authentication."
+  exact_confirmation DETACH_CONFIRM_LID_TEST 'closed-lid hardware test'
+  finished="$(date +%s)"
+  elapsed=$((finished - started))
+  [ "$elapsed" -ge "$minimum" ] || \
+    die "closed-lid test was confirmed after only $elapsed seconds (minimum $minimum)"
+  kill -TERM "$LID_WRAPPER_PID" >/dev/null 2>&1 || true
+  wait "$LID_WRAPPER_PID" >/dev/null 2>&1 || true
+  LID_WRAPPER_PID=""
+  [ -s "$ticks" ] || die 'closed-lid probe produced no liveness samples'
+  maximum_gap="$(awk 'NR == 1 {previous=$1; next} {gap=$1-previous; if (gap>maximum) maximum=gap; previous=$1} END {print maximum+0}' "$ticks")"
+  [ "$maximum_gap" -le 5 ] || \
+    die "the Mac stopped the protected probe for $maximum_gap seconds during the lid test"
+  record_stage lid
+}
+
+run_publish_preflight() {
+  note 're-running strict release and publication preflight immediately before publication'
+  "$ROOT/tests/release-preflight.sh"
+  "$ROOT/tests/publish-preflight.sh"
+  git -C "$ROOT" diff --check
+  verify_clean_worktree
+  release_artifacts_valid || die 'release artifacts changed before publication'
+  [ "$(remote_ref_commit refs/heads/main)" = "$RELEASE_COMMIT" ] && \
+    [ "$(remote_ref_commit "refs/tags/$TAG")" = "$RELEASE_COMMIT" ] || \
+    die 'remote main/tag changed before publication'
+}
+
+publish_release() {
+  if ! has_stage published; then
+    release_api_status "$STATE_DIR/release-before-publish.json" >/dev/null
+    run_publish_preflight
+    DETACH_VERSION="$VERSION" \
+      DETACH_RELEASE_TAG="$TAG" \
+      DETACH_GITHUB_REPOSITORY="$REPOSITORY" \
+      DETACH_CONFIRM_PUBLISH="$REPOSITORY@$TAG" \
+      DETACH_RESUME_DRAFT=1 \
+      DETACH_RESUME_PUBLISHED=1 \
+      "$APP_ROOT/scripts/publish-release.sh"
+    record_stage published
+  fi
+}
+
+download_remote_asset() {
+  local name="$1" destination="$2"
+  curl --fail --silent --show-error --location --max-time 60 \
+    "https://github.com/$REPOSITORY/releases/download/$TAG/$name" \
+    --output "$destination"
+}
+
+verify_published_release() {
+  local remote_root="$STATE_DIR/remote-assets" latest_tag http_status
+  local local_asset remote_asset name
+  local -a assets
+
+  rm -rf "$remote_root"
+  mkdir -m 0700 "$remote_root"
+  latest_tag="$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName)"
+  [ "$latest_tag" = "$TAG" ] || die 'published release is not GitHub Latest'
+  [ "$(remote_ref_commit refs/heads/main)" = "$RELEASE_COMMIT" ] && \
+    [ "$(remote_ref_commit "refs/tags/$TAG")" = "$RELEASE_COMMIT" ] || \
+    die 'published remote main/tag do not match the release commit'
+
+  assets=(
+    "$APP_ROOT/build/Detach.dmg"
+    "$APP_ROOT/build/Detach.dmg.sha256"
+    "$APP_ROOT/build/update-assets/Detach-$VERSION.zip"
+    "$APP_ROOT/build/update-assets/Detach-$VERSION.zip.sha256"
+    "$APP_ROOT/build/update-assets/appcast.xml"
+    "$APP_ROOT/build/update-assets/appcast.xml.sha256"
+    "$APP_ROOT/build/update-assets/release-manifest.json"
+    "$APP_ROOT/build/update-assets/release-manifest.json.sha256"
+  )
+  for local_asset in "${assets[@]}"; do
+    name="$(basename "$local_asset")"
+    remote_asset="$remote_root/$name"
+    download_remote_asset "$name" "$remote_asset"
+    [ "$(shasum -a 256 "$local_asset" | awk '{print $1}')" = \
+      "$(shasum -a 256 "$remote_asset" | awk '{print $1}')" ] || \
+      die "published asset hash mismatch: $name"
+  done
+  "$APP_ROOT/scripts/verify-appcast.sh" "$remote_root/appcast.xml"
+  [ "$(manifest_value "$remote_root/release-manifest.json" version)" = "$VERSION" ] && \
+    [ "$(manifest_value "$remote_root/release-manifest.json" build)" = "$BUILD" ] && \
+    [ "$(manifest_value "$remote_root/release-manifest.json" git_commit)" = "$RELEASE_COMMIT" ] || \
+    die 'published release manifest does not match the workflow'
+  curl --fail --silent --show-error --location --max-time 60 \
+    "https://github.com/$REPOSITORY/releases/latest/download/appcast.xml" \
+    --output "$remote_root/latest-appcast.xml"
+  [ "$(shasum -a 256 "$remote_root/latest-appcast.xml" | awk '{print $1}')" = \
+    "$(shasum -a 256 "$remote_root/appcast.xml" | awk '{print $1}')" ] || \
+    die 'Latest appcast does not match the published tag'
+  http_status="$(curl --silent --show-error --location --head --max-time 30 \
+    --output /dev/null --write-out '%{http_code}' \
+    "https://github.com/$REPOSITORY/releases/download/$TAG/Detach.dmg")" || \
+    die 'published DMG is not reachable'
+  [ "$http_status" = 200 ] || die "published DMG returned HTTP $http_status instead of 200"
+  has_stage verified || record_stage verified
+}
+
+run_locked() {
+  VERSION="$1"
+  valid_semver "$VERSION" || die 'usage: scripts/release-version X.Y.Z[-prerelease][+build]'
+  load_release_environment
+  validate_configuration
+  if has_stage preflight; then
+    load_workflow
+    if has_stage verified; then
+      RELEASE_COMMIT="$(read_state_value release-commit)" || \
+        die 'completed workflow has no release commit'
+      verify_main_branch
+      verify_clean_worktree
+      release_artifacts_valid || die 'completed workflow local artifacts no longer validate'
+      verify_published_release
+      note "Detach $VERSION is published, verified and GitHub Latest"
+      return
+    fi
+    verify_credentials
+  else
+    initialize_workflow
+  fi
+  prepare_release_commit
+  push_release_source
+  build_release_artifacts
+  install_release_candidate
+  run_power_smoke
+  run_lid_test
+  publish_release
+  has_stage verified || verify_published_release
+  note "Detach $VERSION is published, verified and GitHub Latest"
+}
+
+if [ "${1:-}" = __locked ]; then
+  shift
+  [ "$#" -eq 1 ] || die 'internal lock invocation is invalid'
+  LOCKED=1
+  run_locked "$1"
+  exit 0
+fi
+
+[ "$#" -eq 1 ] || die 'usage: scripts/release-version X.Y.Z[-prerelease][+build]'
+valid_semver "$1" || die 'usage: scripts/release-version X.Y.Z[-prerelease][+build]'
+mkdir -p "$APP_ROOT/build/release-workflow/$1"
+[ -d "$APP_ROOT/build/release-workflow/$1" ] && \
+  [ ! -L "$APP_ROOT/build/release-workflow/$1" ] || \
+  die 'invalid release workflow lock directory'
+chmod 0700 "$APP_ROOT/build/release-workflow/$1"
+exec /usr/bin/lockf -t 0 "$APP_ROOT/build/release-workflow/$1/workflow.lock" \
+  "$0" __locked "$1"

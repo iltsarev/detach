@@ -377,4 +377,103 @@ grep -F 'hdiutil|attach -readonly -nobrowse -owners on -mountpoint ' \
 grep -F 'spctl|--assess --type open --context context:primary-signature --verbose=2' \
   "$TMP_ROOT/validation.log" >/dev/null
 
+# A safe retry may encounter a draft created by a previous interrupted upload.
+# It must validate every existing digest, upload only missing allowlisted files,
+# and then publish the same draft instead of creating or replacing a release.
+cat >"$FAKE_BIN/gh" <<'SH'
+#!/bin/bash
+set -eu
+printf '%s\n' "$*" >>"${FAKE_GH_LOG:?}"
+
+asset_path() {
+  case "$1" in
+    Detach.dmg|Detach.dmg.sha256) printf '%s/%s\n' "${FAKE_DRAFT_BUILD:?}" "$1" ;;
+    *) printf '%s/%s\n' "${FAKE_DRAFT_ASSETS:?}" "$1" ;;
+  esac
+}
+
+print_asset_names() {
+  printf '%s\n' Detach.dmg Detach.dmg.sha256
+  if [ -f "${FAKE_DRAFT_UPLOADED:?}" ]; then
+    printf '%s\n' \
+      Detach-1.2.3.zip \
+      Detach-1.2.3.zip.sha256 \
+      appcast.xml \
+      appcast.xml.sha256 \
+      release-manifest.json \
+      release-manifest.json.sha256
+  fi
+}
+
+case "${1:-} ${2:-}" in
+  'auth status') exit 0 ;;
+  'api repos/'*) printf '%s\n' "${FAKE_DRAFT_COMMIT:?}" ;;
+  'release view')
+    case " $* " in
+      *' --json isDraft '*)
+        if [ -f "${FAKE_DRAFT_PUBLISHED:?}" ]; then printf '%s\n' false; else printf '%s\n' true; fi
+        ;;
+      *' --json tagName '*) printf '%s\n' "${FAKE_DRAFT_TAG:?}" ;;
+      *' --json assets '*)
+        case " $* " in
+          *'.digest'*)
+            name="$(printf '%s\n' "$*" | sed -n 's/.*name == "\([^"]*\)".*/\1/p')"
+            [ -n "$name" ]
+            path="$(asset_path "$name")"
+            [ -f "$path" ]
+            printf 'sha256:%s\n' "$(shasum -a 256 "$path" | awk '{print $1}')"
+            ;;
+          *) print_asset_names ;;
+        esac
+        ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  'release upload') : >"${FAKE_DRAFT_UPLOADED:?}" ;;
+  'release edit') : >"${FAKE_DRAFT_PUBLISHED:?}" ;;
+  *) exit 64 ;;
+esac
+SH
+chmod 0755 "$FAKE_BIN/gh"
+
+rm -f "$GH_LOG"
+: >"$TMP_ROOT/validation.log"
+rm -f "$TMP_ROOT/draft-uploaded" "$TMP_ROOT/draft-published"
+PATH="$FAKE_BIN:/usr/bin:/bin" \
+  FAKE_GH_LOG="$GH_LOG" \
+  FAKE_VALIDATION_LOG="$TMP_ROOT/validation.log" \
+  FAKE_DRAFT_BUILD="$BUILD" \
+  FAKE_DRAFT_ASSETS="$UPDATE_ASSETS" \
+  FAKE_DRAFT_COMMIT="$GIT_COMMIT" \
+  FAKE_DRAFT_TAG="$TAG" \
+  FAKE_DRAFT_UPLOADED="$TMP_ROOT/draft-uploaded" \
+  FAKE_DRAFT_PUBLISHED="$TMP_ROOT/draft-published" \
+  DETACH_GITHUB_REPOSITORY="$REPOSITORY" \
+  DETACH_CONFIRM_PUBLISH="$EXPECTED_CONFIRMATION" \
+  DETACH_RESUME_DRAFT=1 \
+  "$TEST_APP/scripts/publish-release.sh" \
+  >"$TMP_ROOT/resume-draft.stdout" 2>"$TMP_ROOT/resume-draft.stderr"
+[ -f "$TMP_ROOT/draft-uploaded" ]
+[ -f "$TMP_ROOT/draft-published" ]
+grep -F 'release upload' "$GH_LOG" >/dev/null
+grep -F 'release edit' "$GH_LOG" >/dev/null
+grep -F 'Published Detach 1.2.3' "$TMP_ROOT/resume-draft.stdout" >/dev/null
+
+PATH="$FAKE_BIN:/usr/bin:/bin" \
+  FAKE_GH_LOG="$GH_LOG" \
+  FAKE_VALIDATION_LOG="$TMP_ROOT/validation.log" \
+  FAKE_DRAFT_BUILD="$BUILD" \
+  FAKE_DRAFT_ASSETS="$UPDATE_ASSETS" \
+  FAKE_DRAFT_COMMIT="$GIT_COMMIT" \
+  FAKE_DRAFT_TAG="$TAG" \
+  FAKE_DRAFT_UPLOADED="$TMP_ROOT/draft-uploaded" \
+  FAKE_DRAFT_PUBLISHED="$TMP_ROOT/draft-published" \
+  DETACH_GITHUB_REPOSITORY="$REPOSITORY" \
+  DETACH_CONFIRM_PUBLISH="$EXPECTED_CONFIRMATION" \
+  DETACH_RESUME_PUBLISHED=1 \
+  "$TEST_APP/scripts/publish-release.sh" \
+  >"$TMP_ROOT/resume-published.stdout" 2>"$TMP_ROOT/resume-published.stderr"
+[ "$(grep -c '^release upload' "$GH_LOG")" = 1 ]
+grep -F 'Published Detach 1.2.3' "$TMP_ROOT/resume-published.stdout" >/dev/null
+
 printf 'Detach publish preflight tests passed\n'

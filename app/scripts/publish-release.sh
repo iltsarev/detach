@@ -19,6 +19,8 @@ FEED_URL="${DETACH_SPARKLE_FEED_URL:-https://github.com/$REPOSITORY/releases/lat
 RELEASE_TARGET="${DETACH_GITHUB_RELEASE_TARGET:-}"
 SEPARATE_RELEASE_REPOSITORY="${DETACH_SEPARATE_RELEASE_REPOSITORY:-0}"
 PUBLISH_CONFIRMATION="${DETACH_CONFIRM_PUBLISH:-}"
+RESUME_DRAFT="${DETACH_RESUME_DRAFT:-0}"
+RESUME_PUBLISHED="${DETACH_RESUME_PUBLISHED:-0}"
 APPCAST_VERIFIER="$APP_ROOT/scripts/verify-appcast.sh"
 VERIFY_APP="$APP_ROOT/scripts/verify-app.sh"
 DMG_VALIDATION_ROOT=""
@@ -161,6 +163,14 @@ fi
   printf 'DETACH_SEPARATE_RELEASE_REPOSITORY must be 0 or 1\n' >&2
   exit 1
 }
+[[ "$RESUME_DRAFT" = 0 || "$RESUME_DRAFT" = 1 ]] || {
+  printf 'DETACH_RESUME_DRAFT must be 0 or 1\n' >&2
+  exit 1
+}
+[[ "$RESUME_PUBLISHED" = 0 || "$RESUME_PUBLISHED" = 1 ]] || {
+  printf 'DETACH_RESUME_PUBLISHED must be 0 or 1\n' >&2
+  exit 1
+}
 EXPECTED_PUBLISH_CONFIRMATION="$REPOSITORY@$TAG"
 [ "$PUBLISH_CONFIRMATION" = "$EXPECTED_PUBLISH_CONFIRMATION" ] || {
   printf 'DETACH_CONFIRM_PUBLISH must exactly equal %s\n' \
@@ -288,10 +298,6 @@ done
 verify_publishable_dmg
 verify_clean_worktree
 gh auth status >/dev/null
-if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
-  printf 'Release already exists; refusing to replace assets: %s %s\n' "$REPOSITORY" "$TAG" >&2
-  exit 1
-fi
 
 # GitHub otherwise creates a missing tag from the repository's default branch.
 # An existing remote tag is explicit and is verified by `gh`. A separate
@@ -326,27 +332,44 @@ else
   release_tag_args=(--target "$REMOTE_TARGET_COMMIT")
 fi
 
-gh release create "$TAG" "${assets[@]}" \
-  --repo "$REPOSITORY" \
-  --title "Detach $VERSION" \
-  --generate-notes \
-  "${release_tag_args[@]}" \
-  --draft
-remote_assets="$(gh release view "$TAG" --repo "$REPOSITORY" --json assets --jq '.assets[].name')"
-for asset in "${assets[@]}"; do
-  grep -Fx "$(basename "$asset")" <<<"$remote_assets" >/dev/null || {
-    printf 'Draft release is missing asset: %s\n' "$asset" >&2
-    exit 1
-  }
-done
+release_exists=0
+release_is_published=0
+if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+  release_is_draft="$(gh release view "$TAG" --repo "$REPOSITORY" \
+    --json isDraft --jq .isDraft)"
+  if [ "$release_is_draft" = true ]; then
+    [ "$RESUME_DRAFT" = 1 ] || {
+      printf 'Release draft already exists; refusing to replace assets: %s %s\n' "$REPOSITORY" "$TAG" >&2
+      exit 1
+    }
+  else
+    [ "$RESUME_PUBLISHED" = 1 ] || {
+      printf 'Release already exists; refusing to replace assets: %s %s\n' "$REPOSITORY" "$TAG" >&2
+      exit 1
+    }
+    release_is_published=1
+  fi
+  release_exists=1
+fi
+
+local_asset_for_name() {
+  local requested="$1" candidate
+  for candidate in "${assets[@]}"; do
+    [ "$(basename "$candidate")" = "$requested" ] || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
 
 verify_remote_digest() {
   local asset="$1"
-  local expected_sha256="$2"
   local asset_name
   local remote_digest
+  local expected_sha256
 
   asset_name="$(basename "$asset")"
+  expected_sha256="$(shasum -a 256 "$asset" | awk '{print $1}')"
   remote_digest="$(gh release view "$TAG" --repo "$REPOSITORY" --json assets \
     --jq ".assets[] | select(.name == \"$asset_name\") | .digest")"
   [ "$remote_digest" = "sha256:$expected_sha256" ] || {
@@ -355,9 +378,56 @@ verify_remote_digest() {
   }
 }
 
-verify_remote_digest "$DMG" "$DMG_SHA256"
-verify_remote_digest "$UPDATE_ZIP" "$UPDATE_SHA256"
-verify_remote_digest "$APPCAST" "$APPCAST_SHA256"
+if [ "$release_exists" = 0 ]; then
+  gh release create "$TAG" "${assets[@]}" \
+    --repo "$REPOSITORY" \
+    --title "Detach $VERSION" \
+    --generate-notes \
+    "${release_tag_args[@]}" \
+    --draft
+else
+  remote_assets="$(gh release view "$TAG" --repo "$REPOSITORY" \
+    --json assets --jq '.assets[].name')"
+  while IFS= read -r remote_name; do
+    [ -n "$remote_name" ] || continue
+    local_asset="$(local_asset_for_name "$remote_name" || true)"
+    [ -n "$local_asset" ] || {
+      printf 'Existing draft contains an unexpected asset: %s\n' "$remote_name" >&2
+      exit 1
+    }
+    verify_remote_digest "$local_asset"
+  done <<<"$remote_assets"
+  missing_assets=()
+  for asset in "${assets[@]}"; do
+    grep -Fx "$(basename "$asset")" <<<"$remote_assets" >/dev/null || \
+      missing_assets+=("$asset")
+  done
+  if [ "${#missing_assets[@]}" -gt 0 ]; then
+    [ "$release_is_published" = 0 ] || {
+      printf 'Published release is missing assets and cannot be mutated safely\n' >&2
+      exit 1
+    }
+    gh release upload "$TAG" "${missing_assets[@]}" --repo "$REPOSITORY"
+  fi
+fi
+
+remote_assets="$(gh release view "$TAG" --repo "$REPOSITORY" \
+  --json assets --jq '.assets[].name')"
+while IFS= read -r remote_name; do
+  [ -n "$remote_name" ] || continue
+  local_asset="$(local_asset_for_name "$remote_name" || true)"
+  [ -n "$local_asset" ] || {
+    printf 'Draft release contains an unexpected asset: %s\n' "$remote_name" >&2
+    exit 1
+  }
+done <<<"$remote_assets"
+for asset in "${assets[@]}"; do
+  grep -Fx "$(basename "$asset")" <<<"$remote_assets" >/dev/null || {
+    printf 'Draft release is missing asset: %s\n' "$asset" >&2
+    exit 1
+  }
+  verify_remote_digest "$asset"
+done
 
 gh release edit "$TAG" --repo "$REPOSITORY" --draft=false --latest
 LATEST_TAG="$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName)"

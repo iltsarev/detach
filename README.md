@@ -121,7 +121,7 @@ Detach 0.2.1 is the first published self-contained release:
 > Guided setup checks the provider and every Detach-owned component. Provider
 > authentication remains in Codex or Claude Code itself.
 
-1. Download the **Detach 0.2.1 DMG** from the
+1. Download the **current Detach DMG** from the
    [Releases page](https://github.com/iltsarev/detach/releases), move
    **Detach.app** to `/Applications`, and open it.
 2. Follow the setup assistant. Detach installs its bundled command-line
@@ -617,6 +617,32 @@ Detach.app itself remains until you move it to Trash.
 You do not need Homebrew, a separate tmux or JSON tool, Amphetamine, Power
 Protect, or another keep-awake package. macOS may still require you to approve
 Detach under Login Items for its background monitor.
+
+<details>
+<summary><strong>Maintainer release workflow</strong></summary>
+
+Production releases use one resumable command from a clean, synchronized
+`main`:
+
+```bash
+./scripts/release-version X.Y.Z
+```
+
+Release credentials stay in the ignored, owner-only `.env.release` file or the
+macOS Keychain. The workflow runs the complete test suite before changing Git,
+creates the version commit and annotated tag once, and requires the exact
+`owner/repository@tag` confirmation before pushing. It builds, signs,
+notarizes, installs, and verifies the candidate; runs the signed real-power
+smoke test; and pauses for a measured, supervised closed-lid check on Apple
+Silicon hardware. After publication it verifies GitHub Latest, remote
+`main`/tag identity, every downloaded asset hash, the appcast, release manifest,
+and an HTTP 200 response for the DMG.
+
+An interrupted run is continued with the same command. Durable stages are
+revalidated instead of duplicated. A partial GitHub draft is resumable only
+when every existing asset has the expected name and digest.
+
+</details>
 
 ## Start the next long run in Detach
 
