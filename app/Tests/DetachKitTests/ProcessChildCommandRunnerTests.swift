@@ -48,8 +48,59 @@ final class ProcessChildCommandRunnerTests: XCTestCase {
         XCTAssertEqual(launcher.requests.first?.arguments, ["codex", "exec", "task"])
     }
 
-    func testFoundationLauncherMapsSignalTerminationToShellExitCode() throws {
-        let launcher = FoundationChildProcessLauncher()
+    func testPOSIXLauncherPreservesParentProcessGroup() throws {
+        let launcher = POSIXChildProcessLauncher()
+        var environment = ProcessInfo.processInfo.environment
+        environment["DETACH_EXPECTED_PROCESS_GROUP"] = String(getpgrp())
+
+        let exitCode = try launcher.run(ChildProcessRequest(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                """
+                actual=$(/bin/ps -o pgid= -p $$ | /usr/bin/tr -d '[:space:]')
+                test "$actual" = "$DETACH_EXPECTED_PROCESS_GROUP"
+                """,
+            ],
+            environment: environment,
+            currentDirectoryURL: URL(fileURLWithPath: "/", isDirectory: true),
+            inheritsStandardIO: false))
+
+        XCTAssertEqual(exitCode, 0)
+    }
+
+    func testPOSIXLauncherPassesEnvironmentAndCurrentDirectory() throws {
+        let launcher = POSIXChildProcessLauncher()
+        let currentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: currentDirectory,
+            withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: currentDirectory)
+        }
+
+        let exitCode = try launcher.run(ChildProcessRequest(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                """
+                test "$(/bin/pwd -P)" = "$DETACH_EXPECTED_CWD"
+                test "$DETACH_SENTINEL" = "preserved"
+                """,
+            ],
+            environment: [
+                "DETACH_EXPECTED_CWD": currentDirectory.path,
+                "DETACH_SENTINEL": "preserved",
+            ],
+            currentDirectoryURL: currentDirectory,
+            inheritsStandardIO: false))
+
+        XCTAssertEqual(exitCode, 0)
+    }
+
+    func testPOSIXLauncherMapsSignalTerminationToShellExitCode() throws {
+        let launcher = POSIXChildProcessLauncher()
 
         let exitCode = try launcher.run(ChildProcessRequest(
             executableURL: URL(fileURLWithPath: "/bin/sh"),

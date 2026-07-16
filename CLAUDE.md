@@ -180,8 +180,11 @@ ready file before launching the provider. The starter waits for that handshake
 and must never print `Started` before it arrives. HUP/INT/TERM are forwarded to
 the provider while the wrapper remains alive long enough to release its lease
 and assertion; explicit `detach stop` also performs an idempotent release by
-session/run token. On provider exit, the worker records status, attempts a final
-checkpoint, and leaves the pane retained for logs and diagnosis.
+session/run token. The provider must inherit the wrapper's tmux foreground
+process group; launching it in a separate group makes interactive Codex or
+Claude stop on terminal I/O. On provider exit, the worker records status,
+attempts a final checkpoint, and leaves the pane retained for logs and
+diagnosis.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user

@@ -91,7 +91,7 @@ public protocol ChildProcessLaunching: Sendable {
     func run(_ request: ChildProcessRequest) throws -> Int32
 }
 
-public struct FoundationChildProcessLauncher: ChildProcessLaunching {
+public struct POSIXChildProcessLauncher: ChildProcessLaunching {
     private final class ForwardedSignalBox: @unchecked Sendable {
         private let lock = NSLock()
         private var value: Int32?
@@ -114,17 +114,7 @@ public struct FoundationChildProcessLauncher: ChildProcessLaunching {
     public init() {}
 
     public func run(_ request: ChildProcessRequest) throws -> Int32 {
-        let process = Process()
-        process.executableURL = request.executableURL
-        process.arguments = request.arguments
-        process.environment = request.environment
-        process.currentDirectoryURL = request.currentDirectoryURL
-        if request.inheritsStandardIO {
-            process.standardInput = FileHandle.standardInput
-            process.standardOutput = FileHandle.standardOutput
-            process.standardError = FileHandle.standardError
-        }
-        try process.run()
+        let childPID = try spawn(request)
 
         // Install forwarding only after launch so the provider inherits the
         // default signal dispositions. `detach stop` signals the whole tmux
@@ -142,15 +132,18 @@ public struct FoundationChildProcessLauncher: ChildProcessLaunching {
                 queue: signalQueue)
             source.setEventHandler {
                 forwardedSignal.record(signalNumber)
-                if process.isRunning {
-                    _ = Darwin.kill(process.processIdentifier, signalNumber)
-                }
+                _ = Darwin.kill(childPID, signalNumber)
             }
             source.resume()
             return source
         }
 
-        process.waitUntilExit()
+        let waitResult: Result<Int32, Error>
+        do {
+            waitResult = .success(try wait(for: childPID))
+        } catch {
+            waitResult = .failure(error)
+        }
         signalSources.forEach { $0.cancel() }
         signalQueue.sync {}
         for (signalNumber, previousHandler) in zip(
@@ -159,18 +152,133 @@ public struct FoundationChildProcessLauncher: ChildProcessLaunching {
             Darwin.signal(signalNumber, previousHandler)
         }
 
+        let waitStatus = try waitResult.get()
         if let signalNumber = forwardedSignal.firstSignal {
             return 128 + signalNumber
         }
-        if process.terminationReason == .uncaughtSignal {
-            return 128 + process.terminationStatus
+        let terminationStatus = waitStatus & 0x7f
+        if terminationStatus == 0 {
+            return (waitStatus >> 8) & 0xff
         }
-        return process.terminationStatus
+        if terminationStatus != 0x7f {
+            return 128 + terminationStatus
+        }
+        throw posixError(
+            ECHILD,
+            operation: "waitpid returned an unsupported child status")
+    }
+
+    private func spawn(_ request: ChildProcessRequest) throws -> pid_t {
+        var fileActions: posix_spawn_file_actions_t?
+        let initializeResult = posix_spawn_file_actions_init(&fileActions)
+        guard initializeResult == 0 else {
+            throw posixError(
+                initializeResult,
+                operation: "posix_spawn_file_actions_init")
+        }
+        defer {
+            posix_spawn_file_actions_destroy(&fileActions)
+        }
+
+        let changeDirectoryResult = request.currentDirectoryURL.path.withCString {
+            path in
+            if #available(macOS 26.0, *) {
+                return posix_spawn_file_actions_addchdir(&fileActions, path)
+            }
+            return posix_spawn_file_actions_addchdir_np(&fileActions, path)
+        }
+        guard changeDirectoryResult == 0 else {
+            throw posixError(
+                changeDirectoryResult,
+                operation: "posix_spawn_file_actions_addchdir")
+        }
+
+        let argumentStrings =
+            [request.executableURL.path] + request.arguments
+        let environmentStrings = request.environment
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
+        var childPID: pid_t = 0
+        let spawnResult = try withCStringArray(argumentStrings) {
+            argumentPointers in
+            try withCStringArray(environmentStrings) {
+                environmentPointers in
+                request.executableURL.path.withCString { executablePath in
+                    posix_spawn(
+                        &childPID,
+                        executablePath,
+                        &fileActions,
+                        nil,
+                        argumentPointers,
+                        environmentPointers)
+                }
+            }
+        }
+        guard spawnResult == 0 else {
+            throw posixError(spawnResult, operation: "posix_spawn")
+        }
+        return childPID
+    }
+
+    private func wait(for childPID: pid_t) throws -> Int32 {
+        var waitStatus: Int32 = 0
+        while true {
+            let result = waitpid(childPID, &waitStatus, 0)
+            if result == childPID {
+                return waitStatus
+            }
+            if result == -1, errno == EINTR {
+                continue
+            }
+            throw posixError(errno, operation: "waitpid")
+        }
+    }
+
+    private func withCStringArray<Result>(
+        _ strings: [String],
+        body: (
+            UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+        ) throws -> Result
+    ) throws -> Result {
+        var pointers: [UnsafeMutablePointer<CChar>?] = []
+        pointers.reserveCapacity(strings.count + 1)
+        defer {
+            for pointer in pointers {
+                free(pointer)
+            }
+        }
+        for string in strings {
+            guard let pointer = strdup(string) else {
+                throw posixError(ENOMEM, operation: "strdup")
+            }
+            pointers.append(pointer)
+        }
+        pointers.append(nil)
+        return try pointers.withUnsafeMutableBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else {
+                throw posixError(EINVAL, operation: "CString array")
+            }
+            return try body(baseAddress)
+        }
+    }
+
+    private func posixError(
+        _ code: Int32,
+        operation: String
+    ) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "\(operation): \(String(cString: strerror(code)))"
+            ])
     }
 }
 
-/// Foundation-backed child runner used by the eventual `detach-power`
-/// executable. Tests inject a fake and never launch a process.
+/// POSIX-backed child runner used by the `detach-power` executable. The child
+/// deliberately inherits the wrapper's process group so interactive providers
+/// remain in the tmux pane's foreground process group.
 public struct ProcessChildCommandRunner: ChildCommandRunning {
     private let environment: [String: String]
     private let currentDirectoryURL: URL
@@ -181,7 +289,7 @@ public struct ProcessChildCommandRunner: ChildCommandRunning {
         currentDirectoryURL: URL = URL(
             fileURLWithPath: FileManager.default.currentDirectoryPath,
             isDirectory: true),
-        launcher: any ChildProcessLaunching = FoundationChildProcessLauncher()
+        launcher: any ChildProcessLaunching = POSIXChildProcessLauncher()
     ) {
         self.environment = environment
         self.currentDirectoryURL = currentDirectoryURL
