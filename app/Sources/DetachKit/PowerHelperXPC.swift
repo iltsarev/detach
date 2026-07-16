@@ -132,6 +132,11 @@ public final class NSXPCPowerHelperTransport: PowerHelperXPCTransport, @unchecke
     // bounded pmset calls. Never let the client abandon a successful acquire
     // while the root service can still be completing that mutation.
     public static let defaultTimeout: TimeInterval = 30
+    /// Read-only status is used by `detach doctor` before the helper has been
+    /// registered. A missing Mach service may consume the full XPC deadline
+    /// instead of failing immediately, so keep this comfortably below the
+    /// doctor's own timeout and report the helper as unavailable.
+    public static let defaultStatusTimeout: TimeInterval = 2
     /// Root receives a much earlier absolute deadline for an initial acquire.
     /// This leaves ample time to undo a just-completed power mutation before
     /// the synchronous client is allowed to time out.
@@ -164,7 +169,9 @@ public final class NSXPCPowerHelperTransport: PowerHelperXPCTransport, @unchecke
     }
 
     public func statusData() throws -> Data {
-        try perform { proxy, completion in
+        try perform(
+            timeout: min(timeout, Self.defaultStatusTimeout)
+        ) { proxy, completion in
             proxy.status { data, error in
                 if let error {
                     completion(.failure(error))
@@ -257,6 +264,7 @@ public final class NSXPCPowerHelperTransport: PowerHelperXPCTransport, @unchecke
     }
 
     private func perform<Value>(
+        timeout requestTimeout: TimeInterval? = nil,
         _ request: (
             DetachPowerHelperXPCProtocol,
             @escaping (Result<Value, Error>) -> Void
@@ -279,7 +287,7 @@ public final class NSXPCPowerHelperTransport: PowerHelperXPCTransport, @unchecke
             throw PowerHelperXPCError.unavailable("remote proxy has an unexpected type")
         }
         request(proxy) { reply.resolve($0) }
-        return try reply.wait(timeout: timeout)
+        return try reply.wait(timeout: requestTimeout ?? timeout)
     }
 }
 

@@ -64,6 +64,13 @@ final class PowerHelperXPCClientTests: XCTestCase {
             RootProcessCommandRunner.defaultTimeout * 5
                 + RootProcessCommandRunner.defaultTerminationGrace)
         XCTAssertLessThan(
+            NSXPCPowerHelperTransport.defaultStatusTimeout,
+            NSXPCPowerHelperTransport.defaultTimeout)
+        XCTAssertLessThan(
+            NSXPCPowerHelperTransport.defaultStatusTimeout,
+            15,
+            "read-only status must finish before detach doctor times out")
+        XCTAssertLessThan(
             NSXPCPowerHelperTransport.defaultInitialAcquireBudget,
             NSXPCPowerHelperTransport.defaultTimeout / 3 + 0.001)
     }
