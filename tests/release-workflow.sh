@@ -181,6 +181,10 @@ SH
   write_executable "$BIN/swift" <<'SH'
 #!/bin/bash
 set -eu
+[ "${DETACH_RELEASE_TESTS_DETACHED:-0}" = 1 ] || {
+  printf '%s\n' 'swift test inherited the release confirmation session' >&2
+  exit 1
+}
 printf 'swift %s\n' "$*" >>"${FAKE_ACTION_LOG:?}"
 SH
   write_executable "$BIN/security" <<'SH'
