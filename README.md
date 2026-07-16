@@ -80,9 +80,9 @@ using its official instructions.
 Detach.app is available in English and Russian and follows the language chosen
 for Detach in macOS.
 
-## What's new in 0.2.0
+## What's new in 0.2.1
 
-Detach 0.2.0 is the first self-contained release:
+Detach 0.2.1 is the first published self-contained release:
 
 - The app bundles its own Apple Silicon tmux, typed state runtime, native power
   client and helpers, background monitor, and Sparkle updater. Homebrew,
@@ -100,6 +100,10 @@ Detach 0.2.0 is the first self-contained release:
 - Native keep-awake coordination protects both idle sleep and closed-lid runs,
   releases Detach-owned protection at 10% battery, and exposes one consistent
   status in the app, menu bar, and tmux.
+- Closing the lid during a protected run now turns the displays off through
+  macOS's normal Lock Screen path. The provider remains active, while reopening
+  the lid returns to Touch ID, Apple Watch, or password authentication according
+  to the user's Lock Screen settings.
 - Managed terminals now get identity-tinted tmux status bars, one-line wheel
   scrolling and clipboard copy, while dashboard previews preserve terminal
   colors plus bold, dim, italic, underline, strikethrough, and reverse video.
@@ -107,6 +111,8 @@ Detach 0.2.0 is the first self-contained release:
   Startup and app-activation health refreshes run in the background without
   flashing the onboarding assistant; a confirmed setup problem still surfaces
   with an explicit repair path.
+- The one-time setup assistant uses larger, scalable hero artwork and typography
+  so its approvals and next actions remain clear at every supported text size.
 
 ## Quick start
 
@@ -115,7 +121,7 @@ Detach 0.2.0 is the first self-contained release:
 > Guided setup checks the provider and every Detach-owned component. Provider
 > authentication remains in Codex or Claude Code itself.
 
-1. Download the **Detach 0.2.0 DMG** from the
+1. Download the **Detach 0.2.1 DMG** from the
    [Releases page](https://github.com/iltsarev/detach/releases), move
    **Detach.app** to `/Applications`, and open it.
 2. Follow the setup assistant. Detach installs its bundled command-line
@@ -293,7 +299,7 @@ use its own normal service and local session storage.
 | Codex CLI and/or Claude Code | You | Install and authenticate at least one provider through its official flow. Detach manages it but does not replace or redistribute it. |
 | tmux | Detach | A private Apple Silicon (`arm64`) build is bundled and used for managed sessions. Your own tmux installation and configuration are not required. |
 | Structured state handling | Detach | The typed `detach-state` executable reads and updates Detach JSON/JSONL. It replaces the former `jq` runtime dependency. |
-| Sleep protection | Detach | The unprivileged `detach-power` wrapper, a signed root helper, and a background monitor replace Amphetamine, Power Protect, and `caffeinate`. |
+| Sleep protection | Detach | The unprivileged `detach-power` wrapper, a signed root helper, and a background monitor replace Amphetamine, Power Protect, and `caffeinate`; protected lid closure also follows the normal macOS Lock Screen path. |
 | App updates | Detach | Sparkle remains embedded and signed inside Detach.app; there is nothing separate to install. |
 
 There are no Homebrew runtime dependencies. Detach still uses utilities that
@@ -407,12 +413,17 @@ detach resume --name migration --detach SESSION_UUID
 | `detach list [--json]` | List Codex and Claude sessions together; JSON mode emits JSONL. |
 | `detach resume <uuid>` | Detect the provider and project, then continue that provider conversation. |
 | `detach <provider> status [name]` | Show worker, provider, checkpoint, and keep-awake state. |
-| `detach <provider> logs [name]` | Read the retained tmux pane without attaching. |
+| `detach <provider> logs [--ansi] [name]` | Read the retained tmux pane without attaching, optionally preserving ANSI sequences. |
 | `detach <provider> stop [name]` | Stop a running managed session. |
 | `detach <provider> recover [name]` | Restart an interrupted managed run using its saved recovery context. |
-| `detach <provider> delete [name]` | Delete stopped Detach state; leave provider storage untouched. |
+| `detach <provider> delete [--force] [name]` | Delete stopped Detach state; leave provider storage untouched. |
+| `detach power status --json` | Read the combined idle-sleep and closed-lid protection state. |
 | `detach config tmux-style [mode]` | Select `detach` styling or `inherit` your tmux theme. |
-| `detach doctor` | Check installation integrity, the bundled tmux/state/power runtime, provider CLIs, native power helper, and background monitor. |
+| `detach config tmux-mouse [on\|off]` | Enable or disable Detach's tmux mouse scrolling and copy bindings. |
+| `detach doctor [--json]` | Check installation integrity, the bundled tmux/state/power runtime, provider CLIs, native power helper, and background monitor. |
+| `detach repair` | Reinstall the pristine immutable payload from the installed app source. |
+| `detach uninstall [--keep-state\|--purge-state]` | Remove Detach-owned installed components, optionally preserving or deleting checkpoints. |
+| `detach --version` | Print the installed Detach version and build. |
 
 A normal start always creates a new Codex or Claude conversation. Use `attach`
 for a live worker and `resume` for an existing provider conversation. Detach
