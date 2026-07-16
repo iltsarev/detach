@@ -300,6 +300,29 @@ if parse_pmset_fixture $'SleepDisabled maybe\n' >/dev/null 2>&1; then
   exit 1
 fi
 
+# A release may itself run inside Detach. In that case the signed real-power
+# smoke must add and remove exactly one lease without disturbing the existing
+# protected baseline. Only complete, internally consistent Detach-owned states
+# are accepted.
+classify_power_baseline() {
+  DETACH_TEST_BASELINE_CLASSIFY_ONLY=1 "$POWER_SMOKE_TEST" "$@"
+}
+[ "$(classify_power_baseline allowed 0 false false true false false 0)" = pristine ]
+[ "$(classify_power_baseline protected 1 true true true false false 1)" = protected ]
+[ "$(classify_power_baseline protected 7 true true true false false 1)" = protected ]
+for unsafe_baseline in \
+  'allowed 0 false false true false false 1' \
+  'protected 0 true true true false false 1' \
+  'protected 1 false true true false false 1' \
+  'protected 1 true true true true false 1' \
+  'protected 1 true true true false true 1' \
+  'protected nope true true true false false 1'; do
+  if classify_power_baseline $unsafe_baseline >/dev/null 2>&1; then
+    printf 'power smoke accepted unsafe baseline: %s\n' "$unsafe_baseline" >&2
+    exit 1
+  fi
+done
+
 # The immutable CLI install computes this same digest in scripts/install.sh.
 # Keep the app manifest and verifier in the canonical fixed order.
 grep -F "payload_id=\"\$(printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n'" \
