@@ -45,6 +45,7 @@ setup_fixture() {
   install -m 0755 "$ROOT/app/scripts/verify-appcast.sh" \
     "$REPO/app/scripts/verify-appcast.sh"
   printf '%s\n' 1.2.3 >"$REPO/VERSION"
+  printf '%s\n' 13 >"$REPO/BUILD"
   printf '%s\n' '.env.release' >"$REPO/.gitignore"
   printf '%s\n' '.build/' 'build/' >"$REPO/app/.gitignore"
   printf '%s\n' 'release workflow fixture' >"$REPO/README.md"
@@ -335,6 +336,7 @@ for stage in preflight prepared pushed artifacts installed power-smoke lid publi
 done
 run_workflow
 [ "$(<"$REPO/VERSION")" = "$TARGET_VERSION" ]
+[ "$(<"$REPO/BUILD")" = 14 ]
 [ "$(git -C "$REPO" log --format=%s | grep -c "^Prepare $TARGET_VERSION release$")" = 1 ]
 [ "$(git -C "$REPO" cat-file -t "$TARGET_TAG")" = tag ]
 [ "$(grep -c '^release$' "$ACTION_LOG")" = 1 ]
@@ -348,6 +350,13 @@ setup_fixture dirty
 printf '%s\n' dirty >"$REPO/untracked-note.txt"
 expect_failure dirty 'release workflow requires a clean worktree' run_workflow
 [ ! -s "$ACTION_LOG" ]
+
+setup_fixture stale-build
+printf '%s\n' 12 >"$REPO/BUILD"
+git -C "$REPO" add BUILD
+git -C "$REPO" commit -qm 'stale tracked build'
+git -C "$REPO" push -q origin main
+expect_failure stale-build 'tracked BUILD 12 does not match published build 13' run_workflow
 
 setup_fixture diverged
 printf '%s\n' local >>"$REPO/README.md"

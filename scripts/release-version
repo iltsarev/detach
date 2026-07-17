@@ -402,7 +402,7 @@ run_full_tests() {
 }
 
 initialize_workflow() {
-  local current_version published_manifest published_version published_build
+  local current_version current_build published_manifest published_version published_build
   local target_release_status remote_main remote_tag configured_build
 
   verify_main_branch
@@ -414,6 +414,12 @@ initialize_workflow() {
   [ "$SOURCE_COMMIT" = "$remote_main" ] || die 'main must be synchronized with origin/main'
   current_version="$(<"$ROOT/VERSION")"
   valid_semver "$current_version" || die 'VERSION does not contain valid SemVer'
+  git -C "$ROOT" ls-files --error-unmatch -- BUILD >/dev/null 2>&1 || \
+    die 'BUILD must be tracked by Git'
+  [ -f "$ROOT/BUILD" ] && [ ! -L "$ROOT/BUILD" ] || \
+    die 'BUILD must be a tracked regular file'
+  current_build="$(<"$ROOT/BUILD")"
+  [[ "$current_build" =~ ^[1-9][0-9]*$ ]] || die 'BUILD does not contain a positive integer'
   semver_greater_than "$VERSION" "$current_version" || \
     die "target version must be greater than current VERSION ($current_version)"
 
@@ -433,7 +439,9 @@ initialize_workflow() {
   [[ "$published_build" =~ ^[1-9][0-9]*$ ]] || die 'published release manifest has invalid build'
   semver_greater_than "$VERSION" "$published_version" || \
     die "target version must be greater than published version ($published_version)"
-  configured_build="${DETACH_BUILD_VERSION:-$((published_build + 1))}"
+  [ "$current_build" = "$published_build" ] || \
+    die "tracked BUILD $current_build does not match published build $published_build"
+  configured_build="${DETACH_BUILD_VERSION:-$((current_build + 1))}"
   [[ "$configured_build" =~ ^[1-9][0-9]*$ ]] || die 'release build must be a positive integer'
   [ "$configured_build" -gt "$published_build" ] || \
     die "release build must exceed published build $published_build"
@@ -470,21 +478,22 @@ load_workflow() {
   [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die 'release workflow state has invalid source commit'
 }
 
-only_version_is_dirty() {
-  local status line saw_version=0
+only_release_metadata_is_dirty() {
+  local status line saw_version=0 saw_build=0
   status="$(git -C "$ROOT" status --porcelain --untracked-files=all)"
   [ -n "$status" ] || return 1
   while IFS= read -r line; do
     case "$line" in
       ' M VERSION'|'M  VERSION'|'MM VERSION') saw_version=1 ;;
+      ' M BUILD'|'M  BUILD'|'MM BUILD') saw_build=1 ;;
       *) return 1 ;;
     esac
   done <<<"$status"
-  [ "$saw_version" = 1 ]
+  [ "$saw_version" = 1 ] && [ "$saw_build" = 1 ]
 }
 
 prepare_release_commit() {
-  local head commit_parent commit_subject tag_commit tag_type version_temp
+  local head commit_parent commit_subject tag_commit tag_type version_temp build_temp
 
   verify_main_branch
   head="$(git -C "$ROOT" rev-parse --verify HEAD)"
@@ -492,16 +501,22 @@ prepare_release_commit() {
     RELEASE_COMMIT="$(read_state_value release-commit)"
   elif [ "$head" = "$SOURCE_COMMIT" ]; then
     if [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]; then
-      only_version_is_dirty && [ "$(<"$ROOT/VERSION")" = "$VERSION" ] || \
+      only_release_metadata_is_dirty && \
+        [ "$(<"$ROOT/VERSION")" = "$VERSION" ] && \
+        [ "$(<"$ROOT/BUILD")" = "$BUILD" ] || \
         die 'unexpected worktree changes while preparing the release commit'
     else
       version_temp="$STATE_DIR/VERSION.next"
+      build_temp="$STATE_DIR/BUILD.next"
       printf '%s\n' "$VERSION" >"$version_temp"
+      printf '%s\n' "$BUILD" >"$build_temp"
       chmod 0644 "$version_temp"
+      chmod 0644 "$build_temp"
       mv -f "$version_temp" "$ROOT/VERSION"
+      mv -f "$build_temp" "$ROOT/BUILD"
     fi
-    git -C "$ROOT" add VERSION
-    git -C "$ROOT" commit -m "Prepare $VERSION release" -- VERSION
+    git -C "$ROOT" add VERSION BUILD
+    git -C "$ROOT" commit -m "Prepare $VERSION release" -- VERSION BUILD
     RELEASE_COMMIT="$(git -C "$ROOT" rev-parse --verify HEAD)"
     write_state_value release-commit "$RELEASE_COMMIT"
   else
@@ -509,7 +524,8 @@ prepare_release_commit() {
     commit_subject="$(git -C "$ROOT" log -1 --format=%s)"
     [ "$commit_parent" = "$SOURCE_COMMIT" ] && \
       [ "$commit_subject" = "Prepare $VERSION release" ] && \
-      [ "$(<"$ROOT/VERSION")" = "$VERSION" ] || \
+      [ "$(<"$ROOT/VERSION")" = "$VERSION" ] && \
+      [ "$(<"$ROOT/BUILD")" = "$BUILD" ] || \
       die 'HEAD is not the resumable release commit'
     RELEASE_COMMIT="$head"
     write_state_value release-commit "$RELEASE_COMMIT"
@@ -520,6 +536,7 @@ prepare_release_commit() {
   [ "$(git -C "$ROOT" rev-parse "$RELEASE_COMMIT^")" = "$SOURCE_COMMIT" ] || \
     die 'release commit does not directly follow the tested source'
   [ "$(<"$ROOT/VERSION")" = "$VERSION" ] || die 'VERSION does not match the release target'
+  [ "$(<"$ROOT/BUILD")" = "$BUILD" ] || die 'BUILD does not match the release target'
   verify_clean_worktree
 
   tag_commit="$(git -C "$ROOT" rev-list -n 1 "$TAG" 2>/dev/null || true)"

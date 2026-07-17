@@ -86,7 +86,9 @@ their scope.
 `scripts/release-version X.Y.Z` is the only normal release entry point. It
 requires a clean synchronized `main`, reads literal release settings from the
 ignored owner-only `.env.release`, runs the complete suite before changing Git,
-creates one release commit and annotated tag, and requires an exact
+requires the tracked root `BUILD` to match the latest published manifest,
+increments it together with `VERSION` in one release commit, creates one
+annotated tag, and requires an exact
 `owner/repository@tag` confirmation before an atomic push. It then reuses the
 strict `app/scripts/release.sh` and `app/scripts/publish-release.sh`, installs
 the signed candidate, runs the real power smoke, measures a supervised
