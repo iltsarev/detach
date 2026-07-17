@@ -84,6 +84,7 @@ struct OnboardingView: View {
             .padding(44)
             .frame(maxWidth: .infinity)
         }
+        .scrollBounceBehavior(.basedOnSize)
         .task(id: step) { poller.update(for: step) }
         .onDisappear { poller.stop() }
     }
@@ -382,11 +383,24 @@ struct OnboardingView: View {
 
         case .permissions:
             VStack(spacing: 10) {
-                Button(L10n.string("Open System Settings")) {
-                    store.openPowerHelperApprovalSettings()
+                if needsPermissionRepair {
+                    Button(L10n.string("Retry Setup")) {
+                        Task { await store.repair() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Brand.indigo)
+                    .disabled(store.isBusy)
+                    Button(L10n.string("Open System Settings")) {
+                        store.openPowerHelperApprovalSettings()
+                    }
+                    .buttonStyle(.link)
+                } else {
+                    Button(L10n.string("Open System Settings")) {
+                        store.openPowerHelperApprovalSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Brand.indigo)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Brand.indigo)
                 Button(L10n.string("What exactly is enabled and why?")) {
                     showsPermissionsExplainer.toggle()
                 }
@@ -545,8 +559,19 @@ struct OnboardingView: View {
     private var allChecks: [DiagnosticCheck] {
         let cliChecks = store.report?.checks.filter {
             $0.section == .base && $0.id != "watchdog"
+                && $0.id != "power_helper"
         } ?? []
         return cliChecks + store.appContextChecks
+    }
+
+    private var needsPermissionRepair: Bool {
+        if store.powerHelperError != nil || store.watchdogError != nil {
+            return true
+        }
+        return !store.isBusy
+            && store.powerHelperStatus == .enabled
+            && store.watchdogStatus == .enabled
+            && !store.powerHelperReadinessConfirmed
     }
 
     private func checks(_ values: [DiagnosticCheck]) -> some View {

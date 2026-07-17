@@ -30,6 +30,72 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(phase, .ready)
     }
 
+    func testEnabledRegistrationNeedsReachableDoctorCheck() {
+        let unreachable = doctorReport(powerHelperStatus: .error)
+        XCTAssertFalse(InstallationStore.powerHelperReadiness(
+            distributionMatchesBundle: true,
+            powerHelperStatus: .enabled,
+            powerHelperError: nil,
+            report: unreachable))
+
+        let reachable = doctorReport(powerHelperStatus: .ok)
+        XCTAssertTrue(InstallationStore.powerHelperReadiness(
+            distributionMatchesBundle: true,
+            powerHelperStatus: .enabled,
+            powerHelperError: nil,
+            report: reachable))
+    }
+
+    func testDoctorReachabilityCannotOverrideRegistrationOrReconcileFailure() {
+        let reachable = doctorReport(powerHelperStatus: .ok)
+        XCTAssertFalse(InstallationStore.powerHelperReadiness(
+            distributionMatchesBundle: true,
+            powerHelperStatus: .requiresApproval,
+            powerHelperError: nil,
+            report: reachable))
+        XCTAssertFalse(InstallationStore.powerHelperReadiness(
+            distributionMatchesBundle: true,
+            powerHelperStatus: .enabled,
+            powerHelperError: "readiness failed",
+            report: reachable))
+        XCTAssertFalse(InstallationStore.powerHelperReadiness(
+            distributionMatchesBundle: false,
+            powerHelperStatus: .enabled,
+            powerHelperError: nil,
+            report: reachable))
+    }
+
+    func testInstalledRuntimeRequiresIdentityAndEveryOwnedCheck() {
+        let healthy = installedRuntimeReport()
+        XCTAssertTrue(InstallationStore.installedRuntimeMatches(
+            report: healthy,
+            version: "0.2.7",
+            build: "17",
+            payloadID: "payload"))
+
+        var damaged = healthy
+        damaged.checks[3].status = .error
+        XCTAssertFalse(InstallationStore.installedRuntimeMatches(
+            report: damaged,
+            version: "0.2.7",
+            build: "17",
+            payloadID: "payload"))
+
+        var incomplete = healthy
+        incomplete.checks.removeAll { $0.id == "power_runtime" }
+        XCTAssertFalse(InstallationStore.installedRuntimeMatches(
+            report: incomplete,
+            version: "0.2.7",
+            build: "17",
+            payloadID: "payload"))
+
+        XCTAssertFalse(InstallationStore.installedRuntimeMatches(
+            report: healthy,
+            version: "0.2.7",
+            build: "18",
+            payloadID: "payload"))
+    }
+
     func testFreshHealthyHeartbeatProvidesEffectivePowerState() throws {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -143,7 +209,7 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(fixture.store.onboardingStep, .mainApp)
 
         probe.releaseNext()
-        await refresh.value
+        _ = await refresh.value
         XCTAssertEqual(fixture.store.onboardingStep, .mainApp)
     }
 
@@ -245,8 +311,8 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(probe.operations, [.refresh, .refresh])
 
         probe.releaseNext()
-        await first.value
-        for duplicate in duplicates { await duplicate.value }
+        _ = await first.value
+        for duplicate in duplicates { _ = await duplicate.value }
 
         XCTAssertEqual(probe.operations, [.refresh, .refresh])
         XCTAssertEqual(probe.maximumConcurrentOperations, 1)
@@ -259,6 +325,48 @@ final class InstallationStorePowerStateTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func doctorReport(
+        powerHelperStatus: DiagnosticCheck.Status
+    ) -> DoctorReport {
+        DoctorReport(
+            schema: 1,
+            version: "0.2.7",
+            build: "17",
+            payloadID: "payload",
+            ok: powerHelperStatus == .ok,
+            checks: [DiagnosticCheck(
+                id: "power_helper",
+                section: .base,
+                label: "Detach power helper",
+                required: true,
+                status: powerHelperStatus,
+                path: "/tmp/detach-power",
+                summary: "power helper")])
+    }
+
+    private func installedRuntimeReport() -> DoctorReport {
+        let ids = [
+            "integrity", "cli", "manifest", "tmux", "state_helper",
+            "power_runtime",
+        ]
+        return DoctorReport(
+            schema: 1,
+            version: "0.2.7",
+            build: "17",
+            payloadID: "payload",
+            ok: true,
+            checks: ids.map { id in
+                DiagnosticCheck(
+                    id: id,
+                    section: .base,
+                    label: id,
+                    required: true,
+                    status: .ok,
+                    path: "/tmp/\(id)",
+                    summary: "ok")
+            })
     }
 
     private func makeCompletedOnboardingStore(

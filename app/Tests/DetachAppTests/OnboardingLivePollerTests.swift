@@ -15,6 +15,7 @@ final class OnboardingLivePollerTests: XCTestCase {
             reconcile: {
                 reconciles += 1
                 confirmed = true
+                return true
             })
 
         await poller.tick(.permissions)
@@ -35,7 +36,10 @@ final class OnboardingLivePollerTests: XCTestCase {
         let poller = makePoller(
             servicesEnabled: { enabled },
             readinessConfirmed: { false },
-            reconcile: { reconciles += 1 })
+            reconcile: {
+                reconciles += 1
+                return true
+            })
 
         await poller.tick(.permissions)
         XCTAssertEqual(reconciles, 1)
@@ -60,6 +64,7 @@ final class OnboardingLivePollerTests: XCTestCase {
             reconcile: {
                 reconciles += 1
                 checkPassed = true
+                return true
             },
             locate: { available })
 
@@ -74,6 +79,23 @@ final class OnboardingLivePollerTests: XCTestCase {
 
         await poller.tick(.provider)
         XCTAssertEqual(reconciles, 1)
+    }
+
+    func testRejectedPermissionReconcileIsRetriedOnNextTick() async {
+        var reconciles = 0
+        let poller = makePoller(
+            servicesEnabled: { true },
+            readinessConfirmed: { false },
+            reconcile: {
+                reconciles += 1
+                return reconciles > 1
+            })
+
+        await poller.tick(.permissions)
+        await poller.tick(.permissions)
+        await poller.tick(.permissions)
+
+        XCTAssertEqual(reconciles, 2)
     }
 
     func testHeartbeatGatePublishesHealth() async {
@@ -106,7 +128,7 @@ final class OnboardingLivePollerTests: XCTestCase {
         servicesEnabled: @escaping @MainActor () -> Bool = { false },
         readinessConfirmed: @escaping @MainActor () -> Bool = { false },
         providerCheckPassed: @escaping @MainActor () -> Bool = { false },
-        reconcile: @escaping @MainActor () async -> Void = {},
+        reconcile: @escaping @MainActor () async -> Bool = { true },
         locate: @escaping () async -> ProviderAvailability = {
             ProviderAvailability()
         },

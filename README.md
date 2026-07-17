@@ -30,6 +30,9 @@
 That is the entire Detach installation. The setup assistant installs the
 bundled `detach` CLI, checks every component, and walks you through the one-time
 macOS approvals for its background monitor and sleep-protection helper.
+After the bundled runtime is verified, pending approval is shown as its own
+actionable step rather than as an installation failure. Setup completes only
+after the signed helper is reachable and the background monitor reports.
 
 Detach manages Codex CLI and Claude Code; it does not replace them. You need at
 least one provider installed and authenticated before starting a session. The

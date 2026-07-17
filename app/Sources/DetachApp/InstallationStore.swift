@@ -210,23 +210,33 @@ final class InstallationStore {
         let powerHelperCheck: DiagnosticCheck
         switch powerHelperStatus {
         case .enabled:
-            powerHelperCheck = DiagnosticCheck(
-                id: "app_power_helper", section: .base,
-                label: L10n.string("Native Sleep Protection"),
-                required: true, status: .ok, path: nil,
-                summary: L10n.string("Native sleep protection is enabled"))
+            if powerHelperReadinessConfirmed {
+                powerHelperCheck = DiagnosticCheck(
+                    id: "app_power_helper", section: .base,
+                    label: L10n.string("Native Sleep Protection"),
+                    required: true, status: .ok, path: nil,
+                    summary: L10n.string("Native sleep protection is enabled"))
+            } else {
+                powerHelperCheck = DiagnosticCheck(
+                    id: "app_power_helper", section: .base,
+                    label: L10n.string("Native Sleep Protection"),
+                    required: true,
+                    status: powerHelperError == nil ? .warning : .error,
+                    path: nil,
+                    summary: L10n.string("Confirming protection readiness…"))
+            }
         case .requiresApproval:
             powerHelperCheck = DiagnosticCheck(
                 id: "app_power_helper", section: .base,
                 label: L10n.string("Native Sleep Protection"),
-                required: true, status: .error, path: nil,
+                required: true, status: .warning, path: nil,
                 summary: L10n.string(
                     "macOS is waiting for one-time administrator approval"))
         case .notRegistered:
             powerHelperCheck = DiagnosticCheck(
                 id: "app_power_helper", section: .base,
                 label: L10n.string("Native Sleep Protection"),
-                required: true, status: .error, path: nil,
+                required: true, status: .warning, path: nil,
                 summary: L10n.string("Native sleep protection is not enabled yet"))
         case .unavailable:
             powerHelperCheck = DiagnosticCheck(
@@ -319,13 +329,15 @@ final class InstallationStore {
         return base.appendingPathComponent("power", isDirectory: true)
     }
 
-    func refreshContext() async {
+    @discardableResult
+    func refreshContext() async -> Bool {
         // This read is side-effect free and useful even when a direct
         // bootstrap/uninstall owns `.syncing`; the coordinated trailing pass
         // will publish it again after refresh/repair work drains.
         refreshPowerProtectionState()
-        guard phase != .syncing || contextOperationRunning else { return }
+        guard phase != .syncing || contextOperationRunning else { return false }
         await performContextOperation(.refresh)
+        return true
     }
 
     private func performContextOperation(
@@ -399,8 +411,15 @@ final class InstallationStore {
             }
             powerHelperStatus = powerHelper.status
         }
-        powerHelperReadinessConfirmed = distributionMatchesBundle
-            && powerHelperError == nil && powerHelperStatus == .enabled
+        // Keep a previously proven readiness snapshot through unrelated
+        // doctor/provider refreshes. A registration regression or reconcile
+        // failure withdraws it immediately; the fresh doctor pass below then
+        // publishes the new proof. This prevents Provider -> Permissions UI
+        // flashes on a routine provider refresh.
+        if !distributionMatchesBundle || powerHelperError != nil
+            || powerHelperStatus != .enabled {
+            powerHelperReadinessConfirmed = false
+        }
         watchdogStatus = watchdog.status
         if distributionMatchesBundle {
             do {
@@ -489,10 +508,12 @@ final class InstallationStore {
         do {
             lastInstallMessage = try await client.synchronize(repair: repair)
             report = try await client.doctor()
-            guard let bundledMetadata,
-                  report?.matches(version: bundledMetadata.version,
-                                  build: bundledMetadata.build,
-                                  payloadID: bundledMetadata.payloadID) == true else {
+            guard let bundledMetadata, let report,
+                  Self.installedRuntimeMatches(
+                    report: report,
+                    version: bundledMetadata.version,
+                    build: bundledMetadata.build,
+                    payloadID: bundledMetadata.payloadID) else {
                 distributionMatchesBundle = false
                 let unknown = L10n.string("unknown")
                 let active = L10n.format(
@@ -519,8 +540,10 @@ final class InstallationStore {
             powerHelperError = error.localizedDescription
         }
         powerHelperStatus = powerHelper.status
-        powerHelperReadinessConfirmed = powerHelperError == nil
-            && powerHelperStatus == .enabled
+        // Registration may legitimately stop at requiresApproval. Even an
+        // enabled status is not sufficient until the post-registration doctor
+        // pass proves the helper is reachable over XPC.
+        powerHelperReadinessConfirmed = false
 
         // The user agent records an independently observable power heartbeat.
         watchdogError = nil
@@ -546,6 +569,11 @@ final class InstallationStore {
             phase = .failed(error.localizedDescription)
             return
         }
+        powerHelperReadinessConfirmed = Self.powerHelperReadiness(
+            distributionMatchesBundle: distributionMatchesBundle,
+            powerHelperStatus: powerHelperStatus,
+            powerHelperError: powerHelperError,
+            report: report)
         updatePhase()
     }
 
@@ -558,12 +586,23 @@ final class InstallationStore {
             versionFile: payloadDirectory.appendingPathComponent("VERSION"))
         do {
             report = try await client.doctor()
-            if let bundledMetadata {
-                distributionMatchesBundle = report?.matches(
+            if let bundledMetadata, let report {
+                distributionMatchesBundle = Self.installedRuntimeMatches(
+                    report: report,
                     version: bundledMetadata.version,
                     build: bundledMetadata.build,
-                    payloadID: bundledMetadata.payloadID) == true
+                    payloadID: bundledMetadata.payloadID)
             }
+            guard distributionMatchesBundle else {
+                phase = .failed(L10n.string(
+                    "The CLI is missing or belongs to another build; run Repair from the intended app version"))
+                return
+            }
+            powerHelperReadinessConfirmed = Self.powerHelperReadiness(
+                distributionMatchesBundle: distributionMatchesBundle,
+                powerHelperStatus: powerHelperStatus,
+                powerHelperError: powerHelperError,
+                report: report)
             updatePhase()
         } catch {
             phase = .failed(error.localizedDescription)
@@ -604,5 +643,40 @@ final class InstallationStore {
             return .actionRequired
         }
         return .ready
+    }
+
+    static func powerHelperReadiness(
+        distributionMatchesBundle: Bool,
+        powerHelperStatus: PowerHelperRegistrationStatus,
+        powerHelperError: String?,
+        report: DoctorReport?
+    ) -> Bool {
+        guard distributionMatchesBundle,
+              powerHelperStatus == .enabled,
+              powerHelperError == nil,
+              let check = report?.checks.first(where: { $0.id == "power_helper" }) else {
+            return false
+        }
+        return check.status == .ok
+    }
+
+    static func installedRuntimeMatches(
+        report: DoctorReport,
+        version: String,
+        build: String,
+        payloadID: String
+    ) -> Bool {
+        guard report.matches(
+            version: version, build: build, payloadID: payloadID) else {
+            return false
+        }
+        let requiredIDs: Set<String> = [
+            "integrity", "cli", "manifest", "tmux", "state_helper",
+            "power_runtime",
+        ]
+        let healthyIDs = Set(report.checks.lazy.filter {
+            $0.status == .ok && requiredIDs.contains($0.id)
+        }.map(\.id))
+        return healthyIDs == requiredIDs
     }
 }

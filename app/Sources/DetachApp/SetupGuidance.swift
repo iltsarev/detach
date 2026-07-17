@@ -37,15 +37,18 @@ enum SetupGuidance {
     /// shown exactly once.
     static func step(for input: OnboardingStepInput) -> OnboardingStep {
         if !input.isStableApplicationLocation { return .moveToApplications }
-        if input.isBusy { return .autoSetup(failureMessage: nil) }
+        let permissionsReady = input.powerHelperEnabled
+            && input.watchdogEnabled && input.powerReadinessConfirmed
+        if input.isBusy && !input.distributionMatchesBundle {
+            return .autoSetup(failureMessage: nil)
+        }
         if let failure = input.failureMessage {
             return .autoSetup(failureMessage: failure)
         }
         if !input.distributionMatchesBundle {
             return .autoSetup(failureMessage: nil)
         }
-        if !(input.powerHelperEnabled && input.watchdogEnabled
-                && input.powerReadinessConfirmed) {
+        if !permissionsReady {
             return .permissions
         }
         if !input.providerInstalled && !input.onboardingEverCompleted {

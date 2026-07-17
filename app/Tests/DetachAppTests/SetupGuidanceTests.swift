@@ -58,13 +58,72 @@ final class OnboardingStepTests: XCTestCase {
         XCTAssertEqual(SetupGuidance.step(for: input), .moveToApplications)
     }
 
-    func testBusyShowsAutoSetupWithoutFailureDetail() {
+    func testBusyMatchedRuntimeUsesPublishedGatesInsteadOfFirstScreen() {
         var input = readyInput()
         input.isBusy = true
-        input.failureMessage = "stale"
+        XCTAssertEqual(SetupGuidance.step(for: input), .done)
+    }
+
+    func testBusyPermissionGatesAdvanceAfterRuntimeMatches() {
+        var helperApproval = readyInput()
+        helperApproval.isBusy = true
+        helperApproval.powerHelperEnabled = false
+        helperApproval.powerReadinessConfirmed = false
+
+        var watchdogApproval = readyInput()
+        watchdogApproval.isBusy = true
+        watchdogApproval.watchdogEnabled = false
+
+        var readinessProbe = readyInput()
+        readinessProbe.isBusy = true
+        readinessProbe.powerReadinessConfirmed = false
+
+        for input in [helperApproval, watchdogApproval, readinessProbe] {
+            XCTAssertEqual(SetupGuidance.step(for: input), .permissions)
+        }
+    }
+
+    func testBusyPayloadMismatchStaysOnAutomaticSetup() {
+        var input = readyInput()
+        input.isBusy = true
+        input.distributionMatchesBundle = false
+        input.powerHelperEnabled = false
+        input.powerReadinessConfirmed = false
+
         XCTAssertEqual(
             SetupGuidance.step(for: input),
             .autoSetup(failureMessage: nil))
+    }
+
+    func testFirstOnboardingSequenceNeverMovesBackwardAfterRuntimeMatches() {
+        var input = readyInput()
+        input.distributionMatchesBundle = false
+        input.isBusy = true
+        input.powerHelperEnabled = false
+        input.watchdogEnabled = false
+        input.powerReadinessConfirmed = false
+        XCTAssertEqual(
+            SetupGuidance.step(for: input),
+            .autoSetup(failureMessage: nil))
+
+        input.distributionMatchesBundle = true
+        XCTAssertEqual(SetupGuidance.step(for: input), .permissions)
+
+        input.powerHelperEnabled = true
+        input.watchdogEnabled = true
+        input.powerReadinessConfirmed = true
+        XCTAssertEqual(SetupGuidance.step(for: input), .done)
+
+        input.isBusy = false
+        XCTAssertEqual(SetupGuidance.step(for: input), .done)
+    }
+
+    func testProviderScreenDoesNotMoveBackwardDuringRefresh() {
+        var input = readyInput()
+        input.providerInstalled = false
+        input.isBusy = true
+
+        XCTAssertEqual(SetupGuidance.step(for: input), .provider)
     }
 
     func testFailureOutranksProviderDiscovery() {

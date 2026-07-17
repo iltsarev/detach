@@ -23,7 +23,7 @@ final class OnboardingLivePoller {
     private let servicesEnabled: @MainActor () -> Bool
     private let readinessConfirmed: @MainActor () -> Bool
     private let providerCheckPassed: @MainActor () -> Bool
-    private let reconcile: @MainActor () async -> Void
+    private let reconcile: @MainActor () async -> Bool
     private let locate: () async -> ProviderAvailability
     private let heartbeatIsHealthy: @MainActor () -> Bool
     private let installedCopyExists: () -> Bool
@@ -53,7 +53,7 @@ final class OnboardingLivePoller {
         servicesEnabled: @escaping @MainActor () -> Bool,
         readinessConfirmed: @escaping @MainActor () -> Bool,
         providerCheckPassed: @escaping @MainActor () -> Bool,
-        reconcile: @escaping @MainActor () async -> Void,
+        reconcile: @escaping @MainActor () async -> Bool,
         locate: @escaping () async -> ProviderAvailability,
         heartbeatIsHealthy: @escaping @MainActor () -> Bool,
         installedCopyExists: @escaping () -> Bool,
@@ -127,7 +127,7 @@ final class OnboardingLivePoller {
             // surfaces on the card with an explicit Retry — never a silent
             // reconcile loop on every tick.
             reconcileRequested = true
-            await reconcile()
+            reconcileRequested = await reconcile()
 
         case .provider:
             let availability = await locate()
@@ -140,7 +140,7 @@ final class OnboardingLivePoller {
                 return
             }
             providerRefreshRequested = true
-            await reconcile()
+            providerRefreshRequested = await reconcile()
 
         case .done:
             if heartbeatWaitStartedAt == nil {
