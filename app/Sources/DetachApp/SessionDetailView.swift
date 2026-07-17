@@ -108,10 +108,13 @@ struct SessionDetailView: View {
                 Spacer()
             }
             if let reason = session.healthReasonLabel {
+                // No `fixedSize(horizontal: false, vertical: true)` here: on
+                // macOS 26 that modifier inflates the split view's ideal
+                // height and the whole window content slides under the
+                // toolbar. Plain wrapping lays out identically.
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .appFont(.caption)
                     .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             FlowLayout(spacing: 6) {
                 if let projectDir = session.projectDir {
