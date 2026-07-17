@@ -20,6 +20,16 @@ struct MenuBarPresentation: Equatable {
         case openDetach
     }
 
+    /// Colored session signal for the glyph's dot: green while sessions are
+    /// working, orange when at least one waits for a reply (answer-ready
+    /// outranks working, matching the app's ordering). Suppressed while a
+    /// badge state owns the glyph's corner, so a power warning stays visible.
+    enum SessionDot: Equatable {
+        case none
+        case working
+        case answerReady
+    }
+
     struct SessionEntry: Equatable, Identifiable {
         let id: String
         let title: String
@@ -27,6 +37,7 @@ struct MenuBarPresentation: Equatable {
     }
 
     let icon: Icon
+    let sessionDot: SessionDot
     let power: MacPowerSettingsPresentation
     let ageSeconds: Int?
     let problem: ProblemAction?
@@ -81,6 +92,19 @@ struct MenuBarPresentation: Equatable {
                 icon = .attention
             case .unknown:
                 icon = .unknown
+            }
+        }
+
+        switch icon {
+        case .attention, .lowBattery:
+            sessionDot = .none
+        case .active, .canSleep, .unknown:
+            if running.contains(where: { $0.isWaitingForUser }) {
+                sessionDot = .answerReady
+            } else if running.isEmpty {
+                sessionDot = .none
+            } else {
+                sessionDot = .working
             }
         }
 

@@ -121,8 +121,10 @@ not currently part of that signal.
 
 The optional menu bar companion shows whether the Mac can sleep, how fresh the
 background health report is, how many protected sessions are live, and which
-sessions are waiting for an answer. Closing the main window keeps the menu bar
-and background checks available; quitting Detach.app does not kill managed
+sessions are waiting for an answer. While sessions are active, the dot in the
+menu bar glyph turns green; it turns orange when at least one session is
+waiting for your reply. Closing the main window keeps the menu bar and
+background checks available; quitting Detach.app does not kill managed
 sessions.
 
 ## Built to survive the ordinary interruptions

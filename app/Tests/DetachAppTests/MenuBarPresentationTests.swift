@@ -153,6 +153,69 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.power.reason, .noActiveSessions)
     }
 
+    // MARK: - Session dot
+
+    func testRunningSessionsColorTheDotGreen() {
+        let presentation = makePresentation(
+            powerState: "protected",
+            sessions: [runningSession(id: "a")])
+
+        XCTAssertEqual(presentation.sessionDot, .working)
+    }
+
+    func testWaitingSessionOutranksWorkingOnes() {
+        let presentation = makePresentation(
+            powerState: "protected",
+            sessions: [
+                runningSession(id: "a"),
+                runningSession(id: "b", waiting: true),
+            ])
+
+        XCTAssertEqual(presentation.sessionDot, .answerReady)
+    }
+
+    func testNoRunningSessionsMeansNoSessionDot() {
+        XCTAssertEqual(
+            makePresentation(powerState: "protected").sessionDot, .none)
+        XCTAssertEqual(
+            makePresentation(
+                powerState: "allowed",
+                sessions: [finishedSession(id: "old")]).sessionDot,
+            .none)
+    }
+
+    func testSessionDotSurvivesUnprotectedAndUnknownPowerStates() {
+        // The dot reports sessions, not protection: it stays on the dimmed
+        // and outline shapes.
+        XCTAssertEqual(
+            makePresentation(
+                powerState: "allowed",
+                sessions: [runningSession(id: "a")]).sessionDot,
+            .working)
+        XCTAssertEqual(
+            makePresentation(
+                powerState: "protected",
+                heartbeatFresh: false,
+                sessions: [runningSession(id: "a", waiting: true)]).sessionDot,
+            .answerReady)
+    }
+
+    func testBadgeStatesSuppressTheSessionDot() {
+        // "!" and the dot share the glyph's corner; the warning wins.
+        let attention = makePresentation(
+            powerState: "unavailable",
+            helperStatus: .unavailable,
+            sessions: [runningSession(id: "a", waiting: true)])
+        XCTAssertEqual(attention.icon, .attention)
+        XCTAssertEqual(attention.sessionDot, .none)
+
+        let lowBattery = makePresentation(
+            powerState: "low_battery",
+            sessions: [runningSession(id: "a")])
+        XCTAssertEqual(lowBattery.icon, .lowBattery)
+        XCTAssertEqual(lowBattery.sessionDot, .none)
+    }
+
     // MARK: - Fixtures
 
     private func makePresentation(

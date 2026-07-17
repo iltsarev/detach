@@ -403,9 +403,15 @@ without a fresh heartbeat must be replaced through the same durable
 unregister/barrier/register transaction. Ordinary activation refreshes must not
 force replacement merely because a heartbeat is temporarily stale.
 
-The menu bar item is display-only. Its template image is the Detach prompt mark:
+The menu bar item is display-only. Its image is the Detach prompt mark:
 a filled dot means protected, the dimmed mark means sleep is allowed, an
-exclamation badge means attention, and an outline means unknown. The first menu
+exclamation badge means attention, and an outline means unknown. Active
+sessions additionally tint the glyph's dot — green while working, orange when
+a session waits for a reply (answer-ready outranks working; the badge states
+suppress the tint so a power warning stays visible). The image stays template
+while monochrome; only the tinted states draw with real color, using
+label/system colors resolved at composite time, and VoiceOver names the
+session state in words. The first menu
 line is `state · reason · freshness`, reusing the Mac Power presentation words.
 An allowed heartbeat with visible running sessions must say they are not
 holding sleep protection, never claim there are no sessions. Both glyph and

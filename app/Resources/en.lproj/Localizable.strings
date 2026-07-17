@@ -308,6 +308,8 @@
 "Mac can sleep: low battery" = "Mac can sleep: low battery";
 "Sleep protection unavailable" = "Sleep protection unavailable";
 "Sleep status unknown" = "Sleep status unknown";
+"Sessions are working" = "Sessions are working";
+"A session is waiting for your reply" = "A session is waiting for your reply";
 "The Mac won't sleep with the lid closed while an agent is working." = "The Mac won't sleep with the lid closed while an agent is working.";
 "Ready" = "Ready";
 "Needs attention" = "Needs attention";

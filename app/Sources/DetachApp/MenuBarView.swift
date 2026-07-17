@@ -12,20 +12,22 @@ struct MenuBarLabel: View {
     let showsSessionCount: Bool
 
     var body: some View {
-        let icon = MenuBarPresentation(
+        let presentation = MenuBarPresentation(
             heartbeat: installation.watchdogHeartbeat,
             sessions: sessionStore.sessions,
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
-            showsSessionCount: showsSessionCount).icon
+            showsSessionCount: showsSessionCount)
         HStack(spacing: 3) {
-            Image(nsImage: MenuBarGlyph.image(for: icon))
-            if let text = countBadge(for: icon) {
+            Image(nsImage: MenuBarGlyph.image(
+                for: presentation.icon, dot: presentation.sessionDot))
+            if let text = countBadge(for: presentation.icon) {
                 Text(text)
             }
         }
-        .accessibilityLabel(accessibilityText(for: icon))
+        .accessibilityLabel(accessibilityText(
+            for: presentation.icon, dot: presentation.sessionDot))
         // The watchdog writes its heartbeat independently of the app. Keep
         // the observable snapshot moving even when the session list and every
         // window are idle, otherwise MenuBarExtra can preserve an obsolete
@@ -49,14 +51,26 @@ struct MenuBarLabel: View {
         return nil
     }
 
-    private func accessibilityText(for icon: MenuBarPresentation.Icon) -> String {
-        switch icon {
+    private func accessibilityText(
+        for icon: MenuBarPresentation.Icon,
+        dot: MenuBarPresentation.SessionDot
+    ) -> String {
+        let power = switch icon {
         case .active: L10n.string("Mac stays awake")
         case .canSleep: L10n.string("Mac can sleep")
         case .lowBattery: L10n.string("Mac can sleep: low battery")
         case .attention: L10n.string("Sleep protection unavailable")
         case .unknown: L10n.string("Sleep status unknown")
         }
+        // The colored dot must not be the only channel: name the session
+        // state in words for VoiceOver.
+        let sessions: String? = switch dot {
+        case .none: nil
+        case .working: L10n.string("Sessions are working")
+        case .answerReady: L10n.string("A session is waiting for your reply")
+        }
+        guard let sessions else { return power }
+        return "\(power) · \(sessions)"
     }
 }
 

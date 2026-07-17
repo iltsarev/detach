@@ -308,6 +308,8 @@
 "Mac can sleep: low battery" = "Mac может уснуть: низкий заряд";
 "Sleep protection unavailable" = "Защита сна недоступна";
 "Sleep status unknown" = "Статус сна неизвестен";
+"Sessions are working" = "Сессии работают";
+"A session is waiting for your reply" = "Сессия ждёт вашего ответа";
 "The Mac won't sleep with the lid closed while an agent is working." = "Mac не уснёт с закрытой крышкой, пока работает агент.";
 "Ready" = "Готово";
 "Needs attention" = "Требует внимания";
