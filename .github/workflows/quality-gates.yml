@@ -1,0 +1,45 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gates:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore Swift and tmux caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/.build
+          key: detach-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/Package.resolved', 'scripts/build-tmux.sh') }}
+          restore-keys: |
+            detach-${{ runner.os }}-${{ runner.arch }}-
+      - name: Run pull-request change gate
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: scripts/quality-gate --base "$BASE_SHA"
+      - name: Run full main gate
+        if: github.event_name == 'push'
+        run: scripts/quality-gate --mode repository
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-logs
+          path: app/build/quality-gates
+          if-no-files-found: ignore

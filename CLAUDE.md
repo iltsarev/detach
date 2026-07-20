@@ -46,6 +46,13 @@ including this file, must not contain private context.
 
 ## Verification commands
 
+- `scripts/quality-gate` — the policy-versioned, impact-aware readiness entry
+  point for agents. It selects mandatory checks from the diff and fails safe to
+  the repository gate for unknown impact. See `docs/quality-gates.md`.
+- `scripts/quality-gate --mode repository` — every automated repository gate;
+  CI uses the same entry point. `--stage` is diagnostic only and is not proof
+  that a change is ready.
+
 - `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run.sh`
   — hermetic Codex integration with a fake provider, private tmux
   socket/state roots, a fake native power wrapper, and an explicitly selected

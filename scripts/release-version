@@ -347,58 +347,9 @@ file_line() {
   printf '%s\n' "$value"
 }
 
-run_without_controlling_terminal() {
-  [ -x /usr/bin/perl ] || die 'release tests require /usr/bin/perl to isolate them from the confirmation terminal'
-  /usr/bin/perl -MPOSIX -e '
-    defined(my $pid = fork()) or die "fork failed: $!\n";
-    if ($pid) {
-      $SIG{INT} = sub { kill "INT", -$pid };
-      $SIG{TERM} = sub { kill "TERM", -$pid };
-      $SIG{HUP} = sub { kill "HUP", -$pid };
-      $SIG{QUIT} = sub { kill "QUIT", -$pid };
-      while (waitpid($pid, 0) < 0) {
-        next if $!{EINTR};
-        die "waitpid failed: $!\n";
-      }
-      exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
-    }
-    POSIX::setsid() >= 0 or die "setsid failed: $!\n";
-    $ENV{DETACH_RELEASE_TESTS_DETACHED} = 1;
-    exec @ARGV or die "exec failed: $!\n";
-  ' "$@"
-}
-
 run_full_tests() {
-  local tmux_bin="$APP_ROOT/build/Detach.app/Contents/Resources/DetachCLI/tmux"
   note 'running the complete pre-release test suite before Git changes'
-  (
-    cd -P "$APP_ROOT"
-    # The workflow keeps a controlling terminal for the later lid confirmation.
-    # XCTest must not inherit it: TerminalLauncher tests intentionally start an
-    # interactive login shell, which job control suspends in XCTest's background
-    # process group when a controlling terminal is present.
-    run_without_controlling_terminal swift test
-  )
-  env \
-    -u DETACH_VERSION \
-    -u DETACH_BUILD_VERSION \
-    -u DETACH_BUILD_ARCHS \
-    -u DETACH_CODESIGN_IDENTITY \
-    -u DETACH_RELEASE_BUILD \
-    -u DETACH_SPARKLE_VERSION \
-    -u DETACH_SPARKLE_FEED_URL \
-    -u DETACH_SPARKLE_PUBLIC_ED_KEY \
-    -u DETACH_DOWNLOAD_URL \
-    "$APP_ROOT/scripts/make-app.sh"
-  "$APP_ROOT/scripts/verify-app.sh"
-  [ -x "$tmux_bin" ] || die 'bundled tmux is missing after the development build'
-  DETACH_TEST_TMUX_BIN="$tmux_bin" "$ROOT/tests/run.sh"
-  DETACH_TEST_TMUX_BIN="$tmux_bin" "$ROOT/tests/run-claude.sh"
-  "$ROOT/tests/distribution.sh"
-  "$ROOT/tests/tmux-runtime.sh"
-  "$ROOT/tests/release-preflight.sh"
-  "$ROOT/tests/publish-preflight.sh"
-  git -C "$ROOT" diff --check
+  "$ROOT/scripts/quality-gate" --mode release
 }
 
 initialize_workflow() {

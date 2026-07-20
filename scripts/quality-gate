@@ -1,0 +1,346 @@
+#!/bin/bash
+
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+POLICY_VERSION=1
+MODE=change
+BASE_REF=""
+PLAN_ONLY=0
+DIAGNOSTIC_STAGE=""
+TEST_MODE="${DETACH_QUALITY_GATE_TEST_MODE:-0}"
+RESULT_ROOT="${DETACH_QUALITY_GATE_RESULT_ROOT:-$ROOT/app/build/quality-gates}"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUN_DIR="$RESULT_ROOT/$RUN_ID"
+SUMMARY="$RUN_DIR/summary.tsv"
+CURRENT_STAGE=""
+CURRENT_CHILD=""
+
+ALL_STAGES=(static gate-contract swift app codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow)
+RELEASE_STAGES=(static gate-contract swift app codex claude distribution tmux-runtime release-preflight publish-preflight)
+SELECTED=()
+
+usage() {
+  cat <<'EOF'
+usage: scripts/quality-gate [--mode change|repository|release] [--base GIT_REF] [--plan]
+       scripts/quality-gate --stage NAME
+
+The normal modes are readiness evidence. --stage is a diagnostic rerun only.
+EOF
+}
+
+die() {
+  printf 'quality-gate: %s\n' "$*" >&2
+  exit 2
+}
+
+contains_stage() {
+  local wanted="$1" stage
+  for stage in "${SELECTED[@]:-}"; do
+    [ "$stage" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
+add_stage() {
+  contains_stage "$1" || SELECTED+=("$1")
+}
+
+select_all() {
+  SELECTED=("${ALL_STAGES[@]}")
+}
+
+select_release() {
+  SELECTED=("${RELEASE_STAGES[@]}")
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --mode)
+      [ "$#" -ge 2 ] || die '--mode requires a value'
+      MODE="$2"
+      shift 2
+      ;;
+    --base)
+      [ "$#" -ge 2 ] || die '--base requires a ref'
+      BASE_REF="$2"
+      shift 2
+      ;;
+    --plan)
+      PLAN_ONLY=1
+      shift
+      ;;
+    --stage)
+      [ "$#" -ge 2 ] || die '--stage requires a name'
+      DIAGNOSTIC_STAGE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$TEST_MODE" in 0|1) ;; *) die 'DETACH_QUALITY_GATE_TEST_MODE must be 0 or 1' ;; esac
+case "$MODE" in change|repository|release) ;; *) die "invalid mode: $MODE" ;; esac
+[ -z "$DIAGNOSTIC_STAGE" ] || { [ "$MODE" = change ] && [ -z "$BASE_REF" ] || die '--stage cannot be combined with another selection'; }
+
+stage_exists() {
+  local wanted="$1" stage
+  for stage in "${ALL_STAGES[@]}"; do
+    [ "$stage" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
+changed_files() {
+  if [ -n "$BASE_REF" ]; then
+    git -C "$ROOT" rev-parse --verify "$BASE_REF^{commit}" >/dev/null 2>&1 || die "invalid base ref: $BASE_REF"
+    git -C "$ROOT" diff --name-only --diff-filter=ACMRTUXB "$BASE_REF"...HEAD
+  fi
+  git -C "$ROOT" diff --name-only --diff-filter=ACMRTUXB HEAD
+  git -C "$ROOT" ls-files --others --exclude-standard
+}
+
+select_for_path() {
+  local path="$1"
+  add_stage static
+  case "$path" in
+    .github/workflows/quality-gates.yml|docs/quality-gates.md|scripts/quality-gate|tests/quality-gate.sh)
+      select_all
+      ;;
+    *.md|docs/assets/*|agents.md|CLAUDE.md)
+      ;;
+    app/Sources/*|app/Tests/*)
+      add_stage swift
+      ;;
+    app/Package.swift|app/Package.resolved)
+      add_stage swift; add_stage app; add_stage tmux-runtime
+      ;;
+    app/Resources/*)
+      add_stage swift; add_stage app; add_stage tmux-runtime
+      ;;
+    bin/*)
+      add_stage app; add_stage codex; add_stage claude; add_stage distribution; add_stage tmux-runtime
+      ;;
+    install.sh|scripts/install.sh)
+      add_stage app; add_stage distribution; add_stage tmux-runtime
+      ;;
+    scripts/build-tmux.sh)
+      add_stage app; add_stage codex; add_stage claude; add_stage tmux-runtime
+      ;;
+    app/scripts/release.sh|app/scripts/publish-release.sh|app/scripts/make-dmg.sh|app/scripts/verify-appcast.sh|scripts/release-version|scripts/release-lid-probe|VERSION|BUILD)
+      add_stage app; add_stage release-preflight; add_stage publish-preflight; add_stage release-workflow
+      ;;
+    app/scripts/*)
+      add_stage app; add_stage tmux-runtime; add_stage release-preflight
+      ;;
+    tests/run.sh|tests/fake-codex)
+      add_stage app; add_stage codex
+      ;;
+    tests/run-claude.sh|tests/fake-claude)
+      add_stage app; add_stage claude
+      ;;
+    tests/distribution.sh)
+      add_stage app; add_stage distribution
+      ;;
+    tests/tmux-runtime.sh|tests/power-smoke.sh)
+      add_stage app; add_stage tmux-runtime
+      ;;
+    tests/release-preflight.sh)
+      add_stage release-preflight
+      ;;
+    tests/publish-preflight.sh)
+      add_stage publish-preflight
+      ;;
+    tests/release-workflow.sh)
+      add_stage release-workflow
+      ;;
+    .gitignore|.gitattributes)
+      ;;
+    *)
+      printf 'quality-gate: unknown impact for %s; selecting repository gate\n' "$path" >&2
+      select_all
+      ;;
+  esac
+}
+
+if [ -n "$DIAGNOSTIC_STAGE" ]; then
+  stage_exists "$DIAGNOSTIC_STAGE" || die "unknown stage: $DIAGNOSTIC_STAGE"
+  SELECTED=("$DIAGNOSTIC_STAGE")
+elif [ "$MODE" = repository ]; then
+  select_all
+elif [ "$MODE" = release ]; then
+  select_release
+else
+  while IFS= read -r path; do
+    [ -n "$path" ] && select_for_path "$path"
+  done < <(changed_files | LC_ALL=C sort -u)
+  if [ "${#SELECTED[@]}" -eq 0 ]; then
+    printf 'quality-gate: no diff to classify; selecting repository gate\n' >&2
+    select_all
+  fi
+fi
+
+# Preserve the canonical cheap-to-expensive order after taking the union.
+ordered=()
+for stage in "${ALL_STAGES[@]}"; do
+  contains_stage "$stage" && ordered+=("$stage")
+done
+SELECTED=("${ordered[@]}")
+
+printf 'quality-gate policy=%s mode=%s stages=%s\n' "$POLICY_VERSION" \
+  "$([ -n "$DIAGNOSTIC_STAGE" ] && printf diagnostic || printf '%s' "$MODE")" \
+  "$(IFS=,; printf '%s' "${SELECTED[*]}")"
+if [ "$PLAN_ONLY" = 1 ]; then
+  exit 0
+fi
+
+mkdir -p "$RUN_DIR"
+chmod 0700 "$RESULT_ROOT" "$RUN_DIR" 2>/dev/null || true
+printf 'policy\tmode\tstage\tstatus\tduration_seconds\tlog\n' >"$SUMMARY"
+
+on_signal() {
+  if [ -n "$CURRENT_CHILD" ]; then
+    kill -TERM "$CURRENT_CHILD" 2>/dev/null || true
+    wait "$CURRENT_CHILD" 2>/dev/null || true
+  fi
+  if [ -n "$CURRENT_STAGE" ]; then
+    printf '%s\t%s\t%s\tinterrupted\t-\t%s.log\n' "$POLICY_VERSION" "$MODE" "$CURRENT_STAGE" "$CURRENT_STAGE" >>"$SUMMARY"
+  fi
+  printf 'quality-gate: interrupted; evidence is incomplete (%s)\n' "$SUMMARY" >&2
+  exit 130
+}
+trap on_signal INT TERM HUP
+
+timeout_for_stage() {
+  case "$1" in
+    static) printf 120 ;;
+    gate-contract) printf 120 ;;
+    swift) printf 1200 ;;
+    app) printf 2400 ;;
+    codex|claude|distribution|tmux-runtime) printf 1200 ;;
+    release-preflight|publish-preflight|release-workflow) printf 900 ;;
+  esac
+}
+
+run_bounded() {
+  local timeout="$1"
+  shift
+  /usr/bin/perl -MPOSIX -e '
+    my $timeout = shift @ARGV;
+    defined(my $pid = fork()) or die "fork failed: $!\n";
+    if (!$pid) {
+      POSIX::setsid() >= 0 or die "setsid failed: $!\n";
+      $ENV{DETACH_RELEASE_TESTS_DETACHED} = 1;
+      exec @ARGV or die "exec failed: $!\n";
+    }
+    my $timed_out = 0;
+    local $SIG{ALRM} = sub { $timed_out = 1; kill "TERM", -$pid; };
+    local $SIG{INT} = sub { kill "INT", -$pid; };
+    local $SIG{TERM} = sub { kill "TERM", -$pid; };
+    alarm $timeout;
+    while (waitpid($pid, 0) < 0) { next if $!{EINTR}; die "waitpid failed: $!\n"; }
+    alarm 0;
+    exit 124 if $timed_out;
+    exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+  ' "$timeout" "$@"
+}
+
+run_static() {
+  local file
+  while IFS= read -r file; do
+    case "$file" in
+      *.sh|bin/detach|bin/detach-core|scripts/quality-gate|scripts/release-version|scripts/release-lid-probe)
+        /bin/bash -n "$ROOT/$file"
+        ;;
+    esac
+  done < <(git -C "$ROOT" ls-files)
+  if [ -n "$BASE_REF" ]; then
+    git -C "$ROOT" diff --check "$BASE_REF"...HEAD
+  fi
+  git -C "$ROOT" diff --check HEAD
+}
+
+run_stage_command() {
+  local stage="$1" tmux_bin="$ROOT/app/build/Detach.app/Contents/Resources/DetachCLI/tmux"
+  if [ "$TEST_MODE" = 1 ]; then
+    [ -x "$ROOT/tests/quality-gate-fixtures/$stage" ] || die "missing test fixture for $stage"
+    env -u DETACH_VERSION -u DETACH_BUILD_VERSION -u DETACH_BUILD_ARCHS \
+      -u DETACH_CODESIGN_IDENTITY -u DETACH_RELEASE_BUILD -u DETACH_SPARKLE_VERSION \
+      -u DETACH_SPARKLE_FEED_URL -u DETACH_SPARKLE_PUBLIC_ED_KEY -u DETACH_DOWNLOAD_URL \
+      "$ROOT/tests/quality-gate-fixtures/$stage"
+    return
+  fi
+  case "$stage" in
+    static) run_static ;;
+    gate-contract) "$ROOT/tests/quality-gate.sh" ;;
+    swift)
+      (
+        cd -P "$ROOT/app"
+        mkdir -p .build/module-cache
+        CLANG_MODULE_CACHE_PATH="$ROOT/app/.build/module-cache" \
+          SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/app/.build/module-cache" \
+          swift test --disable-sandbox
+      )
+      ;;
+    app)
+      env -u DETACH_VERSION -u DETACH_BUILD_VERSION -u DETACH_BUILD_ARCHS \
+        -u DETACH_CODESIGN_IDENTITY -u DETACH_RELEASE_BUILD -u DETACH_SPARKLE_VERSION \
+        -u DETACH_SPARKLE_FEED_URL -u DETACH_SPARKLE_PUBLIC_ED_KEY -u DETACH_DOWNLOAD_URL \
+        "$ROOT/app/scripts/make-app.sh"
+      "$ROOT/app/scripts/verify-app.sh"
+      ;;
+    codex)
+      [ -x "$tmux_bin" ] || die 'codex gate requires the app stage bundled tmux'
+      DETACH_TEST_TMUX_BIN="$tmux_bin" "$ROOT/tests/run.sh"
+      ;;
+    claude)
+      [ -x "$tmux_bin" ] || die 'claude gate requires the app stage bundled tmux'
+      DETACH_TEST_TMUX_BIN="$tmux_bin" "$ROOT/tests/run-claude.sh"
+      ;;
+    distribution) "$ROOT/tests/distribution.sh" ;;
+    tmux-runtime) "$ROOT/tests/tmux-runtime.sh" ;;
+    release-preflight) "$ROOT/tests/release-preflight.sh" ;;
+    publish-preflight) "$ROOT/tests/publish-preflight.sh" ;;
+    release-workflow) "$ROOT/tests/release-workflow.sh" ;;
+  esac
+}
+
+export ROOT BASE_REF TEST_MODE
+export -f die run_static run_stage_command
+
+for stage in "${SELECTED[@]}"; do
+  CURRENT_STAGE="$stage"
+  log="$RUN_DIR/$stage.log"
+  started="$(date +%s)"
+  timeout="${DETACH_QUALITY_GATE_TIMEOUT:-$(timeout_for_stage "$stage")}"
+  printf 'quality-gate: running %s (timeout %ss)\n' "$stage" "$timeout"
+  set +e
+  run_bounded "$timeout" /bin/bash -c 'run_stage_command "$1"' _ "$stage" >"$log" 2>&1 &
+  CURRENT_CHILD=$!
+  wait "$CURRENT_CHILD"
+  status=$?
+  CURRENT_CHILD=""
+  set -e
+  /bin/cat "$log"
+  duration=$(($(date +%s) - started))
+  if [ "$status" -ne 0 ]; then
+    result=failed
+    [ "$status" -eq 124 ] && result=timeout
+    printf '%s\t%s\t%s\t%s\t%s\t%s.log\n' "$POLICY_VERSION" "$MODE" "$stage" "$result" "$duration" "$stage" >>"$SUMMARY"
+    printf 'quality-gate: %s %s; diagnostic rerun: scripts/quality-gate --stage %s\n' "$stage" "$result" "$stage" >&2
+    printf 'quality-gate: readiness evidence is incomplete; log: %s\n' "$log" >&2
+    exit "$status"
+  fi
+  printf '%s\t%s\t%s\tpassed\t%s\t%s.log\n' "$POLICY_VERSION" "$MODE" "$stage" "$duration" "$stage" >>"$SUMMARY"
+done
+CURRENT_STAGE=""
+
+if [ -n "$DIAGNOSTIC_STAGE" ]; then
+  printf 'quality-gate: diagnostic stage passed; this is not readiness evidence\n'
+else
+  printf 'quality-gate: PASS policy=%s evidence=%s\n' "$POLICY_VERSION" "$SUMMARY"
+fi

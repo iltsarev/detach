@@ -36,12 +36,13 @@ setup_fixture() {
   RELEASE_EXISTS="$FIXTURE/release-exists"
   ACTION_LOG="$FIXTURE/actions.log"
   PUBLISHED_MANIFEST="$FIXTURE/published-manifest.json"
-  mkdir -p "$REPO/scripts" "$REPO/tests" "$REPO/app/scripts" \
+  mkdir -p "$REPO/scripts" "$REPO/tests/quality-gate-fixtures" "$REPO/app/scripts" \
     "$REPO/app/.build/artifacts/sparkle/Sparkle/bin" "$BIN" "$APPS" \
     "$REMOTE_ASSETS"
 
   install -m 0755 "$ROOT/scripts/release-version" "$REPO/scripts/release-version"
   install -m 0755 "$ROOT/scripts/release-lid-probe" "$REPO/scripts/release-lid-probe"
+  install -m 0755 "$ROOT/scripts/quality-gate" "$REPO/scripts/quality-gate"
   install -m 0755 "$ROOT/app/scripts/verify-appcast.sh" \
     "$REPO/app/scripts/verify-appcast.sh"
   printf '%s\n' 1.2.3 >"$REPO/VERSION"
@@ -180,6 +181,40 @@ set -eu
 printf '%s\n' '$test_name' >>"\${FAKE_ACTION_LOG:?}"
 SH
   done
+
+  write_executable "$REPO/tests/quality-gate-fixtures/static" <<'SH'
+#!/bin/bash
+exit 0
+SH
+  write_executable "$REPO/tests/quality-gate-fixtures/gate-contract" <<'SH'
+#!/bin/bash
+exit 0
+SH
+  write_executable "$REPO/tests/quality-gate-fixtures/swift" <<'SH'
+#!/bin/bash
+exec swift test
+SH
+  write_executable "$REPO/tests/quality-gate-fixtures/app" <<'SH'
+#!/bin/bash
+set -eu
+root="$(cd -P "$(dirname "$0")/../.." && pwd)"
+"$root/app/scripts/make-app.sh"
+"$root/app/scripts/verify-app.sh"
+SH
+  write_executable "$REPO/tests/quality-gate-fixtures/codex" <<'SH'
+#!/bin/bash
+exec "$(cd -P "$(dirname "$0")/../.." && pwd)/tests/run.sh"
+SH
+  write_executable "$REPO/tests/quality-gate-fixtures/claude" <<'SH'
+#!/bin/bash
+exec "$(cd -P "$(dirname "$0")/../.." && pwd)/tests/run-claude.sh"
+SH
+  for stage in distribution tmux-runtime release-preflight publish-preflight; do
+    write_executable "$REPO/tests/quality-gate-fixtures/$stage" <<SH
+#!/bin/bash
+exec "\$(cd -P "\$(dirname "\$0")/../.." && pwd)/tests/$stage.sh"
+SH
+  done
   write_executable "$REPO/tests/power-smoke.sh" <<'SH'
 #!/bin/bash
 set -eu
@@ -306,6 +341,7 @@ run_workflow() {
       FAKE_PUBLISHED_MANIFEST="$PUBLISHED_MANIFEST" \
       FAKE_TARGET_TAG="$TARGET_TAG" \
       DETACH_RELEASE_TEST_MODE=1 \
+      DETACH_QUALITY_GATE_TEST_MODE=1 \
       DETACH_RELEASE_TEST_APPLICATIONS_DIR="$APPS" \
       DETACH_RELEASE_TEST_LID_MIN_SECONDS=0 \
       DETACH_RELEASE_TEST_FAIL_AFTER="$fail_after" \

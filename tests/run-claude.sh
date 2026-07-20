@@ -149,6 +149,10 @@ mkdir -p "$TMUX_TMPDIR" "$TMUX_SOCKET_ROOT" "$CLAUDE_CONFIG_REAL_DIR" "$CODEX_HO
 ln -s "$CLAUDE_CONFIG_REAL_DIR" "$CLAUDE_CONFIG_DIR"
 printf '%s\n' 'set -g base-index 1' 'set -g pane-base-index 1' >"$DETACH_TMUX_CONFIG"
 
+test_sqlite() {
+  sqlite3 -cmd '.timeout 5000' "$@"
+}
+
 bash -n "$SCRIPT"
 bash -n "$ROOT/tests/fake-claude"
 [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
@@ -227,7 +231,7 @@ if "$SCRIPT" codex --name cross-provider --detach -- 'must not run beside Claude
   exit 1
 fi
 "$STATE_HELPER" meta matches "$meta" claude "$session_id"
-sqlite3 "$CODEX_HOME/state_5.sqlite" \
+test_sqlite "$CODEX_HOME/state_5.sqlite" \
   'CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at_ms INTEGER, updated_at_ms INTEGER, source TEXT, thread_source TEXT, cwd TEXT);'
 
 # A filename alone is not evidence of a Claude session. A truncated/foreign
@@ -237,36 +241,68 @@ codex_only_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 mkdir -p "$CLAUDE_CONFIG_DIR/projects/foreign"
 printf '{truncated claude transcript\n' \
   >"$CLAUDE_CONFIG_DIR/projects/foreign/$codex_only_id.jsonl"
-sqlite3 "$CODEX_HOME/state_5.sqlite" \
+test_sqlite "$CODEX_HOME/state_5.sqlite" \
   "INSERT INTO threads (id, rollout_path, source, thread_source, cwd) VALUES ('$codex_only_id', '/tmp/codex-only.jsonl', 'cli', 'user', '$TMP_ROOT');"
 "$SCRIPT" codex __has_session_id "$codex_only_id"
 if "$SCRIPT" claude __has_session_id "$codex_only_id"; then
   printf 'Claude accepted a UUID based only on an invalid transcript filename\n' >&2
   exit 1
 fi
-sqlite3 "$CODEX_HOME/state_5.sqlite" "DELETE FROM threads WHERE id = '$codex_only_id';"
+test_sqlite "$CODEX_HOME/state_5.sqlite" "DELETE FROM threads WHERE id = '$codex_only_id';"
 rm -f "$CLAUDE_CONFIG_DIR/projects/foreign/$codex_only_id.jsonl"
 
-sqlite3 "$CODEX_HOME/state_5.sqlite" \
+test_sqlite "$CODEX_HOME/state_5.sqlite" \
   "INSERT INTO threads (id, rollout_path, source, thread_source, cwd) VALUES ('$session_id', '/tmp/not-used.jsonl', 'cli', 'user', '$ROOT');"
 if "$SCRIPT" resume --detach "$session_id"; then
   printf 'Cross-provider resume accepted a UUID shared by both providers\n' >&2
   exit 1
 fi
-sqlite3 "$CODEX_HOME/state_5.sqlite" "DELETE FROM threads WHERE id = '$session_id';"
+test_sqlite "$CODEX_HOME/state_5.sqlite" "DELETE FROM threads WHERE id = '$session_id';"
 
-json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin schema)" = "1" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin provider)" = "claude" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = "running" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$session_id" ]
-[ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin project_dir)" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin session_color)" = "$session_color" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin power_protection_state)" = "protected" ]
+require_session_json() {
+  local output line
+  output="$("$SCRIPT" list --json)" || {
+    printf 'detach list --json failed while validating the live Claude session\n' >&2
+    return 1
+  }
+  line="$(printf '%s\n' "$output" | grep -F "\"session_name\":\"$session\"")" || {
+    printf 'detach list --json omitted the live Claude session:\n%s\n' "$output" >&2
+    return 1
+  }
+  printf '%s\n' "$line"
+}
+
+json_line="$(require_session_json)"
+assert_json_field() {
+  local field="$1" expected="$2" actual
+  actual="$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin "$field")" || {
+    printf 'could not read %s from Claude list JSON: %s\n' "$field" "$json_line" >&2
+    return 1
+  }
+  [ "$actual" = "$expected" ] || {
+    printf 'unexpected Claude list field %s: expected %s, got %s\n' \
+      "$field" "$expected" "$actual" >&2
+    return 1
+  }
+}
+
+assert_json_field schema 1
+assert_json_field provider claude
+assert_json_field effective_status running
+assert_json_field agent_session_id "$session_id"
+[ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin project_dir)" ] || {
+  printf 'Claude list JSON has an empty project_dir: %s\n' "$json_line" >&2
+  exit 1
+}
+assert_json_field session_color "$session_color"
+assert_json_field power_protection_state protected
 printf '%s' "$json_line" | grep -F '"model":' | grep -F '"context_used_tokens":' | \
-  grep -F '"context_window":' >/dev/null
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "working" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "$session_id" ]
+  grep -F '"context_window":' >/dev/null || {
+    printf 'Claude list JSON omitted context fields: %s\n' "$json_line" >&2
+    exit 1
+  }
+assert_json_field agent_turn_state working
+assert_json_field agent_turn_id "$session_id"
 transcript="$("$STATE_HELPER" meta get "$meta" transcript_path)"
 printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":[{"type":"tool_result"}]},"uuid":"tool-result-event","timestamp":"2099-01-01T00:02:00.000Z"}\n' \
   "$session_id" >>"$transcript"
