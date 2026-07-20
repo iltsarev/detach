@@ -671,7 +671,7 @@ run_codex stop integration
 
 # list --json exposes machine-readable session state.
 export FAKE_CODEX_INIT_DELAY=0
-export FAKE_CODEX_SLEEP=20
+export FAKE_CODEX_SLEEP=60
 export FAKE_CODEX_EXIT=0
 run_codex --name integration --detach -- 'json coverage'
 sleep 1
@@ -697,6 +697,94 @@ json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = "running" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "waiting" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "$turn_id" ]
+
+# Codex /clear opens a successor thread inside the same provider process.
+# Discovery must rebind identity, turn state, and checkpoints to the newest
+# run-owned thread, refuse a creation-time tie, ignore subagent threads, and
+# consume superseded ids so the next switch is unambiguous again.
+switch_project_dir="$("$STATE_HELPER" meta get "$meta" project_dir)"
+switch_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
+pre_switch_id="$("$STATE_HELPER" meta get "$meta" codex_session_id)"
+[ -n "$pre_switch_id" ]
+switch_base_ms="$(($(date '+%s') * 1000))"
+switch_thread() {
+  local switch_id="$1"
+  local switch_ms="$2"
+  local switch_source="$3"
+  local switch_turn="$4"
+  local switch_rollout="$CODEX_HOME/sessions/2099/01/01/rollout-test-$switch_id.jsonl"
+
+  printf '{"timestamp":"2099-01-01T00:20:00Z","type":"session_meta","payload":{"id":"%s","cwd":"%s","originator":"detach_%s"}}\n' \
+    "$switch_id" "$switch_project_dir" "$switch_run_token" >"$switch_rollout"
+  printf '{"timestamp":"2099-01-01T00:20:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"%s"}}\n' \
+    "$switch_turn" >>"$switch_rollout"
+  sqlite3 "$CODEX_HOME/state_5.sqlite" \
+    "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) \
+     VALUES ('$switch_id', '${switch_rollout//\'/\'\'}', $switch_ms, $switch_ms, 'cli', '$switch_source', '${switch_project_dir//\'/\'\'}');"
+}
+switch_a="22222222-2222-7222-8222-222222222222"
+switch_b="33333333-3333-7333-8333-333333333333"
+switch_subagent="44444444-4444-7444-8444-444444444444"
+switch_thread "$switch_a" "$((switch_base_ms + 1000))" user clear-turn-a
+switch_thread "$switch_b" "$((switch_base_ms + 1000))" user clear-turn-b
+switch_thread "$switch_subagent" "$((switch_base_ms + 5000))" subagent clear-turn-subagent
+sleep 3
+[ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$pre_switch_id" ]
+grep -F 'ambiguous Codex thread switch' \
+  "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint.log" >/dev/null
+sqlite3 "$CODEX_HOME/state_5.sqlite" "DELETE FROM threads WHERE id = '$switch_b';"
+rm -f "$CODEX_HOME/sessions/2099/01/01/rollout-test-$switch_b.jsonl"
+attempts=0
+while [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" != "$switch_a" ] && \
+      [ "$attempts" -lt 80 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$switch_a" ]
+[ "$("$STATE_HELPER" meta get "$meta" agent_session_id)" = "$switch_a" ]
+[ "$("$STATE_HELPER" meta get "$meta" transcript_path)" = \
+  "$CODEX_HOME/sessions/2099/01/01/rollout-test-$switch_a.jsonl" ]
+grep -Fqx "$pre_switch_id" \
+  "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/known-thread-ids.txt"
+grep -F 'rebound Codex session identity' \
+  "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint.log" >/dev/null
+json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "working" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "clear-turn-a" ]
+attempts=0
+while ! grep -F 'clear-turn-a' "$checkpoint/rollout.jsonl" >/dev/null 2>&1 && \
+      [ "$attempts" -lt 80 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+grep -F 'clear-turn-a' "$checkpoint/rollout.jsonl" >/dev/null
+
+# A second switch with two visible successors must pick the newest, record the
+# superseded candidate in known-thread-ids.txt, and keep later switches
+# unambiguous.
+switch_c="55555555-5555-7555-8555-555555555555"
+switch_d="66666666-6666-7666-8666-666666666666"
+switch_thread "$switch_c" "$((switch_base_ms + 10000))" user clear-turn-c
+switch_thread "$switch_d" "$((switch_base_ms + 11000))" user clear-turn-d
+attempts=0
+while [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" != "$switch_d" ] && \
+      [ "$attempts" -lt 80 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$switch_d" ]
+grep -Fqx "$switch_a" "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/known-thread-ids.txt"
+grep -Fqx "$switch_c" "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/known-thread-ids.txt"
+
+# A run-owned thread that surfaces late but is older than the current binding
+# must never rebind identity backward.
+switch_old="77777777-7777-7777-8777-777777777777"
+switch_thread "$switch_old" "$((switch_base_ms + 2000))" user clear-turn-old
+sleep 3
+[ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$switch_d" ]
+grep -F 'refusing Codex thread switch' \
+  "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint.log" >/dev/null
+
 while IFS= read -r list_line; do
   [ "$(printf '%s' "$list_line" | "$STATE_HELPER" meta get /dev/stdin schema)" = "1" ]
 done < <(run_codex list --json)

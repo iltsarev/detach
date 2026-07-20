@@ -161,7 +161,10 @@ Once provider identity is known, Detach attempts an initial conversation
 checkpoint, repeats every five minutes by default, and attempts a final
 checkpoint when the worker exits. It also retains terminal output and records
 canonical repository context without invoking Git or Apple's Command Line
-Tools shim.
+Tools shim. When a Codex session starts a fresh conversation inside the same
+run (for example with `/clear`), Detach follows the provider to that new
+conversation, so status and later checkpoints track the conversation you are
+actually in.
 
 The app window is not the runtime. A session, its power lease, and its
 checkpoint loop continue independently; the dashboard catches up when it is

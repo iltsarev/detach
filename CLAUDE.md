@@ -269,8 +269,14 @@ safety again from a display status.
 
 Claude gets a wrapper-owned UUID via `--session-id`. Codex identity is resolved
 after launch by matching the run-token originator in rollout files and Codex's
-SQLite threads, refusing ambiguity. Wrapper-owned provider flags are rejected;
-policy defaults apply only when the user did not supply an allowed override.
+SQLite threads, refusing an ambiguous first binding. When the provider later
+switches to another run-owned user thread mid-run (for example `/clear`),
+discovery rebinds identity, transcript, and checkpoints to the newest
+originator-matched thread within one heartbeat or checkpoint tick, records the
+superseded thread ids so the next switch is again unambiguous, and keeps the
+current binding on a creation-time tie. Subagent threads never rebind a
+session. Wrapper-owned provider flags are rejected; policy defaults apply only
+when the user did not supply an allowed override.
 
 Checkpoints run every `DETACH_<PROVIDER>_CHECKPOINT_INTERVAL` seconds (300 by
 default) under a per-session lock and include metadata, validated provider

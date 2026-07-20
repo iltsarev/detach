@@ -1390,6 +1390,17 @@ write_resume_args() {
   mv -f "$tmp" "$output"
 }
 
+codex_thread_created_ms() {
+  local db="$1"
+  local id="$2"
+  local id_sql
+
+  id_sql="$(sql_escape "$id")"
+  "$SQLITE_BIN" -noheader -cmd '.timeout 5000' "$db" \
+    "SELECT COALESCE(created_at_ms, 0) FROM threads
+     WHERE id = '$id_sql' LIMIT 1;" 2>/dev/null
+}
+
 discover_codex_session() {
   local session="$1"
   local run_token="${2:-}"
@@ -1408,6 +1419,11 @@ discover_codex_session() {
   local candidate_rollout
   local candidate_originator
   local expected_originator
+  local bound_status
+  local previous_id
+  local id_created_ms
+  local previous_created_ms
+  local bound_created_ms
 
   meta="$(session_meta "$session")"
   [ -f "$meta" ] || return 1
@@ -1433,13 +1449,14 @@ discover_codex_session() {
     fi
     return
   fi
-  [ -z "$existing_id" ] || return 0
+  bound_status=1
+  [ -z "$existing_id" ] || bound_status=0
 
   cwd="$("$STATE_BIN" meta get "$meta" project_dir)"
   db="$(codex_state_db)"
-  [ -n "$db" ] && [ -f "$db" ] || return 1
+  [ -n "$db" ] && [ -f "$db" ] || return "$bound_status"
   known="$(session_dir "$session")/known-thread-ids.txt"
-  [ -f "$known" ] || return 1
+  [ -f "$known" ] || return "$bound_status"
 
   cwd_sql="$(sql_escape "$cwd")"
   rows="$($SQLITE_BIN -noheader -separator $'\t' -cmd '.timeout 5000' "$db" \
@@ -1449,27 +1466,70 @@ discover_codex_session() {
        AND cwd = '$cwd_sql'
      ORDER BY created_at_ms ASC, id ASC;" 2>/dev/null || true)"
 
-  [ -n "$run_token" ] || return 1
+  [ -n "$run_token" ] || return "$bound_status"
   expected_originator="detach_$run_token"
   candidate_ids="$(printf '%s\n' "$rows" | \
     while IFS=$'\t' read -r candidate candidate_rollout; do
+      [ "$candidate" != "$existing_id" ] || continue
       grep -Fqx "$candidate" "$known" && continue
       [ -f "$candidate_rollout" ] || continue
       candidate_originator="$("$STATE_BIN" jsonl first "$candidate_rollout" payload.originator 2>/dev/null || true)"
       [ "$candidate_originator" = "$expected_originator" ] && printf '%s\n' "$candidate"
-    done)"
+    done | sed '/^$/d')"
   candidate_count="$(printf '%s\n' "$candidate_ids" | sed '/^$/d' | wc -l | tr -d ' ')"
-  [ "$candidate_count" = "1" ] || {
-    [ "$candidate_count" -lt 2 ] || checkpoint_log "$session" "ambiguous Codex session discovery: $candidate_count new root threads"
-    return 1
-  }
-  id="$(printf '%s\n' "$candidate_ids" | sed -n '1p')"
+  [ "$candidate_count" != "0" ] || return "$bound_status"
+
+  if [ -z "$existing_id" ]; then
+    # The first binding has no proof of which run-owned thread is current, so
+    # any ambiguity is refused until exactly one candidate remains.
+    [ "$candidate_count" = "1" ] || {
+      checkpoint_log "$session" "ambiguous Codex session discovery: $candidate_count new root threads"
+      return 1
+    }
+    id="$(printf '%s\n' "$candidate_ids" | sed -n '1p')"
+  else
+    # The provider switched to another run-owned thread mid-run (for example
+    # /clear). Rebind to the newest candidate; a creation-time tie between the
+    # newest two cannot be broken by recency and keeps the current binding.
+    id="$(printf '%s\n' "$candidate_ids" | sed -n '$p')"
+    id_created_ms="$(codex_thread_created_ms "$db" "$id")"
+    case "$id_created_ms" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$candidate_count" != "1" ]; then
+      previous_id="$(printf '%s\n' "$candidate_ids" | sed -n "$((candidate_count - 1))p")"
+      previous_created_ms="$(codex_thread_created_ms "$db" "$previous_id")"
+      case "$previous_created_ms" in ''|*[!0-9]*) return 0 ;; esac
+      [ "$id_created_ms" -gt "$previous_created_ms" ] || {
+        checkpoint_log "$session" "ambiguous Codex thread switch: $candidate_count new root threads"
+        return 0
+      }
+    fi
+    # A run-owned thread that surfaces late must never displace the newer
+    # thread the user is actually in: identity moves only forward in time.
+    bound_created_ms="$(codex_thread_created_ms "$db" "$existing_id")"
+    case "$bound_created_ms" in ''|*[!0-9]*) bound_created_ms=0 ;; esac
+    [ "$id_created_ms" -gt "$bound_created_ms" ] || {
+      checkpoint_log "$session" "refusing Codex thread switch to a thread not newer than the current one: $id"
+      return 0
+    }
+  fi
   rollout="$(printf '%s\n' "$rows" | \
     awk -F '\t' -v id="$id" '$1 == id { print substr($0, length($1) + 2); exit }')"
-  [ -n "$id" ] && [ -n "$rollout" ] || return 1
+  [ -n "$id" ] && [ -n "$rollout" ] || return "$bound_status"
 
-  safe_codex_rollout_path "$rollout" || return 1
-  valid_jsonl "$rollout" "$id" || return 1
+  safe_codex_rollout_path "$rollout" || return "$bound_status"
+  valid_jsonl "$rollout" "$id" || return "$bound_status"
+
+  if [ -n "$existing_id" ]; then
+    # Consume the superseded run-owned threads so the next switch is again a
+    # single-candidate decision.
+    printf '%s\n' "$candidate_ids" | while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      [ "$candidate" != "$id" ] || continue
+      grep -Fqx "$candidate" "$known" || printf '%s\n' "$candidate" >>"$known"
+    done
+    grep -Fqx "$existing_id" "$known" || printf '%s\n' "$existing_id" >>"$known"
+    checkpoint_log "$session" "rebound Codex session identity after a thread switch: $existing_id -> $id"
+  fi
 
   if [ -n "$run_token" ]; then
     state_update_meta_for_run "$session" "$run_token" \
@@ -2252,6 +2312,11 @@ runtime_heartbeat_locked() {
     update_args+=( --integer provider_pid "$provider_pid" )
   else
     update_args+=( --null provider_pid )
+  fi
+  # A provider thread switch (for example /clear) should surface in list
+  # output within one heartbeat, not only on the next checkpoint tick.
+  if [ "$PROVIDER" = "codex" ]; then
+    discover_codex_session "$session" "$run_token" >/dev/null 2>&1 || true
   fi
   state_update_meta_for_run "$session" "$run_token" "${update_args[@]}"
 }
