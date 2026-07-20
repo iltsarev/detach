@@ -49,6 +49,11 @@ including this file, must not contain private context.
 - `scripts/quality-gate` — the policy-versioned, impact-aware readiness entry
   point for agents. It selects mandatory checks from the diff and fails safe to
   the repository gate for unknown impact. See `docs/quality-gates.md`.
+- `scripts/quality-gate --plan --explain` explains impact selection;
+  `--plan --format json` is the machine-readable equivalent. A failed or
+  interrupted run may use `--resume <run-dir>` only while its policy, plan, and
+  exact diff fingerprint still match. `--keep-going` improves diagnosis but
+  never turns any failed stage into readiness evidence.
 - `scripts/quality-gate --mode repository` — every automated repository gate;
   CI uses the same entry point. `--stage` is diagnostic only and is not proof
   that a change is ready.

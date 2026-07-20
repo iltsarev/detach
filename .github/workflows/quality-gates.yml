@@ -1,6 +1,7 @@
 name: Quality gates
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -33,13 +34,32 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: scripts/quality-gate --base "$BASE_SHA"
-      - name: Run full main gate
-        if: github.event_name == 'push'
-        run: scripts/quality-gate --mode repository
-      - name: Upload failure diagnostics
-        if: failure()
+      - name: Run full repository gate
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: scripts/quality-gate --mode repository --keep-going
+      - name: Publish gate summary
+        if: always()
+        shell: bash
+        run: |
+          runs=(app/build/quality-gates/*)
+          if [ ! -f "${runs[0]}/summary.tsv" ]; then
+            printf '## Quality gate\n\nNo evidence was produced.\n' >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          latest="${runs[${#runs[@]}-1]}"
+          {
+            printf '## Quality gate evidence\n\n'
+            printf '```text\n'
+            cat "$latest/manifest.tsv"
+            printf '\n'
+            cat "$latest/summary.tsv"
+            printf '```\n'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload gate evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: quality-gate-logs
+          name: quality-gate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: app/build/quality-gates
           if-no-files-found: ignore
+          retention-days: 14

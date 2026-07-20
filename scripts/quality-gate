@@ -3,26 +3,36 @@
 set -euo pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-POLICY_VERSION=1
+POLICY_VERSION=2
 MODE=change
 BASE_REF=""
 PLAN_ONLY=0
 DIAGNOSTIC_STAGE=""
+OUTPUT_FORMAT=text
+EXPLAIN=0
+KEEP_GOING=0
+RESUME_DIR=""
 TEST_MODE="${DETACH_QUALITY_GATE_TEST_MODE:-0}"
 RESULT_ROOT="${DETACH_QUALITY_GATE_RESULT_ROOT:-$ROOT/app/build/quality-gates}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_DIR="$RESULT_ROOT/$RUN_ID"
 SUMMARY="$RUN_DIR/summary.tsv"
+MANIFEST="$RUN_DIR/manifest.tsv"
+JUNIT="$RUN_DIR/junit.xml"
 CURRENT_STAGE=""
 CURRENT_CHILD=""
+OVERALL_STATUS=0
 
 ALL_STAGES=(static gate-contract swift app codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow)
 RELEASE_STAGES=(static gate-contract swift app codex claude distribution tmux-runtime release-preflight publish-preflight)
 SELECTED=()
+EXPLANATIONS=()
 
 usage() {
   cat <<'EOF'
 usage: scripts/quality-gate [--mode change|repository|release] [--base GIT_REF] [--plan]
+                            [--format text|json] [--explain]
+                            [--resume RUN_DIR] [--keep-going]
        scripts/quality-gate --stage NAME
 
 The normal modes are readiness evidence. --stage is a diagnostic rerun only.
@@ -43,11 +53,17 @@ contains_stage() {
 }
 
 add_stage() {
-  contains_stage "$1" || SELECTED+=("$1")
+  local stage="$1" reason="${2:-${IMPACT_REASON:-}}"
+  contains_stage "$stage" || SELECTED+=("$stage")
+  [ -z "$reason" ] || EXPLANATIONS+=("$reason -> $stage")
 }
 
 select_all() {
+  local reason="${1:-full repository policy}" stage
   SELECTED=("${ALL_STAGES[@]}")
+  for stage in "${ALL_STAGES[@]}"; do
+    EXPLANATIONS+=("$reason -> $stage")
+  done
 }
 
 select_release() {
@@ -70,6 +86,24 @@ while [ "$#" -gt 0 ]; do
       PLAN_ONLY=1
       shift
       ;;
+    --format)
+      [ "$#" -ge 2 ] || die '--format requires a value'
+      OUTPUT_FORMAT="$2"
+      shift 2
+      ;;
+    --explain)
+      EXPLAIN=1
+      shift
+      ;;
+    --resume)
+      [ "$#" -ge 2 ] || die '--resume requires a run directory'
+      RESUME_DIR="$2"
+      shift 2
+      ;;
+    --keep-going)
+      KEEP_GOING=1
+      shift
+      ;;
     --stage)
       [ "$#" -ge 2 ] || die '--stage requires a name'
       DIAGNOSTIC_STAGE="$2"
@@ -85,7 +119,11 @@ done
 
 case "$TEST_MODE" in 0|1) ;; *) die 'DETACH_QUALITY_GATE_TEST_MODE must be 0 or 1' ;; esac
 case "$MODE" in change|repository|release) ;; *) die "invalid mode: $MODE" ;; esac
+case "$OUTPUT_FORMAT" in text|json) ;; *) die "invalid format: $OUTPUT_FORMAT" ;; esac
 [ -z "$DIAGNOSTIC_STAGE" ] || { [ "$MODE" = change ] && [ -z "$BASE_REF" ] || die '--stage cannot be combined with another selection'; }
+[ "$OUTPUT_FORMAT" = text ] || [ "$PLAN_ONLY" = 1 ] || die '--format json requires --plan'
+[ "$EXPLAIN" = 0 ] || { [ "$PLAN_ONLY" = 1 ] && [ "$OUTPUT_FORMAT" = text ]; } || die '--explain requires a text plan'
+[ -z "$RESUME_DIR" ] || { [ "$PLAN_ONLY" = 0 ] && [ -z "$DIAGNOSTIC_STAGE" ]; } || die '--resume cannot be combined with --plan or --stage'
 
 stage_exists() {
   local wanted="$1" stage
@@ -95,21 +133,24 @@ stage_exists() {
   return 1
 }
 
-changed_files() {
+changed_entries() {
   if [ -n "$BASE_REF" ]; then
     git -C "$ROOT" rev-parse --verify "$BASE_REF^{commit}" >/dev/null 2>&1 || die "invalid base ref: $BASE_REF"
-    git -C "$ROOT" diff --name-only --diff-filter=ACMRTUXB "$BASE_REF"...HEAD
+    git -C "$ROOT" diff --name-status -z --find-renames "$BASE_REF"...HEAD
   fi
-  git -C "$ROOT" diff --name-only --diff-filter=ACMRTUXB HEAD
-  git -C "$ROOT" ls-files --others --exclude-standard
+  git -C "$ROOT" diff --name-status -z --find-renames HEAD
+  while IFS= read -r -d '' path; do
+    printf 'A\0%s\0' "$path"
+  done < <(git -C "$ROOT" ls-files -z --others --exclude-standard)
 }
 
 select_for_path() {
-  local path="$1"
+  local path="$1" change="${2:-changed}"
+  IMPACT_REASON="$change $path"
   add_stage static
   case "$path" in
     .github/workflows/quality-gates.yml|docs/quality-gates.md|scripts/quality-gate|tests/quality-gate.sh)
-      select_all
+      select_all "$change gate policy file $path"
       ;;
     *.md|docs/assets/*|agents.md|CLAUDE.md)
       ;;
@@ -162,7 +203,7 @@ select_for_path() {
       ;;
     *)
       printf 'quality-gate: unknown impact for %s; selecting repository gate\n' "$path" >&2
-      select_all
+      select_all "$change unclassified path $path"
       ;;
   esac
 }
@@ -175,12 +216,19 @@ elif [ "$MODE" = repository ]; then
 elif [ "$MODE" = release ]; then
   select_release
 else
-  while IFS= read -r path; do
-    [ -n "$path" ] && select_for_path "$path"
-  done < <(changed_files | LC_ALL=C sort -u)
+  while IFS= read -r -d '' status && IFS= read -r -d '' path; do
+    case "$status" in
+      R*|C*)
+        IFS= read -r -d '' new_path || die 'malformed rename/copy entry from Git'
+        select_for_path "$path" "$status old"
+        select_for_path "$new_path" "$status new"
+        ;;
+      *) select_for_path "$path" "$status" ;;
+    esac
+  done < <(changed_entries)
   if [ "${#SELECTED[@]}" -eq 0 ]; then
     printf 'quality-gate: no diff to classify; selecting repository gate\n' >&2
-    select_all
+    select_all 'empty diff fail-safe policy'
   fi
 fi
 
@@ -191,9 +239,42 @@ for stage in "${ALL_STAGES[@]}"; do
 done
 SELECTED=("${ordered[@]}")
 
-printf 'quality-gate policy=%s mode=%s stages=%s\n' "$POLICY_VERSION" \
-  "$([ -n "$DIAGNOSTIC_STAGE" ] && printf diagnostic || printf '%s' "$MODE")" \
-  "$(IFS=,; printf '%s' "${SELECTED[*]}")"
+EFFECTIVE_MODE="$([ -n "$DIAGNOSTIC_STAGE" ] && printf diagnostic || printf '%s' "$MODE")"
+STAGE_LIST="$(IFS=,; printf '%s' "${SELECTED[*]}")"
+
+compute_fingerprint() {
+  {
+    printf 'policy=%s\nmode=%s\nbase=%s\nstages=%s\n' "$POLICY_VERSION" "$EFFECTIVE_MODE" "$BASE_REF" "$STAGE_LIST"
+    if [ -n "$BASE_REF" ]; then
+      git -C "$ROOT" diff --binary "$BASE_REF"...HEAD
+    fi
+    git -C "$ROOT" diff --binary HEAD
+    while IFS= read -r -d '' path; do
+      printf 'untracked\0%s\0' "$path"
+      git -C "$ROOT" hash-object -- "$path"
+    done < <(git -C "$ROOT" ls-files -z --others --exclude-standard)
+  } | shasum -a 256 | awk '{print $1}'
+}
+
+FINGERPRINT="$(compute_fingerprint)"
+
+if [ "$OUTPUT_FORMAT" = json ]; then
+  printf '{"policy":%s,"mode":"%s","fingerprint":"%s","stages":[' "$POLICY_VERSION" "$EFFECTIVE_MODE" "$FINGERPRINT"
+  separator=""
+  for stage in "${SELECTED[@]}"; do
+    printf '%s"%s"' "$separator" "$stage"
+    separator=,
+  done
+  printf ']}\n'
+else
+  printf 'quality-gate policy=%s mode=%s fingerprint=%s stages=%s\n' \
+    "$POLICY_VERSION" "$EFFECTIVE_MODE" "$FINGERPRINT" "$STAGE_LIST"
+  if [ "$EXPLAIN" = 1 ]; then
+    for explanation in "${EXPLANATIONS[@]}"; do
+      printf 'quality-gate: reason %s\n' "$explanation"
+    done
+  fi
+fi
 if [ "$PLAN_ONLY" = 1 ]; then
   exit 0
 fi
@@ -201,6 +282,72 @@ fi
 mkdir -p "$RUN_DIR"
 chmod 0700 "$RESULT_ROOT" "$RUN_DIR" 2>/dev/null || true
 printf 'policy\tmode\tstage\tstatus\tduration_seconds\tlog\n' >"$SUMMARY"
+
+manifest_value() {
+  local file="$1" key="$2"
+  awk -F '\t' -v wanted="$key" '$1 == wanted {print $2; found=1; exit} END {if (!found) exit 1}' "$file"
+}
+
+write_manifest() {
+  local result="$1" temporary="$RUN_DIR/.manifest.$$"
+  {
+    printf 'schema\t1\n'
+    printf 'policy\t%s\n' "$POLICY_VERSION"
+    printf 'mode\t%s\n' "$EFFECTIVE_MODE"
+    printf 'source_commit\t%s\n' "$(git -C "$ROOT" rev-parse --verify HEAD)"
+    printf 'fingerprint\t%s\n' "$FINGERPRINT"
+    printf 'stages\t%s\n' "$STAGE_LIST"
+    printf 'result\t%s\n' "$result"
+  } >"$temporary"
+  chmod 0600 "$temporary"
+  mv -f "$temporary" "$MANIFEST"
+}
+
+resume_stage_passed() {
+  local stage="$1"
+  [ -n "$RESUME_DIR" ] || return 1
+  awk -F '\t' -v wanted="$stage" \
+    '$3 == wanted && ($4 == "passed" || $4 == "reused") {found=1} END {exit !found}' \
+    "$RESUME_DIR/summary.tsv"
+}
+
+validate_resume() {
+  [ -n "$RESUME_DIR" ] || return 0
+  [ -d "$RESUME_DIR" ] && [ ! -L "$RESUME_DIR" ] || die 'resume path must be a non-symlink run directory'
+  [ -f "$RESUME_DIR/manifest.tsv" ] && [ ! -L "$RESUME_DIR/manifest.tsv" ] || die 'resume manifest is missing or unsafe'
+  [ -f "$RESUME_DIR/summary.tsv" ] && [ ! -L "$RESUME_DIR/summary.tsv" ] || die 'resume summary is missing or unsafe'
+  [ "$(manifest_value "$RESUME_DIR/manifest.tsv" schema)" = 1 ] || die 'resume evidence schema is unsupported'
+  [ "$(manifest_value "$RESUME_DIR/manifest.tsv" policy)" = "$POLICY_VERSION" ] || die 'resume evidence uses another policy version'
+  [ "$(manifest_value "$RESUME_DIR/manifest.tsv" mode)" = "$EFFECTIVE_MODE" ] || die 'resume evidence uses another mode'
+  [ "$(manifest_value "$RESUME_DIR/manifest.tsv" stages)" = "$STAGE_LIST" ] || die 'resume evidence has another stage plan'
+  [ "$(manifest_value "$RESUME_DIR/manifest.tsv" fingerprint)" = "$FINGERPRINT" ] || die 'resume evidence does not match the current diff'
+}
+
+write_junit() {
+  local tests=0 failures=0 skipped=0 stage status duration log
+  while IFS=$'\t' read -r _ _ stage status duration log; do
+    [ "$stage" = stage ] && continue
+    tests=$((tests + 1))
+    case "$status" in failed|timeout|interrupted) failures=$((failures + 1)) ;; reused) skipped=$((skipped + 1)) ;; esac
+  done <"$SUMMARY"
+  {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+    printf '<testsuite name="detach-quality-gate" tests="%s" failures="%s" skipped="%s">\n' "$tests" "$failures" "$skipped"
+    while IFS=$'\t' read -r _ _ stage status duration log; do
+      [ "$stage" = stage ] && continue
+      printf '  <testcase classname="quality-gate" name="%s" time="%s">' "$stage" "$duration"
+      case "$status" in
+        failed|timeout|interrupted) printf '<failure message="%s">See %s</failure>' "$status" "$log" ;;
+        reused) printf '<skipped message="reused matching passed evidence"/>' ;;
+      esac
+      printf '</testcase>\n'
+    done <"$SUMMARY"
+    printf '</testsuite>\n'
+  } >"$JUNIT"
+}
+
+validate_resume
+write_manifest running
 
 on_signal() {
   if [ -n "$CURRENT_CHILD" ]; then
@@ -210,6 +357,8 @@ on_signal() {
   if [ -n "$CURRENT_STAGE" ]; then
     printf '%s\t%s\t%s\tinterrupted\t-\t%s.log\n' "$POLICY_VERSION" "$MODE" "$CURRENT_STAGE" "$CURRENT_STAGE" >>"$SUMMARY"
   fi
+  write_manifest interrupted
+  write_junit
   printf 'quality-gate: interrupted; evidence is incomplete (%s)\n' "$SUMMARY" >&2
   exit 130
 }
@@ -251,13 +400,14 @@ run_bounded() {
 
 run_static() {
   local file
-  while IFS= read -r file; do
+  while IFS= read -r -d '' file; do
+    [ -f "$ROOT/$file" ] || continue
     case "$file" in
       *.sh|bin/detach|bin/detach-core|scripts/quality-gate|scripts/release-version|scripts/release-lid-probe)
         /bin/bash -n "$ROOT/$file"
         ;;
     esac
-  done < <(git -C "$ROOT" ls-files)
+  done < <(git -C "$ROOT" ls-files -z --cached --others --exclude-standard)
   if [ -n "$BASE_REF" ]; then
     git -C "$ROOT" diff --check "$BASE_REF"...HEAD
   fi
@@ -266,6 +416,9 @@ run_static() {
 
 run_stage_command() {
   local stage="$1" tmux_bin="$ROOT/app/build/Detach.app/Contents/Resources/DetachCLI/tmux"
+  mkdir -p "$ROOT/app/.build/module-cache"
+  export CLANG_MODULE_CACHE_PATH="$ROOT/app/.build/module-cache"
+  export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/app/.build/module-cache"
   if [ "$TEST_MODE" = 1 ]; then
     [ -x "$ROOT/tests/quality-gate-fixtures/$stage" ] || die "missing test fixture for $stage"
     env -u DETACH_VERSION -u DETACH_BUILD_VERSION -u DETACH_BUILD_ARCHS \
@@ -280,10 +433,7 @@ run_stage_command() {
     swift)
       (
         cd -P "$ROOT/app"
-        mkdir -p .build/module-cache
-        CLANG_MODULE_CACHE_PATH="$ROOT/app/.build/module-cache" \
-          SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/app/.build/module-cache" \
-          swift test --disable-sandbox
+        swift test --disable-sandbox
       )
       ;;
     app)
@@ -315,6 +465,11 @@ export -f die run_static run_stage_command
 for stage in "${SELECTED[@]}"; do
   CURRENT_STAGE="$stage"
   log="$RUN_DIR/$stage.log"
+  if resume_stage_passed "$stage"; then
+    printf 'quality-gate: reusing %s from matching evidence %s\n' "$stage" "$RESUME_DIR"
+    printf '%s\t%s\t%s\treused\t0\t-\n' "$POLICY_VERSION" "$MODE" "$stage" >>"$SUMMARY"
+    continue
+  fi
   started="$(date +%s)"
   timeout="${DETACH_QUALITY_GATE_TIMEOUT:-$(timeout_for_stage "$stage")}"
   printf 'quality-gate: running %s (timeout %ss)\n' "$stage" "$timeout"
@@ -333,14 +488,23 @@ for stage in "${SELECTED[@]}"; do
     printf '%s\t%s\t%s\t%s\t%s\t%s.log\n' "$POLICY_VERSION" "$MODE" "$stage" "$result" "$duration" "$stage" >>"$SUMMARY"
     printf 'quality-gate: %s %s; diagnostic rerun: scripts/quality-gate --stage %s\n' "$stage" "$result" "$stage" >&2
     printf 'quality-gate: readiness evidence is incomplete; log: %s\n' "$log" >&2
-    exit "$status"
+    OVERALL_STATUS="$status"
+    [ "$KEEP_GOING" = 1 ] || break
+    continue
   fi
   printf '%s\t%s\t%s\tpassed\t%s\t%s.log\n' "$POLICY_VERSION" "$MODE" "$stage" "$duration" "$stage" >>"$SUMMARY"
 done
 CURRENT_STAGE=""
+write_junit
 
-if [ -n "$DIAGNOSTIC_STAGE" ]; then
+if [ "$OVERALL_STATUS" -ne 0 ]; then
+  write_manifest failed
+  printf 'quality-gate: FAIL policy=%s fingerprint=%s evidence=%s junit=%s\n' "$POLICY_VERSION" "$FINGERPRINT" "$SUMMARY" "$JUNIT" >&2
+  exit "$OVERALL_STATUS"
+elif [ -n "$DIAGNOSTIC_STAGE" ]; then
+  write_manifest diagnostic
   printf 'quality-gate: diagnostic stage passed; this is not readiness evidence\n'
 else
-  printf 'quality-gate: PASS policy=%s evidence=%s\n' "$POLICY_VERSION" "$SUMMARY"
+  write_manifest passed
+  printf 'quality-gate: PASS policy=%s fingerprint=%s evidence=%s junit=%s\n' "$POLICY_VERSION" "$FINGERPRINT" "$SUMMARY" "$JUNIT"
 fi

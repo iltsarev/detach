@@ -14,8 +14,8 @@ SOCKET_PATH="$TMUX_SOCKET_ROOT/$SOCKET.sock"
 if [ -n "${DETACH_TEST_STATE_BIN:-}" ]; then
   STATE_HELPER="$DETACH_TEST_STATE_BIN"
 else
-  STATE_HELPER="$(swift build --package-path "$ROOT/app" --product detach-state --show-bin-path)/detach-state"
-  swift build --package-path "$ROOT/app" --product detach-state >/dev/null
+  STATE_HELPER="$(swift build --disable-sandbox --package-path "$ROOT/app" --product detach-state --show-bin-path)/detach-state"
+  swift build --disable-sandbox --package-path "$ROOT/app" --product detach-state >/dev/null
 fi
 [ -x "$STATE_HELPER" ] || {
   printf 'detach-state test helper is missing: %s\n' "$STATE_HELPER" >&2

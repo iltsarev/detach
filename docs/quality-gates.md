@@ -1,7 +1,7 @@
 # Quality gates
 
 `scripts/quality-gate` is the tracked readiness contract for local agents, CI,
-and releases. Policy version 1 orders checks from cheap to expensive, derives
+and releases. Policy version 2 orders checks from cheap to expensive, derives
 the mandatory set from the Git diff, and selects the full repository gate for
 unknown paths or changes to this policy itself.
 
@@ -15,7 +15,15 @@ unknown paths or changes to this policy itself.
 - `scripts/quality-gate --mode release` runs the complete pre-release suite.
   It omits only the recursive test of `scripts/release-version` itself.
 - `scripts/quality-gate --plan` prints the selected stages without running
-  them. `--stage <name>` is an explicit diagnostic rerun and is never readiness
+  them. Add `--explain` to show which changed path selected each stage, or
+  `--format json` for machine-readable planning.
+- `scripts/quality-gate --resume <run-dir>` reuses only passed stages from
+  evidence whose policy, mode, exact stage plan, and diff fingerprint still
+  match. Changed or untracked bytes invalidate reuse.
+- `scripts/quality-gate --keep-going` runs the remaining selected stages after
+  a failure so one CI attempt reports all independent failures. The final
+  result remains failed.
+- `--stage <name>` is an explicit diagnostic rerun and is never readiness
   evidence.
 
 The stages are `static`, the gate orchestrator's own contract tests, `swift`,
@@ -23,19 +31,43 @@ development app build/verification, serial Codex and Claude integrations,
 distribution, bundled runtime, release and publish preflights, and the hermetic
 release-workflow test. Integrations that
 share tmux or project locks are intentionally serial. Every stage has a bounded
-timeout. Logs and a versioned TSV result are written privately under
-`app/build/quality-gates/`; failure, timeout, skip, or interruption cannot
-produce PASS. The failure output names the exact diagnostic rerun. A red gate
-must be diagnosed, not made green by blind retries.
+timeout. Logs, a versioned TSV summary, a provenance manifest, and JUnit XML are
+written privately under `app/build/quality-gates/`. The manifest binds evidence
+to the policy, source commit, selected stages, and a SHA-256 fingerprint of the
+committed and working-tree diff. Failure, timeout, interruption, or mismatched
+resume evidence cannot produce PASS. The failure output names the exact
+diagnostic rerun. A red gate must be diagnosed, not made green by blind retries.
 
-Swift and Clang module caches are rooted under `app/.build`; integrations use
-only the freshly verified bundled tmux and their existing private state/socket
-roots. The gate therefore does not depend on writable user caches, ambient tmux,
-or provider session state.
+Swift and Clang module caches are rooted under `app/.build` for every stage,
+including integrations that invoke SwiftPM internally. Integrations use only
+the freshly verified bundled tmux and their existing private state/socket roots.
+The gate therefore does not depend on writable user caches, ambient tmux, or
+provider session state.
 
-There are no quarantined tests in policy version 1. A future quarantine must be
+There are no quarantined tests in policy version 2. A future quarantine must be
 tracked here with an owner, expiry, and reason, and may not remove a release
 contract check.
+
+## Policy version 2 improvements
+
+The second policy revision adds ten release-quality and feedback-speed
+features as one fail-closed contract:
+
+1. Deleted paths participate in impact analysis instead of disappearing from
+   the diff.
+2. Both the old and new paths of a rename or copy contribute their impacts.
+3. NUL-delimited Git input safely handles spaces and unusual file names.
+4. `--explain` makes every selected stage traceable to its changed path.
+5. `--format json` exposes the exact plan to CI and other tooling.
+6. Every run records an exact diff fingerprint and source provenance.
+7. `--resume` avoids repeating passed expensive stages after interruption.
+8. Stale or differently planned evidence is rejected before any reuse.
+9. `--keep-going` finds multiple failures in one repository-gate attempt.
+10. JUnit, manifest, logs, and summaries are retained by CI on both success and
+    failure; manual repository-gate dispatch uses the same entry point.
+
+The static stage also syntax-checks matching untracked shell files, so a new
+script cannot evade the cheap gate merely because it has not been added yet.
 
 ## Impact classes
 
@@ -49,7 +81,8 @@ contract check.
 | Release/publication | static, app, release/publish preflights, release-workflow test |
 | Gate policy, CI, mixed unknown path | full repository gate |
 
-Known mixed diffs take the union of their mandatory gates. Dependencies are
+Known mixed diffs take the union of their mandatory gates. Deletions use their
+old path; renames and copies conservatively use both paths. Dependencies are
 added by the mapping (for example an integration always gets a freshly built
 bundled tmux). An unclassifiable path fails safe to the full set.
 
@@ -61,8 +94,10 @@ user-facing documentation is synchronized, and `git diff --check` is clean.
 The report must name any manual release gate that was not run. A single test or
 `--stage` rerun is useful diagnosis but cannot replace the selected gate.
 
-CI and `scripts/release-version` invoke this same entry point. They must not
-copy a separate test matrix.
+CI and `scripts/release-version` invoke this same entry point. CI publishes its
+manifest, TSV, JUnit report, and logs for 14 days even when the gate passes, and
+also exposes the summary in the workflow UI. They must not copy a separate test
+matrix.
 
 ## Manual release-only gates
 

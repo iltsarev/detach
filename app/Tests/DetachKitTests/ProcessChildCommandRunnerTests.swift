@@ -54,13 +54,10 @@ final class ProcessChildCommandRunnerTests: XCTestCase {
         environment["DETACH_EXPECTED_PROCESS_GROUP"] = String(getpgrp())
 
         let exitCode = try launcher.run(ChildProcessRequest(
-            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            executableURL: URL(fileURLWithPath: "/usr/bin/perl"),
             arguments: [
-                "-c",
-                """
-                actual=$(/bin/ps -o pgid= -p $$ | /usr/bin/tr -d '[:space:]')
-                test "$actual" = "$DETACH_EXPECTED_PROCESS_GROUP"
-                """,
+                "-e",
+                "exit(getpgrp(0) == $ENV{DETACH_EXPECTED_PROCESS_GROUP} ? 0 : 1)",
             ],
             environment: environment,
             currentDirectoryURL: URL(fileURLWithPath: "/", isDirectory: true),
