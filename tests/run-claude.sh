@@ -356,7 +356,19 @@ while [ "$("$STATE_HELPER" meta get "$meta" status)" != "failed" ] && \
 done
 [ "$("$STATE_HELPER" meta get "$meta" status)" = "failed" ]
 [ "$("$STATE_HELPER" meta get "$meta" exit_status)" = "7" ]
-[ "$(tmux -L "$SOCKET" show-options -qv -t "=$session:" @detach_status)" = "failed" ]
+attempts=0
+while :; do
+  failed_tmux_status="$(tmux -L "$SOCKET" show-options -qv \
+    -t "=$session:" @detach_status 2>/dev/null || true)"
+  [ "$failed_tmux_status" != "failed" ] || break
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 50 ] || {
+    printf 'Claude tmux status did not publish failed: %s\n' \
+      "$failed_tmux_status" >&2
+    exit 1
+  }
+  sleep 0.1
+done
 attempts=0
 while :; do
   failed_status_left="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left 2>/dev/null || true)"
