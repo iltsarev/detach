@@ -8,21 +8,18 @@ public struct TerminalLaunchFailure: Equatable, Sendable {
         case terminalUnavailable
         case commandFile
         case openFailed
-        case incompatible
     }
 
     public let message: String
     public let reason: Reason
 
     public var requiresTerminalSelection: Bool {
-        reason == .terminalUnavailable || reason == .incompatible
+        reason == .terminalUnavailable
     }
 
 }
 
 public enum TerminalLauncher {
-    static let acknowledgementTimeoutNanoseconds: UInt64 = 30_000_000_000
-
     /// Opens a private, self-deleting command file in the selected terminal.
     /// The bundle identifier is resolved for every launch, so moving or
     /// renaming the application does not invalidate the preference.
@@ -43,7 +40,6 @@ public enum TerminalLauncher {
             terminal: terminal,
             temporaryDirectory: FileManager.default.temporaryDirectory,
             fileManager: .default,
-            acknowledgementTimeoutNanoseconds: acknowledgementTimeoutNanoseconds,
             openApplication: openApplication)
     }
 
@@ -53,7 +49,6 @@ public enum TerminalLauncher {
         terminal: TerminalApplication,
         temporaryDirectory: URL,
         fileManager: FileManager,
-        acknowledgementTimeoutNanoseconds: UInt64,
         openApplication: (URL, URL) async throws -> Void
     ) async -> TerminalLaunchFailure? {
         let commandURL: URL
@@ -82,29 +77,11 @@ public enum TerminalLauncher {
                 reason: .openFailed)
         }
 
-        let start = DispatchTime.now().uptimeNanoseconds
-        while fileManager.fileExists(atPath: commandURL.path) {
-            let elapsed = DispatchTime.now().uptimeNanoseconds - start
-            if elapsed >= acknowledgementTimeoutNanoseconds {
-                removeCommandDirectory(containing: commandURL, fileManager: fileManager)
-                return TerminalLaunchFailure(
-                    message: L10n.format(
-                        "%@ opened the file but did not run the command. Choose another terminal in Settings.",
-                        terminal.displayName),
-                    reason: .incompatible)
-            }
-            do {
-                try await Task.sleep(nanoseconds: min(100_000_000, acknowledgementTimeoutNanoseconds))
-            } catch {
-                removeCommandDirectory(containing: commandURL, fileManager: fileManager)
-                return TerminalLaunchFailure(
-                    message: L10n.string("Command launch was cancelled."),
-                    reason: .openFailed)
-            }
-        }
-        // The script normally removes its private directory itself. Clean it
-        // here as well in case a terminal removed only the command file.
-        removeCommandDirectory(containing: commandURL, fileManager: fileManager)
+        // A terminal can acknowledge opening the file before its interactive
+        // shell is ready to execute it. In particular, shell startup may stop
+        // at an oh-my-zsh update prompt for an arbitrary amount of time. The
+        // command file must therefore remain available after the workspace
+        // handoff; it deletes itself as its first action once execution starts.
         return nil
     }
 

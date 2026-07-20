@@ -31,8 +31,6 @@
 "The selected terminal was not found. Choose another terminal in Settings." = "Выбранный терминал не найден. Выберите другой терминал в настройках.";
 "Could not safely prepare the temporary command: %@" = "Не удалось безопасно подготовить временную команду: %@";
 "%@ could not open the command: %@" = "%@ не смог открыть команду: %@";
-"%@ opened the file but did not run the command. Choose another terminal in Settings." = "%@ открыл файл, но не запустил команду. Выберите другой терминал в настройках.";
-"Command launch was cancelled." = "Запуск команды был отменён.";
 
 /* tmux session identity */
 "Session color: %@" = "Цвет сессии: %@";
@@ -48,7 +46,7 @@
 /* App and shared UI */
 "%@ build %@" = "%@ (сборка %@)";
 "%@ can't be used as a terminal because it has no bundle identifier." = "%@ нельзя использовать как терминал: у приложения нет идентификатора бандла.";
-"%@ was chosen manually. Detach will verify it can run commands the first time one opens." = "%@ выбран вручную. При первом запуске команды Detach проверит, что приложение умеет их выполнять.";
+"%@ was chosen manually. Detach will ask it to open command files." = "%@ выбран вручную. Detach будет передавать ему командные файлы для открытия.";
 "%@ was not found in PATH" = "%@ не найден в PATH";
 "%@ · %@\n%@" = "%@ · %@\n%@";
 "%@ · %d" = "%@ · %d";

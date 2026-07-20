@@ -81,52 +81,27 @@ final class TerminalLauncherTests: XCTestCase {
     }
 
     @MainActor
-    func testSuccessfulLaunchRequiresCommandFileAcknowledgement() async throws {
+    func testSuccessfulLaunchLeavesCommandQueuedUntilTerminalExecutesIt() async throws {
         let terminal = TerminalApplication(
             bundleIdentifier: "test.terminal",
             displayName: "Test Terminal",
             applicationURL: URL(fileURLWithPath: "/Applications/Test Terminal.app"))
         var openedApplicationURL: URL?
-        let failure = await TerminalLauncher.open(
-            command: "exec /usr/bin/true",
-            terminal: terminal,
-            temporaryDirectory: temporaryDirectory,
-            fileManager: .default,
-            acknowledgementTimeoutNanoseconds: 1_000_000,
-            openApplication: { commandURL, applicationURL in
-                openedApplicationURL = applicationURL
-                XCTAssertTrue(FileManager.default.isExecutableFile(atPath: commandURL.path))
-                try FileManager.default.removeItem(at: commandURL)
-            })
-
-        XCTAssertNil(failure)
-        XCTAssertEqual(openedApplicationURL, terminal.applicationURL)
-        XCTAssertTrue(
-            (try? FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path))?.isEmpty
-                == true)
-    }
-
-    @MainActor
-    func testTerminalThatDoesNotExecuteCommandFileGetsExplicitFailure() async {
-        let terminal = TerminalApplication(
-            bundleIdentifier: "test.incompatible",
-            displayName: "Viewer",
-            applicationURL: URL(fileURLWithPath: "/Applications/Viewer.app"))
         var commandURL: URL?
         let failure = await TerminalLauncher.open(
             command: "exec /usr/bin/true",
             terminal: terminal,
             temporaryDirectory: temporaryDirectory,
             fileManager: .default,
-            acknowledgementTimeoutNanoseconds: 0,
-            openApplication: { url, _ in commandURL = url })
+            openApplication: { url, applicationURL in
+                openedApplicationURL = applicationURL
+                commandURL = url
+                XCTAssertTrue(FileManager.default.isExecutableFile(atPath: url.path))
+            })
 
-        XCTAssertEqual(failure?.reason, .incompatible)
-        XCTAssertTrue(failure?.requiresTerminalSelection == true)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: commandURL?.path ?? ""))
-        XCTAssertTrue(
-            (try? FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path))?.isEmpty
-                == true)
+        XCTAssertNil(failure)
+        XCTAssertEqual(openedApplicationURL, terminal.applicationURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: commandURL?.path ?? ""))
     }
 
     @MainActor
@@ -144,7 +119,6 @@ final class TerminalLauncherTests: XCTestCase {
             terminal: terminal,
             temporaryDirectory: temporaryDirectory,
             fileManager: .default,
-            acknowledgementTimeoutNanoseconds: 0,
             openApplication: { url, _ in
                 commandURL = url
                 throw OpenError()

@@ -549,7 +549,7 @@ struct SettingsView: View {
                         .settingsMessage(color: .red)
                 } else if let unlisted = unlistedSelectedTerminal {
                     Text(L10n.format(
-                        "%@ was chosen manually. Detach will verify it can run commands the first time one opens.",
+                        "%@ was chosen manually. Detach will ask it to open command files.",
                         unlisted.displayName))
                         .settingsMessage()
                 } else if let selectedTerminal {
