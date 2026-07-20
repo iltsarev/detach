@@ -327,6 +327,17 @@ json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
 [ -d "$CLAUDE_CONFIG_DIR/tasks/$session_id" ]
 [ -d "$CLAUDE_CONFIG_DIR/tasks/session-${session_id:0:8}" ]
 [ -d "$CLAUDE_CONFIG_DIR/teams/session-${session_id:0:8}" ]
+attempts=0
+while [ ! -s "$checkpoint/transcript.jsonl" ] || \
+    [ ! -s "$checkpoint/claude-session.tar" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 100 ] || {
+    printf 'Claude checkpoint was not published within 10 seconds: %s\n' \
+      "$checkpoint" >&2
+    exit 1
+  }
+  sleep 0.1
+done
 [ -s "$checkpoint/transcript.jsonl" ]
 "$STATE_HELPER" jsonl validate claude "$checkpoint/transcript.jsonl" "$session_id"
 [ -s "$checkpoint/claude-session.tar" ]

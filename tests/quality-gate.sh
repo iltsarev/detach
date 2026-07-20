@@ -127,7 +127,23 @@ chmod 0755 "$REPO/tests/quality-gate-fixtures/static"
     "$REPO/scripts/quality-gate" --stage static
 ) >"$REPO/interrupt.out" 2>&1 &
 gate_pid=$!
-sleep 1
+attempts=0
+while ! grep -F 'quality-gate: running static' "$REPO/interrupt.out" >/dev/null 2>&1; do
+  if ! kill -0 "$gate_pid" 2>/dev/null; then
+    wait "$gate_pid" || true
+    printf 'quality gate exited before the interrupt fixture became ready\n' >&2
+    cat "$REPO/interrupt.out" >&2
+    exit 1
+  fi
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 200 ] || {
+    kill -TERM "$gate_pid" 2>/dev/null || true
+    wait "$gate_pid" || true
+    printf 'quality gate did not start the interrupt fixture\n' >&2
+    exit 1
+  }
+  sleep 0.05
+done
 kill -TERM "$gate_pid"
 set +e
 wait "$gate_pid"
