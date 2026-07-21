@@ -51,12 +51,17 @@ including this file, must not contain private context.
   the repository gate for unknown impact. See `docs/quality-gates.md`.
 - `scripts/quality-gate --plan --explain` explains impact selection;
   `--plan --format json` is the machine-readable equivalent. A failed or
-  interrupted run may use `--resume <run-dir>` only while its policy, plan, and
-  exact diff fingerprint still match. `--keep-going` improves diagnosis but
-  never turns any failed stage into readiness evidence.
+  interrupted run may use `--resume <run-dir>` or `--resume latest` only while
+  its policy, exact source/base commits, input fingerprint, and stage coverage
+  still match. `--keep-going` improves diagnosis but never turns a failed or
+  blocked stage into readiness evidence.
 - `scripts/quality-gate --mode repository` — every automated repository gate;
   CI uses the same entry point. `--stage` is diagnostic only and is not proof
-  that a change is ready.
+  that a change is ready. Policy 4 keeps SwiftPM work exclusive, then runs the
+  isolated Codex and Claude suites concurrently against the verified bundled
+  tmux and state helper. Policy 5 additionally rejects wall time above 180
+  seconds, individual stage regressions, and any attempt to lower quality floors
+  or raise time budgets relative to their merge-base values.
 
 - `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run.sh`
   — hermetic Codex integration with a fake provider, private tmux
@@ -79,7 +84,15 @@ including this file, must not contain private context.
 - `tests/release-workflow.sh` — hermetic end-to-end orchestration, including
   resume after every durable stage, dirty/diverged source rejection, duplicate
   tag/release rejection, hardware-gate failure, and remote hash mismatch.
-- `cd app && swift test` — unit tests for DetachKit, app services, typed state
+- `cd app && swift test --enable-code-coverage --disable-sandbox`, followed by
+  `tests/quality-contracts.sh` — unit tests plus fail-closed UI/business test
+  count, critical-suite presence, and exact line-coverage floors. The static
+  policy branch runs the monotonic baseline ratchets in parallel with SwiftPM.
+  `tests/quality-ratchet-contract.sh` and
+  `tests/release-budget-ratchet-contract.sh` are fast negative diagnostics for
+  attempted policy weakening.
+- `cd app && swift test` — a faster diagnostic unit-test rerun for DetachKit,
+  app services, typed state
   operations, power lifecycle, lease policy, XPC policy, and presentation.
 - `app/scripts/make-app.sh` followed by `app/scripts/verify-app.sh` — build and
   verify a local app. A normal build must contain only an `arm64` slice for the

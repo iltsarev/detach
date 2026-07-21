@@ -1,0 +1,14 @@
+schema	1
+wall_seconds_max	180
+stage_static_seconds_max	2
+stage_gate_contract_seconds_max	100
+stage_swift_seconds_max	20
+stage_quality_contracts_seconds_max	5
+stage_app_seconds_max	70
+stage_codex_seconds_max	110
+stage_claude_seconds_max	50
+stage_distribution_seconds_max	80
+stage_tmux_runtime_seconds_max	8
+stage_release_preflight_seconds_max	15
+stage_publish_preflight_seconds_max	25
+stage_release_workflow_seconds_max	70

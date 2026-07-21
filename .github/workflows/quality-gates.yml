@@ -49,11 +49,15 @@ jobs:
           latest="${runs[${#runs[@]}-1]}"
           {
             printf '## Quality gate evidence\n\n'
-            printf '```text\n'
-            cat "$latest/manifest.tsv"
-            printf '\n'
-            cat "$latest/summary.tsv"
-            printf '```\n'
+            if [ -f "$latest/summary.md" ]; then
+              cat "$latest/summary.md"
+            else
+              printf '```text\n'
+              cat "$latest/manifest.tsv"
+              printf '\n'
+              cat "$latest/summary.tsv"
+              printf '```\n'
+            fi
           } >>"$GITHUB_STEP_SUMMARY"
       - name: Upload gate evidence
         if: always()

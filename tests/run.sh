@@ -114,6 +114,32 @@ wait_for_pane_text() {
   return 1
 }
 
+wait_for_tmux_option() {
+  local session="$1" option="$2" expected="$3" attempts=0 actual=""
+  while [ "$attempts" -lt 80 ]; do
+    actual="$(tmux -L "$SOCKET" show-options -qv -t "=$session:" "$option" 2>/dev/null || true)"
+    [ "$actual" != "$expected" ] || return 0
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for %s %s=%s (actual=%s)\n' \
+    "$session" "$option" "$expected" "$actual" >&2
+  return 1
+}
+
+wait_for_file_text() {
+  local file="$1" text="$2" attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    if [ -f "$file" ] && grep -F -- "$text" "$file" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for %s in %s\n' "$text" "$file" >&2
+  return 1
+}
+
 export DETACH_STATE_ROOT="$TMP_ROOT/detach-state"
 export DETACH_STATE_BIN="$STATE_HELPER"
 FAKE_POWER_BIN="$TMP_ROOT/fake-detach-power"
@@ -381,7 +407,7 @@ literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
 export FAKE_CODEX_SLEEP=12
 run_codex --name integration --detach -- "$literal_prompt"
 
-sleep 2
+wait_for_tmux_option "$SESSION" @detach_status running
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 "$DETACH" list | grep -F 'codex' | grep -F "$SESSION" >/dev/null
 mkdir -p "$TMP_ROOT/unrelated-tmux-tmpdir"
@@ -605,7 +631,7 @@ export FAKE_CODEX_SLEEP=20
 export FAKE_CODEX_EXIT=0
 export FAKE_CODEX_FOREIGN_FIRST=0
 run_codex recover --detach integration
-sleep 1
+wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
 grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
@@ -623,7 +649,7 @@ wait_for_process_group_exit "$worker_pgid"
 export FAKE_CODEX_INIT_DELAY=5
 printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request", "never"]' >"$DETACH_CODEX_REQUIREMENTS_FILE"
 run_codex --name integration --detach -- 'start a new thread'
-sleep 1
+wait_for_file_text "$FAKE_CODEX_ARGS_FILE" 'start a new thread'
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_cli_version)" = "$upgraded_version" ]
 [ "$(grep -Fxc -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ "$(grep -Fxc -- 'never' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
@@ -647,7 +673,7 @@ uppercase_id="$(printf '%s' "$expected_id" | tr '[:lower:]' '[:upper:]')"
 other_cwd="$TMP_ROOT/other-cwd"
 mkdir -p "$other_cwd"
 (cd "$other_cwd" && "$DETACH" resume --name integration --detach "$uppercase_id")
-sleep 2
+wait_for_tmux_option "$SESSION" @detach_status completed
 grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$expected_id" ]
@@ -662,7 +688,12 @@ completed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-sty
 # A normal start replaces a completed retained pane with a fresh Codex thread.
 export FAKE_CODEX_INIT_DELAY=5
 run_codex --name integration --detach -- 'replace the completed thread'
-sleep 1
+attempts=0
+while [ "$("$STATE_HELPER" meta get "$meta" run_token)" = "$completed_run_token" ] && \
+      [ "$attempts" -lt 30 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
 [ "$("$STATE_HELPER" meta get "$meta" run_token)" != "$completed_run_token" ]
 grep -Fx 'replace the completed thread' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 ! grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
@@ -675,7 +706,7 @@ export FAKE_CODEX_INIT_DELAY=0
 export FAKE_CODEX_SLEEP=60
 export FAKE_CODEX_EXIT=0
 run_codex --name integration --detach -- 'json coverage'
-sleep 1
+wait_for_tmux_option "$SESSION" @detach_status running
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin schema)" = "1" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin provider)" = "codex" ]
@@ -729,7 +760,8 @@ switch_subagent="44444444-4444-7444-8444-444444444444"
 switch_thread "$switch_a" "$((switch_base_ms + 1000))" user clear-turn-a
 switch_thread "$switch_b" "$((switch_base_ms + 1000))" user clear-turn-b
 switch_thread "$switch_subagent" "$((switch_base_ms + 5000))" subagent clear-turn-subagent
-sleep 3
+wait_for_file_text "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint.log" \
+  'ambiguous Codex thread switch'
 [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$pre_switch_id" ]
 grep -F 'ambiguous Codex thread switch' \
   "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint.log" >/dev/null
@@ -781,7 +813,8 @@ grep -Fqx "$switch_c" "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/known-thread-i
 # must never rebind identity backward.
 switch_old="77777777-7777-7777-8777-777777777777"
 switch_thread "$switch_old" "$((switch_base_ms + 2000))" user clear-turn-old
-sleep 3
+wait_for_file_text "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint.log" \
+  'refusing Codex thread switch'
 [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$switch_d" ]
 grep -F 'refusing Codex thread switch' \
   "$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint.log" >/dev/null
@@ -810,7 +843,7 @@ printf '%s' "$json_line" | grep -F '"session_color":null' >/dev/null
 
 # delete refuses a live session and removes a stopped one.
 run_codex --name integration --detach -- 'delete refusal coverage'
-sleep 1
+wait_for_tmux_option "$SESSION" @detach_status running
 live_storage_plan="$("$DETACH" storage cleanup --dry-run --json)"
 ! printf '%s' "$live_storage_plan" | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
 if "$DETACH" storage cleanup --dry-run --json --session "$SESSION" >/dev/null 2>&1; then

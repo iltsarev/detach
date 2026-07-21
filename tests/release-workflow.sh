@@ -50,6 +50,22 @@ setup_fixture() {
   printf '%s\n' '.env.release' >"$REPO/.gitignore"
   printf '%s\n' '.build/' 'build/' >"$REPO/app/.gitignore"
   printf '%s\n' 'release workflow fixture' >"$REPO/README.md"
+  printf '%s\n' \
+    $'schema\t1' \
+    $'wall_seconds_max\t180' \
+    $'stage_static_seconds_max\t10' \
+    $'stage_gate_contract_seconds_max\t10' \
+    $'stage_swift_seconds_max\t10' \
+    $'stage_quality_contracts_seconds_max\t10' \
+    $'stage_app_seconds_max\t10' \
+    $'stage_codex_seconds_max\t10' \
+    $'stage_claude_seconds_max\t10' \
+    $'stage_distribution_seconds_max\t10' \
+    $'stage_tmux_runtime_seconds_max\t10' \
+    $'stage_release_preflight_seconds_max\t10' \
+    $'stage_publish_preflight_seconds_max\t10' \
+    $'stage_release_workflow_seconds_max\t10' \
+    >"$REPO/tests/release-budget.tsv"
   {
     printf "DETACH_CODESIGN_IDENTITY='%s'\n" "$IDENTITY"
     printf '%s\n' 'DETACH_NOTARY_PROFILE=detach-tests'
@@ -193,6 +209,10 @@ SH
   write_executable "$REPO/tests/quality-gate-fixtures/swift" <<'SH'
 #!/bin/bash
 exec swift test
+SH
+  write_executable "$REPO/tests/quality-gate-fixtures/quality-contracts" <<'SH'
+#!/bin/bash
+exit 0
 SH
   write_executable "$REPO/tests/quality-gate-fixtures/app" <<'SH'
 #!/bin/bash

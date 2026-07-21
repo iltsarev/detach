@@ -1025,8 +1025,4 @@ grep -F 'refusing unsafe shell profile' "$TMP_ROOT/external-ancestor.stderr" >/d
 [ ! -e "$TMP_ROOT/external-fish-config/fish/conf.d/detach.fish" ]
 shell_case_uninstall >/dev/null
 
-"$ROOT/tests/release-preflight.sh"
-"$ROOT/tests/publish-preflight.sh"
-"$ROOT/tests/release-workflow.sh"
-
 printf 'Detach distribution tests passed\n'

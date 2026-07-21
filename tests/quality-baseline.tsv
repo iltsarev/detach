@@ -1,0 +1,5 @@
+schema	1
+ui_test_count_min	170
+business_test_count_min	294
+ui_line_coverage_min	21.54
+business_line_coverage_min	80.75
