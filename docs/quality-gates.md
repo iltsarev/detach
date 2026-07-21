@@ -1,7 +1,7 @@
 # Quality gates
 
 `scripts/quality-gate` is the tracked readiness contract for local agents, CI,
-and releases. Policy version 5 derives
+and releases. Policy version 6 derives
 the mandatory set from the Git diff, and selects the full repository gate for
 unknown paths or changes to this policy itself. Its resource-aware scheduler
 runs isolated work concurrently without allowing two SwiftPM operations to
@@ -59,9 +59,27 @@ bundled tmux and `detach-state`; they do not invoke SwiftPM. Distribution and
 hermetic release contracts form independent lanes. The gate therefore does not
 depend on writable user caches, ambient tmux, or provider session state.
 
-There are no quarantined tests in policy version 5. A future quarantine must be
+There are no quarantined tests in policy version 6. A future quarantine must be
 tracked here with an owner, expiry, and reason, and may not remove a release
 contract check.
+
+## Policy version 6: lean agent context and durable specs
+
+Policy 6 keeps the policy-5 quality and time ratchets and adds one fast
+documentation contract to the existing static stage:
+
+1. Git tracks exactly one canonical `AGENTS.md`; `CLAUDE.md` contains only
+   `@AGENTS.md`, so Codex and Claude Code share one source without copied rules.
+2. The automatically loaded guide remains below 200 lines and 8 KiB.
+   Architecture lives in small task-specific files under `docs/specs/`.
+3. A five-row context map points to one spec and one focused feedback loop per
+   subsystem. Detailed specs are not eagerly imported.
+4. Small changes skip planning. Complex or cross-subsystem work may use the
+   ignored ExecPlan template without publishing temporary task history.
+5. `tests/docs-contract.sh` checks the single-source link, context budgets,
+   required specs, context-map coverage, plan shape, and ignored work area.
+6. Documentation-only changes still run only the bounded static stage; no new
+   build or test pass was added to the repository critical path.
 
 ## Policy version 5: monotonic quality and time budgets
 
@@ -102,7 +120,8 @@ distribution 80s, runtime 8s, release preflight 15s, publish preflight 25s, and
 release workflow 70s. The stricter 180-second wall ceiling is authoritative.
 Changing machine class or intentionally adding mandatory coverage requires
 making enough scheduling improvement to remain inside that same ceiling; the
-budget itself cannot be relaxed.
+budget itself cannot be relaxed. CI pins Xcode 26.6 so coverage does not move
+when GitHub changes its default toolchain.
 
 ## Policy version 4: speed without quality loss
 

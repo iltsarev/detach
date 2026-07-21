@@ -17,6 +17,8 @@ jobs:
   quality-gates:
     runs-on: macos-26
     timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,9 +28,10 @@ jobs:
         with:
           path: |
             app/.build
-          key: detach-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/Package.resolved', 'scripts/build-tmux.sh') }}
+          key: detach-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.resolved', 'scripts/build-tmux.sh') }}-${{ github.sha }}
           restore-keys: |
-            detach-${{ runner.os }}-${{ runner.arch }}-
+            detach-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.resolved', 'scripts/build-tmux.sh') }}-
+            detach-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-
       - name: Run pull-request change gate
         if: github.event_name == 'pull_request'
         env:

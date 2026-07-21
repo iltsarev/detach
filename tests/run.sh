@@ -97,6 +97,21 @@ wait_for_process_group_exit() {
   ! process_group_exists "$pgid"
 }
 
+wait_for_process_group_id() {
+  local pid="$1" pgid="" attempts=0
+  while [ "$attempts" -lt 50 ]; do
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    case "$pgid" in
+      ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$pgid"; return 0 ;;
+    esac
+    attempts=$((attempts + 1))
+    sleep 0.05
+  done
+  printf 'timed out waiting for process group of PID %s\n' "$pid" >&2
+  return 1
+}
+
 wait_for_pane_text() {
   local socket="$1"
   local pane="$2"
@@ -450,7 +465,7 @@ grep -Fx -- '--run-token' "$FAKE_POWER_ARGS_FILE" >/dev/null
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_cli_version)" = "$installed_version" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_core_path)" = "$installed_core" ]
 first_worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
-first_worker_pgid="$(ps -o pgid= -p "$first_worker_pid" | tr -d '[:space:]')"
+first_worker_pgid="$(wait_for_process_group_id "$first_worker_pid")"
 health_json="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 [ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
 [ "$(printf '%s' "$health_json" | "$STATE_HELPER" meta get /dev/stdin ownership_proven)" = true ]
@@ -636,7 +651,7 @@ grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
-worker_pgid="$(ps -o pgid= -p "$worker_pid" | tr -d '[:space:]')"
+worker_pgid="$(wait_for_process_group_id "$worker_pid")"
 
 run_codex stop integration
 ! kill -0 "$worker_pid" 2>/dev/null
@@ -912,7 +927,7 @@ worker_crash_pane="$(tmux -L "$SOCKET" show-options -qv \
   -t "=$worker_crash_session:" @detach_pane_id)"
 worker_crash_pid="$("$STATE_HELPER" meta get "$worker_crash_meta" worker_pid)"
 worker_crash_provider_pid="$("$STATE_HELPER" meta get "$worker_crash_meta" provider_pid)"
-worker_crash_pgid="$(ps -o pgid= -p "$worker_crash_pid" | tr -d '[:space:]')"
+worker_crash_pgid="$(wait_for_process_group_id "$worker_crash_pid")"
 kill -KILL "$worker_crash_pid"
 attempts=0
 while [ "$(tmux -L "$SOCKET" display-message -p -t "$worker_crash_pane" '#{pane_dead}')" != "1" ] && \
@@ -1007,7 +1022,7 @@ provider_crash_pane="$(tmux -L "$SOCKET" show-options -qv \
   -t "=$provider_crash_session:" @detach_pane_id)"
 provider_crash_worker="$("$STATE_HELPER" meta get "$provider_crash_meta" worker_pid)"
 provider_crash_provider="$("$STATE_HELPER" meta get "$provider_crash_meta" provider_pid)"
-provider_crash_pgid="$(ps -o pgid= -p "$provider_crash_worker" | tr -d '[:space:]')"
+provider_crash_pgid="$(wait_for_process_group_id "$provider_crash_worker")"
 kill -KILL "$provider_crash_provider"
 attempts=0
 while { [ "$(tmux -L "$SOCKET" display-message -p -t "$provider_crash_pane" '#{pane_dead}')" != "1" ] || \
@@ -1072,7 +1087,7 @@ done
 [ -s "$tmux_loss_checkpoint" ]
 tmux_loss_worker="$("$STATE_HELPER" meta get "$tmux_loss_meta" worker_pid)"
 tmux_loss_provider="$("$STATE_HELPER" meta get "$tmux_loss_meta" provider_pid)"
-tmux_loss_pgid="$(ps -o pgid= -p "$tmux_loss_worker" | tr -d '[:space:]')"
+tmux_loss_pgid="$(wait_for_process_group_id "$tmux_loss_worker")"
 tmux_server_pid="$(tmux -L "$SOCKET" display-message -p '#{pid}')"
 kill -STOP -- "-$tmux_loss_pgid"
 kill -KILL "$tmux_server_pid"

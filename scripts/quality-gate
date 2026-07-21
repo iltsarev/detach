@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-POLICY_VERSION=5
+POLICY_VERSION=6
 MODE=change
 BASE_REF=""
 PLAN_ONLY=0
@@ -183,7 +183,9 @@ select_for_path() {
     .github/workflows/quality-gates.yml|docs/quality-gates.md|scripts/quality-gate|tests/quality-gate.sh|tests/quality-contracts.sh|tests/quality-baseline.tsv|tests/quality-ratchet.sh|tests/quality-ratchet-contract.sh|tests/release-budget.tsv|tests/release-budget-ratchet.sh|tests/release-budget-ratchet-contract.sh)
       select_all "$change gate policy file $path"
       ;;
-    *.md|docs/assets/*|agents.md|CLAUDE.md)
+    tests/docs-contract.sh)
+      ;;
+    *.md|docs/assets/*|AGENTS.md|CLAUDE.md)
       ;;
     app/Sources/*|app/Tests/*)
       add_stage swift; add_stage quality-contracts; add_stage release-budget
@@ -584,6 +586,7 @@ run_static() {
     git -C "$ROOT" diff --check "$RESOLVED_BASE"...HEAD
   fi
   git -C "$ROOT" diff --check HEAD
+  "$ROOT/tests/docs-contract.sh"
   "$ROOT/tests/quality-ratchet.sh"
   "$ROOT/tests/release-budget-ratchet.sh"
 }

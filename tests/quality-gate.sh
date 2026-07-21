@@ -17,6 +17,8 @@ setup_fixture() {
   install -m 0755 "$ROOT/scripts/quality-gate" "$REPO/scripts/quality-gate"
   install -m 0755 "$ROOT/tests/quality-ratchet.sh" "$ROOT/tests/release-budget-ratchet.sh" "$REPO/tests/"
   install -m 0644 "$ROOT/tests/quality-baseline.tsv" "$ROOT/tests/release-budget.tsv" "$REPO/tests/"
+  printf '#!/bin/bash\nexit 0\n' >"$REPO/tests/docs-contract.sh"
+  chmod 0755 "$REPO/tests/docs-contract.sh"
   printf '%s\n' baseline >"$REPO/README.md"
   printf '%s\n' actions.log results '*.out' >"$REPO/.gitignore"
   for stage in static gate-contract swift quality-contracts app codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow; do
@@ -65,6 +67,11 @@ stages="$(gate --list-stages)"
 [ "$(printf '%s\n' "$stages" | head -1)" = static ]
 [ "$(printf '%s\n' "$stages" | tail -1)" = release-budget ]
 printf '%s\n' docs >>"$REPO/README.md"
+plan="$(gate --plan)"
+[[ "$plan" = *'stages=static' ]]
+
+setup_fixture docs-contract
+printf '%s\n' '# changed contract' >"$REPO/tests/docs-contract.sh"
 plan="$(gate --plan)"
 [[ "$plan" = *'stages=static' ]]
 
@@ -135,7 +142,7 @@ mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct OddName {}' >"$REPO/app/Sources/DetachKit/line
 break.swift"
 plan="$(gate --plan --format json)"
-[[ "$plan" = '{"policy":5,"mode":"change","source_commit":"'* ]]
+[[ "$plan" = '{"policy":6,"mode":"change","source_commit":"'* ]]
 [[ "$plan" = *'"base_commit":"","input_fingerprint":"'* ]]
 [[ "$plan" = *'"stages":["static","swift","quality-contracts","release-budget"]}' ]]
 
@@ -320,7 +327,7 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/tamper-first.out" 2>&1; then
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'5\trepository\tapp\tpassed\t0\tapp.log' >>"$resume_dir/summary.tsv"
+printf '%s\n' $'6\trepository\tapp\tpassed\t0\tapp.log' >>"$resume_dir/summary.tsv"
 if gate --mode repository --resume "$resume_dir" >"$REPO/tamper-second.out" 2>&1; then
   printf 'quality gate reused tampered summary evidence\n' >&2
   exit 1
@@ -332,7 +339,7 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/duplicate-manifest-first.out
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'policy\t5' >>"$resume_dir/manifest.tsv"
+printf '%s\n' $'policy\t6' >>"$resume_dir/manifest.tsv"
 if gate --mode repository --resume "$resume_dir" >"$REPO/duplicate-manifest-second.out" 2>&1; then
   printf 'quality gate accepted duplicate manifest keys\n' >&2
   exit 1
@@ -356,7 +363,7 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/invalid-summary-first.out" 2
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'5\trepository\tstatic\tpassed\t0\tduplicate.log' >>"$resume_dir/summary.tsv"
+printf '%s\n' $'6\trepository\tstatic\tpassed\t0\tduplicate.log' >>"$resume_dir/summary.tsv"
 refresh_summary_digest "$resume_dir"
 if gate --mode repository --resume "$resume_dir" >"$REPO/invalid-summary-second.out" 2>&1; then
   printf 'quality gate accepted duplicate stage records\n' >&2
