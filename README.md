@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/iltsarev/detach/releases/latest"><img src="https://img.shields.io/github/v/release/iltsarev/detach?style=flat-square&amp;label=release&amp;color=545CE0" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/macOS-14%2B-545CE0?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="macOS 14 or newer">
+  <img src="https://img.shields.io/badge/macOS-26%2B-545CE0?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="macOS 26 or newer">
   <img src="https://img.shields.io/badge/Apple_Silicon-native-545CE0?style=flat-square" alt="Apple Silicon native">
   <img src="https://img.shields.io/badge/Codex-087F6D?style=flat-square" alt="Codex supported">
   <img src="https://img.shields.io/badge/Claude_Code-B43B24?style=flat-square" alt="Claude Code supported">
@@ -465,7 +465,7 @@ Protect, `caffeinate`, or another keep-awake package.
 
 | Component | Requirement |
 |---|---|
-| Mac | macOS 14 or newer on Apple Silicon (`arm64`); Intel Macs are not supported. |
+| Mac | macOS 26 or newer on Apple Silicon (`arm64`); Intel Macs are not supported. |
 | Provider | At least one authenticated [Codex CLI](https://github.com/openai/codex) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview). |
 | macOS approval | An administrator password is required once to register the signed power helper; Login Items approval may also be required. |
 

@@ -100,8 +100,8 @@ build_arch() {
   cmake="$(command -v cmake 2>/dev/null || true)"
   [ -x "$cmake" ] || die "cmake is required to build the pinned libevent source"
   jobs="$(/usr/sbin/sysctl -n hw.logicalcpu 2>/dev/null || printf 4)"
-  common_cflags="-arch $arch -isysroot $sdk -mmacosx-version-min=14.0 -O2"
-  common_ldflags="-arch $arch -isysroot $sdk -mmacosx-version-min=14.0"
+  common_cflags="-arch $arch -isysroot $sdk -mmacosx-version-min=26.0 -O2"
+  common_ldflags="-arch $arch -isysroot $sdk -mmacosx-version-min=26.0"
 
   (
     cd -P "$source_root/libevent"
@@ -112,7 +112,7 @@ build_arch() {
       -DCMAKE_AR="$ar" \
       -DCMAKE_RANLIB="$ranlib" \
       -DCMAKE_OSX_ARCHITECTURES="$arch" \
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
       -DCMAKE_OSX_SYSROOT="$sdk" \
       -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DEVENT__LIBRARY_TYPE=STATIC \

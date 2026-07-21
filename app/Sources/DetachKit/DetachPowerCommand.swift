@@ -198,10 +198,7 @@ public struct POSIXChildProcessLauncher: ChildProcessLaunching {
 
         let changeDirectoryResult = request.currentDirectoryURL.path.withCString {
             path in
-            if #available(macOS 26.0, *) {
-                return posix_spawn_file_actions_addchdir(&fileActions, path)
-            }
-            return posix_spawn_file_actions_addchdir_np(&fileActions, path)
+            posix_spawn_file_actions_addchdir(&fileActions, path)
         }
         guard changeDirectoryResult == 0 else {
             throw posixError(

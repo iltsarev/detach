@@ -206,7 +206,7 @@ build_arch() {
   # Sharing one scratch directory also shares the pinned Sparkle checkout and
   # binary artifact.
   local scratch="$APP_ROOT/.build"
-  local triple="$arch-apple-macosx14.0"
+  local triple="$arch-apple-macosx26.0"
   swift build --disable-sandbox --disable-automatic-resolution \
     --package-path "$APP_ROOT" -c release --triple "$triple" \
     --scratch-path "$scratch"

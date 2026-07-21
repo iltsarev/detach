@@ -5,7 +5,7 @@ code in this repository.
 
 ## What this is
 
-Detach is a macOS 14+ reliability harness for long-running Codex CLI and Claude
+Detach is a macOS 26+ reliability harness for long-running Codex CLI and Claude
 Code sessions. It launches a provider inside a persistent, Detach-owned tmux
 server, keeps private recovery checkpoints every five minutes by default, and
 can protect an active session from idle and closed-lid sleep.

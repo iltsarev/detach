@@ -10,6 +10,7 @@ INFO="$APP/Contents/Info.plist"
 AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.power-watchdog.plist"
 POWER_DAEMON="$APP/Contents/Library/LaunchDaemons/dev.tsarev.detach.power-helper.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
+EXPECTED_MINIMUM_SYSTEM_VERSION="26.0"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.4}"
 SPARKLE_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/Sparkle/LICENSE.txt"
 SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
@@ -74,6 +75,12 @@ done
 # operations support JSON. Parse the payload manifest explicitly as JSON.
 plutil -p "$PAYLOAD/payload.json" >/dev/null
 [ "$(plutil -extract CFBundleShortVersionString raw -o - "$INFO")" = "$EXPECTED_VERSION" ]
+[ "$(plutil -extract LSMinimumSystemVersion raw -o - "$INFO")" = \
+  "$EXPECTED_MINIMUM_SYSTEM_VERSION" ] || {
+  printf 'App minimum system version must be %s\n' \
+    "$EXPECTED_MINIMUM_SYSTEM_VERSION" >&2
+  exit 1
+}
 INFO_BUILD="$(plutil -extract CFBundleVersion raw -o - "$INFO")"
 [[ "$INFO_BUILD" =~ ^[1-9][0-9]*$ ]]
 [ "$(<"$PAYLOAD/VERSION")" = "$EXPECTED_VERSION" ]
@@ -237,6 +244,31 @@ verify_dynamic_dependencies() {
     exit 1
   fi
 }
+
+verify_minimum_system_version() {
+  local binary="$1"
+  local minimum
+
+  minimum="$(otool -l "$binary" | awk '
+      $1 == "cmd" && $2 == "LC_BUILD_VERSION" { in_build_version = 1; next }
+      in_build_version && $1 == "minos" && !found { print $2; found = 1 }
+    ')"
+  [ "$minimum" = "$EXPECTED_MINIMUM_SYSTEM_VERSION" ] || {
+    printf '%s minimum system version is %s, expected %s\n' \
+      "$binary" "${minimum:-missing}" "$EXPECTED_MINIMUM_SYSTEM_VERSION" >&2
+    exit 1
+  }
+}
+
+for binary in \
+  "$APP/Contents/MacOS/Detach" \
+  "$APP/Contents/MacOS/DetachWatchdog" \
+  "$STATE_BINARY" \
+  "$POWER_BINARY" \
+  "$POWER_HELPER_BINARY" \
+  "$TMUX_BINARY"; do
+  verify_minimum_system_version "$binary"
+done
 
 [ -d "$FRAMEWORK_VERSION_ROOT" ] || {
   printf 'Missing embedded Sparkle.framework 2.x layout\n' >&2
