@@ -4,6 +4,7 @@ set -eu
 set -o pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+PROJECT_LABEL="${ROOT##*/}"
 SCRIPT="$ROOT/bin/detach"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-claude-test.XXXXXX")"
 TEST_INSTALL_STATE_ROOT="/tmp/detach-claude-install-state-$$"
@@ -246,7 +247,7 @@ tmux -L "$SOCKET" show-options -qv -t "=$session:" status-style | \
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
   grep -F "bg=$session_color" >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
-  grep -F 'Claude' | grep -F 'harness' | grep -F 'RUNNING' >/dev/null
+  grep -F 'Claude' | grep -F "$PROJECT_LABEL" | grep -F 'RUNNING' >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-right | \
   grep -F 'MAC AWAKE' >/dev/null
 grep -Fx -- 'run' "$FAKE_POWER_ARGS_FILE" >/dev/null

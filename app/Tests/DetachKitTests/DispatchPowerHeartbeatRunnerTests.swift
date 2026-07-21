@@ -3,6 +3,7 @@ import XCTest
 
 final class DispatchPowerHeartbeatRunnerTests: XCTestCase {
     private struct ExpectedFailure: Error {}
+    private struct TimedOut: Error {}
 
     private final class Probe: @unchecked Sendable {
         private let lock = NSLock()
@@ -24,14 +25,18 @@ final class DispatchPowerHeartbeatRunnerTests: XCTestCase {
 
     func testTransientRenewalFailureKeepsRetryingAndRecovers() throws {
         let probe = Probe()
+        let recovered = DispatchSemaphore(value: 0)
         let runner = DispatchPowerHeartbeatRunner(interval: 0.01)
 
         let result = try runner.run(
             heartbeat: {
                 if probe.next() == 1 { throw ExpectedFailure() }
+                recovered.signal()
             },
             operation: {
-                Thread.sleep(forTimeInterval: 0.055)
+                guard recovered.wait(timeout: .now() + 2) == .success else {
+                    throw TimedOut()
+                }
                 return ChildCommandResult(exitCode: 17)
             })
 
@@ -41,17 +46,20 @@ final class DispatchPowerHeartbeatRunnerTests: XCTestCase {
 
     func testPersistentRenewalFailureIsSurfacedAfterChildCleanup() {
         let probe = Probe()
+        let secondFailure = DispatchSemaphore(value: 0)
         let runner = DispatchPowerHeartbeatRunner(interval: 0.01)
 
         XCTAssertThrowsError(try runner.run(
             heartbeat: {
-                _ = probe.next()
+                if probe.next() >= 2 { secondFailure.signal() }
                 throw ExpectedFailure()
             },
             operation: {
-                Thread.sleep(forTimeInterval: 0.04)
+                _ = secondFailure.wait(timeout: .now() + 2)
                 return ChildCommandResult(exitCode: 0)
-            }))
+            })) { error in
+                XCTAssertTrue(error is ExpectedFailure)
+            }
         XCTAssertGreaterThanOrEqual(probe.value, 2)
     }
 }

@@ -4,6 +4,7 @@ set -eu
 set -o pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+PROJECT_LABEL="${ROOT##*/}"
 SCRIPT="$ROOT/bin/detach"
 DETACH="$ROOT/bin/detach"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-codex-test.XXXXXX")"
@@ -405,7 +406,7 @@ tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style | \
 status_left="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left)"
 printf '%s' "$status_left" | grep -F "bg=$session_color" >/dev/null
 printf '%s' "$status_left" | grep -F 'Detach' | grep -F 'Codex' | \
-  grep -F 'harness' | grep -F 'RUNNING' >/dev/null
+  grep -F "$PROJECT_LABEL" | grep -F 'RUNNING' >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-right | \
   grep -F 'MAC AWAKE' >/dev/null
 # Mouse input: wheel scrolling stays one line per step and selections land in
