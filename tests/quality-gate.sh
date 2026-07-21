@@ -172,6 +172,11 @@ fi
 ! grep -Fx release-workflow "$ACTION_LOG" >/dev/null
 [ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 11 ]
 
+setup_fixture github-budget
+plan="$(GITHUB_ACTIONS=true gate --mode repository --without-release-budget --plan)"
+[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow' ]]
+[[ "$plan" != *'release-budget'* ]]
+
 setup_fixture failure
 printf '#!/bin/bash\nprintf "%%s\\n" swift >>"${GATE_ACTION_LOG:?}"\n+exit 23\n' \
   >"$REPO/tests/quality-gate-fixtures/swift"

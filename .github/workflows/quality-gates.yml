@@ -40,7 +40,7 @@ jobs:
         run: scripts/quality-gate --base "$BASE_SHA"
       - name: Run full repository gate
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        run: scripts/quality-gate --mode repository --keep-going
+        run: scripts/quality-gate --mode repository --keep-going --without-release-budget
       - name: Save Swift and tmux caches
         if: always() && steps.swift-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

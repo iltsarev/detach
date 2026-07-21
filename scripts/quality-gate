@@ -13,6 +13,7 @@ EXPLAIN=0
 KEEP_GOING=0
 RESUME_DIR=""
 RESUME_LATEST=0
+WITHOUT_RELEASE_BUDGET=0
 TEST_MODE="${DETACH_QUALITY_GATE_TEST_MODE:-0}"
 RESULT_ROOT="${DETACH_QUALITY_GATE_RESULT_ROOT:-$ROOT/app/build/quality-gates}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -40,6 +41,7 @@ usage() {
 usage: scripts/quality-gate [--mode change|repository|release] [--base GIT_REF] [--plan]
                             [--format text|json] [--explain]
                             [--resume RUN_DIR|latest] [--keep-going]
+                            [--without-release-budget]
        scripts/quality-gate --list-stages
        scripts/quality-gate --stage NAME
 
@@ -118,6 +120,10 @@ while [ "$#" -gt 0 ]; do
       KEEP_GOING=1
       shift
       ;;
+    --without-release-budget)
+      WITHOUT_RELEASE_BUDGET=1
+      shift
+      ;;
     --list-stages)
       LIST_STAGES=1
       shift
@@ -136,6 +142,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$TEST_MODE" in 0|1) ;; *) die 'DETACH_QUALITY_GATE_TEST_MODE must be 0 or 1' ;; esac
+[ "$WITHOUT_RELEASE_BUDGET" = 0 ] || [ "${GITHUB_ACTIONS:-}" = true ] || [ "$TEST_MODE" = 1 ] || \
+  die '--without-release-budget is restricted to GitHub Actions'
 if [ "$TEST_MODE" != 1 ] && { [ -n "${DETACH_QUALITY_GATE_TEST_WALL_SECONDS:-}" ] || [ -n "${DETACH_QUALITY_GATE_TEST_CODEX_SECONDS:-}" ]; }; then
   die 'quality-gate clock overrides are test-only'
 fi
@@ -271,6 +279,13 @@ for stage in "${ALL_STAGES[@]}"; do
   contains_stage "$stage" && ordered+=("$stage")
 done
 SELECTED=("${ordered[@]}")
+if [ "$WITHOUT_RELEASE_BUDGET" = 1 ]; then
+  ordered=()
+  for stage in "${SELECTED[@]}"; do
+    [ "$stage" = release-budget ] || ordered+=("$stage")
+  done
+  SELECTED=("${ordered[@]}")
+fi
 
 EFFECTIVE_MODE="$([ -n "$DIAGNOSTIC_STAGE" ] && printf diagnostic || printf '%s' "$MODE")"
 STAGE_LIST="$(IFS=,; printf '%s' "${SELECTED[*]}")"

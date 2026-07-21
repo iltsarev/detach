@@ -214,10 +214,12 @@ user-facing documentation is synchronized, and `git diff --check` is clean.
 The report must name any manual release gate that was not run. A single test or
 `--stage` rerun is useful diagnosis but cannot replace the selected gate.
 
-CI and `scripts/release-version` invoke this same entry point. CI publishes its
-manifest, TSV, JUnit report, and logs for 14 days even when the gate passes, and
-also exposes the summary in the workflow UI. They must not copy a separate test
-matrix.
+CI and `scripts/release-version` invoke this same entry point. CI runs every
+functional stage but omits the hardware-specific `release-budget`; local and
+release readiness still require the 180-second reference budget. CI publishes
+its manifest, TSV, JUnit report, and logs for 14 days even when the gate passes,
+and also exposes the summary in the workflow UI. It does not copy a separate
+test matrix.
 
 ## Manual release-only gates
 
