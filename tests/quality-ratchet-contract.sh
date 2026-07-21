@@ -19,18 +19,18 @@ write_baseline() {
 
 current="$TMP_ROOT/current.tsv"
 prior="$TMP_ROOT/prior.tsv"
-write_baseline "$current" 170 294 21.54 80.75
-write_baseline "$prior" 170 294 21.54 80.75
+write_baseline "$current" 170 294 21.54 80.98
+write_baseline "$prior" 170 294 21.54 80.98
 
 DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" \
   DETACH_QUALITY_PRIOR_BASELINE="$prior" "$RATCHET" >/dev/null
 
 for regression in ui-tests business-tests ui-coverage business-coverage; do
   case "$regression" in
-    ui-tests) write_baseline "$current" 169 294 21.54 80.75 ;;
-    business-tests) write_baseline "$current" 170 293 21.54 80.75 ;;
-    ui-coverage) write_baseline "$current" 170 294 21.53 80.75 ;;
-    business-coverage) write_baseline "$current" 170 294 21.54 80.74 ;;
+    ui-tests) write_baseline "$current" 169 294 21.54 80.98 ;;
+    business-tests) write_baseline "$current" 170 293 21.54 80.98 ;;
+    ui-coverage) write_baseline "$current" 170 294 21.53 80.98 ;;
+    business-coverage) write_baseline "$current" 170 294 21.54 80.97 ;;
   esac
   if DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" "$RATCHET" \
     >"$TMP_ROOT/$regression.out" 2>&1; then
@@ -49,7 +49,7 @@ if DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" \
 fi
 grep -F 'regressed below merge-base' "$TMP_ROOT/prior.out" >/dev/null
 
-write_baseline "$current" 170 294 21.54 80.75
+write_baseline "$current" 170 294 21.54 80.98
 printf 'ui_test_count_min\t170\n' >>"$current"
 if DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" "$RATCHET" \
   >"$TMP_ROOT/duplicate.out" 2>&1; then

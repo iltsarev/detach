@@ -3862,6 +3862,7 @@ recover_session() {
       die "could not start checkpoint recovery"
   fi
   [ "$detach" -eq 1 ] || attach_session "$session"
+  return 0
 }
 
 main() {

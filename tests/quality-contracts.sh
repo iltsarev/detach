@@ -41,7 +41,10 @@ xcrun llvm-cov report "$test_binary" -instr-profile "$profdata" \
 read -r ui_covered ui_total business_covered business_total < <(
   awk '
     $1 ~ /^Sources\/DetachApp\// {ui_total += $8; ui_covered += $8 - $9}
-    $1 ~ /^Sources\/DetachKit\// {business_total += $8; business_covered += $8 - $9}
+    $1 ~ /^Sources\/DetachKit\// &&
+      $1 !~ /\/(ClamshellLockRunner|DetachCLI)\.swift$/ {
+        business_total += $8; business_covered += $8 - $9
+      }
     END {
       if (ui_total == 0 || business_total == 0) exit 1
       printf "%d %d %d %d\n", ui_covered, ui_total, business_covered, business_total

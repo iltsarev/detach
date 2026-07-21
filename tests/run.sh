@@ -654,7 +654,10 @@ rm -f "$meta"
 export FAKE_CODEX_SLEEP=20
 export FAKE_CODEX_EXIT=0
 export FAKE_CODEX_FOREIGN_FIRST=0
-run_codex recover --detach integration
+if ! run_codex recover --detach integration; then
+  printf 'recover command returned a failure after starting the session\n' >&2
+  exit 1
+fi
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"

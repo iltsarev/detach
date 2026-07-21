@@ -24,7 +24,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: Restore Swift and tmux caches
-        uses: actions/cache@v4
+        id: swift-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             app/.build
@@ -40,6 +41,13 @@ jobs:
       - name: Run full repository gate
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: scripts/quality-gate --mode repository --keep-going
+      - name: Save Swift and tmux caches
+        if: always() && steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/.build
+          key: detach-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.resolved', 'scripts/build-tmux.sh') }}-${{ github.sha }}
       - name: Publish gate summary
         if: always()
         shell: bash
