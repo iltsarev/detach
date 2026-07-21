@@ -91,6 +91,12 @@ assert_at_least() {
   local label="$1" actual="$2" minimum="$3"
   awk -v actual="$actual" -v minimum="$minimum" 'BEGIN {exit !(actual + 0 >= minimum + 0)}' || {
     printf 'quality contracts: %s regressed: %s < %s\n' "$label" "$actual" "$minimum" >&2
+    if [ "$label" = 'business line coverage' ]; then
+      printf 'quality contracts: DetachKit coverage by file:\n' >&2
+      awk '$1 ~ /^Sources\/DetachKit\// {print}' "$TMP_ROOT/coverage.txt" >&2
+      xcrun swift --version >&2
+      sw_vers >&2
+    fi
     exit 1
   }
 }

@@ -155,6 +155,15 @@ wait_for_file_text() {
   return 1
 }
 
+require_file_line() {
+  local file="$1" expected="$2"
+  grep -Fx -- "$expected" "$file" >/dev/null || {
+    printf 'missing exact line %s in %s; contents:\n' "$expected" "$file" >&2
+    sed -n '1,80p' "$file" >&2
+    return 1
+  }
+}
+
 export DETACH_STATE_ROOT="$TMP_ROOT/detach-state"
 export DETACH_STATE_BIN="$STATE_HELPER"
 FAKE_POWER_BIN="$TMP_ROOT/fake-detach-power"
@@ -647,10 +656,14 @@ export FAKE_CODEX_EXIT=0
 export FAKE_CODEX_FOREIGN_FIRST=0
 run_codex recover --detach integration
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
-grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
-grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
+require_file_line "$FAKE_CODEX_ARGS_FILE" resume
+require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
+[ -n "$pane_id" ] || { printf 'recovered session is missing its pane ID\n' >&2; exit 1; }
 worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
+case "$worker_pid" in
+  ''|*[!0-9]*) printf 'recovered pane has invalid worker PID: %s\n' "$worker_pid" >&2; exit 1 ;;
+esac
 worker_pgid="$(wait_for_process_group_id "$worker_pid")"
 
 run_codex stop integration
