@@ -159,6 +159,40 @@ bash -n "$ROOT/tests/fake-claude"
 [ "$($SCRIPT config tmux-style)" = "detach" ]
 [ "$("$SCRIPT" claude __session_color /fixtures/harness)" = "#C2410C" ]
 
+# Color allocation is shared across providers. A path-derived collision walks
+# to the next free hue, an existing unique identity remains stable, and only a
+# fully occupied palette permits a duplicate.
+color_cwd=/fixtures/shared-color
+preferred_color="$("$SCRIPT" claude __session_color "$color_cwd")"
+codex_color_sessions="$DETACH_CODEX_STATE_ROOT/sessions"
+claude_color_sessions="$DETACH_CLAUDE_STATE_ROOT/sessions"
+mkdir -p "$codex_color_sessions/taken" "$claude_color_sessions/current"
+"$STATE_HELPER" meta create "$codex_color_sessions/taken/meta.json" \
+  --integer schema 1 --string session_name taken --string session_color "$preferred_color"
+allocated_color="$("$SCRIPT" claude __allocate_session_color "$color_cwd")"
+[ "$allocated_color" != "$preferred_color" ]
+"$STATE_HELPER" meta create "$claude_color_sessions/current/meta.json" \
+  --integer schema 1 --string session_name current --string session_color "$allocated_color"
+[ "$("$SCRIPT" claude __allocate_session_color "$color_cwd" current)" = "$allocated_color" ]
+mkdir -p "$claude_color_sessions/duplicate-current"
+"$STATE_HELPER" meta create "$claude_color_sessions/duplicate-current/meta.json" \
+  --integer schema 1 --string session_name duplicate-current --string session_color "$preferred_color"
+migrated_color="$("$SCRIPT" claude __allocate_session_color "$color_cwd" duplicate-current)"
+[ "$migrated_color" != "$preferred_color" ]
+[ "$migrated_color" != "$allocated_color" ]
+
+palette=( '#C2410C' '#4D7C0F' '#15803D' '#0D9488' '#0369A1' '#1D4ED8' '#6D28D9' '#A21CAF' )
+color_index=0
+for color in "${palette[@]}"; do
+  color_dir="$codex_color_sessions/palette-$color_index"
+  mkdir -p "$color_dir"
+  "$STATE_HELPER" meta create "$color_dir/meta.json" \
+    --integer schema 1 --string session_name "palette-$color_index" --string session_color "$color"
+  color_index=$((color_index + 1))
+done
+[ "$("$SCRIPT" claude __allocate_session_color "$color_cwd")" = "$preferred_color" ]
+rm -rf "$codex_color_sessions" "$claude_color_sessions"
+
 marker="$TMP_ROOT/must-not-exist"
 literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
 mkdir -p "$TMP_ROOT/extra-a" "$TMP_ROOT/extra-b"

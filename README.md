@@ -115,7 +115,8 @@ The dashboard gives every managed session:
 - optional notifications when a turn is ready for an answer, a session
   finishes or fails, or recovery becomes available;
 - a stable identity color shared by the sidebar and that session's tmux status
-  bar.
+  bar; saved sessions avoid reusing an occupied hue until the eight-color
+  palette is full.
 
 Sessions waiting for your reply move into **Answer ready**, ahead of agents
 that are still working. That signal comes from structured provider lifecycle

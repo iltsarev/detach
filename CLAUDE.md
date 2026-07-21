@@ -244,9 +244,14 @@ a dense blend of the session identity color behind light plain-text labels,
 plus a solid painted-space left edge (no font-dependent partial blocks), and
 puts the power label and clock in `status-right`. Finished sessions keep a
 faint tint of the same hue; failures tint the strip with the reserved red. The
-eight-hue identity palette deliberately omits pure red, and every derived
-surface comes from the single `blend_session_color` formula rather than
-per-color pairs. The style snapshot saves and restores `status-right` and its
+eight-hue identity palette deliberately omits pure red. Color allocation scans
+saved Codex and Claude sessions while Start/Resume/Recover holds the shared
+install lock: keep an existing unique session color, otherwise walk from the
+stable provider/project-derived preference to the first free hue, and permit a
+duplicate only when all eight hues are occupied. This preserves identity
+without avoidable collisions across providers. Every derived surface comes
+from the single `blend_session_color` formula rather than per-color pairs. The
+style snapshot saves and restores `status-right` and its
 length alongside the left side; a snapshot from an older Detach that never
 captured the right side must not clear the user's `status-right`. The text
 status is the primary power signal: `MAC AWAKE`, `MAC CAN SLEEP`,

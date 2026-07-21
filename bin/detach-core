@@ -93,13 +93,17 @@ CONFIG_TMUX_STYLE="$(config_value TMUX_STYLE 2>/dev/null || true)"
 case "$CONFIG_TMUX_STYLE" in 0|1|'') ;; *) CONFIG_TMUX_STYLE="" ;; esac
 CONFIG_TMUX_MOUSE="$(config_value TMUX_MOUSE 2>/dev/null || true)"
 case "$CONFIG_TMUX_MOUSE" in 0|1|'') ;; *) CONFIG_TMUX_MOUSE="" ;; esac
+CODEX_STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_BASE_ROOT/codex}"
+CLAUDE_STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_BASE_ROOT/claude}"
+CODEX_SESSIONS_ROOT="$CODEX_STATE_ROOT/sessions"
+CLAUDE_SESSIONS_ROOT="$CLAUDE_STATE_ROOT/sessions"
 if [ "$PROVIDER" = "codex" ]; then
-  STATE_ROOT="${DETACH_CODEX_STATE_ROOT:-$STATE_BASE_ROOT/codex}"
+  STATE_ROOT="$CODEX_STATE_ROOT"
   CHECKPOINT_INTERVAL="${DETACH_CODEX_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
   HISTORY_LIMIT="${DETACH_CODEX_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
   SYNC_ENABLED="${DETACH_CODEX_SYNC:-1}"
 else
-  STATE_ROOT="${DETACH_CLAUDE_STATE_ROOT:-$STATE_BASE_ROOT/claude}"
+  STATE_ROOT="$CLAUDE_STATE_ROOT"
   CHECKPOINT_INTERVAL="${DETACH_CLAUDE_CHECKPOINT_INTERVAL:-$DEFAULT_CHECKPOINT_INTERVAL}"
   HISTORY_LIMIT="${DETACH_CLAUDE_HISTORY_LIMIT:-$DEFAULT_HISTORY_LIMIT}"
   SYNC_ENABLED="${DETACH_CLAUDE_SYNC:-1}"
@@ -478,28 +482,130 @@ tmux_option() {
   "${TMUX_CMD[@]}" show-options -qv -t "=$1:" "$2" 2>/dev/null || true
 }
 
+SESSION_COLOR_PALETTE=(
+  '#C2410C'
+  '#4D7C0F'
+  '#15803D'
+  '#0D9488'
+  '#0369A1'
+  '#1D4ED8'
+  '#6D28D9'
+  '#A21CAF'
+)
+
+session_color_from_state_dir() {
+  local dir="$1"
+  local meta
+  local color
+
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  for meta in "$dir/meta.json" "$dir/checkpoint/meta.json"; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    color="$("$STATE_BIN" meta get "$meta" session_color 2>/dev/null || true)"
+    [[ "$color" =~ ^#[0-9A-Fa-f]{6}$ ]] || continue
+    printf '%s\n' "$color" | LC_ALL=C tr '[:lower:]' '[:upper:]'
+    return 0
+  done
+  return 1
+}
+
+session_color_is_in_palette() {
+  local wanted
+  local color
+
+  wanted="$(printf '%s' "$1" | LC_ALL=C tr '[:lower:]' '[:upper:]')"
+  for color in "${SESSION_COLOR_PALETTE[@]}"; do
+    [ "$color" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
+session_color_used_by_other_session() {
+  local wanted
+  local excluded_dir="${2:-}"
+  local sessions_root
+  local dir
+  local color
+
+  wanted="$(printf '%s' "$1" | LC_ALL=C tr '[:lower:]' '[:upper:]')"
+  for sessions_root in "$CODEX_SESSIONS_ROOT" "$CLAUDE_SESSIONS_ROOT"; do
+    [ -d "$sessions_root" ] && [ ! -L "$sessions_root" ] || continue
+    for dir in "$sessions_root"/*; do
+      [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+      [ "$dir" = "$excluded_dir" ] && continue
+      color="$(session_color_from_state_dir "$dir" 2>/dev/null || true)"
+      [ "$color" = "$wanted" ] && return 0
+    done
+  done
+  return 1
+}
+
 session_color_for() {
   local provider="$1"
   local cwd="$2"
   local digest
   local index
-  # Eight hues spaced evenly around the wheel; pure red is reserved for the
-  # FAILED strip so an identity color can never read as an alarm.
-  local palette=(
-    '#C2410C'
-    '#4D7C0F'
-    '#15803D'
-    '#0D9488'
-    '#0369A1'
-    '#1D4ED8'
-    '#6D28D9'
-    '#A21CAF'
-  )
 
   digest="$(printf '%s\0%s' "$provider" "$cwd" | shasum -a 256 | awk '{print substr($1, 1, 8)}')" || return 1
   [[ "$digest" =~ ^[0-9a-fA-F]{8}$ ]] || return 1
-  index=$((16#$digest % ${#palette[@]}))
-  printf '%s\n' "${palette[$index]}"
+  index=$((16#$digest % ${#SESSION_COLOR_PALETTE[@]}))
+  printf '%s\n' "${SESSION_COLOR_PALETTE[$index]}"
+}
+
+allocate_session_color() {
+  local provider="$1"
+  local cwd="$2"
+  local session="${3:-}"
+  local preferred_index
+  local index
+  local offset
+  local candidate
+  local preferred_color
+  local current_dir=""
+  local existing_color=""
+  # Eight hues spaced evenly around the wheel; pure red is reserved for the
+  # FAILED strip so an identity color can never read as an alarm.
+
+  preferred_color="$(session_color_for "$provider" "$cwd")" || return 1
+  for ((preferred_index = 0; preferred_index < ${#SESSION_COLOR_PALETTE[@]}; preferred_index++)); do
+    [ "${SESSION_COLOR_PALETTE[$preferred_index]}" = "$preferred_color" ] && break
+  done
+  [ "$preferred_index" -lt "${#SESSION_COLOR_PALETTE[@]}" ] || return 1
+
+  if [ -n "$session" ]; then
+    case "$provider" in
+      codex) current_dir="$CODEX_SESSIONS_ROOT/$session" ;;
+      claude) current_dir="$CLAUDE_SESSIONS_ROOT/$session" ;;
+      *) return 1 ;;
+    esac
+    existing_color="$(session_color_from_state_dir "$current_dir" 2>/dev/null || true)"
+    if session_color_is_in_palette "$existing_color" && \
+       ! session_color_used_by_other_session "$existing_color" "$current_dir"; then
+      printf '%s\n' "$existing_color"
+      return 0
+    fi
+  fi
+
+  # Keep the path-derived hue as the first choice, then walk the palette in a
+  # stable order. The install lock serializes every Start/Resume/Recover, so a
+  # simultaneously starting session cannot claim the same free color.
+  for ((offset = 0; offset < ${#SESSION_COLOR_PALETTE[@]}; offset++)); do
+    index=$(((preferred_index + offset) % ${#SESSION_COLOR_PALETTE[@]}))
+    candidate="${SESSION_COLOR_PALETTE[$index]}"
+    if ! session_color_used_by_other_session "$candidate" "$current_dir"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  # Once all eight colors are occupied, duplication is unavoidable. Preserve
+  # an existing palette identity when possible; otherwise use the stable
+  # project-derived preference.
+  if session_color_is_in_palette "$existing_color"; then
+    printf '%s\n' "$existing_color"
+  else
+    printf '%s\n' "${SESSION_COLOR_PALETTE[$preferred_index]}"
+  fi
 }
 
 # Mix the identity color with the neutral strip anchor (#20202B), keeping the
@@ -985,7 +1091,7 @@ write_initial_meta() {
     : >"$dir/checkpoint.log"
   fi
   agent_version="$("$agent_bin" --version 2>/dev/null || printf 'unknown')"
-  session_color="$(session_color_for "$PROVIDER" "$cwd")" || return 1
+  session_color="$(allocate_session_color "$PROVIDER" "$cwd" "$session")" || return 1
 
   create_args=(
     --integer schema 1
@@ -3973,6 +4079,11 @@ case "${1:-}" in
     shift
     [ "$#" -eq 1 ] || exit 1
     session_color_for "$PROVIDER" "$1"
+    ;;
+  __allocate_session_color)
+    shift
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || exit 1
+    allocate_session_color "$PROVIDER" "$1" "${2:-}"
     ;;
   __start_tmux_session_locked)
     shift

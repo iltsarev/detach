@@ -792,10 +792,13 @@ run_codex stop integration
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = "stopped" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin meta_status)" = "stopped" ]
-# A null legacy identity is treated the same way as an absent field.
+# A null legacy identity uses the stable provider/project fallback. The
+# occupancy-aware allocation is only persisted while writing metadata.
 "$STATE_HELPER" meta patch "$meta" --null session_color
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin session_color)" = "$session_color" ]
+legacy_project_dir="$("$STATE_HELPER" meta get "$meta" project_dir)"
+legacy_fallback_color="$(run_codex __session_color "$legacy_project_dir")"
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin session_color)" = "$legacy_fallback_color" ]
 "$STATE_HELPER" meta patch "$meta" --string session_color not-a-color
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 [ -z "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin session_color)" ]
