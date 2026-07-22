@@ -40,6 +40,20 @@ app update, unregister, await completion, then use the bounded retry for the
 transient SMAppService Code=1 race. Do not replace a helper with active leases:
 defer the update.
 
+Every readiness build carries one unique `detach-app-build:<UUID>` value both
+in the main executable's `__TEXT,__detach_build` section and in the signed
+`Contents/Resources/BUILD_MARKER`; verification requires an exact match. The
+packaged-app UI smoke runs only a process-private background copy under
+`/private/tmp/detach-ui-e2e.*`. That copy has a distinct bundle identity and no
+production CLI payload, watchdog, helper, power executable, state executable,
+or bundled tmux. Its HOME, preferences, state, power paths, fake CLI, fixture,
+and result are all contained below the private root after symlink resolution;
+an escape, production identity, foreground identity, executable mismatch, or
+remaining payload fails closed before UI actions. The smoke drives the app's
+semantic Accessibility tree without activating it and verifies dashboard
+geometry, session selection, one fake-CLI stop action, the new-session sheet,
+and the empty state. This test-only path is otherwise dormant.
+
 The per-user watchdog has an additional launch-readiness rule. macOS can report
 an approved agent as enabled while no launchd job was loaded after the approval
 transition. During first onboarding, or an explicit Repair, an enabled watchdog

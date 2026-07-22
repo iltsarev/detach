@@ -18,6 +18,9 @@ the providers separately.
    `--resume latest` after a compatible interrupted or failed run.
 5. Review the final diff and evidence. Update the user contract or durable spec
    in the same change whenever behavior or an invariant changes.
+6. Unless the owner explicitly asks to keep work local, stage only task-scoped
+   files, inspect the staged public diff, commit after readiness passes, push
+   the current branch, and verify it is synchronized with its upstream.
 
 `README.md` is the user-facing contract. `docs/specs/` contains durable
 current-state engineering contracts. Tests and gates are executable evidence;
@@ -121,4 +124,5 @@ the impact-selected quality gate prints PASS, affected user docs and durable
 specs agree with the code, and `git diff --check` is clean. Report manual
 release gates that were not run. Do not substitute a plausible implementation,
 a narrow test, or a green stale manifest for requirement-by-requirement
-evidence.
+evidence. Unless the owner requests a local-only handoff, deliver ready work as
+a reviewed commit pushed to the current branch and verify upstream parity.

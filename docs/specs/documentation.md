@@ -23,6 +23,9 @@ against the same deterministic quality gate.
 - Fast diagnostics close the edit loop; `scripts/quality-gate` remains the
   sole readiness entry point. A focused command or diagnostic stage is never
   presented as final evidence.
+- Ready task-scoped changes are committed and pushed to the current branch by
+  default after staged public-diff review; an owner request to keep work local
+  is the explicit exception, and successful delivery includes upstream parity.
 - `tests/docs-contract.sh` enforces this structure and runs inside the
   static quality stage.
 

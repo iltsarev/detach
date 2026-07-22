@@ -40,7 +40,10 @@ xcrun llvm-cov report "$test_binary" -instr-profile "$profdata" \
 
 read -r ui_covered ui_total business_covered business_total < <(
   awk '
-    $1 ~ /^Sources\/DetachApp\// {ui_total += $8; ui_covered += $8 - $9}
+    $1 ~ /^Sources\/DetachApp\// &&
+      $1 !~ /\/UIE2E(AccessibilityBridge|TestDriver)\.swift$/ {
+        ui_total += $8; ui_covered += $8 - $9
+      }
     $1 ~ /^Sources\/DetachKit\// &&
       $1 !~ /\/(ClamshellLockRunner|DetachCLI)\.swift$/ {
         business_total += $8; business_covered += $8 - $9
@@ -78,6 +81,7 @@ for suite in \
   DetachAppTests.MenuBarPresentationTests \
   DetachAppTests.SetupGuidanceTests \
   DetachAppTests.TextSizeTests \
+  DetachAppTests.UIE2EConfigurationTests \
   DetachAppTests.WatchdogServiceTests \
   DetachKitTests.DetachCLITests \
   DetachKitTests.DetachStateTests \

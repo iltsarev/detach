@@ -51,13 +51,14 @@ setup_fixture() {
   printf '%s\n' '.build/' 'build/' >"$REPO/app/.gitignore"
   printf '%s\n' 'release workflow fixture' >"$REPO/README.md"
   printf '%s\n' \
-    $'schema\t1' \
+    $'schema\t2' \
     $'wall_seconds_max\t180' \
     $'stage_static_seconds_max\t10' \
     $'stage_gate_contract_seconds_max\t10' \
     $'stage_swift_seconds_max\t10' \
     $'stage_quality_contracts_seconds_max\t10' \
     $'stage_app_seconds_max\t10' \
+    $'stage_ui_e2e_seconds_max\t10' \
     $'stage_codex_seconds_max\t10' \
     $'stage_claude_seconds_max\t10' \
     $'stage_distribution_seconds_max\t10' \
@@ -220,6 +221,11 @@ set -eu
 root="$(cd -P "$(dirname "$0")/../.." && pwd)"
 "$root/app/scripts/make-app.sh"
 "$root/app/scripts/verify-app.sh"
+SH
+
+  write_executable "$REPO/tests/quality-gate-fixtures/ui-e2e" <<'SH'
+#!/bin/bash
+exit 0
 SH
   write_executable "$REPO/tests/quality-gate-fixtures/codex" <<'SH'
 #!/bin/bash

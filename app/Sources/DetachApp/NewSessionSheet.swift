@@ -5,7 +5,8 @@ import DetachKit
 struct NewSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appFontPointSize) private var fontPointSize
-    @AppStorage(AppSettings.terminalBundleIdentifierKey) private var terminalBundleIdentifier =
+    @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
+    private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
 
     let detachPath: String
@@ -72,16 +73,20 @@ struct NewSessionSheet: View {
                 Spacer()
                 Button(L10n.string("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("new-session-cancel")
                 Button(L10n.string("Launch in Terminal")) {
                     Task { await launch() }
                 }
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.indigo)
                     .disabled(projectDir == nil || isLaunching)
+                    .accessibilityIdentifier("new-session-launch")
             }
         }
         .padding(20)
         .frame(width: max(460, fontPointSize * 32))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("new-session-sheet")
         .fileImporter(isPresented: $showPicker, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { projectDir = url }
         }

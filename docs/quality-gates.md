@@ -1,7 +1,7 @@
 # Quality gates
 
 `scripts/quality-gate` is the tracked readiness contract for local agents, CI,
-and releases. Policy version 6 derives
+and releases. Policy version 7 derives
 the mandatory set from the Git diff, and selects the full repository gate for
 unknown paths or changes to this policy itself. Its resource-aware scheduler
 runs isolated work concurrently without allowing two SwiftPM operations to
@@ -40,10 +40,11 @@ share the same build directory.
   evidence.
 
 The stages are `static`, the gate orchestrator's own contract tests, `swift`,
-`quality-contracts`, development app build/verification, Codex and Claude
-integrations, distribution, bundled runtime, release and publish preflights,
-the hermetic release-workflow test, and the zero-work `release-budget`
-postflight. Every executable stage has a bounded timeout.
+`quality-contracts`, development app build/verification, packaged-app
+`ui-e2e`, Codex and Claude integrations, distribution, bundled runtime,
+release and publish preflights, the hermetic release-workflow test, and the
+zero-work `release-budget` postflight. Every executable stage has a bounded
+timeout.
 Logs, a versioned TSV summary, a provenance manifest, and JUnit XML are
 written privately under `app/build/quality-gates/`. The schema-2 manifest binds
 evidence to the policy, source commit, resolved base commit, selected stages,
@@ -57,15 +58,42 @@ Swift and Clang module caches are rooted under `app/.build`. Coverage-enabled
 Swift tests finish before the release app build because SwiftPM owns that
 shared directory. Artifact-only coverage analysis then overlaps the release
 build and reads test discovery from the completed Swift log instead of invoking
-SwiftPM again. Once the app is verified, Codex and Claude
-run concurrently with private state/socket roots and use only the freshly
-bundled tmux and `detach-state`; they do not invoke SwiftPM. Distribution and
-hermetic release contracts form independent lanes. The gate therefore does not
-depend on writable user caches, ambient tmux, or provider session state.
+SwiftPM again. Once the app is verified, `ui-e2e`, Codex, and Claude run
+concurrently. The UI stage launches a stripped process-private background copy
+with a fake CLI and private HOME/preferences/state; it cannot reach the
+installed Detach payload or user session data. Provider suites use private
+state/socket roots and only the freshly bundled tmux and `detach-state`; none
+of these stages invokes SwiftPM. Distribution and hermetic release contracts
+form independent lanes. The gate therefore does not depend on writable user
+caches, ambient tmux, provider session state, or the installed Detach app.
 
-There are no quarantined tests in policy version 6. A future quarantine must be
+There are no quarantined tests in policy version 7. A future quarantine must be
 tracked here with an owner, expiry, and reason, and may not remove a release
 contract check.
+
+## Policy version 7: packaged-app accessibility smoke
+
+Policy 7 retains every policy-6 check and the unchanged 180-second wall ceiling,
+then adds one bounded packaged-app stage:
+
+1. Every app build embeds a unique marker in both the Mach-O and bundle
+   resources, so a stale executable cannot satisfy the smoke.
+2. `ui-e2e` is mandatory whenever readiness selects `app`, is blocked when
+   that prerequisite fails, and appears independently in resumable TSV,
+   Markdown, and JUnit evidence.
+3. The test copy has a distinct background-only identity and is stripped of
+   the production payload and all lifecycle, power, state, and tmux helpers.
+   All writable paths and the fake executable must remain below its private
+   root after symlink resolution.
+4. Accessibility assertions cover non-empty semantic geometry, labeled and
+   enabled session/action controls, session selection, a safe fake-CLI stop,
+   the new-session sheet, and the empty dashboard without stealing focus.
+5. The stage runs beside the provider/runtime lanes after the app prerequisite
+   and has a locked 15-second ceiling, so the repository wall budget remains
+   180 seconds.
+6. The two dormant test-driver source files are measured by this packaged-app
+   stage and excluded from the unit-test UI coverage denominator; all ordinary
+   DetachApp source remains under the unchanged 21.54% floor.
 
 ## Policy version 6: lean agent context and durable specs
 
@@ -121,7 +149,7 @@ another build or test pass:
     unchanged, but successful runs no longer pay arbitrary idle delays.
 
 The tracked stage ceilings are diagnostic guardrails: static 2s, orchestrator
-100s, Swift 20s, quality analysis 5s, app 70s, Codex 110s, Claude 50s,
+100s, Swift 20s, quality analysis 5s, app 70s, UI e2e 15s, Codex 110s, Claude 50s,
 distribution 80s, runtime 8s, release preflight 15s, publish preflight 25s, and
 release workflow 70s. The stricter 180-second wall ceiling is authoritative.
 Changing machine class or intentionally adding mandatory coverage requires
@@ -198,11 +226,12 @@ evade the static gate merely because they are untracked.
 | Change | Mandatory automated gates |
 | --- | --- |
 | Documentation only | static syntax and diff checks |
-| Swift source or tests | static, Swift tests, quality contracts, release budget |
-| Package/resources/app build | static, Swift, quality contracts, app, runtime contracts, release budget |
-| CLI/session lifecycle | static, app, both isolated integrations, distribution, runtime, release budget |
-| Install/distribution | static, app, distribution, runtime, release budget |
-| Release/publication | static, app, release/publish preflights, release-workflow test, release budget |
+| Swift source | static, Swift tests, quality contracts, app, UI e2e, release budget |
+| Swift tests | static, Swift tests, quality contracts, release budget |
+| Package/resources/app build | static, Swift, quality contracts, app, UI e2e, runtime contracts, release budget |
+| CLI/session lifecycle | static, app, UI e2e, both isolated integrations, distribution, runtime, release budget |
+| Install/distribution | static, app, UI e2e, distribution, runtime, release budget |
+| Release/publication | static, app, UI e2e, release/publish preflights, release-workflow test, release budget |
 | Gate policy, CI, mixed unknown path | full repository gate |
 
 Known mixed diffs take the union of their mandatory gates. Deletions use their

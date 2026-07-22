@@ -27,6 +27,23 @@ keys=(
   stage_swift_seconds_max
   stage_quality_contracts_seconds_max
   stage_app_seconds_max
+  stage_ui_e2e_seconds_max
+  stage_codex_seconds_max
+  stage_claude_seconds_max
+  stage_distribution_seconds_max
+  stage_tmux_runtime_seconds_max
+  stage_release_preflight_seconds_max
+  stage_publish_preflight_seconds_max
+  stage_release_workflow_seconds_max
+)
+
+legacy_keys=(
+  wall_seconds_max
+  stage_static_seconds_max
+  stage_gate_contract_seconds_max
+  stage_swift_seconds_max
+  stage_quality_contracts_seconds_max
+  stage_app_seconds_max
   stage_codex_seconds_max
   stage_claude_seconds_max
   stage_distribution_seconds_max
@@ -50,6 +67,7 @@ ceiling() {
     stage_swift_seconds_max) printf 20 ;;
     stage_quality_contracts_seconds_max) printf 5 ;;
     stage_app_seconds_max) printf 70 ;;
+    stage_ui_e2e_seconds_max) printf 15 ;;
     stage_codex_seconds_max) printf 110 ;;
     stage_claude_seconds_max) printf 50 ;;
     stage_distribution_seconds_max) printf 80 ;;
@@ -61,21 +79,27 @@ ceiling() {
 }
 
 validate_budget() {
-  local file="$1" label="$2" key value expected_count
+  local file="$1" label="$2" expected_schema="$3" key value expected_count
+  local -a expected_keys
   [ -f "$file" ] && [ ! -L "$file" ] || {
     printf 'release budget ratchet: %s budget is missing or unsafe\n' "$label" >&2
     return 1
   }
-  expected_count=$((${#keys[@]} + 1))
+  if [ "$expected_schema" = 1 ]; then
+    expected_keys=("${legacy_keys[@]}")
+  else
+    expected_keys=("${keys[@]}")
+  fi
+  expected_count=$((${#expected_keys[@]} + 1))
   [ "$(awk -F '\t' 'NF == 2 {count++} END {print count+0}' "$file")" -eq "$expected_count" ] || {
     printf 'release budget ratchet: %s budget schema is invalid\n' "$label" >&2
     return 1
   }
-  [ "$(budget_value "$file" schema 2>/dev/null || true)" = 1 ] || {
+  [ "$(budget_value "$file" schema 2>/dev/null || true)" = "$expected_schema" ] || {
     printf 'release budget ratchet: %s budget version is unsupported\n' "$label" >&2
     return 1
   }
-  for key in "${keys[@]}"; do
+  for key in "${expected_keys[@]}"; do
     value="$(budget_value "$file" "$key" 2>/dev/null || true)"
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
       printf 'release budget ratchet: %s %s is missing, duplicated, or invalid\n' "$label" "$key" >&2
@@ -93,7 +117,7 @@ assert_not_higher() {
   }
 }
 
-validate_budget "$BUDGET" current
+validate_budget "$BUDGET" current 2
 for key in "${keys[@]}"; do
   assert_not_higher "$key" "$(budget_value "$BUDGET" "$key")" "$(ceiling "$key")" locked-ceiling
 done
@@ -106,8 +130,14 @@ elif [ -n "$BASE_COMMIT" ] && git -C "$ROOT" cat-file -e "$BASE_COMMIT:tests/rel
   git -C "$ROOT" show "$BASE_COMMIT:tests/release-budget.tsv" >"$PRIOR"
 fi
 if [ -n "$PRIOR" ]; then
-  validate_budget "$PRIOR" prior
-  for key in "${keys[@]}"; do
+  prior_schema="$(budget_value "$PRIOR" schema 2>/dev/null || true)"
+  case "$prior_schema" in 1|2) ;; *) prior_schema=invalid ;; esac
+  validate_budget "$PRIOR" prior "$prior_schema"
+  comparison_keys=("${keys[@]}")
+  if [ "$prior_schema" = 1 ]; then
+    comparison_keys=("${legacy_keys[@]}")
+  fi
+  for key in "${comparison_keys[@]}"; do
     assert_not_higher "$key" "$(budget_value "$BUDGET" "$key")" \
       "$(budget_value "$PRIOR" "$key")" merge-base
   done

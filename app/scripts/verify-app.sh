@@ -25,6 +25,7 @@ POWER_BINARY="$APP/Contents/MacOS/detach-power"
 POWER_HELPER_BINARY="$APP/Contents/MacOS/DetachPowerHelper"
 TMUX_THIRD_PARTY="$APP/Contents/Resources/ThirdParty/tmux"
 SPARKLE_LICENSE="$APP/Contents/Resources/ThirdParty/Sparkle/LICENSE.txt"
+BUILD_MARKER="$APP/Contents/Resources/BUILD_MARKER"
 BUNDLE_MODE_POLICY="$APP_ROOT/scripts/bundle-modes.sh"
 ENTITLEMENTS_DIR=""
 
@@ -48,6 +49,31 @@ verify_detach_bundle_modes "$APP"
   printf 'DETACH_VERIFY_PRODUCTION must be 0 or 1\n' >&2; exit 1;
 }
 plutil -lint "$INFO" "$AGENT" "$POWER_DAEMON" >/dev/null
+[ -f "$BUILD_MARKER" ] && [ ! -L "$BUILD_MARKER" ] || {
+  printf 'App build marker is missing or unsafe\n' >&2
+  exit 1
+}
+[ "$(stat -f '%Lp' "$BUILD_MARKER")" = 644 ] || {
+  printf 'App build marker must have mode 0644\n' >&2
+  exit 1
+}
+[[ "$(<"$BUILD_MARKER")" =~ ^detach-app-build:[0-9A-F-]{36}$ ]] || {
+  printf 'App build marker is malformed\n' >&2
+  exit 1
+}
+otool -l "$APP/Contents/MacOS/Detach" | awk '
+  $1 == "segname" && $2 == "__TEXT" { in_text = 1; next }
+  in_text && $1 == "sectname" && $2 == "__detach_build" { found = 1 }
+  $1 == "segname" && $2 != "__TEXT" { in_text = 0 }
+  END { exit found ? 0 : 1 }
+' || {
+  printf 'Detach executable has no build-marker section\n' >&2
+  exit 1
+}
+strings "$APP/Contents/MacOS/Detach" | grep -Fx "$(<"$BUILD_MARKER")" >/dev/null || {
+  printf 'Detach executable build marker does not match bundle metadata\n' >&2
+  exit 1
+}
 [ "$(plutil -extract CFBundleDevelopmentRegion raw -o - "$INFO")" = en ] || {
   printf 'App development localization must be English\n' >&2
   exit 1

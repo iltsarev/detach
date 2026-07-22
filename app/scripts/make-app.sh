@@ -32,6 +32,8 @@ POWER_DAEMON="$LAUNCH_DAEMONS/dev.tsarev.detach.power-helper.plist"
 # products in a process-private system temporary path and copy only the
 # verified arm64 result into the bundle.
 TMUX_PRODUCT_ROOT="/private/tmp/detach-tmux-products.$$"
+BUILD_MARKER_ROOT="/private/tmp/detach-app-build-marker.$$"
+BUILD_MARKER_FILE="$BUILD_MARKER_ROOT/marker.txt"
 TMUX_THIRD_PARTY="$APP/Contents/Resources/ThirdParty/tmux"
 SPARKLE_LICENSE="$APP/Contents/Resources/ThirdParty/Sparkle/LICENSE.txt"
 BUNDLE_MODE_POLICY="$APP_ROOT/scripts/bundle-modes.sh"
@@ -42,6 +44,9 @@ mkdir -p "$CLANG_MODULE_CACHE_PATH"
 cleanup() {
   case "$TMUX_PRODUCT_ROOT" in
     /private/tmp/detach-tmux-products.*) rm -rf "$TMUX_PRODUCT_ROOT" ;;
+  esac
+  case "$BUILD_MARKER_ROOT" in
+    /private/tmp/detach-app-build-marker.*) rm -rf "$BUILD_MARKER_ROOT" ;;
   esac
 }
 trap cleanup EXIT
@@ -282,6 +287,10 @@ thin_sparkle_to_arm64() {
 # The caller's umask must never leak into a distributable app. In particular,
 # codesign rewrites Mach-O files and creates CodeResources using this umask.
 umask 022
+mkdir -p "$BUILD_MARKER_ROOT"
+printf 'detach-app-build:%s\n' "$(/usr/bin/uuidgen)" >"$BUILD_MARKER_FILE"
+chmod 0644 "$BUILD_MARKER_FILE"
+export DETACH_APP_BUILD_MARKER_FILE="$BUILD_MARKER_FILE"
 mkdir -p "$APP_ROOT/build"
 rm -rf "$APP"
 mkdir -p \
@@ -331,6 +340,7 @@ thin_sparkle_to_arm64 "$FRAMEWORKS/Sparkle.framework"
 ensure_app_rpath "$APP/Contents/MacOS/Detach"
 
 cp "$APP_ROOT/Resources/Detach.icns" "$APP/Contents/Resources/Detach.icns"
+install -m 0644 "$BUILD_MARKER_FILE" "$APP/Contents/Resources/BUILD_MARKER"
 install -d -m 0755 "$(dirname "$SPARKLE_LICENSE")"
 install -m 0644 "$SPARKLE_LICENSE_SOURCE" "$SPARKLE_LICENSE"
 cp "$APP_ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"

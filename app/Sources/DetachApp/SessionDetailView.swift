@@ -6,7 +6,8 @@ struct SessionDetailView: View {
     let session: Session
     let store: SessionStore
     let detachPath: String
-    @AppStorage(AppSettings.terminalBundleIdentifierKey) private var terminalBundleIdentifier =
+    @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
+    private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
 
     @State private var logPoller: LogPoller?
@@ -61,6 +62,8 @@ struct SessionDetailView: View {
         } message: {
             Text(L10n.string("The harness state directory and checkpoints will be permanently deleted. The provider transcript in ~/.claude (~/.codex) will not be affected."))
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("session-detail-\(session.id)")
     }
 
     private var providerTint: Color {
@@ -315,8 +318,10 @@ struct SessionDetailView: View {
                 .disabled(isLaunchingTerminal)
         case .stop:
             Button(L10n.string("Stop"), role: .destructive) { run(.stop) }
+                .accessibilityIdentifier("session-action-stop")
         case .delete:
             Button(L10n.string("Delete"), role: .destructive) { confirmDelete = true }
+                .accessibilityIdentifier("session-action-delete")
         }
     }
 

@@ -40,7 +40,7 @@ private enum GuidedProvider: String, CaseIterable, Identifiable {
 struct OnboardingView: View {
     let store: InstallationStore
     @State private var poller: OnboardingLivePoller
-    @AppStorage(AppSettings.terminalBundleIdentifierKey)
+    @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
     private var terminalBundleIdentifier = TerminalCatalog.defaultBundleIdentifier
     @State private var selectedProvider: GuidedProvider = .claude
     @State private var guidedInstallMessage: String?

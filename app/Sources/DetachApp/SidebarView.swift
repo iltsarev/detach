@@ -54,6 +54,7 @@ struct SidebarView: View {
                     Label(L10n.string("New session"), systemImage: "plus")
                         .foregroundStyle(Brand.indigo)
                 }
+                .accessibilityIdentifier("new-session-button")
             }
         }
         .sheet(isPresented: $showNewSession) {
@@ -76,10 +77,18 @@ struct SidebarView: View {
         if session.isWaitingForUser {
             SessionRow(session: session)
                 .tag(session.id)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(session.displayTitle)
+                .accessibilityIdentifier("session-row-\(session.id)")
+                .accessibilityAction { selectedID = session.id }
                 .listRowBackground(Color.orange.opacity(0.10))
         } else {
             SessionRow(session: session)
                 .tag(session.id)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(session.displayTitle)
+                .accessibilityIdentifier("session-row-\(session.id)")
+                .accessibilityAction { selectedID = session.id }
         }
     }
 }

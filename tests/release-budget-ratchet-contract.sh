@@ -46,6 +46,25 @@ fi
 grep -F 'increased above locked-ceiling' "$TMP_ROOT/stage.out" >/dev/null
 
 cp "$SOURCE" "$current"
+set_value "$current" stage_ui_e2e_seconds_max 16
+if DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" "$RATCHET" \
+  >"$TMP_ROOT/ui-e2e.out" 2>&1; then
+  printf 'release budget contract: accepted a higher UI e2e budget\n' >&2
+  exit 1
+fi
+grep -F 'increased above locked-ceiling' "$TMP_ROOT/ui-e2e.out" >/dev/null
+
+# Policy 7 adds the UI stage without invalidating an otherwise valid policy 6
+# merge-base budget. The new stage is still held to its locked ceiling above.
+cp "$SOURCE" "$current"
+cp "$SOURCE" "$prior"
+set_value "$prior" schema 1
+awk -F '\t' '$1 != "stage_ui_e2e_seconds_max"' "$prior" >"$prior.tmp"
+mv "$prior.tmp" "$prior"
+DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" \
+  DETACH_RELEASE_PRIOR_BUDGET="$prior" "$RATCHET" >/dev/null
+
+cp "$SOURCE" "$current"
 cp "$SOURCE" "$prior"
 set_value "$prior" wall_seconds_max 179
 if DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" \

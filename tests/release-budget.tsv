@@ -1,10 +1,11 @@
-schema	1
+schema	2
 wall_seconds_max	180
 stage_static_seconds_max	2
 stage_gate_contract_seconds_max	100
 stage_swift_seconds_max	20
 stage_quality_contracts_seconds_max	5
 stage_app_seconds_max	70
+stage_ui_e2e_seconds_max	15
 stage_codex_seconds_max	110
 stage_claude_seconds_max	50
 stage_distribution_seconds_max	80

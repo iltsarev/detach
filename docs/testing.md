@@ -20,7 +20,9 @@
   tmux and state helper. Policy 5 additionally rejects wall time above 180
   seconds, individual stage regressions, and any attempt to lower quality floors
   or raise time budgets relative to their merge-base values. Policy 6 adds the
-  fast documentation/context contract to the existing static stage.
+  fast documentation/context contract to the existing static stage. Policy 7
+  adds the mandatory packaged-app `ui-e2e` stage after every selected app
+  build, without raising the 180-second wall budget.
 
 - `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run.sh`
   — hermetic Codex integration with a fake provider, private tmux
@@ -37,6 +39,13 @@
   `detach-state`, `detach-power`, and `tmux`) with a temporary home.
 - `tests/tmux-runtime.sh` — pinned tmux source/provenance, arm64-only packaging,
   linkage, signing, and bundled native-helper contract checks.
+- `tests/ui-e2e-contract.sh` and `tests/ui-e2e.sh` — freshness-marker negative
+  contracts and the bounded Accessibility smoke for the freshly built app.
+  The smoke uses a stripped background-only copy, fake CLI, and private
+  HOME/preferences/state below `/private/tmp`; it cannot use the installed
+  Detach or user session state. Run the app build first. The UI smoke needs a
+  logged-in WindowServer session but must not be granted broader filesystem or
+  production payload access.
 - `tests/release-preflight.sh` and `tests/publish-preflight.sh` — hermetic release
   tooling, arm64 appcast, production-DMG verification, exact artifact allowlist,
   and explicit publication-confirmation guards.

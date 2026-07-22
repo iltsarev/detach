@@ -114,16 +114,21 @@ struct SettingsView: View {
     @ObservedObject var notifications: SessionNotificationService
     @ObservedObject var navigation: SettingsNavigation
 
-    @AppStorage("detachPath") private var detachPath = AppSettings.defaultDetachPath
-    @AppStorage("pollInterval") private var pollInterval = 2.0
-    @AppStorage(AppFontSize.storageKey) private var fontPointSize = AppFontSize.defaultValue
-    @AppStorage(AppSettings.terminalBundleIdentifierKey) private var terminalBundleIdentifier =
+    @AppStorage("detachPath", store: AppSettings.defaults)
+    private var detachPath = AppSettings.initialDetachPath
+    @AppStorage("pollInterval", store: AppSettings.defaults) private var pollInterval = 2.0
+    @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
+    private var fontPointSize = AppFontSize.defaultValue
+    @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
+    private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
-    @AppStorage(AppSettings.notificationsEnabledKey) private var notificationsEnabled = false
-    @AppStorage(AppSettings.tipsEnabledKey) private var tipsEnabled = true
-    @AppStorage(AppSettings.menuBarIconEnabledKey)
+    @AppStorage(AppSettings.notificationsEnabledKey, store: AppSettings.defaults)
+    private var notificationsEnabled = false
+    @AppStorage(AppSettings.tipsEnabledKey, store: AppSettings.defaults)
+    private var tipsEnabled = true
+    @AppStorage(AppSettings.menuBarIconEnabledKey, store: AppSettings.defaults)
     private var menuBarIconEnabled = true
-    @AppStorage(AppSettings.menuBarShowsSessionCountKey)
+    @AppStorage(AppSettings.menuBarShowsSessionCountKey, store: AppSettings.defaults)
     private var menuBarShowsSessionCount = true
 
     @State private var terminalApplications: [TerminalApplication] = []

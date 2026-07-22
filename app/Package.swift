@@ -3,6 +3,15 @@ import PackageDescription
 
 let watchdogInfoPlist = Context.environment["DETACH_WATCHDOG_INFO_PLIST"]
     ?? "\(Context.packageDirectory)/Resources/DetachWatchdog-Info.plist"
+let appBuildMarkerFile = Context.environment["DETACH_APP_BUILD_MARKER_FILE"]
+let appLinkerSettings: [LinkerSetting] = appBuildMarkerFile.map { markerFile in
+    [.unsafeFlags([
+        "-Xlinker", "-sectcreate",
+        "-Xlinker", "__TEXT",
+        "-Xlinker", "__detach_build",
+        "-Xlinker", markerFile,
+    ])]
+} ?? []
 
 let package = Package(
     name: "DetachApp",
@@ -31,7 +40,8 @@ let package = Package(
             dependencies: [
                 "DetachKit",
                 .product(name: "Sparkle", package: "Sparkle"),
-            ]),
+            ],
+            linkerSettings: appLinkerSettings),
         .executableTarget(
             name: "DetachWatchdog",
             linkerSettings: [

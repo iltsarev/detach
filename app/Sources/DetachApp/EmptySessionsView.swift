@@ -55,6 +55,8 @@ struct EmptySessionsView: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("empty-sessions-guide")
     }
 }
 

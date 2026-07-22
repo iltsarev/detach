@@ -1,0 +1,43 @@
+#!/bin/bash
+
+set -euo pipefail
+
+ROOT="${DETACH_UI_E2E_ROOT:?}"
+STATE="${DETACH_UI_E2E_FIXTURE_STATE:?}"
+ACTIONS="$ROOT/fake/actions.log"
+INVOCATIONS="$ROOT/fake/invocations.log"
+
+case "$ROOT" in
+  /private/tmp/detach-ui-e2e.*) ;;
+  *) printf 'fake UI CLI refused unsafe root: %s\n' "$ROOT" >&2; exit 90 ;;
+esac
+case "$STATE" in
+  "$ROOT"/*) ;;
+  *) printf 'fake UI CLI state escapes test root\n' >&2; exit 90 ;;
+esac
+
+printf '%s\n' "$*" >>"$INVOCATIONS"
+
+if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
+  if [ "$(<"$STATE")" = empty ]; then
+    exit 0
+  fi
+  printf '%s\n' \
+    '{"schema":1,"provider":"codex","session_name":"detach-codex-ui-running","name":"UI Running","effective_status":"running","created_at":"2026-07-22T08:00:00Z","model":"gpt-ui-fixture","agent_turn_state":"working","session_color":"#36C5F0","power_protection_state":"protected","health_actions":["stop"]}' \
+    '{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","effective_status":"completed","created_at":"2026-07-22T07:00:00Z","finished_at":"2026-07-22T07:30:00Z","exit_status":0,"session_color":"#A855F7","power_protection_state":"allowed","health_actions":["delete"]}'
+  exit 0
+fi
+
+if [ "$#" -eq 4 ] && [ "$2" = logs ] && [ "$3" = --ansi ]; then
+  printf '\033[32mUI fixture log for %s\033[0m\n' "$4"
+  exit 0
+fi
+
+if [ "$#" -eq 3 ] && [ "$1" = codex ] && [ "$2" = stop ] \
+    && [ "$3" = detach-codex-ui-running ]; then
+  printf '%s\n' "$*" >>"$ACTIONS"
+  exit 0
+fi
+
+printf 'unexpected fake UI CLI invocation: %s\n' "$*" >&2
+exit 64

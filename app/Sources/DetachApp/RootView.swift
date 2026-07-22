@@ -5,9 +5,12 @@ import DetachKit
 struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openSettings) private var openSettings
-    @AppStorage(AppFontSize.storageKey) private var fontPointSize = AppFontSize.defaultValue
-    @AppStorage(AppSettings.notificationsEnabledKey) private var notificationsEnabled = false
-    @AppStorage(AppSettings.tipsEnabledKey) private var tipsEnabled = true
+    @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
+    private var fontPointSize = AppFontSize.defaultValue
+    @AppStorage(AppSettings.notificationsEnabledKey, store: AppSettings.defaults)
+    private var notificationsEnabled = false
+    @AppStorage(AppSettings.tipsEnabledKey, store: AppSettings.defaults)
+    private var tipsEnabled = true
     let detachPath: String
     let pollInterval: Double
     let installation: InstallationStore
@@ -96,11 +99,14 @@ struct RootView: View {
             await installation.bootstrap()
         }
         .task(id: notificationsEnabled) {
+            guard AppSettings.uiE2E == nil else { return }
             await notifications.configure(enabled: notificationsEnabled)
         }
+        .task { await UIE2ETestDriver.runIfRequested() }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task {
+                guard AppSettings.uiE2E == nil else { return }
                 await installation.refreshContext()
                 await notifications.refreshAuthorizationStatus()
             }
@@ -115,5 +121,16 @@ struct RootView: View {
         }
         .onAppear { store.updateCadence(foreground: true) }
         .onDisappear { store.updateCadence(foreground: false) }
+        .background {
+            if AppSettings.uiE2E != nil {
+                UIE2EAccessibilityBridge(
+                    store: store,
+                    selectedID: $selectedID,
+                    navigation: navigation)
+                    .frame(width: 0, height: 0)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("detach-dashboard")
     }
 }

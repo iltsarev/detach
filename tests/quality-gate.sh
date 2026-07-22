@@ -21,7 +21,7 @@ setup_fixture() {
   chmod 0755 "$REPO/tests/docs-contract.sh"
   printf '%s\n' baseline >"$REPO/README.md"
   printf '%s\n' actions.log results '*.out' >"$REPO/.gitignore"
-  for stage in static gate-contract swift quality-contracts app codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow; do
+  for stage in static gate-contract swift quality-contracts app ui-e2e codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow; do
     printf '#!/bin/bash\nset -eu\n[ "${CLANG_MODULE_CACHE_PATH:-}" = "${GATE_EXPECTED_MODULE_CACHE:?}" ] || { printf "unexpected Clang module cache: %%s\\n" "${CLANG_MODULE_CACHE_PATH:-missing}" >&2; exit 1; }\n[ "${SWIFTPM_MODULECACHE_OVERRIDE:-}" = "$GATE_EXPECTED_MODULE_CACHE" ] || { printf "unexpected SwiftPM module cache: %%s\\n" "${SWIFTPM_MODULECACHE_OVERRIDE:-missing}" >&2; exit 1; }\nprintf "%%s\\n" "%s" >>"${GATE_ACTION_LOG:?}"\nsleep "${STAGE_SLEEP:-0}"\ncase " ${FAIL_STAGES:-} " in *" %s "*) exit 23 ;; esac\n' "$stage" "$stage" \
       >"$REPO/tests/quality-gate-fixtures/$stage"
     chmod 0755 "$REPO/tests/quality-gate-fixtures/$stage"
@@ -63,7 +63,7 @@ refresh_summary_digest() {
 
 setup_fixture docs
 stages="$(gate --list-stages)"
-[ "$(printf '%s\n' "$stages" | wc -l | tr -d ' ')" = 13 ]
+[ "$(printf '%s\n' "$stages" | wc -l | tr -d ' ')" = 14 ]
 [ "$(printf '%s\n' "$stages" | head -1)" = static ]
 [ "$(printf '%s\n' "$stages" | tail -1)" = release-budget ]
 printf '%s\n' docs >>"$REPO/README.md"
@@ -79,31 +79,31 @@ setup_fixture swift
 mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct Changed {}' >"$REPO/app/Sources/DetachKit/Changed.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,release-budget' ]]
 
 setup_fixture package
 mkdir -p "$REPO/app"
 printf '%s\n' '// changed package' >"$REPO/app/Package.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,tmux-runtime,release-budget' ]]
 
 setup_fixture shell
 mkdir -p "$REPO/bin"
 printf '%s\n' '#!/bin/bash' >"$REPO/bin/detach"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
 
 setup_fixture release-impact
 printf '%s\n' 999 >"$REPO/BUILD"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,release-preflight,publish-preflight,release-workflow,release-budget' ]]
+[[ "$plan" = *'stages=static,app,ui-e2e,release-preflight,publish-preflight,release-workflow,release-budget' ]]
 
 setup_fixture mixed
 mkdir -p "$REPO/bin" "$REPO/app/Sources/DetachKit"
 printf '%s\n' '#!/bin/bash' >"$REPO/bin/detach"
 printf '%s\n' 'struct Changed {}' >"$REPO/app/Sources/DetachKit/Changed.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
 
 setup_fixture base-ref
 mkdir -p "$REPO/app/Sources/DetachKit"
@@ -112,12 +112,12 @@ git -C "$REPO" add .
 git -C "$REPO" commit -qm change
 printf '%s\n' docs >>"$REPO/README.md"
 plan="$(gate --base "$BASE" --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,release-budget' ]]
 
 setup_fixture unknown
 printf '%s\n' unknown >"$REPO/new-contract.data"
 plan="$(gate --plan 2>&1)"
-[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow,release-budget' ]]
+[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow,release-budget' ]]
 
 setup_fixture deletion
 mkdir -p "$REPO/bin"
@@ -126,7 +126,7 @@ git -C "$REPO" add .
 git -C "$REPO" commit -qm add-lifecycle-file
 rm "$REPO/bin/detach"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
 
 setup_fixture rename
 mkdir -p "$REPO/bin" "$REPO/docs"
@@ -135,16 +135,16 @@ git -C "$REPO" add .
 git -C "$REPO" commit -qm add-lifecycle-file
 git -C "$REPO" mv bin/detach docs/moved.md
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
 
 setup_fixture unusual-name
 mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct OddName {}' >"$REPO/app/Sources/DetachKit/line
 break.swift"
 plan="$(gate --plan --format json)"
-[[ "$plan" = '{"policy":6,"mode":"change","source_commit":"'* ]]
+[[ "$plan" = '{"policy":7,"mode":"change","source_commit":"'* ]]
 [[ "$plan" = *'"base_commit":"","input_fingerprint":"'* ]]
-[[ "$plan" = *'"stages":["static","swift","quality-contracts","release-budget"]}' ]]
+[[ "$plan" = *'"stages":["static","swift","quality-contracts","app","ui-e2e","release-budget"]}' ]]
 
 setup_fixture explain
 mkdir -p "$REPO/app/Sources/DetachKit"
@@ -170,32 +170,37 @@ if ! gate --mode release >"$REPO/release.out" 2>&1; then
   exit 1
 fi
 ! grep -Fx release-workflow "$ACTION_LOG" >/dev/null
-[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 11 ]
+[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 12 ]
 
 setup_fixture github-budget
 plan="$(GITHUB_ACTIONS=true gate --mode repository --without-release-budget --plan)"
-[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow' ]]
+[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow' ]]
 [[ "$plan" != *'release-budget'* ]]
 
 setup_fixture failure
 printf '#!/bin/bash\nprintf "%%s\\n" swift >>"${GATE_ACTION_LOG:?}"\n+exit 23\n' \
   >"$REPO/tests/quality-gate-fixtures/swift"
 chmod 0755 "$REPO/tests/quality-gate-fixtures/swift"
-if gate --mode repository >"$REPO/failure.out" 2>&1; then
+if FAIL_STAGES=ui-e2e gate --mode repository >"$REPO/failure.out" 2>&1; then
   printf 'quality gate unexpectedly ignored a failed stage\n' >&2
   exit 1
 fi
 grep -F 'diagnostic rerun: scripts/quality-gate --stage swift' "$REPO/failure.out" >/dev/null
-[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 11 ]
+grep -F 'diagnostic rerun: scripts/quality-gate --stage ui-e2e' \
+  "$REPO/failure.out" >/dev/null
+grep -F $'ui-e2e\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F $'release-budget\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 12 ]
 
-setup_fixture timeout
-printf '#!/bin/bash\nsleep 5\n' >"$REPO/tests/quality-gate-fixtures/static"
-chmod 0755 "$REPO/tests/quality-gate-fixtures/static"
-if DETACH_QUALITY_GATE_TIMEOUT=1 gate --stage static >"$REPO/timeout.out" 2>&1; then
-  printf 'quality gate unexpectedly ignored a timeout\n' >&2
+setup_fixture ui-e2e-timeout
+printf '#!/bin/bash\nsleep 5\n' >"$REPO/tests/quality-gate-fixtures/ui-e2e"
+chmod 0755 "$REPO/tests/quality-gate-fixtures/ui-e2e"
+if DETACH_QUALITY_GATE_TIMEOUT_UI_E2E=1 gate --stage ui-e2e \
+  >"$REPO/ui-e2e-timeout.out" 2>&1; then
+  printf 'quality gate unexpectedly ignored a UI e2e timeout\n' >&2
   exit 1
 fi
-grep -F 'static timeout' "$REPO/timeout.out" >/dev/null
+grep -F 'ui-e2e timeout' "$REPO/ui-e2e-timeout.out" >/dev/null
 
 setup_fixture interrupt
 printf '#!/bin/bash\ntrap "exit 130" INT TERM HUP\nsleep 20\n' \
@@ -245,9 +250,9 @@ gate --mode repository --resume "$resume_dir" >"$REPO/resume-second.out"
 grep -F 'reusing static from matching evidence' "$REPO/resume-second.out" >/dev/null
 grep -F 'reusing gate-contract from matching evidence' "$REPO/resume-second.out" >/dev/null
 grep -R $'static\treused' "$RESULT_ROOT" >/dev/null
-[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 13 ]
+[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 14 ]
 grep -F $'result\tpassed' "$RESULT_ROOT"/*/manifest.tsv >/dev/null
-grep -F '<testsuite name="detach-quality-gate" tests="13" failures="0" skipped="10">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+grep -F '<testsuite name="detach-quality-gate" tests="14" failures="0" skipped="11">' "$RESULT_ROOT"/*/junit.xml >/dev/null
 
 setup_fixture stale-resume
 if FAIL_STAGES=swift gate --mode repository >"$REPO/stale-first.out" 2>&1; then
@@ -266,10 +271,10 @@ if FAIL_STAGES='swift codex' gate --mode repository --keep-going >"$REPO/keep-go
   printf 'quality gate unexpectedly passed keep-going failures\n' >&2
   exit 1
 fi
-[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 11 ]
+[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 12 ]
 grep -F $'swift\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'codex\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-grep -F '<testsuite name="detach-quality-gate" tests="13" failures="2" skipped="2">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+grep -F '<testsuite name="detach-quality-gate" tests="14" failures="2" skipped="2">' "$RESULT_ROOT"/*/junit.xml >/dev/null
 
 setup_fixture provenance
 printf '%s\n' docs >>"$REPO/README.md"
@@ -286,7 +291,7 @@ fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
 gate --resume "$resume_dir" >"$REPO/compatible-second.out"
 grep -F 'reusing static from matching evidence' "$REPO/compatible-second.out" >/dev/null
-[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 11 ]
+[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 12 ]
 
 setup_fixture latest-resume
 printf '%s\n' docs >>"$REPO/README.md"
@@ -344,7 +349,7 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/duplicate-manifest-first.out
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'policy\t6' >>"$resume_dir/manifest.tsv"
+printf '%s\n' $'policy\t7' >>"$resume_dir/manifest.tsv"
 if gate --mode repository --resume "$resume_dir" >"$REPO/duplicate-manifest-second.out" 2>&1; then
   printf 'quality gate accepted duplicate manifest keys\n' >&2
   exit 1
@@ -398,13 +403,14 @@ fi
 [ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 9 ]
 grep -F $'codex\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'tmux-runtime\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-grep -F '<testsuite name="detach-quality-gate" tests="13" failures="1" skipped="4">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+grep -F $'ui-e2e\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F '<testsuite name="detach-quality-gate" tests="14" failures="1" skipped="5">' "$RESULT_ROOT"/*/junit.xml >/dev/null
 
 setup_fixture parallel-speed
 parallel_started="$(date +%s)"
 STAGE_SLEEP=3 gate --mode repository >"$REPO/parallel.out"
 parallel_duration=$(($(date +%s) - parallel_started))
-[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 12 ]
+[ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 13 ]
 [ "$parallel_duration" -le 18 ] || {
   printf 'parallel gate took %ss; expected at most 18s for a 36s serial fixture\n' \
     "$parallel_duration" >&2

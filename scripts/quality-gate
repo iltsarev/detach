@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-POLICY_VERSION=6
+POLICY_VERSION=7
 MODE=change
 BASE_REF=""
 PLAN_ONLY=0
@@ -31,8 +31,8 @@ SOURCE_COMMIT="$(git -C "$ROOT" rev-parse --verify HEAD)"
 INPUT_FINGERPRINT=""
 RELEASE_BUDGET="$ROOT/tests/release-budget.tsv"
 
-ALL_STAGES=(static gate-contract swift quality-contracts app codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow release-budget)
-RELEASE_STAGES=(static gate-contract swift quality-contracts app codex claude distribution tmux-runtime release-preflight publish-preflight release-budget)
+ALL_STAGES=(static gate-contract swift quality-contracts app ui-e2e codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow release-budget)
+RELEASE_STAGES=(static gate-contract swift quality-contracts app ui-e2e codex claude distribution tmux-runtime release-preflight publish-preflight release-budget)
 SELECTED=()
 EXPLANATIONS=()
 
@@ -195,7 +195,10 @@ select_for_path() {
       ;;
     *.md|docs/assets/*|AGENTS.md|CLAUDE.md)
       ;;
-    app/Sources/*|app/Tests/*)
+    app/Sources/*)
+      add_stage swift; add_stage quality-contracts; add_stage app; add_stage release-budget
+      ;;
+    app/Tests/*)
       add_stage swift; add_stage quality-contracts; add_stage release-budget
       ;;
     app/Package.swift|app/Package.resolved)
@@ -230,6 +233,9 @@ select_for_path() {
       ;;
     tests/tmux-runtime.sh|tests/power-smoke.sh)
       add_stage app; add_stage tmux-runtime; add_stage release-budget
+      ;;
+    tests/ui-e2e.sh|tests/ui-e2e-contract.sh|tests/fake-ui-cli)
+      add_stage app; add_stage release-budget
       ;;
     tests/release-preflight.sh)
       add_stage release-preflight; add_stage release-budget
@@ -271,6 +277,12 @@ else
     printf 'quality-gate: no diff to classify; selecting repository gate\n' >&2
     select_all 'empty diff fail-safe policy'
   fi
+fi
+
+# A selected packaged-app build is never readiness evidence by itself. Its
+# hermetic accessibility smoke must exercise that exact fresh executable.
+if contains_stage app && [ -z "$DIAGNOSTIC_STAGE" ]; then
+  add_stage ui-e2e 'mandatory packaged-app prerequisite'
 fi
 
 # Preserve the canonical cheap-to-expensive order after taking the union.
@@ -533,6 +545,7 @@ timeout_for_stage() {
     gate-contract) printf 300 ;;
     swift|quality-contracts) printf 1200 ;;
     app) printf 2400 ;;
+    ui-e2e) printf 40 ;;
     codex|claude|distribution|tmux-runtime) printf 1200 ;;
     release-preflight|publish-preflight|release-workflow) printf 900 ;;
   esac
@@ -643,6 +656,10 @@ run_stage_command() {
         -u DETACH_SPARKLE_FEED_URL -u DETACH_SPARKLE_PUBLIC_ED_KEY -u DETACH_DOWNLOAD_URL \
         "$ROOT/app/scripts/make-app.sh"
       ;;
+    ui-e2e)
+      "$ROOT/tests/ui-e2e-contract.sh"
+      "$ROOT/tests/ui-e2e.sh"
+      ;;
     codex)
       [ -x "$tmux_bin" ] || die 'codex gate requires the app stage bundled tmux'
       [ -x "$state_bin" ] || die 'codex gate requires the app stage bundled state helper'
@@ -686,7 +703,7 @@ prerequisite_failed() {
   local stage="$1" prerequisite="" status
   case "$stage" in
     quality-contracts) prerequisite=swift ;;
-    codex|claude|tmux-runtime) prerequisite=app ;;
+    ui-e2e|codex|claude|tmux-runtime) prerequisite=app ;;
   esac
   [ -n "$prerequisite" ] || return 1
   status="$(result_status "$prerequisite" 2>/dev/null || true)"
@@ -799,7 +816,7 @@ evaluate_release_budget() {
     esac
   done
   [ -f "$RELEASE_BUDGET" ] && [ ! -L "$RELEASE_BUDGET" ] || die 'release budget is missing or unsafe'
-  [ "$(budget_value schema)" = 1 ] || die 'release budget schema is unsupported'
+  [ "$(budget_value schema)" = 2 ] || die 'release budget schema is unsupported'
   log="$RUN_DIR/release-budget.log"
   elapsed="${DETACH_QUALITY_GATE_TEST_WALL_SECONDS:-$(($(date +%s) - RUN_STARTED_EPOCH))}"
   [[ "$elapsed" =~ ^[0-9]+$ ]] || die 'test wall duration must be a non-negative integer'
@@ -857,7 +874,7 @@ assemble_summary() {
 # provider suites use private state/socket roots and the bundled state helper,
 # so they can run concurrently with each other and the orchestrator contract.
 for stage in "${SELECTED[@]}"; do
-  case "$stage" in app|quality-contracts|codex|claude|tmux-runtime|gate-contract|release-budget) ;;
+  case "$stage" in app|quality-contracts|ui-e2e|codex|claude|tmux-runtime|gate-contract|release-budget) ;;
     *) launch_stage "$stage" ;;
   esac
 done
@@ -865,6 +882,7 @@ wait_stage swift
 launch_stage quality-contracts
 launch_stage app
 wait_stage app
+launch_stage ui-e2e
 launch_stage codex
 launch_stage claude
 launch_stage tmux-runtime
