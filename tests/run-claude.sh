@@ -11,6 +11,7 @@ TEST_INSTALL_STATE_ROOT="/tmp/detach-claude-install-state-$$"
 TMUX_SOCKET_ROOT="$TEST_INSTALL_STATE_ROOT/tmux"
 SOCKET="detach-claude-test-$$"
 SOCKET_PATH="$TMUX_SOCKET_ROOT/$SOCKET.sock"
+ARTIFACT_DIR="${DETACH_PROVIDER_TEST_ARTIFACT_DIR:-}"
 
 if [ -n "${DETACH_TEST_STATE_BIN:-}" ]; then
   STATE_HELPER="$DETACH_TEST_STATE_BIN"
@@ -59,17 +60,43 @@ expected_tint() {
     $(( (16#${color:5:2} * percent + 43 * (100 - percent)) / 100 ))
 }
 
+preserve_failure_diagnostics() {
+  local status="$1" source
+  [ "$status" -ne 0 ] && [ -n "$ARTIFACT_DIR" ] || return 0
+  case "$ARTIFACT_DIR" in /*) ;; *) printf 'Claude artifact directory must be absolute\n' >&2; return 0 ;; esac
+  [ ! -e "$ARTIFACT_DIR" ] || [ -d "$ARTIFACT_DIR" ] && [ ! -L "$ARTIFACT_DIR" ] || return 0
+  mkdir -p "$ARTIFACT_DIR"
+  chmod 0700 "$ARTIFACT_DIR"
+  for source in args.txt codex-args.txt power-args.txt power-releases.txt; do
+    [ -f "$TMP_ROOT/$source" ] && [ ! -L "$TMP_ROOT/$source" ] || continue
+    install -m 0600 "$TMP_ROOT/$source" "$ARTIFACT_DIR/$source"
+  done
+  {
+    printf 'schema\t1\nexit_status\t%s\n' "$status"
+    printf 'socket_root_present\t%s\n' "$([ -d "$TMUX_SOCKET_ROOT" ] && printf true || printf false)"
+    printf 'socket_present\t%s\n' "$([ -S "$SOCKET_PATH" ] && printf true || printf false)"
+    printf 'temporary_state_present\t%s\n' "$([ -d "$TMP_ROOT" ] && printf true || printf false)"
+  } >"$ARTIFACT_DIR/diagnostics.tsv"
+  chmod 0600 "$ARTIFACT_DIR/diagnostics.tsv"
+  find "$TMP_ROOT" -maxdepth 3 -type f -print 2>/dev/null | \
+    sed "s#^$TMP_ROOT#TMP_ROOT#" | LC_ALL=C sort >"$ARTIFACT_DIR/file-inventory.txt"
+  chmod 0600 "$ARTIFACT_DIR/file-inventory.txt"
+  printf 'Claude diagnostics preserved at %s\n' "$ARTIFACT_DIR" >&2
+}
+
 cleanup() {
+  local status="${1:-0}"
+  preserve_failure_diagnostics "$status"
   if [ "${DETACH_CLAUDE_TEST_KEEP:-0}" = "1" ]; then
-    printf 'Preserved test state: %s (socket=%s, tmux_tmpdir=%s)\n' "$TMP_ROOT" "$SOCKET_PATH" "$TMUX_TMPDIR" >&2
+    printf 'Preserved test state: %s (socket=%s, tmux_tmpdir=%s)\n' "$TMP_ROOT" "$SOCKET_PATH" "${TMUX_TMPDIR:-unset}" >&2
   else
     tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-    rm -rf "$TMUX_TMPDIR"
+    [ -z "${TMUX_TMPDIR:-}" ] || rm -rf "$TMUX_TMPDIR"
     rm -rf "$TEST_INSTALL_STATE_ROOT"
     rm -rf "$TMP_ROOT"
   fi
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
 
 export DETACH_STATE_ROOT="$TMP_ROOT/detach-state"
 export DETACH_STATE_BIN="$STATE_HELPER"

@@ -63,9 +63,9 @@ validate_baseline() {
 
 hard_floor() {
   case "$1" in
-    ui_test_count_min) printf 170 ;;
+    ui_test_count_min) printf 175 ;;
     business_test_count_min) printf 294 ;;
-    ui_line_coverage_min) printf 21.54 ;;
+    ui_line_coverage_min) printf 22.21 ;;
     business_line_coverage_min) printf 80.98 ;;
   esac
 }

@@ -1,7 +1,7 @@
 # Quality gates
 
 `scripts/quality-gate` is the tracked readiness contract for local agents, CI,
-and releases. Policy version 7 derives
+and releases. Policy version 8 derives
 the mandatory set from the Git diff, and selects the full repository gate for
 unknown paths or changes to this policy itself. Its resource-aware scheduler
 runs isolated work concurrently without allowing two SwiftPM operations to
@@ -25,8 +25,12 @@ share the same build directory.
   `--format json` for machine-readable planning.
 - `scripts/quality-gate --resume <run-dir>` reuses passed stages from compatible
   evidence whose policy, source commit, resolved base commit, and exact input
-  fingerprint still match. The earlier plan must cover every stage in the new
-  plan, so a repository run can safely satisfy a smaller change gate.
+  fingerprint still match. Reused stages retain their measured duration and a
+  digest-bound local log copy. The new manifest binds its parent manifest, and
+  timing inherits the maximum wall duration in the compatible chain, so resume
+  cannot erase a prior time-budget failure. The earlier plan must cover every
+  stage in the new plan, so a repository run can safely satisfy a smaller
+  change gate.
 - `scripts/quality-gate --resume latest` selects the newest compatible local
   evidence automatically. Changed commits, refs, tracked bytes, or untracked
   bytes invalidate reuse.
@@ -38,6 +42,10 @@ share the same build directory.
   diagnostics and automation.
 - `--stage <name>` is an explicit diagnostic rerun and is never readiness
   evidence.
+- `scripts/quality-history [RESULT_ROOT]` summarizes completed local or
+  downloaded evidence as run counts, failure counts, environment-failure
+  counts, and p50/p95 wall and stage durations. It is observational and cannot
+  produce readiness evidence.
 
 The stages are `static`, the gate orchestrator's own contract tests, `swift`,
 `quality-contracts`, development app build/verification, packaged-app
@@ -45,14 +53,16 @@ The stages are `static`, the gate orchestrator's own contract tests, `swift`,
 release and publish preflights, the hermetic release-workflow test, and the
 zero-work `release-budget` postflight. Every executable stage has a bounded
 timeout.
-Logs, a versioned TSV summary, a provenance manifest, and JUnit XML are
-written privately under `app/build/quality-gates/`. The schema-2 manifest binds
+Logs, a versioned TSV summary, a provenance manifest, a safe execution-context
+record, a digest inventory of bounded fake-test diagnostics, and JUnit XML are
+written privately under `app/build/quality-gates/`. The schema-3 manifest binds
 evidence to the policy, source commit, resolved base commit, selected stages,
-input and plan fingerprints, timestamps, duration, and the SHA-256 digest of
-the summary. Failure, timeout, interruption, blocked dependencies, malformed
-evidence, or mismatched resume evidence cannot produce PASS. The failure output
-names the exact diagnostic rerun. A red gate must be diagnosed, not made green
-by blind retries.
+input and plan fingerprints, timestamps, inherited timing, parent evidence,
+environment and artifact inventories, and SHA-256 digests of the summary and
+every stage log. Failure, environment failure, timeout, interruption, blocked
+dependencies, malformed evidence, or mismatched resume evidence cannot produce
+PASS. The failure output names the exact diagnostic rerun. A red gate must be
+diagnosed, not made green by blind retries.
 
 Swift and Clang module caches are rooted under `app/.build`. Coverage-enabled
 Swift tests finish before the release app build because SwiftPM owns that
@@ -67,9 +77,44 @@ of these stages invokes SwiftPM. Distribution and hermetic release contracts
 form independent lanes. The gate therefore does not depend on writable user
 caches, ambient tmux, provider session state, or the installed Detach app.
 
-There are no quarantined tests in policy version 7. A future quarantine must be
+There are no quarantined tests in policy version 8. A future quarantine must be
 tracked here with an owner, expiry, and reason, and may not remove a release
 contract check.
+
+## Policy version 8: truthful resume and diagnosable execution
+
+Policy 8 retains all functional and time ceilings from policy 7 and closes the
+gaps found while exercising the gate from a managed agent environment:
+
+1. Resume copies each reusable log into the new run, retains the original stage
+   duration and origin run, verifies every log digest, and binds the new
+   manifest to the exact parent manifest digest.
+2. The effective wall duration is the maximum inherited duration in the resume
+   chain. `release-budget` is always reevaluated and cannot be reused, so an
+   over-budget run remains red after resume.
+3. Per-stage ceilings are enforced even for a partial plan without the
+   `release-budget` postflight; documentation-only `static` cannot silently
+   grow from its two-second contract toward its process timeout.
+4. Known socket/sandbox denials are reported as `environment-failed`. They are
+   JUnit failures and never skips or PASS. UI and provider failures preserve a
+   bounded allowlist of fake-test diagnostics whose inventory is digest-bound.
+5. `environment.tsv` records only safe OS, architecture, Xcode, Swift, CI, and
+   managed-sandbox facts. It records no hostname, user name, credential, or
+   provider state.
+6. Pull-request and main hosted CI both omit the local reference-machine timing
+   postflight. Local and release readiness continue to require it.
+7. The locked UI floors are now 175 tests and 22.21% line coverage; business
+   floors remain 294 tests and 80.98%. Typed state, session, and storage source
+   changes select both provider integrations and distribution; native power
+   boundary changes select distribution and runtime contracts.
+8. The existing static stage also runs a small deterministic repository safety
+   check for dynamic eval, remote-shell pipelines, unsafe deletion targets, and
+   unquoted dynamic source paths.
+9. `scripts/quality-history` makes timing margin and repeated environment or
+   product failures visible across retained evidence without changing results.
+10. The scheduler contract uses a 24-second synthetic serial workload and must
+    finish it within 12 seconds, preserving the original two-times parallelism
+    requirement while reducing idle sleep in the gate's own critical path.
 
 ## Policy version 7: packaged-app accessibility smoke
 

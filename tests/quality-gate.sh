@@ -4,33 +4,47 @@ set -euo pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-quality-gate-test.XXXXXX")"
+TEMPLATE_REPO="$TMP_ROOT/template"
 
 cleanup() {
   rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT
 
-setup_fixture() {
+grep -F 'run: scripts/quality-gate --base "$BASE_SHA" --without-release-budget' \
+  "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
+grep -F 'run: scripts/quality-gate --mode repository --keep-going --without-release-budget' \
+  "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
+
+prepare_template() {
   local stage
-  REPO="$(cd -P "$TMP_ROOT" && pwd)/repo-$1"
-  mkdir -p "$REPO/scripts" "$REPO/tests/quality-gate-fixtures" "$REPO/app/build"
-  install -m 0755 "$ROOT/scripts/quality-gate" "$REPO/scripts/quality-gate"
-  install -m 0755 "$ROOT/tests/quality-ratchet.sh" "$ROOT/tests/release-budget-ratchet.sh" "$REPO/tests/"
-  install -m 0644 "$ROOT/tests/quality-baseline.tsv" "$ROOT/tests/release-budget.tsv" "$REPO/tests/"
-  printf '#!/bin/bash\nexit 0\n' >"$REPO/tests/docs-contract.sh"
-  chmod 0755 "$REPO/tests/docs-contract.sh"
-  printf '%s\n' baseline >"$REPO/README.md"
-  printf '%s\n' actions.log results '*.out' >"$REPO/.gitignore"
+  mkdir -p "$TEMPLATE_REPO/scripts" "$TEMPLATE_REPO/tests/quality-gate-fixtures" \
+    "$TEMPLATE_REPO/app/build"
+  install -m 0755 "$ROOT/scripts/quality-gate" "$TEMPLATE_REPO/scripts/quality-gate"
+  install -m 0755 "$ROOT/tests/quality-ratchet.sh" "$ROOT/tests/release-budget-ratchet.sh" \
+    "$ROOT/tests/shell-safety.sh" "$TEMPLATE_REPO/tests/"
+  install -m 0644 "$ROOT/tests/quality-baseline.tsv" "$ROOT/tests/release-budget.tsv" \
+    "$TEMPLATE_REPO/tests/"
+  printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/docs-contract.sh"
+  chmod 0755 "$TEMPLATE_REPO/tests/docs-contract.sh"
+  printf '%s\n' baseline >"$TEMPLATE_REPO/README.md"
+  printf '%s\n' actions.log results '*.out' >"$TEMPLATE_REPO/.gitignore"
   for stage in static gate-contract swift quality-contracts app ui-e2e codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow; do
     printf '#!/bin/bash\nset -eu\n[ "${CLANG_MODULE_CACHE_PATH:-}" = "${GATE_EXPECTED_MODULE_CACHE:?}" ] || { printf "unexpected Clang module cache: %%s\\n" "${CLANG_MODULE_CACHE_PATH:-missing}" >&2; exit 1; }\n[ "${SWIFTPM_MODULECACHE_OVERRIDE:-}" = "$GATE_EXPECTED_MODULE_CACHE" ] || { printf "unexpected SwiftPM module cache: %%s\\n" "${SWIFTPM_MODULECACHE_OVERRIDE:-missing}" >&2; exit 1; }\nprintf "%%s\\n" "%s" >>"${GATE_ACTION_LOG:?}"\nsleep "${STAGE_SLEEP:-0}"\ncase " ${FAIL_STAGES:-} " in *" %s "*) exit 23 ;; esac\n' "$stage" "$stage" \
-      >"$REPO/tests/quality-gate-fixtures/$stage"
-    chmod 0755 "$REPO/tests/quality-gate-fixtures/$stage"
+      >"$TEMPLATE_REPO/tests/quality-gate-fixtures/$stage"
+    chmod 0755 "$TEMPLATE_REPO/tests/quality-gate-fixtures/$stage"
   done
-  git -C "$REPO" init -q
-  git -C "$REPO" config user.name 'Detach Tests'
-  git -C "$REPO" config user.email 'detach-tests@example.invalid'
-  git -C "$REPO" add .
-  git -C "$REPO" commit -qm baseline
+  git -C "$TEMPLATE_REPO" init -q
+  git -C "$TEMPLATE_REPO" config user.name 'Detach Tests'
+  git -C "$TEMPLATE_REPO" config user.email 'detach-tests@example.invalid'
+  git -C "$TEMPLATE_REPO" add .
+  git -C "$TEMPLATE_REPO" commit -qm baseline
+}
+
+setup_fixture() {
+  REPO="$(cd -P "$TMP_ROOT" && pwd)/repo-$1"
+  [ -d "$TEMPLATE_REPO/.git" ] || prepare_template
+  cp -cR "$TEMPLATE_REPO" "$REPO"
   BASE="$(git -C "$REPO" rev-parse HEAD)"
   ACTION_LOG="$REPO/actions.log"
   RESULT_ROOT="$REPO/results"
@@ -61,6 +75,13 @@ refresh_summary_digest() {
   set_manifest_value "$run_dir/manifest.tsv" summary_sha256 "$digest"
 }
 
+CONTRACT_SHARD="${DETACH_QUALITY_GATE_CONTRACT_SHARD:-all}"
+case "$CONTRACT_SHARD" in
+  all|selection|execution|failures|evidence) ;;
+  *) printf 'invalid quality-gate contract shard\n' >&2; exit 2 ;;
+esac
+
+if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = selection ]; then
 setup_fixture docs
 stages="$(gate --list-stages)"
 [ "$(printf '%s\n' "$stages" | wc -l | tr -d ' ')" = 14 ]
@@ -80,6 +101,18 @@ mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct Changed {}' >"$REPO/app/Sources/DetachKit/Changed.swift"
 plan="$(gate --plan)"
 [[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,release-budget' ]]
+
+setup_fixture typed-state-impact
+mkdir -p "$REPO/app/Sources/DetachKit"
+printf '%s\n' 'struct ChangedState {}' >"$REPO/app/Sources/DetachKit/DetachStateCommand.swift"
+plan="$(gate --plan)"
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
+
+setup_fixture power-impact
+mkdir -p "$REPO/app/Sources/DetachKit"
+printf '%s\n' 'struct ChangedPower {}' >"$REPO/app/Sources/DetachKit/PowerHelperLeaseService.swift"
+plan="$(gate --plan)"
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,distribution,tmux-runtime,release-budget' ]]
 
 setup_fixture package
 mkdir -p "$REPO/app"
@@ -142,7 +175,7 @@ mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct OddName {}' >"$REPO/app/Sources/DetachKit/line
 break.swift"
 plan="$(gate --plan --format json)"
-[[ "$plan" = '{"policy":7,"mode":"change","source_commit":"'* ]]
+[[ "$plan" = '{"policy":8,"mode":"change","source_commit":"'* ]]
 [[ "$plan" = *'"base_commit":"","input_fingerprint":"'* ]]
 [[ "$plan" = *'"stages":["static","swift","quality-contracts","app","ui-e2e","release-budget"]}' ]]
 
@@ -176,7 +209,9 @@ setup_fixture github-budget
 plan="$(GITHUB_ACTIONS=true gate --mode repository --without-release-budget --plan)"
 [[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow' ]]
 [[ "$plan" != *'release-budget'* ]]
+fi
 
+if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = execution ] || [ "$CONTRACT_SHARD" = failures ]; then
 setup_fixture failure
 printf '#!/bin/bash\nprintf "%%s\\n" swift >>"${GATE_ACTION_LOG:?}"\n+exit 23\n' \
   >"$REPO/tests/quality-gate-fixtures/swift"
@@ -247,12 +282,21 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/resume-first.out" 2>&1; then
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
 gate --mode repository --resume "$resume_dir" >"$REPO/resume-second.out"
+resumed_run="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort | tail -1)"
 grep -F 'reusing static from matching evidence' "$REPO/resume-second.out" >/dev/null
 grep -F 'reusing gate-contract from matching evidence' "$REPO/resume-second.out" >/dev/null
 grep -R $'static\treused' "$RESULT_ROOT" >/dev/null
 [ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 14 ]
 grep -F $'result\tpassed' "$RESULT_ROOT"/*/manifest.tsv >/dev/null
 grep -F '<testsuite name="detach-quality-gate" tests="14" failures="0" skipped="11">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+grep -F $'resumed_from_run\t'"$(basename "$resume_dir")" "$resumed_run/manifest.tsv" >/dev/null
+expected_parent_digest="$(shasum -a 256 "$resume_dir/manifest.tsv" | awk '{print $1}')"
+grep -F $'resumed_from_manifest_sha256\t'"$expected_parent_digest" "$resumed_run/manifest.tsv" >/dev/null
+reused_log="$(awk -F '\t' '$3 == "static" {print $6}' "$resumed_run/summary.tsv")"
+reused_log_sha256="$(awk -F '\t' '$3 == "static" {print $7}' "$resumed_run/summary.tsv")"
+[ "$reused_log" != - ]
+[ "$(shasum -a 256 "$resumed_run/$reused_log" | awk '{print $1}')" = "$reused_log_sha256" ]
+grep -F $'origin_run\n' "$resumed_run/summary.tsv" >/dev/null
 
 setup_fixture stale-resume
 if FAIL_STAGES=swift gate --mode repository >"$REPO/stale-first.out" 2>&1; then
@@ -276,6 +320,20 @@ grep -F $'swift\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'codex\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F '<testsuite name="detach-quality-gate" tests="14" failures="2" skipped="2">' "$RESULT_ROOT"/*/junit.xml >/dev/null
 
+setup_fixture environment-failure
+printf '#!/bin/bash\nprintf "error creating /tmp/test.sock (Operation not permitted)\\n" >&2\nexit 23\n' \
+  >"$REPO/tests/quality-gate-fixtures/codex"
+chmod 0755 "$REPO/tests/quality-gate-fixtures/codex"
+if gate --mode repository >"$REPO/environment-failure.out" 2>&1; then
+  printf 'quality gate accepted an execution-environment failure\n' >&2
+  exit 1
+fi
+grep -F $'codex\tenvironment-failed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F 'codex environment-failed' "$REPO/environment-failure.out" >/dev/null
+grep -F '<failure message="environment-failed">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+fi
+
+if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = execution ] || [ "$CONTRACT_SHARD" = evidence ]; then
 setup_fixture provenance
 printf '%s\n' docs >>"$REPO/README.md"
 plan="$(gate --base "$BASE" --plan --format json)"
@@ -337,12 +395,24 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/tamper-first.out" 2>&1; then
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'6\trepository\tapp\tpassed\t0\tapp.log' >>"$resume_dir/summary.tsv"
+printf '%s\n' $'8\trepository\tapp\tpassed\t0\tapp.log\tinvalid\t-' >>"$resume_dir/summary.tsv"
 if gate --mode repository --resume "$resume_dir" >"$REPO/tamper-second.out" 2>&1; then
   printf 'quality gate reused tampered summary evidence\n' >&2
   exit 1
 fi
 grep -F 'resume summary digest does not match its manifest' "$REPO/tamper-second.out" >/dev/null
+
+setup_fixture tampered-log
+if FAIL_STAGES=swift gate --mode repository >"$REPO/tampered-log-first.out" 2>&1; then
+  exit 1
+fi
+resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
+printf '%s\n' tampered >>"$resume_dir/static.log"
+if gate --mode repository --resume "$resume_dir" >"$REPO/tampered-log-second.out" 2>&1; then
+  printf 'quality gate reused a tampered stage log\n' >&2
+  exit 1
+fi
+grep -F 'resume summary log digest does not match: static' "$REPO/tampered-log-second.out" >/dev/null
 
 setup_fixture duplicate-manifest
 if FAIL_STAGES=swift gate --mode repository >"$REPO/duplicate-manifest-first.out" 2>&1; then
@@ -355,6 +425,20 @@ if gate --mode repository --resume "$resume_dir" >"$REPO/duplicate-manifest-seco
   exit 1
 fi
 grep -F 'resume evidence uses another policy version' "$REPO/duplicate-manifest-second.out" >/dev/null
+
+setup_fixture cyclic-parent
+if FAIL_STAGES=swift gate --mode repository >"$REPO/cyclic-parent-first.out" 2>&1; then
+  exit 1
+fi
+resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
+set_manifest_value "$resume_dir/manifest.tsv" resumed_from_run "$(basename "$resume_dir")"
+set_manifest_value "$resume_dir/manifest.tsv" resumed_from_manifest_sha256 \
+  0000000000000000000000000000000000000000000000000000000000000000
+if gate --mode repository --resume "$resume_dir" >"$REPO/cyclic-parent-second.out" 2>&1; then
+  printf 'quality gate accepted a cyclic evidence parent\n' >&2
+  exit 1
+fi
+grep -F 'resume evidence parent chain contains a cycle' "$REPO/cyclic-parent-second.out" >/dev/null
 
 setup_fixture incomplete-resume
 if FAIL_STAGES=swift gate --mode repository >"$REPO/incomplete-first.out" 2>&1; then
@@ -373,7 +457,7 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/invalid-summary-first.out" 2
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'6\trepository\tstatic\tpassed\t0\tduplicate.log' >>"$resume_dir/summary.tsv"
+printf '%s\n' $'8\trepository\tstatic\tpassed\t0\tduplicate.log\tinvalid\t-' >>"$resume_dir/summary.tsv"
 refresh_summary_digest "$resume_dir"
 if gate --mode repository --resume "$resume_dir" >"$REPO/invalid-summary-second.out" 2>&1; then
   printf 'quality gate accepted duplicate stage records\n' >&2
@@ -408,11 +492,11 @@ grep -F '<testsuite name="detach-quality-gate" tests="14" failures="1" skipped="
 
 setup_fixture parallel-speed
 parallel_started="$(date +%s)"
-STAGE_SLEEP=3 gate --mode repository >"$REPO/parallel.out"
+STAGE_SLEEP=2 gate --mode repository >"$REPO/parallel.out"
 parallel_duration=$(($(date +%s) - parallel_started))
 [ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 13 ]
-[ "$parallel_duration" -le 18 ] || {
-  printf 'parallel gate took %ss; expected at most 18s for a 36s serial fixture\n' \
+[ "$parallel_duration" -le 12 ] || {
+  printf 'parallel gate took %ss; expected at most 12s for a 24s serial fixture\n' \
     "$parallel_duration" >&2
   exit 1
 }
@@ -427,6 +511,30 @@ fi
 grep -F 'wall time regressed' "$RESULT_ROOT"/*/release-budget.log >/dev/null
 grep -F $'release-budget\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 
+setup_fixture resumed-release-budget-wall
+set_manifest_value "$REPO/tests/release-budget.tsv" wall_seconds_max 1
+if DETACH_QUALITY_GATE_TEST_WALL_SECONDS=2 gate --mode repository >"$REPO/resumed-budget-first.out" 2>&1; then
+  printf 'quality gate accepted the initial wall-time regression\n' >&2
+  exit 1
+fi
+resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
+if DETACH_QUALITY_GATE_TEST_WALL_SECONDS=0 gate --mode repository --resume "$resume_dir" \
+    >"$REPO/resumed-budget-second.out" 2>&1; then
+  printf 'quality gate erased a wall-time regression through resume\n' >&2
+  exit 1
+fi
+grep -F $'inherited_wall_seconds\t2' "$RESULT_ROOT"/*/release-budget.log >/dev/null
+grep -F 'wall time regressed: 2s > 1s' "$RESULT_ROOT"/*/release-budget.log >/dev/null
+
+setup_fixture static-only-budget
+printf '%s\n' docs >>"$REPO/README.md"
+if DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_STATIC=3 gate >"$REPO/static-only-budget.out" 2>&1; then
+  printf 'quality gate accepted a slow documentation-only static stage\n' >&2
+  exit 1
+fi
+grep -F 'stage budget: static regressed: 3s > 2s' "$RESULT_ROOT"/*/static.log >/dev/null
+grep -F $'static\tfailed\t3' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+
 setup_fixture release-budget-stage
 set_manifest_value "$REPO/tests/release-budget.tsv" stage_codex_seconds_max 1
 if DETACH_QUALITY_GATE_TEST_CODEX_SECONDS=2 gate --mode repository >"$REPO/release-budget-stage.out" 2>&1; then
@@ -439,12 +547,20 @@ setup_fixture evidence
 printf '%s\n' docs >>"$REPO/README.md"
 gate >"$REPO/evidence.out"
 run_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-grep -F $'schema\t2' "$run_dir/manifest.tsv" >/dev/null
+grep -F $'schema\t3' "$run_dir/manifest.tsv" >/dev/null
 grep -F $'input_fingerprint\t' "$run_dir/manifest.tsv" >/dev/null
 grep -E $'^started_at\t[0-9]{4}-' "$run_dir/manifest.tsv" >/dev/null
 grep -E $'^finished_at\t[0-9]{4}-' "$run_dir/manifest.tsv" >/dev/null
 grep -E $'^duration_seconds\t[0-9]+$' "$run_dir/manifest.tsv" >/dev/null
+grep -E $'^timing_wall_seconds\t[0-9]+$' "$run_dir/manifest.tsv" >/dev/null
+grep -E $'^environment_sha256\t[0-9a-f]{64}$' "$run_dir/manifest.tsv" >/dev/null
+grep -E $'^artifacts_sha256\t[0-9a-f]{64}$' "$run_dir/manifest.tsv" >/dev/null
 grep -E $'^summary_sha256\t[0-9a-f]{64}$' "$run_dir/manifest.tsv" >/dev/null
+grep -F $'schema\t1' "$run_dir/environment.tsv" >/dev/null
+grep -F $'architecture\t' "$run_dir/environment.tsv" >/dev/null
+grep -F $'xcode\t' "$run_dir/environment.tsv" >/dev/null
+grep -F $'swift\t' "$run_dir/environment.tsv" >/dev/null
+grep -F $'schema\t1' "$run_dir/artifacts.tsv" >/dev/null
 grep -F '# Quality gate' "$run_dir/summary.md" >/dev/null
 grep -F '| `static` | passed |' "$run_dir/summary.md" >/dev/null
 grep -F 'markdown=' "$REPO/evidence.out" >/dev/null
@@ -465,16 +581,25 @@ git -C "$REPO" commit -qm legacy-invalid-shell
 printf '%s\n' docs >>"$REPO/README.md"
 (
   cd -P "$REPO"
-  DETACH_QUALITY_GATE_RESULT_ROOT="$RESULT_ROOT" "$REPO/scripts/quality-gate"
+  DETACH_QUALITY_GATE_TEST_MODE=1 DETACH_QUALITY_GATE_TEST_REAL_STATIC=1 \
+    DETACH_QUALITY_GATE_RESULT_ROOT="$RESULT_ROOT" "$REPO/scripts/quality-gate"
 ) >"$REPO/targeted-static.out"
 grep -F 'quality-gate: PASS' "$REPO/targeted-static.out" >/dev/null
 if (
   cd -P "$REPO"
-  DETACH_QUALITY_GATE_RESULT_ROOT="$RESULT_ROOT" "$REPO/scripts/quality-gate" --stage static
+  DETACH_QUALITY_GATE_TEST_MODE=1 DETACH_QUALITY_GATE_TEST_REAL_STATIC=1 \
+    DETACH_QUALITY_GATE_RESULT_ROOT="$RESULT_ROOT" "$REPO/scripts/quality-gate" --stage static
 ) >"$REPO/full-static.out" 2>&1; then
   printf 'repository static scan ignored an unchanged malformed shell file\n' >&2
   exit 1
 fi
 grep -F 'static failed' "$REPO/full-static.out" >/dev/null
+fi
 
-printf 'Quality gate orchestrator tests passed\n'
+case "$CONTRACT_SHARD" in
+  all) printf 'Quality gate orchestrator tests passed\n' ;;
+  selection) printf 'Quality gate selection tests passed\n' ;;
+  execution) printf 'Quality gate execution tests passed\n' ;;
+  failures) printf 'Quality gate failure tests passed\n' ;;
+  evidence) printf 'Quality gate evidence tests passed\n' ;;
+esac

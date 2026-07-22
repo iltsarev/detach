@@ -19,18 +19,18 @@ write_baseline() {
 
 current="$TMP_ROOT/current.tsv"
 prior="$TMP_ROOT/prior.tsv"
-write_baseline "$current" 170 294 21.54 80.98
-write_baseline "$prior" 170 294 21.54 80.98
+write_baseline "$current" 175 294 22.21 80.98
+write_baseline "$prior" 175 294 22.21 80.98
 
 DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" \
   DETACH_QUALITY_PRIOR_BASELINE="$prior" "$RATCHET" >/dev/null
 
 for regression in ui-tests business-tests ui-coverage business-coverage; do
   case "$regression" in
-    ui-tests) write_baseline "$current" 169 294 21.54 80.98 ;;
-    business-tests) write_baseline "$current" 170 293 21.54 80.98 ;;
-    ui-coverage) write_baseline "$current" 170 294 21.53 80.98 ;;
-    business-coverage) write_baseline "$current" 170 294 21.54 80.97 ;;
+    ui-tests) write_baseline "$current" 174 294 22.21 80.98 ;;
+    business-tests) write_baseline "$current" 175 293 22.21 80.98 ;;
+    ui-coverage) write_baseline "$current" 175 294 22.20 80.98 ;;
+    business-coverage) write_baseline "$current" 175 294 22.21 80.97 ;;
   esac
   if DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" "$RATCHET" \
     >"$TMP_ROOT/$regression.out" 2>&1; then
@@ -40,8 +40,8 @@ for regression in ui-tests business-tests ui-coverage business-coverage; do
   grep -F 'regressed below locked-floor' "$TMP_ROOT/$regression.out" >/dev/null
 done
 
-write_baseline "$current" 171 295 22 81
-write_baseline "$prior" 172 295 22 81
+write_baseline "$current" 176 295 22.22 81
+write_baseline "$prior" 177 295 22.22 81
 if DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" \
   DETACH_QUALITY_PRIOR_BASELINE="$prior" "$RATCHET" >"$TMP_ROOT/prior.out" 2>&1; then
   printf 'quality ratchet contract: accepted a merge-base regression\n' >&2
@@ -49,8 +49,8 @@ if DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" \
 fi
 grep -F 'regressed below merge-base' "$TMP_ROOT/prior.out" >/dev/null
 
-write_baseline "$current" 170 294 21.54 80.98
-printf 'ui_test_count_min\t170\n' >>"$current"
+write_baseline "$current" 175 294 22.21 80.98
+printf 'ui_test_count_min\t175\n' >>"$current"
 if DETACH_QUALITY_RATCHET_TEST_MODE=1 DETACH_QUALITY_BASELINE="$current" "$RATCHET" \
   >"$TMP_ROOT/duplicate.out" 2>&1; then
   printf 'quality ratchet contract: accepted a duplicate key\n' >&2

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-POLICY_VERSION=7
+POLICY_VERSION=8
 MODE=change
 BASE_REF=""
 PLAN_ONLY=0
@@ -15,6 +15,7 @@ RESUME_DIR=""
 RESUME_LATEST=0
 WITHOUT_RELEASE_BUDGET=0
 TEST_MODE="${DETACH_QUALITY_GATE_TEST_MODE:-0}"
+TEST_REAL_STATIC="${DETACH_QUALITY_GATE_TEST_REAL_STATIC:-0}"
 RESULT_ROOT="${DETACH_QUALITY_GATE_RESULT_ROOT:-$ROOT/app/build/quality-gates}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_DIR="$RESULT_ROOT/$RUN_ID"
@@ -22,8 +23,11 @@ SUMMARY="$RUN_DIR/summary.tsv"
 MANIFEST="$RUN_DIR/manifest.tsv"
 JUNIT="$RUN_DIR/junit.xml"
 MARKDOWN="$RUN_DIR/summary.md"
+ENVIRONMENT="$RUN_DIR/environment.tsv"
+ARTIFACTS="$RUN_DIR/artifacts.tsv"
 OVERALL_STATUS=0
 FAILURE_COUNT=0
+EFFECTIVE_TIMING_WALL=0
 RUN_STARTED_EPOCH="$(date +%s)"
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RESOLVED_BASE=""
@@ -142,10 +146,18 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$TEST_MODE" in 0|1) ;; *) die 'DETACH_QUALITY_GATE_TEST_MODE must be 0 or 1' ;; esac
+case "$TEST_REAL_STATIC" in 0|1) ;; *) die 'DETACH_QUALITY_GATE_TEST_REAL_STATIC must be 0 or 1' ;; esac
+[ "$TEST_MODE" = 1 ] || [ "$TEST_REAL_STATIC" = 0 ] || die 'real static fixture mode is test-only'
 [ "$WITHOUT_RELEASE_BUDGET" = 0 ] || [ "${GITHUB_ACTIONS:-}" = true ] || [ "$TEST_MODE" = 1 ] || \
   die '--without-release-budget is restricted to GitHub Actions'
-if [ "$TEST_MODE" != 1 ] && { [ -n "${DETACH_QUALITY_GATE_TEST_WALL_SECONDS:-}" ] || [ -n "${DETACH_QUALITY_GATE_TEST_CODEX_SECONDS:-}" ]; }; then
-  die 'quality-gate clock overrides are test-only'
+if [ "$TEST_MODE" != 1 ]; then
+  [ -z "${DETACH_QUALITY_GATE_TEST_WALL_SECONDS:-}" ] || die 'quality-gate clock overrides are test-only'
+  [ -z "${DETACH_QUALITY_GATE_TEST_CODEX_SECONDS:-}" ] || die 'quality-gate clock overrides are test-only'
+  for test_stage in "${ALL_STAGES[@]}"; do
+    test_suffix="$(printf '%s' "$test_stage" | tr '[:lower:]-' '[:upper:]_')"
+    test_variable="DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_$test_suffix"
+    [ -z "${!test_variable:-}" ] || die 'quality-gate clock overrides are test-only'
+  done
 fi
 case "$MODE" in change|repository|release) ;; *) die "invalid mode: $MODE" ;; esac
 case "$OUTPUT_FORMAT" in text|json) ;; *) die "invalid format: $OUTPUT_FORMAT" ;; esac
@@ -188,12 +200,20 @@ select_for_path() {
   IMPACT_REASON="$change $path"
   add_stage static
   case "$path" in
-    .github/workflows/quality-gates.yml|docs/quality-gates.md|scripts/quality-gate|tests/quality-gate.sh|tests/quality-contracts.sh|tests/quality-baseline.tsv|tests/quality-ratchet.sh|tests/quality-ratchet-contract.sh|tests/release-budget.tsv|tests/release-budget-ratchet.sh|tests/release-budget-ratchet-contract.sh)
+    .github/workflows/quality-gates.yml|docs/quality-gates.md|scripts/quality-gate|scripts/quality-history|tests/quality-gate.sh|tests/quality-contracts.sh|tests/quality-baseline.tsv|tests/quality-ratchet.sh|tests/quality-ratchet-contract.sh|tests/release-budget.tsv|tests/release-budget-ratchet.sh|tests/release-budget-ratchet-contract.sh|tests/shell-safety.sh|tests/shell-safety-contract.sh|tests/quality-history-contract.sh)
       select_all "$change gate policy file $path"
       ;;
     tests/docs-contract.sh)
       ;;
     *.md|docs/assets/*|AGENTS.md|CLAUDE.md)
+      ;;
+    app/Sources/DetachKit/DetachState*.swift|app/Sources/DetachKit/Session*.swift|app/Sources/DetachKit/Storage*.swift|app/Sources/DetachState/*.swift)
+      add_stage swift; add_stage quality-contracts; add_stage app; add_stage codex; add_stage claude
+      add_stage distribution; add_stage tmux-runtime; add_stage release-budget
+      ;;
+    app/Sources/DetachKit/DetachPower*.swift|app/Sources/DetachKit/Power*.swift|app/Sources/DetachPower/*.swift|app/Sources/DetachPowerHelper/*.swift)
+      add_stage swift; add_stage quality-contracts; add_stage app; add_stage distribution
+      add_stage tmux-runtime; add_stage release-budget
       ;;
     app/Sources/*)
       add_stage swift; add_stage quality-contracts; add_stage app; add_stage release-budget
@@ -345,23 +365,79 @@ fi
 mkdir -p "$RUN_DIR"
 [ -d "$RUN_DIR" ] && [ ! -L "$RUN_DIR" ] || die 'run path must be a non-symlink directory'
 chmod 0700 "$RESULT_ROOT" "$RUN_DIR" 2>/dev/null || true
-printf 'policy\tmode\tstage\tstatus\tduration_seconds\tlog\n' >"$SUMMARY"
+printf 'policy\tmode\tstage\tstatus\tduration_seconds\tlog\tlog_sha256\torigin_run\n' >"$SUMMARY"
 chmod 0600 "$SUMMARY"
+if [ "$TEST_MODE" = 1 ]; then
+  {
+    printf 'schema\t1\n'
+    printf 'os_product_version\ttest\n'
+    printf 'os_build_version\ttest\n'
+    printf 'architecture\ttest\n'
+    printf 'xcode\ttest\n'
+    printf 'swift\ttest\n'
+    printf 'github_actions\tfalse\n'
+    printf 'managed_sandbox_declared\tfalse\n'
+  } >"$ENVIRONMENT"
+else
+  {
+    printf 'schema\t1\n'
+    printf 'os_product_version\t%s\n' "$(sw_vers -productVersion 2>/dev/null || printf unknown)"
+    printf 'os_build_version\t%s\n' "$(sw_vers -buildVersion 2>/dev/null || printf unknown)"
+    printf 'architecture\t%s\n' "$(uname -m)"
+    printf 'xcode\t%s\n' "$(xcodebuild -version 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || printf unavailable)"
+    printf 'swift\t%s\n' "$(swift --version 2>/dev/null | head -1 || printf unavailable)"
+    printf 'github_actions\t%s\n' "${GITHUB_ACTIONS:-false}"
+    if [ -n "${CODEX_SANDBOX:-}" ]; then
+      printf 'managed_sandbox_declared\ttrue\n'
+    else
+      printf 'managed_sandbox_declared\tfalse\n'
+    fi
+  } >"$ENVIRONMENT"
+fi
+chmod 0600 "$ENVIRONMENT"
+printf 'schema\t1\n' >"$ARTIFACTS"
+chmod 0600 "$ARTIFACTS"
 
 manifest_value() {
   local file="$1" key="$2"
   awk -F '\t' -v wanted="$key" '$1 == wanted {count++; value=$2} END {if (count != 1) exit 1; print value}' "$file"
 }
 
+write_artifact_inventory() {
+  local file relative digest temporary="$RUN_DIR/.artifacts.$$"
+  printf 'schema\t1\n' >"$temporary"
+  while IFS= read -r file; do
+    [ -f "$file" ] && [ ! -L "$file" ] || die 'diagnostic artifact is missing or unsafe'
+    relative="${file#"$RUN_DIR/"}"
+    case "$relative" in *$'\t'*|*$'\n'*|/*|../*|*/../*) die 'diagnostic artifact path is unsafe' ;; esac
+    digest="$(shasum -a 256 "$file" | awk '{print $1}')"
+    printf 'file\t%s\t%s\n' "$relative" "$digest" >>"$temporary"
+  done < <(find "$RUN_DIR" -mindepth 2 -maxdepth 2 -type f \
+    \( -path '*/ui-e2e-artifacts/*' -o -path '*/codex-artifacts/*' -o -path '*/claude-artifacts/*' \) \
+    -print | LC_ALL=C sort)
+  chmod 0600 "$temporary"
+  mv -f "$temporary" "$ARTIFACTS"
+}
+
 write_manifest() {
   local result="$1" temporary="$RUN_DIR/.manifest.$$" finished_at="" duration="" summary_sha256=""
+  local resumed_from_run="" resumed_from_manifest_sha256="" timing_wall_seconds="" environment_sha256 artifacts_sha256
+  [ "$result" = running ] || write_artifact_inventory
+  environment_sha256="$(shasum -a 256 "$ENVIRONMENT" | awk '{print $1}')"
+  artifacts_sha256="$(shasum -a 256 "$ARTIFACTS" | awk '{print $1}')"
+  if [ -n "$RESUME_DIR" ]; then
+    resumed_from_run="$(basename "$RESUME_DIR")"
+    resumed_from_manifest_sha256="$(shasum -a 256 "$RESUME_DIR/manifest.tsv" | awk '{print $1}')"
+  fi
   if [ "$result" != running ]; then
     finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     duration="$(($(date +%s) - RUN_STARTED_EPOCH))"
     summary_sha256="$(shasum -a 256 "$SUMMARY" | awk '{print $1}')"
+    timing_wall_seconds="${EFFECTIVE_TIMING_WALL:-$duration}"
+    [ "$timing_wall_seconds" -gt 0 ] || timing_wall_seconds="$duration"
   fi
   {
-    printf 'schema\t2\n'
+    printf 'schema\t3\n'
     printf 'policy\t%s\n' "$POLICY_VERSION"
     printf 'mode\t%s\n' "$EFFECTIVE_MODE"
     printf 'source_commit\t%s\n' "$SOURCE_COMMIT"
@@ -372,6 +448,11 @@ write_manifest() {
     printf 'started_at\t%s\n' "$RUN_STARTED_AT"
     printf 'finished_at\t%s\n' "$finished_at"
     printf 'duration_seconds\t%s\n' "$duration"
+    printf 'timing_wall_seconds\t%s\n' "$timing_wall_seconds"
+    printf 'resumed_from_run\t%s\n' "$resumed_from_run"
+    printf 'resumed_from_manifest_sha256\t%s\n' "$resumed_from_manifest_sha256"
+    printf 'environment_sha256\t%s\n' "$environment_sha256"
+    printf 'artifacts_sha256\t%s\n' "$artifacts_sha256"
     printf 'summary_sha256\t%s\n' "$summary_sha256"
     printf 'result\t%s\n' "$result"
   } >"$temporary"
@@ -384,6 +465,13 @@ resume_stage_passed() {
   [ -n "$RESUME_DIR" ] || return 1
   awk -F '\t' -v wanted="$stage" \
     'NR == 1 {next} $3 == wanted {count++; valid=($4 == "passed" || $4 == "reused")} END {exit !(count == 1 && valid)}' \
+    "$RESUME_DIR/summary.tsv"
+}
+
+resume_stage_value() {
+  local stage="$1" column="$2"
+  awk -F '\t' -v wanted="$stage" -v column="$column" \
+    'NR > 1 && $3 == wanted {count++; value=$column} END {if (count != 1) exit 1; print value}' \
     "$RESUME_DIR/summary.tsv"
 }
 
@@ -403,7 +491,7 @@ resolve_latest_resume() {
   while IFS= read -r candidate; do
     manifest="$candidate/manifest.tsv"
     [ -f "$manifest" ] && [ ! -L "$manifest" ] || continue
-    [ "$(manifest_value "$manifest" schema 2>/dev/null || true)" = 2 ] || continue
+    [ "$(manifest_value "$manifest" schema 2>/dev/null || true)" = 3 ] || continue
     [ "$(manifest_value "$manifest" policy 2>/dev/null || true)" = "$POLICY_VERSION" ] || continue
     [ "$(manifest_value "$manifest" source_commit 2>/dev/null || true)" = "$SOURCE_COMMIT" ] || continue
     [ "$(manifest_value "$manifest" base_commit 2>/dev/null || true)" = "$RESOLVED_BASE" ] || continue
@@ -427,30 +515,96 @@ resolve_latest_resume() {
 }
 
 validate_summary() {
-  local file="$1" prior_stages="$2" prior_mode="$3" stage status
-  [ "$(head -n 1 "$file")" = $'policy\tmode\tstage\tstatus\tduration_seconds\tlog' ] || die 'resume summary has an invalid schema'
+  local file="$1" prior_stages="$2" prior_mode="$3" stage status duration log log_sha256 origin_run actual_sha256
+  [ "$(head -n 1 "$file")" = $'policy\tmode\tstage\tstatus\tduration_seconds\tlog\tlog_sha256\torigin_run' ] || die 'resume summary has an invalid schema'
   awk -F '\t' -v policy="$POLICY_VERSION" -v mode="$prior_mode" \
-    'NR > 1 {if (NF != 6 || $1 != policy || $2 != mode) exit 1; seen[$3]++; if (seen[$3] > 1) exit 1}' \
+    'NR > 1 {if (NF != 8 || $1 != policy || $2 != mode) exit 1; seen[$3]++; if (seen[$3] > 1) exit 1}' \
     "$file" || die 'resume summary contains invalid or duplicate stage records'
-  while IFS=$'\t' read -r _ _ stage status _ _; do
+  while IFS=$'\t' read -r _ _ stage status duration log log_sha256 origin_run; do
     [ "$stage" = stage ] && continue
     stage_exists "$stage" || die "resume summary contains unknown stage: $stage"
     stage_in_list "$stage" "$prior_stages" || die "resume summary contains unplanned stage: $stage"
-    case "$status" in passed|reused|failed|timeout|interrupted|blocked) ;; *) die "resume summary contains invalid status: $status" ;; esac
+    case "$status" in passed|reused|failed|environment-failed|timeout|interrupted|blocked) ;; *) die "resume summary contains invalid status: $status" ;; esac
+    [[ "$duration" =~ ^[0-9]+$ ]] || die "resume summary contains invalid duration: $stage"
+    case "$log" in
+      -)
+        [ "$log_sha256" = - ] || die "resume summary has a digest without a log: $stage"
+        case "$status" in passed|reused) die "resume summary has no log for reusable stage: $stage" ;; esac
+        ;;
+      */*|.|..) die "resume summary contains an unsafe log path: $stage" ;;
+      *)
+        [ -f "$(dirname "$file")/$log" ] && [ ! -L "$(dirname "$file")/$log" ] || \
+          die "resume summary log is missing or unsafe: $stage"
+        actual_sha256="$(shasum -a 256 "$(dirname "$file")/$log" | awk '{print $1}')"
+        [ "$actual_sha256" = "$log_sha256" ] || die "resume summary log digest does not match: $stage"
+        ;;
+    esac
+    [ "$origin_run" = - ] || [[ "$origin_run" =~ ^[A-Za-z0-9._-]+$ ]] || \
+      die "resume summary contains an unsafe origin: $stage"
   done <"$file"
 }
 
 validate_resume() {
+  local resume_timing_wall resume_parent_run resume_parent_digest resume_parent_manifest actual_parent_digest
+  local expected_environment_sha256 actual_environment_sha256 expected_artifacts_sha256 actual_artifacts_sha256
+  local artifact_kind artifact_path artifact_sha256 actual_artifact_sha256
+  local chain_dir chain_manifest chain_seen
   resolve_latest_resume
   [ -n "$RESUME_DIR" ] || return 0
   [ -d "$RESUME_DIR" ] && [ ! -L "$RESUME_DIR" ] || die 'resume path must be a non-symlink run directory'
   [ -f "$RESUME_DIR/manifest.tsv" ] && [ ! -L "$RESUME_DIR/manifest.tsv" ] || die 'resume manifest is missing or unsafe'
   [ -f "$RESUME_DIR/summary.tsv" ] && [ ! -L "$RESUME_DIR/summary.tsv" ] || die 'resume summary is missing or unsafe'
-  [ "$(manifest_value "$RESUME_DIR/manifest.tsv" schema)" = 2 ] || die 'resume evidence schema is unsupported'
+  [ -f "$RESUME_DIR/environment.tsv" ] && [ ! -L "$RESUME_DIR/environment.tsv" ] || die 'resume environment evidence is missing or unsafe'
+  [ -f "$RESUME_DIR/artifacts.tsv" ] && [ ! -L "$RESUME_DIR/artifacts.tsv" ] || die 'resume artifact evidence is missing or unsafe'
+  [ "$(manifest_value "$RESUME_DIR/manifest.tsv" schema)" = 3 ] || die 'resume evidence schema is unsupported'
   [ "$(manifest_value "$RESUME_DIR/manifest.tsv" policy)" = "$POLICY_VERSION" ] || die 'resume evidence uses another policy version'
   [ "$(manifest_value "$RESUME_DIR/manifest.tsv" source_commit)" = "$SOURCE_COMMIT" ] || die 'resume evidence uses another source commit'
   [ "$(manifest_value "$RESUME_DIR/manifest.tsv" base_commit)" = "$RESOLVED_BASE" ] || die 'resume evidence uses another base commit'
   [ "$(manifest_value "$RESUME_DIR/manifest.tsv" input_fingerprint)" = "$INPUT_FINGERPRINT" ] || die 'resume evidence does not match the current input'
+  expected_environment_sha256="$(manifest_value "$RESUME_DIR/manifest.tsv" environment_sha256)"
+  actual_environment_sha256="$(shasum -a 256 "$RESUME_DIR/environment.tsv" | awk '{print $1}')"
+  [ "$actual_environment_sha256" = "$expected_environment_sha256" ] || die 'resume environment digest does not match its manifest'
+  expected_artifacts_sha256="$(manifest_value "$RESUME_DIR/manifest.tsv" artifacts_sha256)"
+  actual_artifacts_sha256="$(shasum -a 256 "$RESUME_DIR/artifacts.tsv" | awk '{print $1}')"
+  [ "$actual_artifacts_sha256" = "$expected_artifacts_sha256" ] || die 'resume artifact inventory digest does not match its manifest'
+  [ "$(head -n 1 "$RESUME_DIR/artifacts.tsv")" = $'schema\t1' ] || die 'resume artifact inventory schema is invalid'
+  while IFS=$'\t' read -r artifact_kind artifact_path artifact_sha256; do
+    [ "$artifact_kind" = schema ] && continue
+    [ "$artifact_kind" = file ] || die 'resume artifact inventory contains an unknown record'
+    case "$artifact_path" in /*|../*|*/../*|*$'\n'*|*$'\t'*) die 'resume artifact inventory path is unsafe' ;; esac
+    case "$artifact_path" in ui-e2e-artifacts/*|codex-artifacts/*|claude-artifacts/*) ;; *) die 'resume artifact inventory path is unapproved' ;; esac
+    [[ "$artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'resume artifact inventory digest is invalid'
+    [ -f "$RESUME_DIR/$artifact_path" ] && [ ! -L "$RESUME_DIR/$artifact_path" ] || die 'resume diagnostic artifact is missing or unsafe'
+    actual_artifact_sha256="$(shasum -a 256 "$RESUME_DIR/$artifact_path" | awk '{print $1}')"
+    [ "$actual_artifact_sha256" = "$artifact_sha256" ] || die 'resume diagnostic artifact digest does not match'
+  done <"$RESUME_DIR/artifacts.tsv"
+  resume_timing_wall="$(manifest_value "$RESUME_DIR/manifest.tsv" timing_wall_seconds)"
+  [[ "$resume_timing_wall" =~ ^[0-9]+$ ]] || die 'resume evidence timing wall duration is invalid'
+  chain_dir="$RESUME_DIR"
+  chain_seen=",$(basename "$chain_dir"),"
+  while :; do
+    chain_manifest="$chain_dir/manifest.tsv"
+    resume_parent_run="$(manifest_value "$chain_manifest" resumed_from_run)"
+    resume_parent_digest="$(manifest_value "$chain_manifest" resumed_from_manifest_sha256)"
+    [ -n "$resume_parent_run" ] || {
+      [ -z "$resume_parent_digest" ] || die 'resume evidence has a parent digest without a parent run'
+      break
+    }
+    [[ "$resume_parent_run" =~ ^[A-Za-z0-9._-]+$ ]] || die 'resume evidence parent run is unsafe'
+    [[ "$resume_parent_digest" =~ ^[0-9a-f]{64}$ ]] || die 'resume evidence parent digest is invalid'
+    case "$chain_seen" in *",$resume_parent_run,"*) die 'resume evidence parent chain contains a cycle' ;; esac
+    resume_parent_manifest="$(dirname "$chain_dir")/$resume_parent_run/manifest.tsv"
+    [ -f "$resume_parent_manifest" ] && [ ! -L "$resume_parent_manifest" ] || die 'resume evidence parent manifest is missing or unsafe'
+    actual_parent_digest="$(shasum -a 256 "$resume_parent_manifest" | awk '{print $1}')"
+    [ "$actual_parent_digest" = "$resume_parent_digest" ] || die 'resume evidence parent manifest digest does not match'
+    [ "$(manifest_value "$resume_parent_manifest" schema)" = 3 ] || die 'resume evidence parent schema is unsupported'
+    [ "$(manifest_value "$resume_parent_manifest" policy)" = "$POLICY_VERSION" ] || die 'resume evidence parent policy does not match'
+    [ "$(manifest_value "$resume_parent_manifest" source_commit)" = "$SOURCE_COMMIT" ] || die 'resume evidence parent source commit does not match'
+    [ "$(manifest_value "$resume_parent_manifest" base_commit)" = "$RESOLVED_BASE" ] || die 'resume evidence parent base commit does not match'
+    [ "$(manifest_value "$resume_parent_manifest" input_fingerprint)" = "$INPUT_FINGERPRINT" ] || die 'resume evidence parent input does not match'
+    chain_seen="$chain_seen$resume_parent_run,"
+    chain_dir="$(dirname "$chain_dir")/$resume_parent_run"
+  done
   prior_result="$(manifest_value "$RESUME_DIR/manifest.tsv" result)"
   case "$prior_result" in passed|failed|interrupted) ;; *) die 'resume evidence is not from a completed run' ;; esac
   prior_stages="$(manifest_value "$RESUME_DIR/manifest.tsv" stages)"
@@ -466,19 +620,19 @@ validate_resume() {
 
 write_junit() {
   local tests=0 failures=0 skipped=0 stage status duration log
-  while IFS=$'\t' read -r _ _ stage status duration log; do
+  while IFS=$'\t' read -r _ _ stage status duration log _ _; do
     [ "$stage" = stage ] && continue
     tests=$((tests + 1))
-    case "$status" in failed|timeout|interrupted) failures=$((failures + 1)) ;; reused|blocked) skipped=$((skipped + 1)) ;; esac
+    case "$status" in failed|environment-failed|timeout|interrupted) failures=$((failures + 1)) ;; reused|blocked) skipped=$((skipped + 1)) ;; esac
   done <"$SUMMARY"
   {
     printf '<?xml version="1.0" encoding="UTF-8"?>\n'
     printf '<testsuite name="detach-quality-gate" tests="%s" failures="%s" skipped="%s">\n' "$tests" "$failures" "$skipped"
-    while IFS=$'\t' read -r _ _ stage status duration log; do
+    while IFS=$'\t' read -r _ _ stage status duration log _ _; do
       [ "$stage" = stage ] && continue
       printf '  <testcase classname="quality-gate" name="%s" time="%s">' "$(xml_escape "$stage")" "$(xml_escape "$duration")"
       case "$status" in
-        failed|timeout|interrupted) printf '<failure message="%s">See %s</failure>' "$(xml_escape "$status")" "$(xml_escape "$log")" ;;
+        failed|environment-failed|timeout|interrupted) printf '<failure message="%s">See %s</failure>' "$(xml_escape "$status")" "$(xml_escape "$log")" ;;
         reused) printf '<skipped message="reused matching passed evidence"/>' ;;
         blocked) printf '<skipped message="prerequisite failed"/>' ;;
       esac
@@ -493,18 +647,18 @@ xml_escape() {
 }
 
 write_markdown() {
-  local stage status duration log
+  local stage status duration log origin_run
   {
     printf '# Quality gate\n\n'
     printf -- '- Policy: `%s`\n' "$POLICY_VERSION"
     printf -- '- Mode: `%s`\n' "$EFFECTIVE_MODE"
     printf -- '- Source: `%s`\n' "$SOURCE_COMMIT"
     printf -- '- Fingerprint: `%s`\n\n' "$FINGERPRINT"
-    printf '| Stage | Status | Seconds | Log |\n'
-    printf '| --- | --- | ---: | --- |\n'
-    while IFS=$'\t' read -r _ _ stage status duration log; do
+    printf '| Stage | Status | Seconds | Log | Origin |\n'
+    printf '| --- | --- | ---: | --- | --- |\n'
+    while IFS=$'\t' read -r _ _ stage status duration log _ origin_run; do
       [ "$stage" = stage ] && continue
-      printf '| `%s` | %s | %s | `%s` |\n' "$stage" "$status" "$duration" "$log"
+      printf '| `%s` | %s | %s | `%s` | `%s` |\n' "$stage" "$status" "$duration" "$log" "$origin_run"
     done <"$SUMMARY"
   } >"$MARKDOWN"
   chmod 0600 "$MARKDOWN"
@@ -528,7 +682,7 @@ on_signal() {
     stage="${stage#.stage-}"
     stage="${stage%.pid}"
     result_file="$RUN_DIR/.stage-$stage.result"
-    [ -f "$result_file" ] || printf 'interrupted\t0\t%s.log\t130\n' "$stage" >"$result_file"
+    [ -f "$result_file" ] || write_stage_result "$stage" interrupted 0 "$stage.log" 130
   done
   assemble_summary
   write_manifest interrupted
@@ -617,6 +771,21 @@ run_static() {
   "$ROOT/tests/docs-contract.sh"
   "$ROOT/tests/quality-ratchet.sh"
   "$ROOT/tests/release-budget-ratchet.sh"
+  "$ROOT/tests/shell-safety.sh"
+}
+
+run_tmux_socket_preflight() {
+  local tmux_bin="$1" preflight_root socket status=0
+  preflight_root="$(mktemp -d /private/tmp/detach-quality-tmux-preflight.XXXXXX)"
+  socket="$preflight_root/tmux.sock"
+  "$tmux_bin" -S "$socket" new-session -d -s detach-quality-preflight /bin/sleep 1 || status=$?
+  if [ "$status" -eq 0 ]; then
+    "$tmux_bin" -S "$socket" kill-server >/dev/null 2>&1 || true
+  else
+    printf 'quality-gate environment preflight: bundled tmux could not create a private socket\n' >&2
+  fi
+  case "$preflight_root" in /private/tmp/detach-quality-tmux-preflight.*) rm -rf "$preflight_root" ;; esac
+  return "$status"
 }
 
 run_stage_command() {
@@ -625,7 +794,7 @@ run_stage_command() {
   mkdir -p "$ROOT/app/.build/module-cache"
   export CLANG_MODULE_CACHE_PATH="$ROOT/app/.build/module-cache"
   export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/app/.build/module-cache"
-  if [ "$TEST_MODE" = 1 ]; then
+  if [ "$TEST_MODE" = 1 ] && { [ "$stage" != static ] || [ "$TEST_REAL_STATIC" != 1 ]; }; then
     [ -x "$ROOT/tests/quality-gate-fixtures/$stage" ] || die "missing test fixture for $stage"
     env -u DETACH_VERSION -u DETACH_BUILD_VERSION -u DETACH_BUILD_ARCHS \
       -u DETACH_CODESIGN_IDENTITY -u DETACH_RELEASE_BUILD -u DETACH_SPARKLE_VERSION \
@@ -640,6 +809,8 @@ run_stage_command() {
       "$ROOT/tests/quality-ratchet-contract.sh" | grep -Fx 'Quality ratchet contract tests passed'
       "$ROOT/tests/release-budget-ratchet-contract.sh" | \
         grep -Fx 'Release budget ratchet contract tests passed'
+      "$ROOT/tests/shell-safety-contract.sh" | grep -Fx 'Shell safety contract tests passed'
+      "$ROOT/tests/quality-history-contract.sh" | grep -Fx 'Quality history contract tests passed'
       ;;
     swift)
       (
@@ -658,17 +829,21 @@ run_stage_command() {
       ;;
     ui-e2e)
       "$ROOT/tests/ui-e2e-contract.sh"
-      "$ROOT/tests/ui-e2e.sh"
+      DETACH_UI_E2E_ARTIFACT_DIR="$RUN_DIR/ui-e2e-artifacts" "$ROOT/tests/ui-e2e.sh"
       ;;
     codex)
       [ -x "$tmux_bin" ] || die 'codex gate requires the app stage bundled tmux'
       [ -x "$state_bin" ] || die 'codex gate requires the app stage bundled state helper'
-      DETACH_TEST_TMUX_BIN="$tmux_bin" DETACH_TEST_STATE_BIN="$state_bin" "$ROOT/tests/run.sh"
+      run_tmux_socket_preflight "$tmux_bin" || return $?
+      DETACH_TEST_TMUX_BIN="$tmux_bin" DETACH_TEST_STATE_BIN="$state_bin" \
+        DETACH_PROVIDER_TEST_ARTIFACT_DIR="$RUN_DIR/codex-artifacts" "$ROOT/tests/run.sh"
       ;;
     claude)
       [ -x "$tmux_bin" ] || die 'claude gate requires the app stage bundled tmux'
       [ -x "$state_bin" ] || die 'claude gate requires the app stage bundled state helper'
-      DETACH_TEST_TMUX_BIN="$tmux_bin" DETACH_TEST_STATE_BIN="$state_bin" "$ROOT/tests/run-claude.sh"
+      run_tmux_socket_preflight "$tmux_bin" || return $?
+      DETACH_TEST_TMUX_BIN="$tmux_bin" DETACH_TEST_STATE_BIN="$state_bin" \
+        DETACH_PROVIDER_TEST_ARTIFACT_DIR="$RUN_DIR/claude-artifacts" "$ROOT/tests/run-claude.sh"
       ;;
     distribution) "$ROOT/tests/distribution.sh" ;;
     tmux-runtime) "$ROOT/tests/tmux-runtime.sh" ;;
@@ -678,16 +853,16 @@ run_stage_command() {
   esac
 }
 
-export ROOT BASE_REF RESOLVED_BASE MODE DIAGNOSTIC_STAGE TEST_MODE RUN_DIR
-export -f die changed_entries static_shell_files run_static run_stage_command
+export ROOT BASE_REF RESOLVED_BASE MODE DIAGNOSTIC_STAGE TEST_MODE TEST_REAL_STATIC RUN_DIR
+export -f die changed_entries static_shell_files run_static run_tmux_socket_preflight run_stage_command
 
 stage_result_file() {
   printf '%s/.stage-%s.result' "$RUN_DIR" "$1"
 }
 
 write_stage_result() {
-  local stage="$1" result="$2" duration="$3" log="$4" exit_status="$5"
-  printf '%s\t%s\t%s\t%s\n' "$result" "$duration" "$log" "$exit_status" \
+  local stage="$1" result="$2" duration="$3" log="$4" exit_status="$5" origin_run="${6:--}"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$result" "$duration" "$log" "$exit_status" "$origin_run" \
     >"$(stage_result_file "$stage")"
   chmod 0600 "$(stage_result_file "$stage")"
 }
@@ -707,18 +882,29 @@ prerequisite_failed() {
   esac
   [ -n "$prerequisite" ] || return 1
   status="$(result_status "$prerequisite" 2>/dev/null || true)"
-  case "$status" in failed|timeout|interrupted|blocked) return 0 ;; esac
+  case "$status" in failed|environment-failed|timeout|interrupted|blocked) return 0 ;; esac
   return 1
 }
 
 launch_stage() {
-  local stage="$1" log timeout started
+  local stage="$1" log timeout started prior_duration prior_log prior_origin reused_log
   contains_stage "$stage" || return 0
   [ ! -f "$(stage_result_file "$stage")" ] || return 0
   [ ! -f "$RUN_DIR/.stage-$stage.pid" ] || return 0
   if resume_stage_passed "$stage"; then
     printf 'quality-gate: reusing %s from matching evidence %s\n' "$stage" "$RESUME_DIR"
-    write_stage_result "$stage" reused 0 - 0
+    prior_duration="$(resume_stage_value "$stage" 5)"
+    prior_log="$(resume_stage_value "$stage" 6)"
+    prior_origin="$(resume_stage_value "$stage" 8)"
+    [ "$prior_origin" != - ] || prior_origin="$(basename "$RESUME_DIR")"
+    if [ "$prior_log" = - ]; then
+      reused_log=-
+    else
+      reused_log="$stage.reused.log"
+      cp "$RESUME_DIR/$prior_log" "$RUN_DIR/$reused_log"
+      chmod 0600 "$RUN_DIR/$reused_log"
+    fi
+    write_stage_result "$stage" reused "$prior_duration" "$reused_log" 0 "$prior_origin"
     return 0
   fi
   if prerequisite_failed "$stage"; then
@@ -754,13 +940,16 @@ execute_stage() {
     result=timeout
   elif [ "$status" -ne 0 ]; then
     result=failed
+    if grep -Eq 'error creating .+\.sock \(Operation not permitted\)|sandbox[^[:space:]]* denied|deny\(1\)' "$log"; then
+      result=environment-failed
+    fi
   fi
   write_stage_result "$stage" "$result" "$duration" "$stage.log" "$status"
   exit "$status"
 }
 
 wait_stage() {
-  local stage="$1" pid_file result_file pid status result duration log
+  local stage="$1" pid_file result_file pid status result duration log origin_run
   contains_stage "$stage" || return 0
   result_file="$(stage_result_file "$stage")"
   pid_file="$RUN_DIR/.stage-$stage.pid"
@@ -776,8 +965,10 @@ wait_stage() {
     die "stage was not scheduled: $stage"
   fi
   [ -f "$RUN_DIR/.stage-$stage.reported" ] && return 0
-  IFS=$'\t' read -r result duration log status <"$result_file"
-  if [ "$result" = failed ] || [ "$result" = timeout ]; then
+  IFS=$'\t' read -r result duration log status origin_run <"$result_file"
+  enforce_stage_budget "$stage" "$result" "$duration" "$log" "$status" "$origin_run"
+  IFS=$'\t' read -r result duration log status origin_run <"$result_file"
+  if [ "$result" = failed ] || [ "$result" = environment-failed ] || [ "$result" = timeout ]; then
     [ "$log" = - ] || /bin/cat "$RUN_DIR/$log"
     printf 'quality-gate: %s %s; diagnostic rerun: scripts/quality-gate --stage %s\n' "$stage" "$result" "$stage" >&2
     printf 'quality-gate: readiness evidence is incomplete; log: %s\n' "$RUN_DIR/$log" >&2
@@ -795,14 +986,45 @@ budget_value() {
     '$1 == wanted {count++; value=$2} END {if (count != 1) exit 1; print value}' "$RELEASE_BUDGET"
 }
 
-evaluate_release_budget() {
-  local stage status duration key maximum elapsed result=passed exit_status=0 log
-  contains_stage release-budget || return 0
-  if resume_stage_passed release-budget; then
-    printf 'quality-gate: reusing release-budget from matching evidence %s\n' "$RESUME_DIR"
-    write_stage_result release-budget reused 0 - 0
+stage_budget_override() {
+  local stage="$1" suffix variable_name value
+  suffix="$(printf '%s' "$stage" | tr '[:lower:]-' '[:upper:]_')"
+  variable_name="DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_$suffix"
+  value="${!variable_name:-}"
+  if [ -z "$value" ] && [ "$stage" = codex ]; then
+    value="${DETACH_QUALITY_GATE_TEST_CODEX_SECONDS:-}"
+  fi
+  printf '%s' "$value"
+}
+
+enforce_stage_budget() {
+  local stage="$1" result="$2" duration="$3" log="$4" status="$5" origin_run="$6"
+  local override key maximum measured="$duration"
+  [ "$stage" != release-budget ] || return 0
+  contains_stage release-budget && return 0
+  case "$result" in passed|reused) ;; *) return 0 ;; esac
+  override="$(stage_budget_override "$stage")"
+  if [ "$TEST_MODE" = 1 ] && [ -z "$override" ]; then
     return 0
   fi
+  [ -z "$override" ] || measured="$override"
+  [[ "$measured" =~ ^[0-9]+$ ]] || die "stage duration must be a non-negative integer: $stage"
+  key="stage_$(printf '%s' "$stage" | tr '-' '_')_seconds_max"
+  maximum="$(budget_value "$key")" || die "release stage budget is missing or duplicated: $stage"
+  [[ "$maximum" =~ ^[1-9][0-9]*$ ]] || die "release stage budget must be a positive integer: $stage"
+  [ "$measured" -le "$maximum" ] || {
+    if [ "$log" = - ]; then
+      log="$stage.log"
+      : >"$RUN_DIR/$log"
+    fi
+    printf 'stage budget: %s regressed: %ss > %ss\n' "$stage" "$measured" "$maximum" >>"$RUN_DIR/$log"
+    write_stage_result "$stage" failed "$measured" "$log" 1 "$origin_run"
+  }
+}
+
+evaluate_release_budget() {
+  local stage status duration key maximum elapsed inherited_wall=0 result=passed exit_status=0 log override
+  contains_stage release-budget || return 0
   for stage in "${SELECTED[@]}"; do
     [ "$stage" = release-budget ] && continue
     status="$(result_status "$stage" 2>/dev/null || true)"
@@ -820,27 +1042,33 @@ evaluate_release_budget() {
   log="$RUN_DIR/release-budget.log"
   elapsed="${DETACH_QUALITY_GATE_TEST_WALL_SECONDS:-$(($(date +%s) - RUN_STARTED_EPOCH))}"
   [[ "$elapsed" =~ ^[0-9]+$ ]] || die 'test wall duration must be a non-negative integer'
+  if [ -n "$RESUME_DIR" ]; then
+    inherited_wall="$(manifest_value "$RESUME_DIR/manifest.tsv" timing_wall_seconds)"
+    [[ "$inherited_wall" =~ ^[0-9]+$ ]] || die 'resume timing wall duration is invalid'
+  fi
+  EFFECTIVE_TIMING_WALL="$elapsed"
+  [ "$inherited_wall" -le "$EFFECTIVE_TIMING_WALL" ] || EFFECTIVE_TIMING_WALL="$inherited_wall"
   maximum="$(budget_value wall_seconds_max)" || die 'release wall budget is missing or duplicated'
   [[ "$maximum" =~ ^[1-9][0-9]*$ ]] || die 'release wall budget must be a positive integer'
-  printf 'wall_seconds\t%s\tmax\t%s\n' "$elapsed" "$maximum" >"$log"
-  if [ "$elapsed" -gt "$maximum" ]; then
-    printf 'release budget: wall time regressed: %ss > %ss\n' "$elapsed" "$maximum" >>"$log"
+  printf 'invocation_wall_seconds\t%s\n' "$elapsed" >"$log"
+  printf 'inherited_wall_seconds\t%s\n' "$inherited_wall" >>"$log"
+  printf 'effective_wall_seconds\t%s\tmax\t%s\n' "$EFFECTIVE_TIMING_WALL" "$maximum" >>"$log"
+  if [ "$EFFECTIVE_TIMING_WALL" -gt "$maximum" ]; then
+    printf 'release budget: wall time regressed: %ss > %ss\n' "$EFFECTIVE_TIMING_WALL" "$maximum" >>"$log"
     result=failed
     exit_status=1
   fi
   for stage in "${SELECTED[@]}"; do
     [ "$stage" = release-budget ] && continue
-    IFS=$'\t' read -r status duration _ _ <"$(stage_result_file "$stage")"
-    [ "$status" = reused ] && continue
-    if [ "$TEST_MODE" = 1 ] && [ "$stage" = codex ] && [ -n "${DETACH_QUALITY_GATE_TEST_CODEX_SECONDS:-}" ]; then
-      duration="$DETACH_QUALITY_GATE_TEST_CODEX_SECONDS"
-    fi
+    IFS=$'\t' read -r status duration _ _ _ <"$(stage_result_file "$stage")"
+    override="$(stage_budget_override "$stage")"
+    [ -z "$override" ] || duration="$override"
     [[ "$duration" =~ ^[0-9]+$ ]] || die "stage duration must be a non-negative integer: $stage"
     key="stage_$(printf '%s' "$stage" | tr '-' '_')_seconds_max"
     maximum="$(budget_value "$key")" || die "release stage budget is missing or duplicated: $stage"
     [[ "$maximum" =~ ^[1-9][0-9]*$ ]] || die "release stage budget must be a positive integer: $stage"
     printf '%s_seconds\t%s\tmax\t%s\n' "$stage" "$duration" "$maximum" >>"$log"
-    if [ "$TEST_MODE" = 1 ] && [ -z "${DETACH_QUALITY_GATE_TEST_CODEX_SECONDS:-}" ]; then
+    if [ "$TEST_MODE" = 1 ] && [ -z "$override" ]; then
       continue
     fi
     if [ "$duration" -gt "$maximum" ]; then
@@ -850,23 +1078,46 @@ evaluate_release_budget() {
     fi
   done
   if [ "$result" = passed ]; then
-    printf 'Release budget passed: wall=%ss max=%ss\n' "$elapsed" "$(budget_value wall_seconds_max)" >>"$log"
+    printf 'Release budget passed: wall=%ss max=%ss\n' "$EFFECTIVE_TIMING_WALL" "$(budget_value wall_seconds_max)" >>"$log"
   fi
   write_stage_result release-budget "$result" 0 release-budget.log "$exit_status"
 }
 
 assemble_summary() {
-  local stage result duration log status result_file
-  printf 'policy\tmode\tstage\tstatus\tduration_seconds\tlog\n' >"$SUMMARY"
+  local stage result duration log status origin_run log_sha256 result_file digest_file
+  local -a log_files=()
+  printf 'policy\tmode\tstage\tstatus\tduration_seconds\tlog\tlog_sha256\torigin_run\n' >"$SUMMARY"
   for stage in "${SELECTED[@]}"; do
     result_file="$(stage_result_file "$stage")"
     if [ ! -f "$result_file" ]; then
       write_stage_result "$stage" interrupted 0 "$stage.log" 130
     fi
-    IFS=$'\t' read -r result duration log status <"$result_file"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$POLICY_VERSION" "$MODE" "$stage" "$result" "$duration" "$log" >>"$SUMMARY"
+    IFS=$'\t' read -r result duration log status origin_run <"$result_file"
+    if [ "$log" != - ]; then
+      if [ "$result" = interrupted ] && [ ! -e "$RUN_DIR/$log" ]; then
+        : >"$RUN_DIR/$log"
+        chmod 0600 "$RUN_DIR/$log"
+      fi
+      [ -f "$RUN_DIR/$log" ] && [ ! -L "$RUN_DIR/$log" ] || die "stage log is missing or unsafe: $stage"
+      log_files+=("$log")
+    fi
   done
+  digest_file="$RUN_DIR/.log-digests"
+  : >"$digest_file"
+  if [ "${#log_files[@]}" -gt 0 ]; then
+    (cd -P "$RUN_DIR" && shasum -a 256 -- "${log_files[@]}") >"$digest_file"
+  fi
+  for stage in "${SELECTED[@]}"; do
+    IFS=$'\t' read -r result duration log status origin_run <"$(stage_result_file "$stage")"
+    log_sha256=-
+    if [ "$log" != - ]; then
+      log_sha256="$(awk -v wanted="$log" '$2 == wanted {count++; digest=$1} END {if (count != 1) exit 1; print digest}' "$digest_file")" || \
+        die "stage log digest is missing or duplicated: $stage"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$POLICY_VERSION" "$MODE" "$stage" "$result" "$duration" "$log" "$log_sha256" "$origin_run" >>"$SUMMARY"
+  done
+  rm -f "$digest_file"
 }
 
 # Keep SwiftPM's shared build directory exclusive. Cheap hermetic release and

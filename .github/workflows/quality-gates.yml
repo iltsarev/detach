@@ -37,7 +37,7 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: scripts/quality-gate --base "$BASE_SHA"
+        run: scripts/quality-gate --base "$BASE_SHA" --without-release-budget
       - name: Run full repository gate
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: scripts/quality-gate --mode repository --keep-going --without-release-budget

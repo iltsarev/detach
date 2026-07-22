@@ -6,14 +6,43 @@ ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 SOURCE_APP="${DETACH_TEST_APP:-$ROOT/app/build/Detach.app}"
 VALIDATE_ONLY="${DETACH_UI_E2E_VALIDATE_ONLY:-0}"
 KEEP="${DETACH_UI_E2E_KEEP:-0}"
+ARTIFACT_DIR="${DETACH_UI_E2E_ARTIFACT_DIR:-}"
 TEST_ROOT=""
 APP_PID=""
 
+preserve_failure_diagnostics() {
+  local status="$1" source destination
+  [ "$status" -ne 0 ] && [ -n "$ARTIFACT_DIR" ] && [ -n "$TEST_ROOT" ] || return 0
+  case "$ARTIFACT_DIR" in /*) ;; *) printf 'UI e2e artifact directory must be absolute\n' >&2; return 0 ;; esac
+  [ ! -e "$ARTIFACT_DIR" ] || [ -d "$ARTIFACT_DIR" ] && [ ! -L "$ARTIFACT_DIR" ] || {
+    printf 'UI e2e artifact directory is unsafe\n' >&2
+    return 0
+  }
+  mkdir -p "$ARTIFACT_DIR"
+  chmod 0700 "$ARTIFACT_DIR"
+  for source in "$APP_LOG" "$RESULT" "$FAKE_DIR/invocations.log"; do
+    [ -f "$source" ] && [ ! -L "$source" ] || continue
+    destination="$ARTIFACT_DIR/$(basename "$source")"
+    install -m 0600 "$source" "$destination"
+  done
+  {
+    printf 'schema\t1\n'
+    printf 'exit_status\t%s\n' "$status"
+    printf 'result_present\t%s\n' "$([ -f "$RESULT" ] && printf true || printf false)"
+    printf 'app_log_bytes\t%s\n' "$([ -f "$APP_LOG" ] && wc -c <"$APP_LOG" | tr -d ' ' || printf 0)"
+    printf 'invocations_present\t%s\n' "$([ -f "$FAKE_DIR/invocations.log" ] && printf true || printf false)"
+  } >"$ARTIFACT_DIR/diagnostics.tsv"
+  chmod 0600 "$ARTIFACT_DIR/diagnostics.tsv"
+  printf 'UI e2e diagnostics preserved at %s\n' "$ARTIFACT_DIR" >&2
+}
+
 cleanup() {
+  local status="${1:-0}"
   if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
     kill -TERM "$APP_PID" 2>/dev/null || true
     wait "$APP_PID" 2>/dev/null || true
   fi
+  preserve_failure_diagnostics "$status"
   if [ "$KEEP" = 1 ] && [ -n "$TEST_ROOT" ]; then
     printf 'UI e2e fixture kept at %s\n' "$TEST_ROOT" >&2
     return
@@ -22,7 +51,8 @@ cleanup() {
     /private/tmp/detach-ui-e2e.*) rm -rf "$TEST_ROOT" ;;
   esac
 }
-trap cleanup EXIT INT TERM HUP
+trap 'cleanup $?' EXIT
+trap 'exit 130' INT TERM HUP
 
 validate_fresh_app() {
   local app="$1" marker binary

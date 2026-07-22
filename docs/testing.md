@@ -11,6 +11,9 @@
   its policy, exact source/base commits, input fingerprint, and stage coverage
   still match. `--keep-going` improves diagnosis but never turns a failed or
   blocked stage into readiness evidence.
+- `scripts/quality-history [RESULT_ROOT]` reports p50/p95 wall and stage timing,
+  ordinary failures, and execution-environment failures across retained local
+  or downloaded gate evidence. It is telemetry, not readiness evidence.
 - `scripts/quality-gate --mode repository` — every automated repository gate.
   CI uses the same entry point with `--without-release-budget`, omitting only
   the local reference-machine timing postflight; that option is not local or
@@ -22,7 +25,10 @@
   or raise time budgets relative to their merge-base values. Policy 6 adds the
   fast documentation/context contract to the existing static stage. Policy 7
   adds the mandatory packaged-app `ui-e2e` stage after every selected app
-  build, without raising the 180-second wall budget.
+  build, without raising the 180-second wall budget. Policy 8 makes resume
+  inherit timing and parent provenance, preserves bounded failure diagnostics,
+  classifies known execution-environment denials without weakening FAIL,
+  applies stage budgets to partial plans, and raises the established UI floors.
 
 - `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run.sh`
   — hermetic Codex integration with a fake provider, private tmux
@@ -54,7 +60,9 @@
   tag/release rejection, hardware-gate failure, and remote hash mismatch.
 - `cd app && swift test --enable-code-coverage --disable-sandbox`, followed by
   `tests/quality-contracts.sh` — unit tests plus fail-closed UI/business test
-  count, critical-suite presence, and exact line-coverage floors. The static
+  count, critical-suite presence, and exact line-coverage floors. The current
+  floors are 175 UI tests, 294 business tests, 22.21% UI line coverage, and
+  80.98% stable business-core line coverage. The static
   policy branch runs the monotonic baseline ratchets in parallel with SwiftPM.
   `tests/quality-ratchet-contract.sh` and
   `tests/release-budget-ratchet-contract.sh` are fast negative diagnostics for
@@ -72,9 +80,10 @@
   hardware whose initial sleep setting is normal, then separately verify actual
   closed-lid behavior.
 
-There is no separate linter. Run the relevant shell integrations, Swift tests,
-packaging contracts, shell syntax checks, and `git diff --check` for changes in
-their scope.
+There is no third-party linter dependency. The static stage runs shell syntax,
+the repository-specific shell safety contract, documentation checks, monotonic
+ratchets, and `git diff --check`; behavioral shell integrations remain the main
+runtime evidence.
 
 `tests/docs-contract.sh` is the focused check for agent instructions, durable
 specs, and the documentation workflow. It does not replace the selected gate.

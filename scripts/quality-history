@@ -1,0 +1,76 @@
+#!/bin/bash
+
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+RESULT_ROOT="${1:-$ROOT/app/build/quality-gates}"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-quality-history.XXXXXX")"
+
+cleanup() {
+  rm -rf "$TMP_ROOT"
+}
+trap cleanup EXIT
+
+[ "$#" -le 1 ] || { printf 'usage: scripts/quality-history [RESULT_ROOT]\n' >&2; exit 2; }
+[ -d "$RESULT_ROOT" ] && [ ! -L "$RESULT_ROOT" ] || {
+  printf 'quality history: result root is missing or unsafe\n' >&2
+  exit 1
+}
+
+records="$TMP_ROOT/stages.tsv"
+walls="$TMP_ROOT/walls.txt"
+: >"$records"
+: >"$walls"
+runs=0
+passed=0
+failed=0
+
+while IFS= read -r run; do
+  manifest="$run/manifest.tsv"
+  summary="$run/summary.tsv"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] && [ -f "$summary" ] && [ ! -L "$summary" ] || continue
+  result="$(awk -F '\t' '$1 == "result" {count++; value=$2} END {if (count == 1) print value}' "$manifest")"
+  case "$result" in passed|failed|interrupted) ;; *) continue ;; esac
+  runs=$((runs + 1))
+  if [ "$result" = passed ]; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+  wall="$(awk -F '\t' '
+    $1 == "timing_wall_seconds" {wall_value=$2}
+    $1 == "duration_seconds" {run_duration=$2}
+    END {if (wall_value != "") print wall_value; else print run_duration}
+  ' "$manifest")"
+  [[ "$wall" =~ ^[0-9]+$ ]] && printf '%s\n' "$wall" >>"$walls"
+  awk -F '\t' '
+    NR == 1 {next}
+    $4 != "reused" && $4 != "blocked" && $5 ~ /^[0-9]+$/ {
+      printf "%s\t%s\t%s\n", $3, $5, $4
+    }
+  ' "$summary" >>"$records"
+done < <(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
+
+[ "$runs" -gt 0 ] || { printf 'quality history: no completed evidence found\n' >&2; exit 1; }
+
+percentile_from_file() {
+  local file="$1" percent="$2" count index
+  count="$(wc -l <"$file" | tr -d ' ')"
+  [ "$count" -gt 0 ] || { printf 0; return; }
+  index=$(( (count * percent + 99) / 100 ))
+  sed -n "${index}p" "$file"
+}
+
+printf 'runs\t%s\npassed\t%s\nfailed_or_interrupted\t%s\n' "$runs" "$passed" "$failed"
+if [ -s "$walls" ]; then
+  LC_ALL=C sort -n "$walls" >"$TMP_ROOT/walls.sorted"
+  printf 'wall_p50_seconds\t%s\n' "$(percentile_from_file "$TMP_ROOT/walls.sorted" 50)"
+  printf 'wall_p95_seconds\t%s\n' "$(percentile_from_file "$TMP_ROOT/walls.sorted" 95)"
+fi
+printf '\nstage\tsamples\tfailures\tenvironment_failures\tp50_seconds\tp95_seconds\n'
+while IFS= read -r stage; do
+  awk -F '\t' -v wanted="$stage" '$1 == wanted {print $2}' "$records" | \
+    LC_ALL=C sort -n >"$TMP_ROOT/stage-durations"
+  samples="$(wc -l <"$TMP_ROOT/stage-durations" | tr -d ' ')"
+  failures="$(awk -F '\t' -v wanted="$stage" '$1 == wanted && $3 ~ /^(failed|environment-failed|timeout|interrupted)$/ {count++} END {print count+0}' "$records")"
+  environment_failures="$(awk -F '\t' -v wanted="$stage" '$1 == wanted && $3 == "environment-failed" {count++} END {print count+0}' "$records")"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$stage" "$samples" "$failures" "$environment_failures" \
+    "$(percentile_from_file "$TMP_ROOT/stage-durations" 50)" \
+    "$(percentile_from_file "$TMP_ROOT/stage-durations" 95)"
+done < <(awk -F '\t' '{print $1}' "$records" | LC_ALL=C sort -u)
