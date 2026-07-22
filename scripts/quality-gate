@@ -1000,6 +1000,7 @@ stage_budget_override() {
 enforce_stage_budget() {
   local stage="$1" result="$2" duration="$3" log="$4" status="$5" origin_run="$6"
   local override key maximum measured="$duration"
+  [ "$WITHOUT_RELEASE_BUDGET" = 0 ] || return 0
   [ "$stage" != release-budget ] || return 0
   contains_stage release-budget && return 0
   case "$result" in passed|reused) ;; *) return 0 ;; esac

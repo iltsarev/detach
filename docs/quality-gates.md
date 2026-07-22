@@ -14,10 +14,11 @@ share the same build directory.
   merge base plus staged, unstaged, and untracked files.
 - `scripts/quality-gate --mode repository` runs every automated repository
   check. CI uses this mode on `main`; pull requests use impact analysis.
-- `scripts/quality-gate --without-release-budget` omits only the local
-  reference-machine timing postflight. The `main` CI workflow uses it because
-  hosted-runner timing is not release evidence. It is not valid for local or
-  release readiness.
+- `scripts/quality-gate --without-release-budget` disables the local
+  reference-machine wall and per-stage timing checks. The `main` and pull
+  request CI workflows use it because hosted-runner timing is not comparable
+  release evidence. Functional stages and static budget-ratchet checks remain
+  mandatory. The option is not valid for local or release readiness.
 - `scripts/quality-gate --mode release` runs the complete pre-release suite.
   It omits only the recursive test of `scripts/release-version` itself.
 - `scripts/quality-gate --plan` prints the selected stages without running
@@ -92,17 +93,19 @@ gaps found while exercising the gate from a managed agent environment:
 2. The effective wall duration is the maximum inherited duration in the resume
    chain. `release-budget` is always reevaluated and cannot be reused, so an
    over-budget run remains red after resume.
-3. Per-stage ceilings are enforced even for a partial plan without the
-   `release-budget` postflight; documentation-only `static` cannot silently
-   grow from its two-second contract toward its process timeout.
+3. Per-stage ceilings are enforced even for an ordinary local partial plan
+   without the `release-budget` postflight; documentation-only `static` cannot
+   silently grow from its two-second contract toward its process timeout. The
+   explicit GitHub-only `--without-release-budget` option disables those
+   reference-machine comparisons while retaining functional checks.
 4. Known socket/sandbox denials are reported as `environment-failed`. They are
    JUnit failures and never skips or PASS. UI and provider failures preserve a
    bounded allowlist of fake-test diagnostics whose inventory is digest-bound.
 5. `environment.tsv` records only safe OS, architecture, Xcode, Swift, CI, and
    managed-sandbox facts. It records no hostname, user name, credential, or
    provider state.
-6. Pull-request and main hosted CI both omit the local reference-machine timing
-   postflight. Local and release readiness continue to require it.
+6. Pull-request and main hosted CI both omit all local reference-machine timing
+   enforcement. Local and release readiness continue to require it.
 7. The locked UI floors are now 175 tests and 22.21% line coverage; business
    floors remain 294 tests and 80.98%. Typed state, session, and storage source
    changes select both provider integrations and distribution; native power
@@ -293,11 +296,11 @@ The report must name any manual release gate that was not run. A single test or
 `--stage` rerun is useful diagnosis but cannot replace the selected gate.
 
 CI and `scripts/release-version` invoke this same entry point. CI runs every
-functional stage but omits the reference-machine timing `release-budget`;
-local and release readiness still require the 180-second reference budget. CI publishes
-its manifest, TSV, JUnit report, and logs for 14 days even when the gate passes,
-and also exposes the summary in the workflow UI. It does not copy a separate
-test matrix.
+selected functional stage and the static timing-policy ratchets, but enforces
+neither reference-machine stage ceilings nor the `release-budget` wall ceiling;
+local and release readiness still require both. CI publishes its manifest,
+TSV, JUnit report, and logs for 14 days even when the gate passes, and also
+exposes the summary in the workflow UI. It does not copy a separate test matrix.
 
 ## Manual release-only gates
 

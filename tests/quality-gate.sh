@@ -535,6 +535,23 @@ fi
 grep -F 'stage budget: static regressed: 3s > 2s' "$RESULT_ROOT"/*/static.log >/dev/null
 grep -F $'static\tfailed\t3' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 
+setup_fixture github-no-timing-budgets
+if ! GITHUB_ACTIONS=true \
+    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_STATIC=300 \
+    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_SWIFT=300 \
+    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_APP=300 \
+    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_PUBLISH_PREFLIGHT=300 \
+    gate --mode repository --without-release-budget >"$REPO/github-no-budgets.out" 2>&1; then
+  cat "$REPO/github-no-budgets.out" >&2
+  printf 'quality gate enforced reference-machine timing in GitHub Actions\n' >&2
+  exit 1
+fi
+! grep -F 'stage budget:' "$REPO/github-no-budgets.out" >/dev/null
+grep -F $'swift\tpassed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F $'app\tpassed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F $'publish-preflight\tpassed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+! grep -F $'release-budget\t' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+
 setup_fixture release-budget-stage
 set_manifest_value "$REPO/tests/release-budget.tsv" stage_codex_seconds_max 1
 if DETACH_QUALITY_GATE_TEST_CODEX_SECONDS=2 gate --mode repository >"$REPO/release-budget-stage.out" 2>&1; then

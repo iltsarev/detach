@@ -15,20 +15,22 @@
   ordinary failures, and execution-environment failures across retained local
   or downloaded gate evidence. It is telemetry, not readiness evidence.
 - `scripts/quality-gate --mode repository` — every automated repository gate.
-  CI uses the same entry point with `--without-release-budget`, omitting only
-  the local reference-machine timing postflight; that option is not local or
-  release readiness evidence. `--stage` is diagnostic only and is not proof
-  that a change is ready. Policy 4 keeps SwiftPM work exclusive, then runs the
-  isolated Codex and Claude suites concurrently against the verified bundled
-  tmux and state helper. Policy 5 additionally rejects wall time above 180
-  seconds, individual stage regressions, and any attempt to lower quality floors
-  or raise time budgets relative to their merge-base values. Policy 6 adds the
-  fast documentation/context contract to the existing static stage. Policy 7
-  adds the mandatory packaged-app `ui-e2e` stage after every selected app
+  CI uses the same entry point with `--without-release-budget`, disabling local
+  reference-machine wall and stage timing enforcement while retaining every
+  selected functional stage and the static budget ratchets; that option is not
+  local or release readiness evidence. `--stage` is diagnostic only and is not
+  proof that a change is ready. Policy 4 keeps SwiftPM work exclusive, then
+  runs the isolated Codex and Claude suites concurrently against the verified
+  bundled tmux and state helper. Policy 5 additionally rejects wall time above
+  180 seconds, individual stage regressions, and any attempt to lower quality
+  floors or raise time budgets relative to their merge-base values. Policy 6
+  adds the fast documentation/context contract to the existing static stage.
+  Policy 7 adds the mandatory packaged-app `ui-e2e` stage after every selected app
   build, without raising the 180-second wall budget. Policy 8 makes resume
   inherit timing and parent provenance, preserves bounded failure diagnostics,
   classifies known execution-environment denials without weakening FAIL,
-  applies stage budgets to partial plans, and raises the established UI floors.
+  applies stage budgets to ordinary local partial plans, exempts only the
+  explicit GitHub-only budget-free plan, and raises the established UI floors.
 
 - `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run.sh`
   — hermetic Codex integration with a fake provider, private tmux

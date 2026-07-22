@@ -25,6 +25,8 @@ against the same deterministic quality gate.
   presented as final evidence.
 - Resume evidence retains stage timing and digest-bound logs, binds its parent,
   and cannot turn a prior time-budget regression into readiness.
+- Hosted CI runs every selected functional check and timing-policy ratchet but
+  does not enforce reference-machine wall or per-stage timing ceilings.
 - Ready task-scoped changes are committed and pushed to the current branch by
   default after staged public-diff review; an owner request to keep work local
   is the explicit exception, and successful delivery includes upstream parity.
