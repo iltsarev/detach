@@ -11,8 +11,10 @@
   its policy, exact source/base commits, input fingerprint, and stage coverage
   still match. `--keep-going` improves diagnosis but never turns a failed or
   blocked stage into readiness evidence.
-- `scripts/quality-gate --mode repository` — every automated repository gate;
-  CI uses the same entry point. `--stage` is diagnostic only and is not proof
+- `scripts/quality-gate --mode repository` — every automated repository gate.
+  CI uses the same entry point with `--without-release-budget`, omitting only
+  the local reference-machine timing postflight; that option is not local or
+  release readiness evidence. `--stage` is diagnostic only and is not proof
   that a change is ready. Policy 4 keeps SwiftPM work exclusive, then runs the
   isolated Codex and Claude suites concurrently against the verified bundled
   tmux and state helper. Policy 5 additionally rejects wall time above 180

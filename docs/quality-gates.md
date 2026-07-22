@@ -14,6 +14,10 @@ share the same build directory.
   merge base plus staged, unstaged, and untracked files.
 - `scripts/quality-gate --mode repository` runs every automated repository
   check. CI uses this mode on `main`; pull requests use impact analysis.
+- `scripts/quality-gate --without-release-budget` omits only the local
+  reference-machine timing postflight. The `main` CI workflow uses it because
+  hosted-runner timing is not release evidence. It is not valid for local or
+  release readiness.
 - `scripts/quality-gate --mode release` runs the complete pre-release suite.
   It omits only the recursive test of `scripts/release-version` itself.
 - `scripts/quality-gate --plan` prints the selected stages without running
@@ -215,8 +219,8 @@ The report must name any manual release gate that was not run. A single test or
 `--stage` rerun is useful diagnosis but cannot replace the selected gate.
 
 CI and `scripts/release-version` invoke this same entry point. CI runs every
-functional stage but omits the hardware-specific `release-budget`; local and
-release readiness still require the 180-second reference budget. CI publishes
+functional stage but omits the reference-machine timing `release-budget`;
+local and release readiness still require the 180-second reference budget. CI publishes
 its manifest, TSV, JUnit report, and logs for 14 days even when the gate passes,
 and also exposes the summary in the workflow UI. It does not copy a separate
 test matrix.

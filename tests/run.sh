@@ -142,6 +142,19 @@ wait_for_tmux_option() {
   return 1
 }
 
+wait_for_pane_dead() {
+  local pane="$1" attempts=0 actual=""
+  while [ "$attempts" -lt 80 ]; do
+    actual="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null || true)"
+    [ "$actual" != "1" ] || return 0
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for pane %s to become dead (actual=%s)\n' \
+    "$pane" "$actual" >&2
+  return 1
+}
+
 wait_for_file_text() {
   local file="$1" text="$2" attempts=0
   while [ "$attempts" -lt 80 ]; do
@@ -710,7 +723,7 @@ grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$expected_id" ]
 completed_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
-[ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "1" ]
+wait_for_pane_dead "$pane_id"
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "completed" ]
 completed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
 [ "$completed_style" != "$failed_style" ]

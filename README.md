@@ -387,6 +387,15 @@ detach reconcile --dry-run --json
 Name a session when the project-derived default is not memorable. Press
 `Ctrl-b d` to detach a terminal client without closing its window.
 
+The project-derived name is currently one default slot per provider and
+project. Starting again while that slot is live refuses to replace it; use
+**Attach** or stop it first. Starting again after it finishes creates a fresh
+provider conversation in the same slot and replaces that slot's Detach-owned
+checkpoint and retained-output history. Provider conversation storage remains
+untouched. Use a distinct `--name` when the older Detach session and its
+recovery checkpoint must remain separately visible. This single-slot
+limitation is tracked for removal.
+
 ## Terminal details that make parallel work readable
 
 Every managed session receives a deterministic color based on provider and

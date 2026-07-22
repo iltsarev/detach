@@ -101,6 +101,16 @@ Install migration checks both the older default socket and the historical
 from stable install state and then enters the canonical project beneath its
 cleanup trap.
 
+The derived name is currently one default slot for a provider/project pair.
+Start refuses to replace a live slot. Once its retained pane is no longer live,
+a normal start reuses the same session directory for a fresh provider
+conversation and clears the previous run's Detach checkpoint artifacts and
+checkpoint log; it does not delete provider-owned conversation storage. An
+explicit `--name` creates another slot, but the cross-provider project lock
+still permits only one live managed writer in a canonical worktree. This is a
+known retention limitation, not authorization to erase other named sessions or
+to weaken storage-cleanup eligibility checks.
+
 The worker starts checkpoint and power-status loops, then runs the provider only
 through:
 
