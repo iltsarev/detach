@@ -25,9 +25,19 @@ public final class SessionStore {
     private var baseInterval: TimeInterval = 2
     private var foreground = true
     private var refreshGeneration: UInt64 = 0
+    @ObservationIgnored private let pollSleep: @Sendable (UInt64) async throws -> Void
 
     public init(cli: DetachCLIRunning) {
         self.cli = cli
+        self.pollSleep = { try await Task.sleep(nanoseconds: $0) }
+    }
+
+    init(
+        cli: DetachCLIRunning,
+        pollSleep: @escaping @Sendable (UInt64) async throws -> Void
+    ) {
+        self.cli = cli
+        self.pollSleep = pollSleep
     }
 
     /// Swaps the CLI (for example after the installed payload activates) and
@@ -44,7 +54,7 @@ public final class SessionStore {
             while !Task.isCancelled {
                 await self?.refresh()
                 guard let delay = self?.currentInterval else { return }
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try? await self?.pollSleep(UInt64(delay * 1_000_000_000))
             }
         }
     }

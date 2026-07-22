@@ -1,0 +1,14 @@
+schema	1
+Sources/DetachKit/SessionHealth.swift	99.10
+Sources/DetachKit/DetachState.swift	99.03
+Sources/DetachKit/DetachStateCommand.swift	96.70
+Sources/DetachKit/Storage.swift	95.28
+Sources/DetachKit/StorageStore.swift	100.00
+Sources/DetachKit/Tip.swift	100.00
+Sources/DetachKit/DetachPowerCommand.swift	95.21
+Sources/DetachKit/DetachPowerExecutable.swift	100.00
+Sources/DetachKit/PowerHelperLeaseService.swift	98.21
+Sources/DetachKit/PowerHelperXPC.swift	82.23
+Sources/DetachKit/PowerHelperPlatform.swift	84.54
+Sources/DetachKit/SessionStore.swift	98.11
+Sources/DetachKit/DoctorReport.swift	100.00

@@ -121,6 +121,84 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testEmitSessionAcceptsNullPlaceholdersAndTypedHealthPayload() throws {
+        let health = SessionHealthAssessment(
+            schema: 1,
+            effectiveStatus: .running,
+            reason: .heartbeatStale,
+            actions: [.attach, .stop],
+            reconcileAction: .none,
+            ownershipProven: true,
+            cleanupEligible: false,
+            heartbeatFresh: false,
+            checkpointFresh: true)
+        let healthJSON = String(decoding: try JSONEncoder().encode(health), as: UTF8.self)
+
+        let output = try DetachStateCommand.run(arguments: [
+            "emit", "session", "codex", "detach-codex-project", "running",
+            "--agent-turn-state", "-",
+            "--session-color", "?",
+            "--power-state", "",
+            "--health-json", healthJSON,
+            "--worker-pid", "-",
+            "--provider-pid", "321",
+            "--worker-heartbeat-at", "?",
+        ])
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: output) as? [String: Any])
+
+        XCTAssertTrue(object["agent_turn_state"] is NSNull)
+        XCTAssertTrue(object["session_color"] is NSNull)
+        XCTAssertTrue(object["power_protection_state"] is NSNull)
+        XCTAssertEqual(object["health_reason"] as? String, "heartbeat_stale")
+        XCTAssertEqual(object["health_actions"] as? [String], ["attach", "stop"])
+        XCTAssertEqual(object["ownership_proven"] as? Bool, true)
+        XCTAssertEqual(object["checkpoint_fresh"] as? Bool, true)
+        XCTAssertTrue(object["worker_pid"] is NSNull)
+        XCTAssertEqual(object["provider_pid"] as? Int, 321)
+        XCTAssertTrue(object["worker_heartbeat_at"] is NSNull)
+    }
+
+    func testEmitSessionRejectsMalformedOrMismatchedHealthPayload() throws {
+        for payload in ["not-json", #"{"schema":1,"effective_status":"stopped","reason":"finished","actions":[],"reconcile_action":"none","ownership_proven":false,"cleanup_eligible":true,"heartbeat_fresh":false,"checkpoint_fresh":false}"#] {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+                "emit", "session", "codex", "session", "running",
+                "--health-json", payload,
+            ])) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
+        }
+    }
+
+    func testCommandDispatcherAndEmitSessionRejectMalformedArguments() {
+        for arguments in [
+            [String](),
+            ["emit"],
+            ["unknown", "command"],
+            ["emit", "context", "too", "short"],
+            ["emit", "session", "codex", "only-name"],
+            ["emit", "session", "codex", "session", "running", "--model"],
+            ["emit", "session", "codex", "session", "running", "--model", "a", "--model", "b"],
+            ["emit", "session", "codex", "session", "running", "--unknown", "value"],
+            ["meta", "get", "only-path"],
+            ["meta", "usable", "only-path"],
+            ["meta", "create"],
+            ["meta", "patch"],
+            ["meta", "matches", "only-path"],
+            ["jsonl", "first", "only-path"],
+        ] {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: arguments)) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "emit", "session", "codex", "session", "running",
+            "--worker-pid", "not-a-pid",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidInteger("not-a-pid"))
+        }
+    }
+
     func testMetaGetUsesFallbackPaths() throws {
         let file = temporaryDirectory.appendingPathComponent("meta.json")
         try Data(#"{"agent_session_id":null,"codex_session_id":"legacy"}"#.utf8)
@@ -163,6 +241,31 @@ final class DetachStateCommandTests: XCTestCase {
         ])
 
         XCTAssertEqual(String(decoding: output, as: UTF8.self), "nested-id\n")
+    }
+
+    func testMetaGetRendersEveryScalarAndReturnsEmptyForMissingValues() throws {
+        let file = temporaryDirectory.appendingPathComponent("scalars.json")
+        try Data(#"{"string":"value","integer":7,"number":1.5,"bool":true,"null":null}"#.utf8)
+            .write(to: file)
+
+        let expectations = [
+            ("string", "value\n"),
+            ("integer", "7\n"),
+            ("number", "1.5\n"),
+            ("bool", "true\n"),
+        ]
+        for (path, expected) in expectations {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "get", file.path, path,
+            ])
+            XCTAssertEqual(String(decoding: output, as: UTF8.self), expected)
+        }
+        XCTAssertTrue(try DetachStateCommand.run(arguments: [
+            "meta", "get", file.path, "absent",
+        ]).isEmpty)
+        XCTAssertTrue(try DetachStateCommand.run(arguments: [
+            "meta", "get", file.path, "null",
+        ]).isEmpty)
     }
 
     func testMetaUsableSucceedsOnlyForUsableSchemaOneMetadata() throws {
@@ -252,6 +355,37 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), afterValidPatch)
     }
 
+    func testMetadataMutationParserRejectsInvalidTypedChanges() throws {
+        let file = temporaryDirectory.appendingPathComponent("invalid-meta.json")
+        try Data(#"{"run_token":"current"}"#.utf8).write(to: file)
+        let cases: [([String], DetachStateCommandError)] = [
+            (["--integer", "count", "one"], .invalidInteger("one")),
+            (["--number", "load", "nan"], .invalidNumber("nan")),
+            (["--bool", "active", "yes"], .invalidBoolean("yes")),
+            (["--null"], .invalidArguments),
+            (["--string", "key"], .invalidArguments),
+            (["--unknown", "key", "value"], .invalidArguments),
+        ]
+        for (arguments, expectedError) in cases {
+            XCTAssertThrowsError(try DetachStateCommand.run(
+                arguments: ["meta", "patch", file.path] + arguments
+            )) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, expectedError)
+            }
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "create", temporaryDirectory.appendingPathComponent("new.json").path,
+            "--run-token", "forbidden", "--string", "key", "value",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", file.path,
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+    }
+
     func testJSONLValidateReturnsNoPayloadForAValidTranscript() throws {
         let file = temporaryDirectory.appendingPathComponent("rollout.jsonl")
         try Data("""
@@ -281,6 +415,41 @@ final class DetachStateCommandTests: XCTestCase {
         ])
 
         XCTAssertEqual(String(decoding: output, as: UTF8.self), "session-1\n")
+    }
+
+    func testJSONLFirstSupportsInjectedInputAndAnAbsentScalar() throws {
+        let input = Data("""
+        {"payload":{"id":"stdin-session"}}
+        """.utf8)
+        let found = try DetachStateCommand.run(
+            arguments: ["jsonl", "first", "-", "payload.id"],
+            standardInput: input)
+        let absent = try DetachStateCommand.run(
+            arguments: ["jsonl", "first", "-", "payload.missing"],
+            standardInput: input)
+
+        XCTAssertEqual(String(decoding: found, as: UTF8.self), "stdin-session\n")
+        XCTAssertTrue(absent.isEmpty)
+    }
+
+    func testJSONLValidationRejectsWrongIdentityAndMalformedArguments() throws {
+        let transcript = Data(#"{"payload":{"id":"session-1"}}"#.utf8)
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: ["jsonl", "validate", "codex", "-", "session-2"],
+            standardInput: transcript
+        )) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidTranscript)
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate", "codex", "only-path",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate", "other", "-", "session",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidProvider("other"))
+        }
     }
 
     func testJSONLSummaryUsesStableSnakeCaseJSON() throws {
@@ -319,6 +488,147 @@ final class DetachStateCommandTests: XCTestCase {
         agent_turn_id\tt1
 
         """)
+    }
+
+    func testJSONLSummaryUsesOnlyTheBoundedInjectedTail() throws {
+        var input = Data(repeating: 0x20, count: 300_000)
+        input.append(Data("""
+        {"payload":{"model":"tail-model"}}
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"tail-turn"}}
+        """.utf8))
+
+        let output = try DetachStateCommand.run(
+            arguments: ["jsonl", "summary", "codex", "-"],
+            standardInput: input)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: output) as? [String: Any])
+
+        XCTAssertEqual(object["model"] as? String, "tail-model")
+        XCTAssertEqual(object["agent_turn_id"] as? String, "tail-turn")
+    }
+
+    func testJSONLSummaryRejectsUnsupportedOptions() {
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "summary", "codex", "-", "--json",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+    }
+
+    func testHealthEvaluateRejectsIncompleteDuplicateAndInvalidEvidence() {
+        let valid = [
+            "health", "evaluate",
+            "--metadata-valid", "true",
+            "--runtime-identity-expected", "true",
+            "--meta-status", "running",
+            "--tmux", "live",
+            "--run-token", "match",
+            "--worker", "alive",
+            "--provider-process", "alive",
+            "--heartbeat", "fresh",
+            "--checkpoint", "fresh",
+            "--checkpoint-recoverable", "true",
+            "--agent-session-known", "true",
+        ]
+        let malformed = [
+            Array(valid.dropLast(2)),
+            valid + ["--worker", "dead"],
+            valid + ["--unsupported", "value"],
+            replacing("running", with: "future", in: valid),
+            replacing("live", with: "maybe", in: valid),
+            replacing("match", with: "maybe", in: valid),
+            replacing("alive", with: "maybe", in: valid),
+            replacing("fresh", with: "maybe", in: valid),
+        ]
+        for arguments in malformed {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: arguments)) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
+        }
+
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: replacing("true", with: "yes", in: valid)
+        )) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidBoolean("yes"))
+        }
+    }
+
+    func testMaintenanceReconcileDispatchesAndRejectsInvalidInventory() throws {
+        let actionable: [String: Any] = [
+            "schema": 1,
+            "provider": "codex",
+            "session_name": "detach-codex-dead",
+            "name": "dead",
+            "effective_status": "recoverable",
+            "health_reason": "recoverable_checkpoint",
+            "reconcile_action": "mark_recoverable",
+        ]
+        let inventory = try JSONSerialization.data(withJSONObject: actionable)
+        let output = try DetachStateCommand.run(
+            arguments: ["maintenance", "reconcile", "-"],
+            standardInput: inventory)
+        let plan = try JSONDecoder().decode(SessionMaintenancePlan.self, from: output)
+
+        XCTAssertEqual(plan.items.map(\.sessionName), ["detach-codex-dead"])
+        XCTAssertEqual(plan.items.first?.action, .markRecoverable)
+
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: ["maintenance", "reconcile", "-"],
+            standardInput: Data("not-json\n".utf8)
+        )) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidStorageInventory)
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "maintenance", "reconcile", "-", "extra",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+    }
+
+    func testStorageCommandsRejectMalformedArgumentsAndPayloads() throws {
+        let state = temporaryDirectory.appendingPathComponent("invalid-storage")
+        let reportPrefix = [
+            "storage", "report",
+            "--state-root", state.path,
+            "--codex-root", state.appendingPathComponent("codex").path,
+            "--claude-root", state.appendingPathComponent("claude").path,
+            "--sessions", "-",
+        ]
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: reportPrefix,
+            standardInput: Data("not-json\n".utf8)
+        )) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidStorageInventory)
+        }
+
+        for arguments in [
+            Array(reportPrefix.dropLast()),
+            [
+                "storage", "report",
+                "--state-root", state.path,
+                "--codex-root", state.appendingPathComponent("codex").path,
+                "--claude-root", state.appendingPathComponent("claude").path,
+            ],
+            reportPrefix + ["--state-root", state.path],
+            ["storage", "plan"],
+            ["storage", "plan", "-"],
+            ["storage", "plan", "-", "--all", "--session", "name"],
+            ["storage", "plan", "-", "--session"],
+        ] {
+            XCTAssertThrowsError(try DetachStateCommand.run(
+                arguments: arguments,
+                standardInput: Data("{}".utf8)
+            )) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
+        }
+
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: ["storage", "plan", "-", "--all"],
+            standardInput: Data("{}".utf8)
+        )) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidStorageReport)
+        }
     }
 
     func testStorageReportUsesAllocatedBytesAndOnlyAllowsStoppedOrOrphanedCleanup() throws {
@@ -583,6 +893,18 @@ final class DetachStateCommandTests: XCTestCase {
         ]
         let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
+    }
+
+    private func replacing(
+        _ oldValue: String,
+        with newValue: String,
+        in arguments: [String]
+    ) -> [String] {
+        var result = arguments
+        if let index = result.firstIndex(of: oldValue) {
+            result[index] = newValue
+        }
+        return result
     }
 
     private func storageReport(

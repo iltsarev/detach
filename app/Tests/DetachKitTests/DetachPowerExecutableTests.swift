@@ -43,6 +43,39 @@ final class DetachPowerExecutableTests: XCTestCase {
         XCTAssertEqual(command.arguments, [["status", "--json"]])
     }
 
+    func testStatusPreservesExistingTrailingNewline() {
+        let command = FakeCommand(result: .success(
+            .statusJSON(Data("{\"schema\":1}\n".utf8))))
+        let output = FakeOutput()
+
+        XCTAssertEqual(
+            DetachPowerExecutable(command: command, output: output)
+                .run(arguments: ["status", "--json"]),
+            0)
+        XCTAssertEqual(String(decoding: output.stdout, as: UTF8.self), "{\"schema\":1}\n")
+        XCTAssertTrue(output.stderr.isEmpty)
+    }
+
+    func testFileHandleOutputWritesToTheInjectedStreamsOnly() {
+        let stdout = Pipe()
+        let stderr = Pipe()
+        let output = FileHandleDetachPowerOutput(
+            standardOutput: stdout.fileHandleForWriting,
+            standardError: stderr.fileHandleForWriting)
+
+        output.writeStandardOutput(Data("out".utf8))
+        output.writeStandardError(Data("err".utf8))
+        stdout.fileHandleForWriting.closeFile()
+        stderr.fileHandleForWriting.closeFile()
+
+        XCTAssertEqual(
+            stdout.fileHandleForReading.readDataToEndOfFile(),
+            Data("out".utf8))
+        XCTAssertEqual(
+            stderr.fileHandleForReading.readDataToEndOfFile(),
+            Data("err".utf8))
+    }
+
     func testChildExitCodeIsReturnedExactly() {
         let command = FakeCommand(result: .success(.child(ChildCommandResult(exitCode: 73))))
         let output = FakeOutput()
@@ -50,6 +83,18 @@ final class DetachPowerExecutableTests: XCTestCase {
         XCTAssertEqual(
             DetachPowerExecutable(command: command, output: output).run(arguments: ["run"]),
             73)
+        XCTAssertTrue(output.stdout.isEmpty)
+        XCTAssertTrue(output.stderr.isEmpty)
+    }
+
+    func testSuccessfulLifecycleCommandProducesNoOutput() {
+        let command = FakeCommand(result: .success(.lifecycle))
+        let output = FakeOutput()
+
+        XCTAssertEqual(
+            DetachPowerExecutable(command: command, output: output).run(
+                arguments: ["helper", "cancel-unregistration"]),
+            0)
         XCTAssertTrue(output.stdout.isEmpty)
         XCTAssertTrue(output.stderr.isEmpty)
     }
@@ -75,6 +120,21 @@ final class DetachPowerExecutableTests: XCTestCase {
             DetachPowerExecutable(command: command, output: output).run(arguments: ["status"]),
             1)
         XCTAssertFalse(output.stderr.isEmpty)
+    }
+
+    func testTypedNonUsageCommandErrorReturnsOneWithExactDiagnostic() {
+        let command = FakeCommand(result: .failure(
+            DetachPowerCommandError.helperLeaseUnavailable))
+        let output = FakeOutput()
+
+        XCTAssertEqual(
+            DetachPowerExecutable(command: command, output: output).run(
+                arguments: ["run"]),
+            1)
+        XCTAssertEqual(
+            String(decoding: output.stderr, as: UTF8.self),
+            "detach-power: closed-lid protection lease could not be confirmed\n")
+        XCTAssertTrue(output.stdout.isEmpty)
     }
 
     func testActiveLeasesReturnTemporaryFailureForDeferredAppUpdate() {

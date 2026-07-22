@@ -93,6 +93,24 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.power.reason, .lowBattery)
     }
 
+    func testEveryHealthyPowerStateUsesItsTruthfulShape() {
+        let cases: [(String, MenuBarPresentation.Icon)] = [
+            ("protected", .active(sessionCount: 0)),
+            ("transitioning", .active(sessionCount: 0)),
+            ("allowed", .canSleep),
+            ("low_battery", .lowBattery),
+            ("unavailable", .attention),
+            ("unknown", .unknown),
+        ]
+
+        for (powerState, expectedIcon) in cases {
+            XCTAssertEqual(
+                makePresentation(powerState: powerState).icon,
+                expectedIcon,
+                "unexpected menu shape for \(powerState)")
+        }
+    }
+
     func testAllowedStateWithRunningSessionsNamesTheMismatch() {
         // Heartbeat lag right after a session starts: the menu must not say
         // "No active agent sessions" above a listed running session.
@@ -122,6 +140,50 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(
             presentation.headerText,
             "Sleep status unknown · No fresh report from the background monitor")
+    }
+
+    func testFreshnessUsesMinutesAfterTwoMinutes() {
+        XCTAssertEqual(powerCheckedAgeText(seconds: 119), "checked 119 s ago")
+        XCTAssertEqual(powerCheckedAgeText(seconds: 120), "checked 2 min ago")
+        XCTAssertEqual(powerCheckedAgeText(seconds: 179), "checked 2 min ago")
+    }
+
+    func testFutureCheckedAtIsClampedToNow() {
+        let heartbeat = PowerHeartbeatSnapshot(
+            statusURL: URL(fileURLWithPath: "/tmp/watchdog-status.json"),
+            state: "ok",
+            powerState: .allowed,
+            checkedAt: now.addingTimeInterval(30),
+            isFresh: true)
+
+        let presentation = MenuBarPresentation(
+            heartbeat: heartbeat,
+            sessions: [],
+            helperStatus: .enabled,
+            watchdogStatus: .enabled,
+            distributionMatchesBundle: true,
+            showsSessionCount: true,
+            now: now)
+
+        XCTAssertEqual(presentation.ageSeconds, 0)
+        XCTAssertTrue(presentation.headerText.hasSuffix("checked 0 s ago"))
+    }
+
+    func testEveryPowerReasonHasUserFacingMenuText() {
+        let cases: [(MacPowerSettingsPresentation.Reason, String)] = [
+            (.activeSessions(3), "Held awake by active sessions: 3"),
+            (.protectionActive, "Sleep protection is active"),
+            (.noActiveSessions, "No active agent sessions"),
+            (.sessionsNotHolding(2), "Active sessions without sleep protection: 2"),
+            (.lowBattery, "Protection released until power is connected"),
+            (.confirming, "Confirming sleep protection…"),
+            (.helperUnreachable, "The native power helper is unreachable"),
+            (.noFreshReport, "No fresh report from the background monitor"),
+        ]
+
+        for (reason, expected) in cases {
+            XCTAssertEqual(reason.localizedText, expected)
+        }
     }
 
     func testAnswerReadySessionsComeFirstAndListCapsAtSix() {

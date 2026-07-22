@@ -6,13 +6,17 @@ import XCTest
 final class ProcessChildCommandRunnerTests: XCTestCase {
     private final class FakeLauncher: ChildProcessLaunching, @unchecked Sendable {
         var exitCode: Int32 = 0
+        var error: Error?
         private(set) var requests: [ChildProcessRequest] = []
 
         func run(_ request: ChildProcessRequest) throws -> Int32 {
             requests.append(request)
+            if let error { throw error }
             return exitCode
         }
     }
+
+    private struct ExpectedFailure: Error {}
 
     func testAbsoluteExecutableInheritsEnvironmentCWDAndStandardIO() throws {
         let launcher = FakeLauncher()
@@ -46,6 +50,23 @@ final class ProcessChildCommandRunnerTests: XCTestCase {
 
         XCTAssertEqual(launcher.requests.first?.executableURL.path, "/usr/bin/env")
         XCTAssertEqual(launcher.requests.first?.arguments, ["codex", "exec", "task"])
+    }
+
+    func testRunnerPreservesPIDFileAndLauncherFailure() {
+        let launcher = FakeLauncher()
+        launcher.error = ExpectedFailure()
+        let runner = ProcessChildCommandRunner(
+            environment: [:],
+            currentDirectoryURL: URL(fileURLWithPath: "/fixture/project"),
+            launcher: launcher)
+
+        XCTAssertThrowsError(try runner.run(ChildCommand(
+            executable: "/fixture/provider",
+            arguments: [],
+            pidFile: "/fixture/provider.pid"))) { error in
+                XCTAssertTrue(error is ExpectedFailure)
+            }
+        XCTAssertEqual(launcher.requests.first?.pidFile, "/fixture/provider.pid")
     }
 
     func testPOSIXLauncherPreservesParentProcessGroup() throws {
@@ -107,6 +128,70 @@ final class ProcessChildCommandRunnerTests: XCTestCase {
             inheritsStandardIO: false))
 
         XCTAssertEqual(exitCode, 128 + SIGTERM)
+    }
+
+    func testPOSIXLauncherReturnsOrdinaryNonzeroExitCode() throws {
+        let exitCode = try POSIXChildProcessLauncher().run(ChildProcessRequest(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exit 37"],
+            environment: [:],
+            currentDirectoryURL: URL(fileURLWithPath: "/", isDirectory: true),
+            inheritsStandardIO: false))
+
+        XCTAssertEqual(exitCode, 37)
+    }
+
+    func testPOSIXLauncherReportsMissingExecutableAsPOSIXSpawnFailure() {
+        let missingExecutable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-missing-provider-\(UUID().uuidString)")
+        XCTAssertThrowsError(try POSIXChildProcessLauncher().run(
+            ChildProcessRequest(
+                executableURL: missingExecutable,
+                arguments: [],
+                environment: [:],
+                currentDirectoryURL: URL(fileURLWithPath: "/", isDirectory: true),
+                inheritsStandardIO: false))) { error in
+                    let error = error as NSError
+                    XCTAssertEqual(error.domain, NSPOSIXErrorDomain)
+                    XCTAssertEqual(error.code, Int(ENOENT))
+                    XCTAssertTrue(error.localizedDescription.contains("posix_spawn"))
+                }
+    }
+
+    func testPOSIXLauncherReportsMissingCurrentDirectory() {
+        let missingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-missing-cwd-\(UUID().uuidString)")
+        XCTAssertThrowsError(try POSIXChildProcessLauncher().run(
+            ChildProcessRequest(
+                executableURL: URL(fileURLWithPath: "/usr/bin/true"),
+                arguments: [],
+                environment: [:],
+                currentDirectoryURL: missingDirectory,
+                inheritsStandardIO: false))) { error in
+                    let error = error as NSError
+                    XCTAssertEqual(error.domain, NSPOSIXErrorDomain)
+                    XCTAssertEqual(error.code, Int(ENOENT))
+                }
+    }
+
+    func testPOSIXLauncherKillsAndReapsChildWhenPIDPublicationFails() {
+        let missingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-missing-\(UUID().uuidString)")
+        let start = Date()
+
+        XCTAssertThrowsError(try POSIXChildProcessLauncher().run(
+            ChildProcessRequest(
+                executableURL: URL(fileURLWithPath: "/bin/sleep"),
+                arguments: ["10"],
+                environment: [:],
+                currentDirectoryURL: URL(fileURLWithPath: "/", isDirectory: true),
+                inheritsStandardIO: false,
+                pidFile: missingDirectory.appendingPathComponent("provider.pid").path)))
+
+        XCTAssertLessThan(
+            Date().timeIntervalSince(start),
+            5,
+            "PID publication failure must kill and reap instead of waiting for the child")
     }
 
     func testPOSIXLauncherPublishesTheExactProviderPIDAtomically() throws {

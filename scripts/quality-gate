@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-POLICY_VERSION=8
+POLICY_VERSION=9
 MODE=change
 BASE_REF=""
 PLAN_ONLY=0
@@ -200,7 +200,7 @@ select_for_path() {
   IMPACT_REASON="$change $path"
   add_stage static
   case "$path" in
-    .github/workflows/quality-gates.yml|docs/quality-gates.md|scripts/quality-gate|scripts/quality-history|tests/quality-gate.sh|tests/quality-contracts.sh|tests/quality-baseline.tsv|tests/quality-ratchet.sh|tests/quality-ratchet-contract.sh|tests/release-budget.tsv|tests/release-budget-ratchet.sh|tests/release-budget-ratchet-contract.sh|tests/shell-safety.sh|tests/shell-safety-contract.sh|tests/quality-history-contract.sh)
+    .github/workflows/quality-gates.yml|docs/quality-gates.md|scripts/quality-gate|scripts/quality-history|scripts/test|tests/quality-gate.sh|tests/quality-contracts.sh|tests/quality-baseline.tsv|tests/quality-file-baseline.tsv|tests/quality-ratchet.sh|tests/quality-ratchet-contract.sh|tests/release-budget.tsv|tests/release-budget-ratchet.sh|tests/release-budget-ratchet-contract.sh|tests/shell-safety.sh|tests/shell-safety-contract.sh|tests/quality-history-contract.sh|tests/test-suite-contract.sh)
       select_all "$change gate policy file $path"
       ;;
     tests/docs-contract.sh)
@@ -772,6 +772,7 @@ run_static() {
   "$ROOT/tests/quality-ratchet.sh"
   "$ROOT/tests/release-budget-ratchet.sh"
   "$ROOT/tests/shell-safety.sh"
+  "$ROOT/tests/test-suite-contract.sh"
 }
 
 run_tmux_socket_preflight() {
@@ -805,17 +806,61 @@ run_stage_command() {
   case "$stage" in
     static) run_static ;;
     gate-contract)
-      "$ROOT/tests/quality-gate.sh" | grep -Fx 'Quality gate orchestrator tests passed'
-      "$ROOT/tests/quality-ratchet-contract.sh" | grep -Fx 'Quality ratchet contract tests passed'
-      "$ROOT/tests/release-budget-ratchet-contract.sh" | \
-        grep -Fx 'Release budget ratchet contract tests passed'
-      "$ROOT/tests/shell-safety-contract.sh" | grep -Fx 'Shell safety contract tests passed'
-      "$ROOT/tests/quality-history-contract.sh" | grep -Fx 'Quality history contract tests passed'
+      contract_root="$(mktemp -d "${TMPDIR:-/tmp}/detach-gate-contract.XXXXXX")"
+      contract_pids=()
+      (
+        DETACH_QUALITY_GATE_CONTRACT_SHARD=selection "$ROOT/tests/quality-gate.sh" |
+          grep -Fx 'Quality gate selection tests passed'
+      ) >"$contract_root/orchestrator-selection.log" 2>&1 &
+      contract_pids+=("$!")
+      (
+        DETACH_QUALITY_GATE_CONTRACT_SHARD=failures "$ROOT/tests/quality-gate.sh" |
+          grep -Fx 'Quality gate failure tests passed'
+      ) >"$contract_root/orchestrator-failures.log" 2>&1 &
+      contract_pids+=("$!")
+      (
+        DETACH_QUALITY_GATE_CONTRACT_SHARD=evidence "$ROOT/tests/quality-gate.sh" |
+          grep -Fx 'Quality gate evidence tests passed'
+      ) >"$contract_root/orchestrator-evidence.log" 2>&1 &
+      contract_pids+=("$!")
+      (
+        "$ROOT/tests/quality-ratchet-contract.sh" |
+          grep -Fx 'Quality ratchet contract tests passed'
+      ) >"$contract_root/quality-ratchet.log" 2>&1 &
+      contract_pids+=("$!")
+      (
+        "$ROOT/tests/release-budget-ratchet-contract.sh" |
+          grep -Fx 'Release budget ratchet contract tests passed'
+      ) >"$contract_root/release-budget-ratchet.log" 2>&1 &
+      contract_pids+=("$!")
+      (
+        "$ROOT/tests/shell-safety-contract.sh" |
+          grep -Fx 'Shell safety contract tests passed'
+      ) >"$contract_root/shell-safety.log" 2>&1 &
+      contract_pids+=("$!")
+      (
+        "$ROOT/tests/quality-history-contract.sh" |
+          grep -Fx 'Quality history contract tests passed'
+      ) >"$contract_root/quality-history.log" 2>&1 &
+      contract_pids+=("$!")
+      contract_status=0
+      for contract_pid in "${contract_pids[@]}"; do
+        if ! wait "$contract_pid"; then
+          contract_status=1
+        fi
+      done
+      for contract_log in "$contract_root"/*.log; do
+        cat "$contract_log"
+      done
+      rm -rf "$contract_root"
+      [ "$contract_status" -eq 0 ]
       ;;
     swift)
       (
         cd -P "$ROOT/app"
         mkdir -p .build/quality-codecov
+        build_path="$(swift build --show-bin-path)"
+        rm -f "$build_path/codecov/default.profdata"
         LLVM_PROFILE_FILE="$ROOT/app/.build/quality-codecov/%p-%m.profraw" \
           swift test --enable-code-coverage --disable-sandbox
       )

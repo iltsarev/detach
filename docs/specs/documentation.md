@@ -23,6 +23,11 @@ against the same deterministic quality gate.
 - Fast diagnostics close the edit loop; `scripts/quality-gate` remains the
   sole readiness entry point. A focused command or diagnostic stage is never
   presented as final evidence.
+- `scripts/test critical`, `unit`, `coverage`, `smoke`, and `full` are the
+  stable human entry points for the high-risk logic loop, complete Swift loop,
+  measured coverage loop, freshly packaged product smoke, and exhaustive
+  repository readiness respectively. Each supports `--plan`; only `full` is
+  readiness evidence because it delegates to the repository quality gate.
 - Resume evidence retains stage timing and digest-bound logs, binds its parent,
   and cannot turn a prior time-budget regression into readiness.
 - Hosted CI runs every selected functional check and timing-policy ratchet but
@@ -47,5 +52,5 @@ only for a rule needed on most tasks.
 
 ## Verification
 
-Run `tests/docs-contract.sh`, inspect the context map for the affected area,
-then run the impact-selected quality gate.
+Run `tests/docs-contract.sh` and `tests/test-suite-contract.sh`, inspect the
+context map for the affected area, then run the impact-selected quality gate.

@@ -6,17 +6,23 @@ final class PowerProtectionTests: XCTestCase {
         var enabled: Bool
         var writes: [Bool] = []
         var failure: Error?
+        var writeFailure: Error?
+        var readFailures: [Int: Error] = [:]
+        private(set) var readCount = 0
 
         init(enabled: Bool) {
             self.enabled = enabled
         }
 
         func protectionIsEnabled() throws -> Bool {
+            readCount += 1
+            if let failure = readFailures[readCount] { throw failure }
             if let failure { throw failure }
             return enabled
         }
 
         func setProtectionEnabled(_ enabled: Bool) throws {
+            if let writeFailure { throw writeFailure }
             if let failure { throw failure }
             self.enabled = enabled
             writes.append(enabled)
@@ -52,6 +58,20 @@ final class PowerProtectionTests: XCTestCase {
 
         XCTAssertEqual(status.state, .allowed)
         XCTAssertEqual(status.leaseCount, 0)
+    }
+
+    func testStatusInitializerNormalizesNegativeLeaseCount() {
+        let status = PowerProtectionStatus(
+            state: .protected,
+            leaseCount: -10,
+            assertionActive: true,
+            closedLidProtectionActive: true,
+            helperReachable: true,
+            transitionInProgress: false,
+            lowBattery: false)
+
+        XCTAssertEqual(status.leaseCount, 0)
+        XCTAssertEqual(status.state, .protected)
     }
 
     func testNoLeasesStillReportsBorrowedMachineProtectionTruthfully() {
@@ -148,6 +168,34 @@ final class PowerProtectionTests: XCTestCase {
             ["near"])
     }
 
+    func testInvalidLeaseTimingPolicyFailsClosed() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let lease = PowerLease(
+            id: "lease", sessionName: "session", runToken: "run",
+            renewedAt: now)
+
+        XCTAssertTrue(PowerLeaseRegistry.liveLeases(
+            [lease], now: now, timeout: -1).isEmpty)
+        XCTAssertTrue(PowerLeaseRegistry.liveLeases(
+            [lease], now: now, timeout: 60,
+            maximumFutureClockSkew: -1).isEmpty)
+    }
+
+    func testLeaseDecodingDefaultsLegacyAssertionAndAcceptsCurrentField() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let legacyJSON = #"{"id":"legacy","session_name":"session","run_token":"run","renewed_at":100}"#
+        let currentJSON = #"{"id":"current","session_name":"session","run_token":"run","renewed_at":100,"assertion_active":true}"#
+        let legacy = try decoder.decode(
+            PowerLease.self, from: Data(legacyJSON.utf8))
+        let current = try decoder.decode(
+            PowerLease.self, from: Data(currentJSON.utf8))
+
+        XCTAssertFalse(legacy.assertionActive)
+        XCTAssertTrue(current.assertionActive)
+        XCTAssertEqual(legacy.renewedAt, Date(timeIntervalSince1970: 100))
+    }
+
     func testPowerStateDecodesUnknownValuesSafely() throws {
         let known = try JSONDecoder().decode(
             PowerProtectionState.self, from: Data(#""protected""#.utf8))
@@ -242,5 +290,107 @@ final class PowerProtectionTests: XCTestCase {
 
         XCTAssertEqual(status.state, .unavailable)
         XCTAssertFalse(status.helperReachable)
+    }
+
+    func testCoordinatorHonorsExpiredAcquireDeadlineBeforeGlobalMutation() {
+        let backend = FakeClosedLidBackend(enabled: false)
+        var coordinator = PowerProtectionCoordinator()
+        let now = Date(timeIntervalSince1970: 1_000)
+        let lease = PowerLease(
+            id: "lease", sessionName: "session", runToken: "run",
+            renewedAt: now, assertionActive: true)
+        var deadlineChecks = 0
+
+        let status = coordinator.reconcile(
+            leases: [lease], now: now, timeout: 60,
+            lowBattery: false, backend: backend,
+            allowEnablingProtection: {
+                deadlineChecks += 1
+                return false
+            })
+
+        XCTAssertEqual(status.state, .transitioning)
+        XCTAssertEqual(deadlineChecks, 1)
+        XCTAssertTrue(backend.writes.isEmpty)
+        XCTAssertFalse(coordinator.ownsClosedLidProtection)
+    }
+
+    func testVerificationFailureAfterEnableRetainsOwnershipForLaterRestore() {
+        struct ExpectedFailure: Error {}
+        let backend = FakeClosedLidBackend(enabled: false)
+        backend.readFailures[2] = ExpectedFailure()
+        var coordinator = PowerProtectionCoordinator()
+        let now = Date(timeIntervalSince1970: 1_000)
+        let lease = PowerLease(
+            id: "lease", sessionName: "session", runToken: "run",
+            renewedAt: now, assertionActive: true)
+
+        let failed = coordinator.reconcile(
+            leases: [lease], now: now, timeout: 60,
+            lowBattery: false, backend: backend)
+
+        XCTAssertEqual(failed.state, .unavailable)
+        XCTAssertFalse(failed.helperReachable)
+        XCTAssertTrue(coordinator.ownsClosedLidProtection)
+        XCTAssertEqual(backend.writes, [true])
+
+        let restored = coordinator.reconcile(
+            leases: [], now: now, timeout: 60,
+            lowBattery: false, backend: backend)
+        XCTAssertEqual(restored.state, .allowed)
+        XCTAssertFalse(coordinator.ownsClosedLidProtection)
+        XCTAssertEqual(backend.writes, [true, false])
+    }
+
+    func testCoordinatorClearsStaleOwnershipWhenSettingIsAlreadyOff() {
+        let backend = FakeClosedLidBackend(enabled: false)
+        var coordinator = PowerProtectionCoordinator(
+            ownsClosedLidProtection: true)
+
+        let status = coordinator.reconcile(
+            leases: [], now: Date(timeIntervalSince1970: 1_000), timeout: 60,
+            lowBattery: false, backend: backend)
+
+        XCTAssertEqual(status.state, .allowed)
+        XCTAssertFalse(coordinator.ownsClosedLidProtection)
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testFailedOwnedRestoreRemainsUnavailableAndOwnedForRetry() {
+        struct ExpectedFailure: Error {}
+        let backend = FakeClosedLidBackend(enabled: true)
+        backend.writeFailure = ExpectedFailure()
+        var coordinator = PowerProtectionCoordinator(
+            ownsClosedLidProtection: true)
+
+        let status = coordinator.reconcile(
+            leases: [], now: Date(timeIntervalSince1970: 1_000), timeout: 60,
+            lowBattery: false, backend: backend)
+
+        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertFalse(status.helperReachable)
+        XCTAssertTrue(coordinator.ownsClosedLidProtection)
+    }
+
+    func testMixedAssertionEvidenceCannotClaimFullProtection() {
+        let backend = FakeClosedLidBackend(enabled: true)
+        var coordinator = PowerProtectionCoordinator()
+        let now = Date(timeIntervalSince1970: 1_000)
+        let leases = [
+            PowerLease(
+                id: "active", sessionName: "one", runToken: "one",
+                renewedAt: now, assertionActive: true),
+            PowerLease(
+                id: "inactive", sessionName: "two", runToken: "two",
+                renewedAt: now, assertionActive: false),
+        ]
+
+        let status = coordinator.reconcile(
+            leases: leases, now: now, timeout: 60,
+            lowBattery: false, backend: backend)
+
+        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertFalse(status.assertionActive)
+        XCTAssertEqual(status.leaseCount, 2)
     }
 }

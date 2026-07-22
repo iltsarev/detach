@@ -6,6 +6,112 @@ import XCTest
 
 @MainActor
 final class InstallationStorePowerStateTests: XCTestCase {
+    func testInitialAppContextChecksTruthfullyDescribeUnconfiguredServices() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        let checks = Dictionary(uniqueKeysWithValues: store.appContextChecks.map {
+            ($0.id, $0)
+        })
+
+        XCTAssertEqual(Set(checks.keys), [
+            "app_location", "app_cli_match", "app_power_helper",
+            "app_watchdog", "watchdog_heartbeat",
+        ])
+        XCTAssertEqual(checks["app_location"]?.status, .ok)
+        XCTAssertEqual(checks["app_cli_match"]?.status, .error)
+        XCTAssertEqual(checks["app_power_helper"]?.status, .error)
+        XCTAssertEqual(
+            checks["app_power_helper"]?.summary,
+            "macOS could not register the native power helper")
+        XCTAssertEqual(checks["app_watchdog"]?.status, .error)
+        XCTAssertEqual(
+            checks["app_watchdog"]?.summary,
+            "macOS has not registered the power monitor yet")
+        XCTAssertEqual(checks["watchdog_heartbeat"]?.status, .unknown)
+        XCTAssertFalse(checks["watchdog_heartbeat"]?.required ?? true)
+        XCTAssertFalse(store.providerCheckPassed)
+    }
+
+    func testAppContextHeartbeatCheckPublishesFreshReportedPowerState() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        let heartbeat = try XCTUnwrap(
+            store.appContextChecks.first { $0.id == "watchdog_heartbeat" })
+
+        XCTAssertEqual(heartbeat.status, .ok)
+        XCTAssertEqual(
+            heartbeat.summary,
+            "The background monitor reported power state: protected")
+        XCTAssertEqual(
+            heartbeat.path,
+            root.appendingPathComponent("watchdog-status.json").path)
+    }
+
+    func testHealthyHeartbeatWithoutPowerStateUsesLaunchSummary() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","checked_at":"\#(stamp())"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        let heartbeat = try XCTUnwrap(
+            store.appContextChecks.first { $0.id == "watchdog_heartbeat" })
+
+        XCTAssertEqual(heartbeat.status, .ok)
+        XCTAssertEqual(
+            heartbeat.summary,
+            "The background power monitor ran within the last three minutes")
+    }
+
+    func testBundledPayloadOutsideApplicationsRequiresMoveBeforeWork() async throws {
+        let bundleRoot = try makeTestAppBundle()
+        defer { try? FileManager.default.removeItem(at: bundleRoot) }
+        let bundle = try XCTUnwrap(Bundle(path: bundleRoot.path))
+        var operations: [InstallationContextOperation] = []
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            bundle: bundle,
+            contextOperationOverride: { operations.append($0) })
+
+        XCTAssertTrue(store.hasDistributionPayload)
+        XCTAssertFalse(store.isStableApplicationLocation)
+        XCTAssertEqual(store.onboardingStep, .moveToApplications)
+        let location = try XCTUnwrap(
+            store.appContextChecks.first { $0.id == "app_location" })
+        XCTAssertEqual(location.status, .error)
+        XCTAssertEqual(
+            location.summary,
+            "Move Detach.app to Applications and open the installed copy")
+
+        await store.bootstrap()
+        XCTAssertEqual(store.phase, .actionRequired)
+        await store.repair()
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    func testDeveloperBootstrapIsIdempotentAfterReady() async {
+        let store = InstallationStore(detachPath: "/tmp/detach-test")
+
+        await store.bootstrap()
+        XCTAssertEqual(store.phase, .ready)
+        await store.bootstrap()
+        XCTAssertEqual(store.phase, .ready)
+    }
+
     func testPowerHelperHandoffErrorPreventsReadyPhase() {
         let phase = InstallationStore.phaseForReadiness(
             isStableApplicationLocation: true,
@@ -319,11 +425,64 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertFalse(store.isBusy)
     }
 
+    func testConcurrentRepairsDeduplicateAndConvergeWithOneRefresh() async {
+        let probe = InstallationContextOperationProbe()
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            contextOperationOverride: { operation in
+                await probe.run(operation)
+            })
+
+        let first = Task { await store.repair() }
+        await waitUntil { probe.operations == [.repair] }
+        let duplicate = Task { await store.repair() }
+
+        probe.releaseNext()
+        await waitUntil { probe.operations == [.repair, .refresh] }
+        probe.releaseNext()
+        await first.value
+        await duplicate.value
+
+        XCTAssertEqual(probe.operations, [.repair, .refresh])
+        XCTAssertEqual(probe.maximumConcurrentOperations, 1)
+        XCTAssertFalse(store.isBusy)
+    }
+
     private func makeStateRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
             at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func makeTestAppBundle() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Detach-\(UUID().uuidString).app", isDirectory: true)
+        let contents = root.appendingPathComponent("Contents", isDirectory: true)
+        let payload = contents.appendingPathComponent(
+            "Resources/DetachCLI", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: payload, withIntermediateDirectories: true)
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+        <key>CFBundleIdentifier</key><string>dev.tsarev.detach.coverage-fixture</string>
+        <key>CFBundleName</key><string>Detach</string>
+        <key>CFBundlePackageType</key><string>APPL</string>
+        </dict></plist>
+        """
+        try Data(plist.utf8).write(
+            to: contents.appendingPathComponent("Info.plist"), options: .atomic)
+        for (name, value) in [
+            ("VERSION", "0.2.7\n"),
+            ("BUILD", "17\n"),
+            ("PAYLOAD_ID", "payload\n"),
+        ] {
+            try Data(value.utf8).write(
+                to: payload.appendingPathComponent(name), options: .atomic)
+        }
         return root
     }
 

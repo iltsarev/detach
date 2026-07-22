@@ -16,6 +16,50 @@ final class StorageStoreTests: XCTestCase {
         XCTAssertNotNil(store.lastUpdated)
     }
 
+    func testConfigureReplacesCLIAndRefreshesImmediately() async throws {
+        let original = FakeCLI()
+        let replacement = FakeCLI()
+        let report = makeReport([makeSession(name: "detach-codex-new", bytes: 1)])
+        replacement.responses["storage --json"] = ok(try encode(report))
+        let store = StorageStore(cli: original)
+
+        await store.configure(cli: replacement)
+
+        XCTAssertEqual(store.state, .ok)
+        XCTAssertEqual(store.report, report)
+        XCTAssertEqual(original.calls, [])
+        XCTAssertEqual(replacement.calls, [["storage", "--json"]])
+    }
+
+    func testRefreshReportsTimeoutExitFailureAndMissingCLI() async {
+        let cli = FakeCLI()
+        let store = StorageStore(cli: cli)
+
+        cli.responses["storage --json"] = .success(CLIResult(
+            exitCode: 1, stdout: "", stderr: "ignored", timedOut: true))
+        await store.refresh()
+        XCTAssertEqual(store.state, .error(L10n.string("Storage scan timed out")))
+
+        cli.responses["storage --json"] = .success(CLIResult(
+            exitCode: 1, stdout: "", stderr: "  scan failed\n", timedOut: false))
+        await store.refresh()
+        XCTAssertEqual(store.state, .error("scan failed"))
+
+        cli.responses["storage --json"] = .failure(FakeError())
+        await store.refresh()
+        XCTAssertEqual(store.state, .cliMissing)
+    }
+
+    func testCleanupRefusesWhenRefreshCannotProduceCurrentReport() async {
+        let cli = FakeCLI()
+        cli.responses["storage --json"] = .failure(FakeError())
+        let store = StorageStore(cli: cli)
+
+        let failures = await store.cleanup(expected: [])
+
+        XCTAssertEqual(failures, [L10n.string("Storage changed before cleanup; review it again.")])
+    }
+
     func testCleanupRefusesChangedPreviewBeforeDeletingAnything() async throws {
         let cli = FakeCLI()
         let expected = makeSession(name: "detach-codex-one", bytes: 4_096)
@@ -73,6 +117,27 @@ final class StorageStoreTests: XCTestCase {
         XCTAssertTrue(cli.calls.contains([
             "claude", "delete", "--force", "detach-claude-second",
         ]))
+    }
+
+    func testCleanupReportsTimeoutEmptyFailureAndThrownError() async throws {
+        let cli = FakeCLI()
+        let timedOut = makeSession(name: "detach-codex-timeout", bytes: 1)
+        let emptyFailure = makeSession(name: "detach-codex-empty", bytes: 2)
+        let thrown = makeSession(name: "detach-codex-thrown", bytes: 3)
+        let report = makeReport([timedOut, emptyFailure, thrown])
+        cli.responses["storage --json"] = ok(try encode(report))
+        cli.responses["codex delete --force detach-codex-timeout"] = .success(CLIResult(
+            exitCode: 0, stdout: "", stderr: "", timedOut: true))
+        cli.responses["codex delete --force detach-codex-empty"] = .success(CLIResult(
+            exitCode: 1, stdout: "", stderr: " \n", timedOut: false))
+        cli.responses["codex delete --force detach-codex-thrown"] = .failure(FakeError())
+        let store = StorageStore(cli: cli)
+
+        let failures = await store.cleanup(expected: [timedOut, emptyFailure, thrown])
+
+        XCTAssertEqual(failures[0], "detach-codex-timeout: \(L10n.string("timed out"))")
+        XCTAssertEqual(failures[1], "detach-codex-empty: \(L10n.string("failed"))")
+        XCTAssertTrue(failures[2].hasPrefix("detach-codex-thrown: "))
     }
 
     func testInvalidStorageJSONDoesNotReplaceLastGoodReport() async throws {

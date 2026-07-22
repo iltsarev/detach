@@ -47,6 +47,47 @@ private actor DelayedCLI: DetachCLIRunning {
     }
 }
 
+private actor PollSleepProbe {
+    private(set) var intervals: [UInt64] = []
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancellationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var sleepContinuation: CheckedContinuation<Void, Error>?
+    private var cancelled = false
+
+    func sleep(nanoseconds: UInt64) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                sleepContinuation = continuation
+                intervals.append(nanoseconds)
+                let waiters = startedWaiters
+                startedWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        } onCancel: {
+            Task { await self.cancelSleep() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        if !intervals.isEmpty { return }
+        await withCheckedContinuation { startedWaiters.append($0) }
+    }
+
+    func waitUntilCancelled() async {
+        if cancelled { return }
+        await withCheckedContinuation { cancellationWaiters.append($0) }
+    }
+
+    private func cancelSleep() {
+        cancelled = true
+        sleepContinuation?.resume(throwing: CancellationError())
+        sleepContinuation = nil
+        let waiters = cancellationWaiters
+        cancellationWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+}
+
 @MainActor
 final class SessionStoreTests: XCTestCase {
     let line = """
@@ -65,6 +106,28 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(store.sessions.count, 1)
         XCTAssertEqual(store.state, .ok)
         XCTAssertNotNil(store.lastUpdated)
+    }
+
+    func testRefreshSortsNewestSessionsFirstAndUsesDistantPastForMissingDates() async {
+        let cli = FakeCLI()
+        let olderWithoutDate = line
+            .replacingOccurrences(of: "detach-codex-p-1", with: "detach-codex-old")
+            .replacingOccurrences(of: "p-1", with: "old")
+            .replacingOccurrences(of: #""2026-07-10T10:00:00Z""#, with: "null")
+        let newest = line
+            .replacingOccurrences(of: "detach-codex-p-1", with: "detach-codex-new")
+            .replacingOccurrences(of: "p-1", with: "new")
+            .replacingOccurrences(
+                of: "2026-07-10T10:00:00Z",
+                with: "2026-07-11T10:00:00Z")
+        cli.responses["list --json"] = ok(olderWithoutDate + "\n" + line + "\n" + newest)
+        let store = SessionStore(cli: cli)
+
+        await store.refresh()
+
+        XCTAssertEqual(
+            store.sessions.map(\.sessionName),
+            ["detach-codex-new", "detach-codex-p-1", "detach-codex-old"])
     }
 
     func testInvalidLinesSetIncompatible() async {
@@ -105,6 +168,20 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .error("boom"))
     }
 
+    func testTimedOutRefreshUsesExplicitDiagnosticAndPreservesData() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: cli)
+        await store.refresh()
+        cli.responses["list --json"] = .success(CLIResult(
+            exitCode: 0, stdout: "", stderr: "ignored", timedOut: true))
+
+        await store.refresh()
+
+        XCTAssertEqual(store.state, .error(L10n.string("detach list timed out")))
+        XCTAssertEqual(store.sessions.count, 1)
+    }
+
     func testStopCallsCliAndRefreshes() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line)
@@ -133,6 +210,73 @@ final class SessionStoreTests: XCTestCase {
         await store.refresh()
         let error = await store.perform(.stop, on: store.sessions[0])
         XCTAssertEqual(error, "still busy")
+    }
+
+    func testFailedMutationWithoutStderrReportsExitStatus() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        cli.responses["codex stop detach-codex-p-1"] = .success(CLIResult(
+            exitCode: 17, stdout: "", stderr: " \n", timedOut: false))
+        let store = SessionStore(cli: cli)
+        await store.refresh()
+
+        let error = await store.perform(.stop, on: store.sessions[0])
+
+        XCTAssertEqual(error, L10n.format("detach exited with status %d", 17))
+    }
+
+    func testMutationLaunchFailureReturnsLocalizedError() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        cli.responses["codex stop detach-codex-p-1"] = .failure(FakeError())
+        let store = SessionStore(cli: cli)
+        await store.refresh()
+
+        let error = await store.perform(.stop, on: store.sessions[0])
+
+        XCTAssertTrue(error?.hasPrefix(L10n.string("Could not run detach:")) == true)
+    }
+
+    func testTerminalOnlyActionsAreRejectedWithoutRunningTheCLI() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: cli)
+        await store.refresh()
+        let callsBeforeActions = cli.calls
+
+        for action in [SessionAction.attach, .resume, .recover] {
+            let error = await store.perform(action, on: store.sessions[0])
+            XCTAssertEqual(
+                error,
+                L10n.format("Internal error: %@ must run in Terminal", action.rawValue))
+        }
+        XCTAssertEqual(cli.calls, callsBeforeActions)
+    }
+
+    func testPollingStartsImmediatelySupportsIdleCadenceAndStopsCleanly() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let sleep = PollSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            pollSleep: { try await sleep.sleep(nanoseconds: $0) })
+        var snapshots: [[Session]] = []
+        store.onSnapshot = { snapshots.append($0) }
+        store.updateCadence(foreground: false)
+
+        store.startPolling(interval: 0.01)
+        await sleep.waitUntilStarted()
+
+        let intervals = await sleep.intervals
+        XCTAssertEqual(intervals, [10_000_000_000])
+        XCTAssertEqual(cli.calls, [["list", "--json"]])
+        XCTAssertEqual(snapshots.map { $0.map(\.sessionName) }, [["detach-codex-p-1"]])
+        XCTAssertEqual(store.state, .ok)
+
+        store.stopPolling()
+        await sleep.waitUntilCancelled()
+
+        XCTAssertEqual(cli.calls, [["list", "--json"]])
     }
 
     func testSnapshotObserverReceivesEverySuccessfulPoll() async {

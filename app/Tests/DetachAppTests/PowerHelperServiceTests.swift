@@ -6,6 +6,332 @@ import DetachKit
 
 @MainActor
 final class PowerHelperServiceTests: XCTestCase {
+    func testLifecycleRunnerMapsSuccessfulAndActiveLeasePreparations() async throws {
+        let cli = LifecycleCLI(responses: [
+            .success(CLIResult(
+                exitCode: 0, stdout: "", stderr: "", timedOut: false)),
+            .success(CLIResult(
+                exitCode: DetachPowerExecutable.temporaryFailureExitCode,
+                stdout: "", stderr: "", timedOut: false)),
+        ])
+        let runner = SystemPowerHelperLifecycleRunner(cli: cli)
+
+        let first = try await runner.prepareForUnregistration()
+        let second = try await runner.prepareForUnregistration()
+        let calls = await cli.calls()
+        XCTAssertEqual(first, .prepared)
+        XCTAssertEqual(second, .activeLeases)
+        XCTAssertEqual(calls.arguments, [
+            ["helper", "prepare-unregistration"],
+            ["helper", "prepare-unregistration"],
+        ])
+        XCTAssertEqual(calls.timeouts, [35, 35])
+    }
+
+    func testLifecycleRunnerFormatsTimeoutStderrAndExitFailures() async {
+        let cli = LifecycleCLI(responses: [
+            .success(CLIResult(
+                exitCode: 1, stdout: "", stderr: "ignored", timedOut: true)),
+            .success(CLIResult(
+                exitCode: 2, stdout: "", stderr: " daemon failed \n",
+                timedOut: false)),
+            .success(CLIResult(
+                exitCode: 3, stdout: "", stderr: "", timedOut: false)),
+        ])
+        let runner = SystemPowerHelperLifecycleRunner(cli: cli)
+        let expected = [
+            "power helper lifecycle request timed out",
+            "daemon failed",
+            "power helper lifecycle request exited with status 3",
+        ]
+
+        for message in expected {
+            do {
+                _ = try await runner.prepareForUnregistration()
+                XCTFail("Expected lifecycle failure")
+            } catch {
+                XCTAssertEqual(error.localizedDescription, message)
+            }
+        }
+    }
+
+    func testLifecycleRunnerCancelsOrSurfacesCancellationFailure() async throws {
+        let cli = LifecycleCLI(responses: [
+            .success(CLIResult(
+                exitCode: 0, stdout: "", stderr: "", timedOut: false)),
+            .success(CLIResult(
+                exitCode: 4, stdout: "", stderr: "cancel failed",
+                timedOut: false)),
+        ])
+        let runner = SystemPowerHelperLifecycleRunner(cli: cli)
+
+        try await runner.cancelUnregistration()
+        do {
+            try await runner.cancelUnregistration()
+            XCTFail("Expected cancellation failure")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "cancel failed")
+        }
+        let calls = await cli.calls()
+        XCTAssertEqual(calls.arguments, [
+            ["helper", "cancel-unregistration"],
+            ["helper", "cancel-unregistration"],
+        ])
+    }
+
+    func testServiceErrorsHaveActionableDescriptions() {
+        let cases: [(PowerHelperServiceError, String)] = [
+            (
+                .bundledDefinitionMissing,
+                "The bundled power helper definition is missing or incomplete."
+            ),
+            (
+                .registrationDidNotComplete,
+                "macOS did not finish registering the power helper."
+            ),
+            (
+                .unregistrationBarrierDidNotComplete,
+                "macOS has not finished removing the previous power helper."
+            ),
+            (
+                .activeLeasesPreventUnregistration,
+                "Stop active Detach sessions before removing the power helper."
+            ),
+            (
+                .notActiveConsoleUser,
+                "Switch to this macOS user before updating the power helper."
+            ),
+            (.lifecycleCommandFailed("lifecycle failed"), "lifecycle failed"),
+        ]
+
+        for (error, expected) in cases {
+            XCTAssertEqual(error.errorDescription, expected)
+        }
+    }
+
+    func testMissingBundledDefinitionFailsBeforeRegistration() async {
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered, registrations: [])
+        let fixture = makeFixture(backend: backend, digestProvider: { nil })
+        defer { fixture.cleanup() }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.enable()
+        }
+
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testEnableFailsAfterBoundedUnconfirmedRegistrationRetries() async {
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered,
+            registrations: Array(
+                repeating: .success(.notRegistered), count: 5))
+        var delays: [UInt64] = []
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .missing },
+            sleep: { delays.append($0) })
+        defer { fixture.cleanup() }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.enable()
+        }
+
+        XCTAssertEqual(backend.registerCalls, 5)
+        XCTAssertEqual(
+            delays, [250_000_000, 500_000_000, 1_000_000_000, 2_000_000_000])
+    }
+
+    func testDisableRefusesToRemoveHelperWithActiveLeases() async {
+        let backend = FakePowerHelperBackend(
+            status: .enabled, registrations: [])
+        let lifecycle = FakePowerHelperLifecycle(
+            preparations: [.success(.activeLeases)])
+        let fixture = makeFixture(backend: backend, lifecycle: lifecycle)
+        defer { fixture.cleanup() }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.disable()
+        }
+
+        XCTAssertEqual(lifecycle.prepareCalls, 1)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testDisableNotRegisteredHelperClearsStaleDefinitionState() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered, registrations: [])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "stale", forKey: "powerHelperDefinitionDigest")
+        fixture.defaults.set(
+            true, forKey: "powerHelperDefinitionReconcilePending")
+
+        try await fixture.service.disable()
+
+        XCTAssertNil(fixture.defaults.string(
+            forKey: "powerHelperDefinitionDigest"))
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerHelperDefinitionReconcilePending"))
+        XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testDisableApprovalStateSubmitsUnregistration() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .requiresApproval, registrations: [])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+
+        try await fixture.service.disable()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(fixture.handoffStore.transaction?.phase, .removed)
+        XCTAssertEqual(fixture.handoffStore.transaction?.goal, .remove)
+    }
+
+    func testMatchingApprovedRegistrationRemainsPendingWithoutMutation() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .requiresApproval, registrations: [])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertTrue(fixture.defaults.bool(
+            forKey: "powerHelperDefinitionReconcilePending"))
+        XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testInvalidBootSessionFailsBeforeRegistration() async {
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered, registrations: [])
+        let fixture = makeFixture(
+            backend: backend,
+            bootSessionProvider: { "not-a-boot-session-uuid" })
+        defer { fixture.cleanup() }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.reconcileAfterAppUpdate()
+        }
+
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testLegacyGateReopenDigestCompletesWithoutReplacingEnabledHelper() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .enabled, registrations: [])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+        fixture.defaults.set(true, forKey: "powerHelperGateReopenPending")
+        fixture.defaults.set(
+            "digest-current", forKey: "powerHelperGateReopenDigest")
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 1)
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerHelperGateReopenPending"))
+        XCTAssertNil(fixture.defaults.string(
+            forKey: "powerHelperGateReopenDigest"))
+        XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testMalformedRegisteringRemovalJournalConvergesToRemoved() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered, registrations: [])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+        fixture.handoffStore.transaction = makeTransaction(
+            phase: .registering,
+            goal: .remove,
+            digest: nil,
+            lifetimeBarrierExpected: false)
+
+        try await fixture.service.disable()
+
+        XCTAssertEqual(fixture.handoffStore.transaction?.phase, .removed)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testRebootWithEnabledHelperRestartsRemovalFromPreparation() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)])
+        let fixture = makeFixture(
+            backend: backend,
+            bootSessionProvider: {
+                "00000000-0000-0000-0000-000000000002"
+            })
+        defer { fixture.cleanup() }
+        fixture.handoffStore.transaction = makeTransaction(
+            phase: .unregisterSubmitted,
+            goal: .install,
+            digest: "digest-current",
+            lifetimeBarrierExpected: true)
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 1)
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 1)
+        XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testRebootWithApprovalStateRefreshesJournalBeforeUnregister() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .requiresApproval,
+            registrations: [.success(.enabled)])
+        let fixture = makeFixture(
+            backend: backend,
+            bootSessionProvider: {
+                "00000000-0000-0000-0000-000000000002"
+            })
+        defer { fixture.cleanup() }
+        fixture.handoffStore.transaction = makeTransaction(
+            phase: .unregisterSubmitted,
+            goal: .install,
+            digest: "digest-current",
+            lifetimeBarrierExpected: true)
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 1)
+        XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testSecondOperationIsRejectedWhileUnregisterIsInFlight() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .enabled, registrations: [])
+        backend.suspendUnregister = true
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+
+        let firstDisable = Task { try await fixture.service.disable() }
+        await waitUntil { backend.unregisterCalls == 1 }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.disable()
+        }
+
+        backend.completeSuspendedUnregister()
+        try await firstDisable.value
+        XCTAssertEqual(backend.unregisterCalls, 1)
+    }
+
     func testUsesBundledPrivilegedDaemonDefinition() {
         XCTAssertEqual(
             PowerHelperService.plistName,
@@ -906,6 +1232,7 @@ final class PowerHelperServiceTests: XCTestCase {
                 MemoryPowerHelperHandoffLock()
             },
         currentProcessIsActiveConsoleUser: @escaping () -> Bool = { true },
+        digestProvider: @escaping () -> String? = { "digest-current" },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> PowerHelperFixture {
         let lifecycle = lifecycle ?? FakePowerHelperLifecycle()
@@ -917,7 +1244,7 @@ final class PowerHelperServiceTests: XCTestCase {
             lifecycle: lifecycle,
             defaults: defaults,
             handoffStore: handoffStore,
-            digestProvider: { "digest-current" },
+            digestProvider: digestProvider,
             bootSessionProvider: bootSessionProvider,
             lifetimeBarrierStatus: lifetimeBarrierStatus,
             systemHandoffLockProvider: systemHandoffLockProvider,
@@ -937,6 +1264,28 @@ private final class RootMemoryStore: PowerHelperStateStoring {
 
     func save(_ state: PowerHelperPersistentState) throws {
         self.state = state
+    }
+}
+
+private actor LifecycleCLI: DetachCLIRunning {
+    private var responses: [Result<CLIResult, Error>]
+    private(set) var arguments: [[String]] = []
+    private(set) var timeouts: [TimeInterval] = []
+
+    init(responses: [Result<CLIResult, Error>]) {
+        self.responses = responses
+    }
+
+    func run(
+        arguments: [String], timeout: TimeInterval
+    ) async throws -> CLIResult {
+        self.arguments.append(arguments)
+        timeouts.append(timeout)
+        return try responses.removeFirst().get()
+    }
+
+    func calls() -> (arguments: [[String]], timeouts: [TimeInterval]) {
+        (arguments, timeouts)
     }
 }
 

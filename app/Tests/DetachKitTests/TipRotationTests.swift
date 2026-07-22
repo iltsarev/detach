@@ -65,4 +65,15 @@ final class TipRotationTests: XCTestCase {
         XCTAssertEqual(TipCatalog.all.count, 8)
         XCTAssertEqual(destinations, Set(SettingsDestination.allCases))
     }
+
+    func testTipLocalizedTextUsesRequestedBundleAndLocale() {
+        let tip = DetachTip(id: "test", localizationKey: "Untranslated test tip")
+
+        XCTAssertEqual(
+            tip.localizedText(bundle: Bundle(for: Self.self), locale: Locale(identifier: "en")),
+            L10n.string(
+                tip.localizationKey,
+                bundle: Bundle(for: Self.self),
+                locale: Locale(identifier: "en")))
+    }
 }

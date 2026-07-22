@@ -2,16 +2,32 @@ import XCTest
 @testable import DetachKit
 
 final class PowerHelperXPCServiceTests: XCTestCase {
+    private struct ExpectedFailure: Error {}
+
     private final class MemoryStore: PowerHelperStateStoring {
         var state: PowerHelperPersistentState?
+        var saveError: Error?
         func load() throws -> PowerHelperPersistentState? { state }
-        func save(_ state: PowerHelperPersistentState) throws { self.state = state }
+        func save(_ state: PowerHelperPersistentState) throws {
+            if let saveError { throw saveError }
+            self.state = state
+        }
     }
 
     private final class Backend: ClosedLidProtectionControlling {
         var enabled = false
-        func protectionIsEnabled() throws -> Bool { enabled }
-        func setProtectionEnabled(_ enabled: Bool) throws { self.enabled = enabled }
+        var readError: Error?
+        var writeError: Error?
+
+        func protectionIsEnabled() throws -> Bool {
+            if let readError { throw readError }
+            return enabled
+        }
+
+        func setProtectionEnabled(_ enabled: Bool) throws {
+            if let writeError { throw writeError }
+            self.enabled = enabled
+        }
     }
 
     private struct Battery: PowerBatterySafetyReading {
@@ -153,12 +169,118 @@ final class PowerHelperXPCServiceTests: XCTestCase {
         wait(for: [expired], timeout: 1)
     }
 
+    func testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation() throws {
+        for deadline in [TimeInterval.infinity, -.infinity, .nan] {
+            let bridge = try makeBridge(lowBattery: false)
+            let rejected = expectation(description: "non-finite \(deadline)")
+
+            bridge.acquireLease(
+                sessionName: "session", runToken: "run",
+                assertionActive: true, requestDeadline: deadline
+            ) { confirmed, error in
+                XCTAssertFalse(confirmed)
+                XCTAssertEqual(error?.domain, PowerHelperXPCService.errorDomain)
+                XCTAssertEqual(
+                    error?.code,
+                    PowerHelperXPCService.ErrorCode.requestExpired.rawValue)
+                rejected.fulfill()
+            }
+            wait(for: [rejected], timeout: 1)
+        }
+    }
+
+    func testRenewReportsConfirmationAndMapsInvalidIdentityToGenericError() throws {
+        let bridge = try makeBridge(lowBattery: false)
+        let protected = expectation(description: "protected renewal")
+        bridge.renewLease(
+            sessionName: "session", runToken: "run", assertionActive: true
+        ) { confirmed, error in
+            XCTAssertTrue(confirmed)
+            XCTAssertNil(error)
+            protected.fulfill()
+        }
+        wait(for: [protected], timeout: 1)
+
+        let invalid = expectation(description: "invalid renewal")
+        bridge.renewLease(
+            sessionName: "", runToken: "run", assertionActive: true
+        ) { confirmed, error in
+            XCTAssertFalse(confirmed)
+            XCTAssertEqual(error?.domain, PowerHelperXPCService.errorDomain)
+            XCTAssertEqual(
+                error?.code,
+                PowerHelperXPCService.ErrorCode.generic.rawValue)
+            XCTAssertFalse(error?.localizedDescription.isEmpty ?? true)
+            invalid.fulfill()
+        }
+        wait(for: [invalid], timeout: 1)
+    }
+
+    func testReleaseMapsInvalidIdentityToGenericError() throws {
+        let bridge = try makeBridge(lowBattery: false)
+        let reply = expectation(description: "invalid release")
+
+        bridge.releaseLease(sessionName: "session", runToken: "") { error in
+            XCTAssertEqual(error?.domain, PowerHelperXPCService.errorDomain)
+            XCTAssertEqual(
+                error?.code,
+                PowerHelperXPCService.ErrorCode.generic.rawValue)
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 1)
+    }
+
+    func testPrepareMapsActiveLeaseErrorAndCancelMapsBackendFailure() throws {
+        let backend = Backend()
+        let bridge = try makeBridge(lowBattery: false, backend: backend)
+        let acquired = expectation(description: "acquired")
+        bridge.acquireLease(
+            sessionName: "session", runToken: "run", assertionActive: true,
+            requestDeadline: 200
+        ) { confirmed, error in
+            XCTAssertTrue(confirmed)
+            XCTAssertNil(error)
+            acquired.fulfill()
+        }
+        wait(for: [acquired], timeout: 1)
+
+        let active = expectation(description: "active lease")
+        bridge.prepareForUnregistration { error in
+            XCTAssertEqual(
+                error?.code,
+                PowerHelperXPCService.ErrorCode.activeLeases.rawValue)
+            active.fulfill()
+        }
+        wait(for: [active], timeout: 1)
+
+        let cancelStore = MemoryStore()
+        let cancelBridge = try makeBridge(
+            lowBattery: false, store: cancelStore)
+        let prepared = expectation(description: "prepared for failed cancel")
+        cancelBridge.prepareForUnregistration { error in
+            XCTAssertNil(error)
+            prepared.fulfill()
+        }
+        wait(for: [prepared], timeout: 1)
+
+        cancelStore.saveError = ExpectedFailure()
+        let failedCancel = expectation(description: "failed cancel")
+        cancelBridge.cancelUnregistration { error in
+            XCTAssertEqual(
+                error?.code,
+                PowerHelperXPCService.ErrorCode.generic.rawValue)
+            failedCancel.fulfill()
+        }
+        wait(for: [failedCancel], timeout: 1)
+    }
+
     private func makeBridge(
         lowBattery: Bool,
+        store: MemoryStore = MemoryStore(),
         backend: Backend = Backend()
     ) throws -> PowerHelperXPCService {
         let service = try PowerHelperLeaseService(
-            store: MemoryStore(),
+            store: store,
             backend: backend,
             batteryReader: Battery(low: lowBattery),
             bootSessionReader: BootSession(),

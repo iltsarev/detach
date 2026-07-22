@@ -39,14 +39,63 @@ final class SetupGuidanceTests: XCTestCase {
             .other("Нужна новая настройка"))
     }
 
+    func testDistributionMismatchAlwaysOffersRepair() {
+        XCTAssertEqual(
+            SetupGuidance.blocker(
+                distributionMatchesBundle: false,
+                checks: [check("provider")]),
+            .repairInstallation)
+    }
+
+    func testOnlyRequiredFailingBaseChecksCanBlockSetup() {
+        let ignored = [
+            check("optional", required: false),
+            check("healthy", status: .ok),
+            check("provider", section: .keepAwake),
+            check("watchdog"),
+            check("cli_path"),
+        ]
+
+        XCTAssertNil(blocker(checks: ignored))
+    }
+
+    func testRequiredWarningStillBlocksSetup() {
+        XCTAssertEqual(
+            blocker(checks: [
+                check("approval", summary: "approval pending", status: .warning),
+            ]),
+            .other("approval pending"))
+    }
+
+    func testOwnedInstallationFailureOutranksProviderGuidance() {
+        XCTAssertEqual(
+            blocker(checks: [check("provider"), check("cli")]),
+            .repairInstallation)
+    }
+
+    func testProviderFailureOutranksUnknownFailure() {
+        XCTAssertEqual(
+            blocker(checks: [
+                check("future", summary: "future setup"),
+                check("provider"),
+            ]),
+            .chooseProvider)
+    }
+
     private func blocker(checks: [DiagnosticCheck]) -> SetupBlocker? {
         SetupGuidance.blocker(distributionMatchesBundle: true, checks: checks)
     }
 
-    private func check(_ id: String, summary: String = "missing") -> DiagnosticCheck {
+    private func check(
+        _ id: String,
+        summary: String = "missing",
+        section: DiagnosticCheck.Section = .base,
+        required: Bool = true,
+        status: DiagnosticCheck.Status = .error
+    ) -> DiagnosticCheck {
         DiagnosticCheck(
-            id: id, section: .base, label: id, required: true,
-            status: .error, path: nil, summary: summary)
+            id: id, section: section, label: id, required: required,
+            status: status, path: nil, summary: summary)
     }
 }
 

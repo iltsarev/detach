@@ -94,7 +94,7 @@ extension PowerHelperXPCError: LocalizedError {
     }
 }
 
-private final class PowerHelperXPCReply<Value>: @unchecked Sendable {
+final class PowerHelperXPCReply<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)
     private var result: Result<Value, Error>?

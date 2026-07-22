@@ -46,6 +46,63 @@ final class TerminalLauncherTests: XCTestCase {
         XCTAssertTrue(contents.contains("exec /bin/zsh -lic \(shellQuoted(command))"))
     }
 
+    func testFailureReasonRequiresSelectionOnlyForMissingTerminal() {
+        XCTAssertTrue(TerminalLaunchFailure(
+            message: "missing", reason: .terminalUnavailable)
+            .requiresTerminalSelection)
+        XCTAssertFalse(TerminalLaunchFailure(
+            message: "prepare", reason: .commandFile)
+            .requiresTerminalSelection)
+        XCTAssertFalse(TerminalLaunchFailure(
+            message: "open", reason: .openFailed)
+            .requiresTerminalSelection)
+    }
+
+    @MainActor
+    func testMissingSelectedTerminalReturnsActionableFailure() async {
+        let failure = await TerminalLauncher.open(
+            command: "exec /usr/bin/true",
+            terminalBundleIdentifier:
+                "dev.tsarev.detach.tests.missing-\(UUID().uuidString)")
+
+        XCTAssertEqual(failure?.reason, .terminalUnavailable)
+        XCTAssertTrue(failure?.requiresTerminalSelection == true)
+        XCTAssertTrue(failure?.message.contains("Settings") == true)
+    }
+
+    @MainActor
+    func testUnsafeCommandFailsPreparationAndLeavesNoTemporaryDirectory() async {
+        let terminal = TerminalApplication(
+            bundleIdentifier: "test.terminal",
+            displayName: "Test Terminal",
+            applicationURL: URL(fileURLWithPath: "/Applications/Test Terminal.app"))
+        var attemptedOpen = false
+
+        let failure = await TerminalLauncher.open(
+            command: "printf unsafe\0suffix",
+            terminal: terminal,
+            temporaryDirectory: temporaryDirectory,
+            fileManager: .default,
+            openApplication: { _, _ in attemptedOpen = true })
+
+        XCTAssertEqual(failure?.reason, .commandFile)
+        XCTAssertTrue(failure?.message.contains("temporary command") == true)
+        XCTAssertFalse(attemptedOpen)
+        XCTAssertEqual(
+            try? FileManager.default.contentsOfDirectory(
+                atPath: temporaryDirectory.path),
+            [])
+    }
+
+    func testUnsafeCommandFileContentIsRejectedDirectly() {
+        XCTAssertThrowsError(try TerminalLauncher.commandFileContents(
+            command: "echo before\0after")) { error in
+                XCTAssertEqual(
+                    (error as? CocoaError)?.code,
+                    .fileWriteInapplicableStringEncoding)
+            }
+    }
+
     func testCommandFileLeavesItsDirectoryBeforeDeletingIt() throws {
         let safeHome = temporaryDirectory.appendingPathComponent("home", isDirectory: true)
         let zdotdir = temporaryDirectory.appendingPathComponent("zdotdir", isDirectory: true)

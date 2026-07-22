@@ -3,7 +3,7 @@ import XCTest
 @testable import DetachKit
 
 final class PowerHelperXPCClientTests: XCTestCase {
-    private struct ExpectedFailure: Error {}
+    private struct ExpectedFailure: Error, Equatable {}
 
     private final class FakeTransport: PowerHelperXPCTransport, @unchecked Sendable {
         var statusResult: Result<Data, Error> = .failure(ExpectedFailure())
@@ -58,6 +58,37 @@ final class PowerHelperXPCClientTests: XCTestCase {
         XCTAssertNotNil(NSXPCInterface(with: DetachPowerHelperXPCProtocol.self))
     }
 
+    func testRealTransportFailsClosedForUnknownMachService() {
+        let transport = NSXPCPowerHelperTransport(
+            machServiceName: "dev.tsarev.detach.tests.\(UUID().uuidString)",
+            timeout: 0.1,
+            initialAcquireBudget: 10)
+        let identity = PowerLeaseIdentity(sessionName: "session", runToken: "token")
+
+        assertTransportFailure { _ = try transport.statusData() }
+        assertTransportFailure {
+            _ = try transport.acquireLease(identity, assertionActive: true)
+        }
+        assertTransportFailure {
+            _ = try transport.renewLease(identity, assertionActive: true)
+        }
+        assertTransportFailure { try transport.releaseLease(identity) }
+        assertTransportFailure { try transport.prepareForUnregistration() }
+        assertTransportFailure { try transport.cancelUnregistration() }
+    }
+
+    func testReplyTimesOutAndAcceptsOnlyTheFirstResolution() throws {
+        let unanswered = PowerHelperXPCReply<Bool>()
+        XCTAssertThrowsError(try unanswered.wait(timeout: 0.01)) { error in
+            XCTAssertEqual(error as? PowerHelperXPCError, .timedOut)
+        }
+
+        let answered = PowerHelperXPCReply<Bool>()
+        answered.resolve(.success(true))
+        answered.resolve(.success(false))
+        XCTAssertTrue(try answered.wait(timeout: 0.01))
+    }
+
     func testClientDeadlineCoversWorstCaseSerializedRootMutation() {
         XCTAssertGreaterThan(
             NSXPCPowerHelperTransport.defaultTimeout,
@@ -73,6 +104,25 @@ final class PowerHelperXPCClientTests: XCTestCase {
         XCTAssertLessThan(
             NSXPCPowerHelperTransport.defaultInitialAcquireBudget,
             NSXPCPowerHelperTransport.defaultTimeout / 3 + 0.001)
+    }
+
+    func testPublicErrorsDescribeFailuresPrecisely() {
+        XCTAssertEqual(
+            PowerHelperLifecycleError.activeLeases.localizedDescription,
+            "active power leases prevent helper unregistration")
+        XCTAssertEqual(
+            PowerHelperLifecycleError.serviceQuiescing.localizedDescription,
+            "power helper is preparing to unregister")
+        XCTAssertEqual(
+            PowerHelperXPCError.unavailable("connection invalidated")
+                .localizedDescription,
+            "power helper is unavailable: connection invalidated")
+        XCTAssertEqual(
+            PowerHelperXPCError.timedOut.localizedDescription,
+            "power helper request timed out")
+        XCTAssertEqual(
+            PowerHelperXPCError.invalidReply.localizedDescription,
+            "power helper returned an invalid reply")
     }
 
     func testStatusDecodesHelperSnapshot() throws {
@@ -114,6 +164,21 @@ final class PowerHelperXPCClientTests: XCTestCase {
         XCTAssertEqual(object["helper_reachable"] as? Bool, false)
     }
 
+    func testMalformedHelperSnapshotAlsoFailsClosed() throws {
+        let transport = FakeTransport()
+        transport.statusResult = .success(Data("not-json".utf8))
+
+        let status = try PowerHelperXPCClient(transport: transport).status()
+
+        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertEqual(status.leaseCount, 0)
+        XCTAssertFalse(status.assertionActive)
+        XCTAssertFalse(status.closedLidProtectionActive)
+        XCTAssertFalse(status.helperReachable)
+        XCTAssertFalse(status.transitionInProgress)
+        XCTAssertFalse(status.lowBattery)
+    }
+
     func testLeaseConfirmationIsForwardedWithoutGuessing() throws {
         let transport = FakeTransport()
         transport.acquireResult = .success(false)
@@ -131,6 +196,31 @@ final class PowerHelperXPCClientTests: XCTestCase {
         XCTAssertEqual(transport.released, [identity])
     }
 
+    func testMutationFailuresAreForwardedWithoutBeingReclassified() {
+        let transport = FakeTransport()
+        transport.acquireResult = .failure(ExpectedFailure())
+        transport.renewResult = .failure(ExpectedFailure())
+        transport.releaseError = ExpectedFailure()
+        let client = PowerHelperXPCClient(transport: transport)
+        let identity = PowerLeaseIdentity(sessionName: "session", runToken: "token")
+
+        XCTAssertThrowsError(
+            try client.acquireLease(identity, assertionActive: false)
+        ) { XCTAssertTrue($0 is ExpectedFailure) }
+        XCTAssertThrowsError(
+            try client.renewLease(identity, assertionActive: false)
+        ) { XCTAssertTrue($0 is ExpectedFailure) }
+        XCTAssertThrowsError(try client.releaseLease(identity)) {
+            XCTAssertTrue($0 is ExpectedFailure)
+        }
+
+        XCTAssertEqual(transport.acquired.first?.0, identity)
+        XCTAssertEqual(transport.acquired.first?.1, false)
+        XCTAssertEqual(transport.renewed.first?.0, identity)
+        XCTAssertEqual(transport.renewed.first?.1, false)
+        XCTAssertEqual(transport.released, [identity])
+    }
+
     func testUnregistrationLifecycleIsForwarded() throws {
         let transport = FakeTransport()
         let client = PowerHelperXPCClient(transport: transport)
@@ -140,5 +230,65 @@ final class PowerHelperXPCClientTests: XCTestCase {
 
         XCTAssertEqual(transport.prepareCalls, 1)
         XCTAssertEqual(transport.cancelCalls, 1)
+    }
+
+    func testLifecycleServiceErrorsAreMappedToStableClientErrors() {
+        let transport = FakeTransport()
+        transport.prepareError = NSError(
+            domain: PowerHelperXPCService.errorDomain,
+            code: PowerHelperXPCService.ErrorCode.activeLeases.rawValue)
+        transport.cancelError = NSError(
+            domain: PowerHelperXPCService.errorDomain,
+            code: PowerHelperXPCService.ErrorCode.serviceQuiescing.rawValue)
+        let client = PowerHelperXPCClient(transport: transport)
+
+        XCTAssertThrowsError(try client.prepareForUnregistration()) {
+            XCTAssertEqual($0 as? PowerHelperLifecycleError, .activeLeases)
+        }
+        XCTAssertThrowsError(try client.cancelUnregistration()) {
+            XCTAssertEqual($0 as? PowerHelperLifecycleError, .serviceQuiescing)
+        }
+    }
+
+    func testLifecycleUnknownServiceCodeAndForeignErrorArePreserved() {
+        let transport = FakeTransport()
+        let unknown = NSError(
+            domain: PowerHelperXPCService.errorDomain,
+            code: 999,
+            userInfo: [NSLocalizedDescriptionKey: "future service error"])
+        transport.prepareError = unknown
+        transport.cancelError = ExpectedFailure()
+        let client = PowerHelperXPCClient(transport: transport)
+
+        XCTAssertThrowsError(try client.prepareForUnregistration()) {
+            let error = $0 as NSError
+            XCTAssertEqual(error.domain, PowerHelperXPCService.errorDomain)
+            XCTAssertEqual(error.code, 999)
+        }
+        XCTAssertThrowsError(try client.cancelUnregistration()) {
+            XCTAssertTrue($0 is ExpectedFailure)
+        }
+    }
+
+    private func assertTransportFailure(
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ operation: () throws -> Void
+    ) {
+        XCTAssertThrowsError(try operation(), file: file, line: line) { error in
+            guard let error = error as? PowerHelperXPCError else {
+                return XCTFail(
+                    "expected typed XPC transport error, got \(error)",
+                    file: file,
+                    line: line)
+            }
+            switch error {
+            case .unavailable, .timedOut:
+                break
+            case .invalidReply:
+                XCTFail("missing service must not look like an invalid reply",
+                        file: file, line: line)
+            }
+        }
     }
 }

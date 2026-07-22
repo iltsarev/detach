@@ -29,7 +29,56 @@ final class SessionMaintenanceTests: XCTestCase {
         XCTAssertEqual(plan.items.first?.action, .removeDeadTmuxAndMarkRecoverable)
     }
 
+    func testPlannerRejectsAnyMalformedInventoryLine() {
+        XCTAssertThrowsError(try SessionMaintenancePlanner.reconcile(
+            inventory: Data("not-json\n".utf8)
+        )) { error in
+            XCTAssertEqual(error as? StorageInspectionError, .invalidInventory)
+        }
+    }
+
+    func testPlannerDropsIncompleteEvidenceAndSortsRepairsDeterministically() throws {
+        var missingReason = makeSession(
+            name: "detach-codex-missing-reason",
+            status: .orphaned,
+            reason: .noRecoveryCheckpoint,
+            action: .markOrphaned)
+        missingReason.healthReason = nil
+        let sessions = [
+            makeSession(
+                provider: .codex,
+                name: "detach-codex-zeta",
+                status: .recoverable,
+                reason: .recoverableCheckpoint,
+                action: .markRecoverable),
+            makeSession(
+                provider: .claude,
+                name: "detach-claude-alpha",
+                status: .orphaned,
+                reason: .noRecoveryCheckpoint,
+                action: .markOrphaned),
+            makeSession(
+                provider: .codex,
+                name: "detach-codex-alpha",
+                status: .recoverable,
+                reason: .recoverableCheckpoint,
+                action: .removeDeadTmuxAndMarkRecoverable),
+            missingReason,
+        ]
+        let inventory = try sessions.map {
+            String(decoding: try JSONEncoder().encode($0), as: UTF8.self)
+        }.joined(separator: "\n")
+
+        let plan = try SessionMaintenancePlanner.reconcile(inventory: Data(inventory.utf8))
+
+        XCTAssertEqual(plan.items.map(\.provider), [.claude, .codex, .codex])
+        XCTAssertEqual(plan.items.map(\.sessionName), [
+            "detach-claude-alpha", "detach-codex-alpha", "detach-codex-zeta",
+        ])
+    }
+
     private func makeSession(
+        provider: Provider = .codex,
         name: String,
         status: EffectiveStatus,
         reason: SessionHealthReason,
@@ -37,7 +86,7 @@ final class SessionMaintenanceTests: XCTestCase {
     ) -> Session {
         Session(
             schema: 1,
-            provider: .codex,
+            provider: provider,
             sessionName: name,
             name: name,
             effectiveStatus: status,

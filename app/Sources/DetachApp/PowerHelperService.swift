@@ -27,13 +27,17 @@ protocol PowerHelperLifecycleRunning: AnyObject {
 }
 
 @MainActor
-private final class SystemPowerHelperLifecycleRunner:
+final class SystemPowerHelperLifecycleRunner:
     PowerHelperLifecycleRunning
 {
     private let cli: any DetachCLIRunning
 
     init(executable: URL) {
         cli = ProcessDetachCLI(executable: executable)
+    }
+
+    init(cli: any DetachCLIRunning) {
+        self.cli = cli
     }
 
     func prepareForUnregistration() async throws

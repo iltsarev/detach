@@ -73,6 +73,17 @@ enum UIE2ETestDriver {
             try requireSemanticControl(deleteButton, name: "delete action")
             checks.append("sidebar-selects-completed-session")
 
+            try press(deleteButton, name: "delete action")
+            try await waitUntil("fake CLI records delete action") {
+                let actions = try? String(
+                    contentsOf: configuration.root
+                        .appendingPathComponent("fake/actions.log"),
+                    encoding: .utf8)
+                return actions?.contains(
+                    "claude delete --force \(completedID)") == true
+            }
+            checks.append("safe-delete-reaches-fake-cli")
+
             let runningID = "detach-codex-ui-running"
             let runningRow = try await element(
                 identifier: "session-row-\(runningID)")

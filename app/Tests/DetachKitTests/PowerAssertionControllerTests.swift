@@ -9,6 +9,7 @@ final class PowerAssertionControllerTests: XCTestCase {
         var createError: Error?
         var releaseError: Error?
         private(set) var createdReasons: [String] = []
+        private(set) var releaseAttempts: [UInt32] = []
         private(set) var releasedAssertionIDs: [UInt32] = []
 
         func createNoIdleSleepAssertion(reason: String) throws -> UInt32 {
@@ -18,6 +19,7 @@ final class PowerAssertionControllerTests: XCTestCase {
         }
 
         func releaseAssertion(_ assertionID: UInt32) throws {
+            releaseAttempts.append(assertionID)
             if let releaseError { throw releaseError }
             releasedAssertionIDs.append(assertionID)
         }
@@ -32,6 +34,28 @@ final class PowerAssertionControllerTests: XCTestCase {
 
         XCTAssertTrue(controller.isActive)
         XCTAssertEqual(backend.createdReasons, ["test managed session"])
+    }
+
+    func testDefaultControllerStartsInactiveAndReleaseIsIdempotent() throws {
+        let controller = PowerAssertionController()
+
+        XCTAssertFalse(controller.isActive)
+        XCTAssertFalse(try controller.release())
+        XCTAssertFalse(controller.isActive)
+    }
+
+    func testIOKitErrorPreservesOperationCodeAndDescription() {
+        let create = IOKitPowerAssertionError(operation: .create, code: -1)
+        let release = IOKitPowerAssertionError(operation: .release, code: -2)
+
+        XCTAssertEqual(create.operation, .create)
+        XCTAssertEqual(create.code, -1)
+        XCTAssertEqual(
+            create.localizedDescription,
+            "IOKit power assertion create failed with code -1")
+        XCTAssertEqual(
+            release.localizedDescription,
+            "IOKit power assertion release failed with code -2")
     }
 
     func testAcquireIsIdempotentWhileActive() throws {
@@ -83,6 +107,7 @@ final class PowerAssertionControllerTests: XCTestCase {
         backend.releaseError = nil
         XCTAssertTrue(try controller.release())
         XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(backend.releaseAttempts, [41, 41])
         XCTAssertEqual(backend.releasedAssertionIDs, [41])
     }
 
@@ -96,5 +121,18 @@ final class PowerAssertionControllerTests: XCTestCase {
         }
 
         XCTAssertEqual(backend.releasedAssertionIDs, [99])
+    }
+
+    func testDeinitSwallowsReleaseFailureWithoutLosingTheAttempt() throws {
+        let backend = FakeBackend()
+        backend.releaseError = ExpectedFailure()
+
+        do {
+            let controller = PowerAssertionController(backend: backend)
+            XCTAssertTrue(try controller.acquire())
+        }
+
+        XCTAssertEqual(backend.releaseAttempts, [41])
+        XCTAssertTrue(backend.releasedAssertionIDs.isEmpty)
     }
 }

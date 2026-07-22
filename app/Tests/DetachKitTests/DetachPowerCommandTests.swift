@@ -69,6 +69,7 @@ final class DetachPowerCommandTests: XCTestCase {
         var releaseError: Error?
         var prepareError: Error?
         var cancelError: Error?
+        var onAcquire: (() -> Void)?
         var acquireConfirmed = true
         var renewConfirmed = true
         private(set) var acquired: [(PowerLeaseIdentity, Bool)] = []
@@ -92,6 +93,7 @@ final class DetachPowerCommandTests: XCTestCase {
         ) throws -> Bool {
             events.append("helper.acquire")
             if let acquireError { throw acquireError }
+            onAcquire?()
             acquired.append((identity, assertionActive))
             return acquireConfirmed
         }
@@ -123,6 +125,33 @@ final class DetachPowerCommandTests: XCTestCase {
             cancelCalls += 1
             if let cancelError { throw cancelError }
         }
+    }
+
+    private final class NonLifecycleHelperClient:
+        PowerHelperClient, @unchecked Sendable
+    {
+        func status() throws -> PowerProtectionStatus {
+            PowerProtectionStatus(
+                state: .unavailable,
+                leaseCount: 0,
+                assertionActive: false,
+                closedLidProtectionActive: false,
+                helperReachable: false,
+                transitionInProgress: false,
+                lowBattery: false)
+        }
+
+        func acquireLease(
+            _ identity: PowerLeaseIdentity,
+            assertionActive: Bool
+        ) throws -> Bool { false }
+
+        func renewLease(
+            _ identity: PowerLeaseIdentity,
+            assertionActive: Bool
+        ) throws -> Bool { false }
+
+        func releaseLease(_ identity: PowerLeaseIdentity) throws {}
     }
 
     private final class FakeChildRunner: ChildCommandRunning, @unchecked Sendable {
@@ -164,6 +193,7 @@ final class DetachPowerCommandTests: XCTestCase {
     private final class FakeHeartbeatRunner: PowerHeartbeatRunning, @unchecked Sendable {
         let events: EventLog
         var heartbeatCount = 2
+        var beforeHeartbeat: (() -> Void)?
 
         init(events: EventLog) {
             self.events = events
@@ -176,6 +206,7 @@ final class DetachPowerCommandTests: XCTestCase {
             events.append("heartbeat.start")
             defer { events.append("heartbeat.end") }
             for _ in 0..<heartbeatCount {
+                beforeHeartbeat?()
                 try heartbeat()
             }
             return try operation()
@@ -250,6 +281,32 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(events.values, ["helper.status"])
         XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testResultAndErrorContractsHaveStableExitCodesAndDescriptions() {
+        XCTAssertEqual(DetachPowerCommandResult.lifecycle.exitCode, 0)
+        XCTAssertEqual(
+            DetachPowerCommandError.usage("specific usage").localizedDescription,
+            "specific usage")
+        XCTAssertEqual(
+            DetachPowerCommandError.assertionUnavailable.localizedDescription,
+            "idle-sleep protection could not be acquired")
+        XCTAssertEqual(
+            DetachPowerCommandError.helperLeaseUnavailable.localizedDescription,
+            "closed-lid protection lease could not be confirmed")
+    }
+
+    func testReadinessMarkerAtomicallyCreatesEmptyFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-ready-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        let readyFile = directory.appendingPathComponent("ready")
+
+        try FilePowerRunReadinessMarker().markReady(atPath: readyFile.path)
+
+        XCTAssertEqual(try Data(contentsOf: readyFile), Data())
     }
 
     func testRunAcquiresRenewsAndReleasesBothProtections() throws {
@@ -357,6 +414,27 @@ final class DetachPowerCommandTests: XCTestCase {
         ])
     }
 
+    func testAssertionLostDuringHelperAcquireFailsBeforeReadinessOrChild() {
+        let (command, events, assertion, helper, child, _) = fixture()
+        helper.onAcquire = { _ = try? assertion.release() }
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])) { error in
+            XCTAssertEqual(error as? DetachPowerCommandError, .assertionUnavailable)
+        }
+
+        XCTAssertTrue(child.commands.isEmpty)
+        XCTAssertEqual(events.values, [
+            "assertion.acquire",
+            "helper.acquire",
+            "assertion.release",
+            "helper.release",
+            "assertion.release",
+        ])
+    }
+
     func testHeartbeatFailureRefusesChildAndReleasesProtection() {
         let (command, events, assertion, helper, child, _) = fixture()
         helper.renewError = ExpectedFailure()
@@ -413,6 +491,103 @@ final class DetachPowerCommandTests: XCTestCase {
             "helper.release",
             "assertion.release",
         ])
+    }
+
+    func testHeartbeatWithAlreadyReleasedAssertionReportsLowBatteryWithoutReacquire() throws {
+        let (command, events, assertion, helper, child, heartbeat) = fixture()
+        heartbeat.heartbeatCount = 1
+        heartbeat.beforeHeartbeat = { _ = try? assertion.release() }
+        helper.statusValue = PowerProtectionStatus.derive(
+            leaseCount: 1,
+            assertionActive: false,
+            closedLidProtectionActive: false,
+            helperReachable: true,
+            transitionInProgress: false,
+            lowBattery: true)
+        child.result = ChildCommandResult(exitCode: 17)
+
+        let result = try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])
+
+        XCTAssertEqual(result.exitCode, 17)
+        XCTAssertEqual(helper.renewed.map(\.1), [false])
+        XCTAssertEqual(events.values, [
+            "assertion.acquire",
+            "helper.acquire",
+            "heartbeat.start",
+            "assertion.release",
+            "helper.status",
+            "helper.renew",
+            "child.run",
+            "heartbeat.end",
+            "helper.release",
+            "assertion.release",
+        ])
+    }
+
+    func testHeartbeatReacquiresLostAssertionBeforeRenewingLease() throws {
+        let (command, events, assertion, helper, _, heartbeat) = fixture()
+        heartbeat.heartbeatCount = 1
+        heartbeat.beforeHeartbeat = { _ = try? assertion.release() }
+
+        _ = try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])
+
+        XCTAssertEqual(helper.renewed.map(\.1), [true])
+        XCTAssertEqual(events.values.filter { $0 == "assertion.acquire" }.count, 2)
+        XCTAssertEqual(events.values.filter { $0 == "helper.status" }.count, 1)
+    }
+
+    func testHeartbeatFailsWhenLostAssertionCannotBeReacquired() {
+        let (command, _, assertion, helper, child, heartbeat) = fixture()
+        heartbeat.heartbeatCount = 1
+        helper.onAcquire = { assertion.acquisitionActivates = false }
+        heartbeat.beforeHeartbeat = { _ = try? assertion.release() }
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])) { error in
+            XCTAssertEqual(error as? DetachPowerCommandError, .assertionUnavailable)
+        }
+
+        XCTAssertTrue(helper.renewed.isEmpty)
+        XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testUnconfirmedRenewalFailsClosedWhenBatteryIsNotLow() {
+        let (command, _, _, helper, child, heartbeat) = fixture()
+        heartbeat.heartbeatCount = 1
+        helper.renewConfirmed = false
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])) { error in
+            XCTAssertEqual(error as? DetachPowerCommandError, .helperLeaseUnavailable)
+        }
+
+        XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testCleanupFailuresDoNotReplaceSuccessfulChildResult() throws {
+        let (command, _, assertion, helper, child, heartbeat) = fixture()
+        heartbeat.heartbeatCount = 0
+        helper.releaseError = ExpectedFailure()
+        assertion.releaseError = ExpectedFailure()
+        child.result = ChildCommandResult(exitCode: 41)
+
+        let result = try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])
+
+        XCTAssertEqual(result.exitCode, 41)
+        XCTAssertEqual(helper.released.count, 1)
     }
 
     func testChildLaunchFailureReleasesProtection() {
@@ -566,6 +741,71 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertTrue(child.commands.isEmpty)
     }
 
+    func testEveryRunParserFailureIsSpecificAndSideEffectFree() {
+        let cases: [([String], String)] = [
+            (["run", "--"], "run requires a child command after --"),
+            (["run", "--", "/bin/true"], "run requires --session NAME"),
+            (["run", "--session", "s", "--", "/bin/true"],
+             "run requires --run-token TOKEN"),
+            (["run", "--session"], "run requires one --session NAME"),
+            (["run", "--session", "a", "--session", "b"],
+             "run requires one --session NAME"),
+            (["run", "--run-token"], "run requires one --run-token TOKEN"),
+            (["run", "--run-token", "a", "--run-token", "b"],
+             "run requires one --run-token TOKEN"),
+            (["run", "--ready-file", "relative"],
+             "--ready-file requires one absolute path"),
+            (["run", "--ready-file", "/a", "--ready-file", "/b"],
+             "--ready-file requires one absolute path"),
+            (["run", "--pid-file", "relative"],
+             "--pid-file requires one absolute path"),
+            (["run", "--pid-file", "/a", "--pid-file", "/b"],
+             "--pid-file requires one absolute path"),
+            (["run", "--mystery"], "unknown run option: --mystery"),
+            (["run", "--session", "s", "--run-token", "t"],
+             "run requires -- COMMAND [ARGS...]"),
+        ]
+
+        for (arguments, expectedMessage) in cases {
+            let (command, events, _, _, child, _) = fixture()
+            XCTAssertThrowsError(try command.execute(arguments: arguments)) { error in
+                XCTAssertEqual(
+                    (error as? DetachPowerCommandError)?.localizedDescription,
+                    expectedMessage,
+                    "arguments: \(arguments)")
+            }
+            XCTAssertTrue(events.values.isEmpty, "arguments: \(arguments)")
+            XCTAssertTrue(child.commands.isEmpty, "arguments: \(arguments)")
+        }
+    }
+
+    func testStatusHelperAndReleaseParserFailuresAreSpecific() {
+        let cases: [([String], String)] = [
+            (["status"], "usage: detach-power status --json"),
+            (["helper", "unknown"],
+             "usage: detach-power helper prepare-unregistration|cancel-unregistration"),
+            (["release", "--session"],
+             "release requires --session NAME and --run-token TOKEN"),
+            (["release", "--unknown", "value"],
+             "unknown or duplicate release option: --unknown"),
+            (["release", "--session", "a", "--session", "b"],
+             "unknown or duplicate release option: --session"),
+            (["release", "--session", "", "--run-token", "token"],
+             "release requires --session NAME and --run-token TOKEN"),
+        ]
+
+        for (arguments, expectedMessage) in cases {
+            let (command, events, _, _, _, _) = fixture()
+            XCTAssertThrowsError(try command.execute(arguments: arguments)) { error in
+                XCTAssertEqual(
+                    (error as? DetachPowerCommandError)?.localizedDescription,
+                    expectedMessage,
+                    "arguments: \(arguments)")
+            }
+            XCTAssertTrue(events.values.isEmpty, "arguments: \(arguments)")
+        }
+    }
+
     func testOfflinePackagingSmokeHasNoHelperOrRuntimeSideEffects() {
         let (command, events, assertion, helper, child, _) = fixture()
 
@@ -608,6 +848,31 @@ final class DetachPowerCommandTests: XCTestCase {
             "helper.cancel-unregistration",
         ])
         XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testHelperLifecycleRequiresTheNarrowLifecycleCapability() {
+        let command = DetachPowerCommand(helperClient: NonLifecycleHelperClient())
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "helper", "prepare-unregistration",
+        ])) { error in
+            XCTAssertEqual(
+                (error as? DetachPowerCommandError)?.localizedDescription,
+                "power helper lifecycle client is unavailable")
+        }
+    }
+
+    func testHelperLifecycleFailuresAreNotSwallowed() {
+        let (command, _, _, helper, _, _) = fixture()
+        helper.prepareError = ExpectedFailure()
+        helper.cancelError = ExpectedFailure()
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "helper", "prepare-unregistration",
+        ])) { XCTAssertTrue($0 is ExpectedFailure) }
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "helper", "cancel-unregistration",
+        ])) { XCTAssertTrue($0 is ExpectedFailure) }
     }
 
     func testExplicitReleaseIsIdempotentStopFallback() throws {

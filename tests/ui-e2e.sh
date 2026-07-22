@@ -209,6 +209,7 @@ check_index=0
 for check in \
   dashboard-accessible \
   sidebar-selects-completed-session \
+  safe-delete-reaches-fake-cli \
   safe-action-reaches-fake-cli \
   new-session-sheet-semantics \
   empty-dashboard-state \
@@ -223,7 +224,7 @@ for check in \
 done
 
 [ -s "$FAKE_DIR/invocations.log" ]
-if grep -Ev '^(list --json|(codex|claude) logs --ansi detach-(codex-ui-running|claude-ui-completed)|codex stop detach-codex-ui-running)$' \
+if grep -Ev '^(list --json|(codex|claude) logs --ansi detach-(codex-ui-running|claude-ui-completed)|codex stop detach-codex-ui-running|claude delete --force detach-claude-ui-completed)$' \
     "$FAKE_DIR/invocations.log" >/dev/null; then
   printf 'UI e2e: fake CLI observed an unapproved command\n' >&2
   cat "$FAKE_DIR/invocations.log" >&2

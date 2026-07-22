@@ -16,6 +16,22 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(service.authorizationStatus, .authorized)
     }
 
+    func testRejectedPermissionRequestPublishesDeniedAndDoesNotDeliver() async {
+        let center = FakeNotificationCenter(
+            status: .notDetermined,
+            requestResult: .success(false),
+            statusAfterRequest: .authorized)
+        let service = SessionNotificationService(center: center)
+
+        await service.configure(enabled: true)
+        await service.observe([makeSession(status: .running)])
+        await service.observe([makeSession(status: .failed)])
+
+        XCTAssertEqual(center.requestCount, 1)
+        XCTAssertEqual(service.authorizationStatus, .denied)
+        XCTAssertTrue(center.delivered.isEmpty)
+    }
+
     func testDeniedPermissionIsNotRequestedAgain() async {
         let center = FakeNotificationCenter(status: .denied)
         let service = SessionNotificationService(center: center)
@@ -24,6 +40,25 @@ final class SessionNotificationServiceTests: XCTestCase {
 
         XCTAssertEqual(center.requestCount, 0)
         XCTAssertEqual(service.authorizationStatus, .denied)
+    }
+
+    func testPermissionRequestFailureRefreshesStatusAndPublishesError() async {
+        let error = NSError(
+            domain: "SessionNotificationServiceTests",
+            code: 7,
+            userInfo: [NSLocalizedDescriptionKey: "authorization unavailable"])
+        let center = FakeNotificationCenter(
+            status: .notDetermined,
+            requestResult: .failure(error))
+        let service = SessionNotificationService(center: center)
+
+        await service.configure(enabled: true)
+
+        XCTAssertEqual(center.requestCount, 1)
+        XCTAssertEqual(service.authorizationStatus, .notDetermined)
+        XCTAssertEqual(
+            service.errorMessage,
+            "Could not request notification permission: authorization unavailable")
     }
 
     func testRefreshReflectsPermissionChangedInSystemSettings() async {
@@ -113,6 +148,38 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(center.requestCount, 0)
     }
 
+    func testStalePermissionRequestFailureCannotOverwriteDisabledConfiguration() async {
+        let failure = NSError(
+            domain: "SessionNotificationServiceTests", code: 17,
+            userInfo: [NSLocalizedDescriptionKey: "stale authorization failure"])
+        let center = SuspendedAuthorizationNotificationCenter()
+        let service = SessionNotificationService(center: center)
+
+        let enable = Task { await service.configure(enabled: true) }
+        await center.waitUntilRequestStarted()
+        await service.configure(enabled: false)
+        center.failRequest(with: failure)
+        await enable.value
+
+        XCTAssertEqual(center.requestCount, 1)
+        XCTAssertEqual(service.authorizationStatus, .notDetermined)
+        XCTAssertNil(service.errorMessage)
+    }
+
+    func testDeniedObservationsAreDiscardedAndNeverReplayed() async {
+        let center = FakeNotificationCenter(status: .denied)
+        let service = SessionNotificationService(center: center)
+        await service.configure(enabled: true)
+
+        await service.observe([makeSession(status: .running)])
+        await service.observe([makeSession(status: .failed)])
+        center.status = .authorized
+        await service.refreshAuthorizationStatus()
+        await service.observe([makeSession(status: .failed)])
+
+        XCTAssertTrue(center.delivered.isEmpty)
+    }
+
     func testDeliversOneNotificationPerTransitionAndDeduplicatesPolls() async {
         let center = FakeNotificationCenter(status: .authorized)
         let service = SessionNotificationService(
@@ -148,6 +215,35 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(center.delivered.count, 1)
         XCTAssertEqual(center.delivered[0].title, L10n.string("Agent response is ready"))
         XCTAssertTrue(center.delivered[0].body.contains(L10n.string("Open the session to continue")))
+    }
+
+    func testCompletedAndRecoverableTransitionsHaveSpecificMessages() async {
+        let cases: [(EffectiveStatus, String, String)] = [
+            (
+                .completed,
+                "Session completed",
+                "Work completed successfully"
+            ),
+            (
+                .recoverable,
+                "Session can be recovered",
+                "Recovery from the latest checkpoint is available"
+            ),
+        ]
+
+        for (status, expectedTitle, expectedDetail) in cases {
+            let center = FakeNotificationCenter(status: .authorized)
+            let service = SessionNotificationService(
+                center: center, identifierProvider: { status.rawValue })
+            await service.configure(enabled: true)
+            await service.observe([makeSession(status: .running)])
+
+            await service.observe([makeSession(status: status)])
+
+            XCTAssertEqual(center.delivered.count, 1)
+            XCTAssertEqual(center.delivered.first?.title, expectedTitle)
+            XCTAssertTrue(center.delivered.first?.body.contains(expectedDetail) == true)
+        }
     }
 
     func testInitialTerminalStateAndDisabledTransitionsAreNotReplayed() async {
@@ -236,6 +332,64 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(center.delivered.count, 1)
     }
 
+    func testDisablingDuringFailedDeliveryDoesNotPublishStaleErrorOrRetry() async {
+        let failure = NSError(
+            domain: "SessionNotificationServiceTests", code: 41,
+            userInfo: [NSLocalizedDescriptionKey: "late delivery failure"])
+        let center = ResettableDeliveryNotificationCenter()
+        let service = SessionNotificationService(
+            center: center, identifierProvider: { "disabled-in-flight" })
+        await service.configure(enabled: true)
+        await service.observe([makeSession(status: .running)])
+
+        let transition = Task {
+            await service.observe([makeSession(status: .failed)])
+        }
+        await center.waitUntilFirstDeliveryStarted()
+        await service.configure(enabled: false)
+        center.resumeFirstDelivery(throwing: failure)
+        await transition.value
+
+        XCTAssertEqual(center.attemptedIdentifiers, [
+            "detach.session.disabled-in-flight",
+        ])
+        XCTAssertNil(service.errorMessage)
+        XCTAssertTrue(center.delivered.isEmpty)
+    }
+
+    func testPermissionResetDuringFailedDeliveryDropsOldPayloadAndContinues() async {
+        let failure = NSError(
+            domain: "SessionNotificationServiceTests", code: 42,
+            userInfo: [NSLocalizedDescriptionKey: "obsolete delivery failure"])
+        let center = ResettableDeliveryNotificationCenter()
+        let service = SessionNotificationService(
+            center: center, identifierProvider: { "reset-in-flight" })
+        await service.configure(enabled: true)
+        await service.observe([makeSession(status: .running)])
+
+        let staleTransition = Task {
+            await service.observe([makeSession(status: .failed)])
+        }
+        await center.waitUntilFirstDeliveryStarted()
+        center.status = .denied
+        await service.refreshAuthorizationStatus()
+        center.status = .authorized
+        await service.refreshAuthorizationStatus()
+        center.resumeFirstDelivery(throwing: failure)
+        await staleTransition.value
+
+        await service.observe([makeSession(status: .running)])
+        await service.observe([makeSession(status: .completed)])
+
+        XCTAssertEqual(center.attemptedIdentifiers, [
+            "detach.session.reset-in-flight",
+            "detach.session.reset-in-flight",
+        ])
+        XCTAssertEqual(center.delivered.count, 1)
+        XCTAssertEqual(center.delivered.first?.title, "Session completed")
+        XCTAssertNil(service.errorMessage)
+    }
+
     func testPollOnceUsesOnlyValidSuccessfulSnapshots() async {
         let center = FakeNotificationCenter(status: .authorized)
         let cli = NotificationCLI(responses: [
@@ -251,6 +405,32 @@ final class SessionNotificationServiceTests: XCTestCase {
         await service.pollOnce(using: cli)
 
         XCTAssertEqual(center.delivered.count, 1)
+    }
+
+    func testPollOnceIgnoresErrorsNonzeroExitAndTimeout() async {
+        let center = FakeNotificationCenter(status: .authorized)
+        let cli = NotificationCLI(responses: [
+            .failure(NSError(domain: "cli", code: 1)),
+            .success(CLIResult(
+                exitCode: 1, stdout: sessionLine(status: .running),
+                stderr: "failed", timedOut: false)),
+            .success(CLIResult(
+                exitCode: 0, stdout: sessionLine(status: .running),
+                stderr: "", timedOut: true)),
+            .success(CLIResult(
+                exitCode: 0, stdout: sessionLine(status: .running),
+                stderr: "", timedOut: false)),
+            .success(CLIResult(
+                exitCode: 0, stdout: sessionLine(status: .completed),
+                stderr: "", timedOut: false)),
+        ])
+        let service = SessionNotificationService(center: center)
+        await service.configure(enabled: true)
+
+        for _ in 0..<5 { await service.pollOnce(using: cli) }
+
+        XCTAssertEqual(center.delivered.count, 1)
+        XCTAssertEqual(center.delivered.first?.title, "Session completed")
     }
 
     private func makeSession(
@@ -306,6 +486,11 @@ private final class SuspendedAuthorizationNotificationCenter: SessionNotificatio
         requestContinuation = nil
     }
 
+    func failRequest(with error: Error) {
+        requestContinuation?.resume(throwing: error)
+        requestContinuation = nil
+    }
+
     func deliver(_ payload: SessionNotificationPayload) async throws {
         delivered.append(payload)
     }
@@ -337,6 +522,50 @@ private final class NotificationCLI: DetachCLIRunning, @unchecked Sendable {
 
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         try responses.removeFirst().get()
+    }
+}
+
+@MainActor
+private final class ResettableDeliveryNotificationCenter:
+    SessionNotificationCenterBackend
+{
+    var status: SessionNotificationAuthorizationStatus = .authorized
+    private var firstDeliveryContinuation: CheckedContinuation<Void, Error>?
+    private var firstDeliveryStartedContinuation:
+        CheckedContinuation<Void, Never>?
+    private var firstDeliveryStarted = false
+    private(set) var attemptedIdentifiers: [String] = []
+    private(set) var delivered: [SessionNotificationPayload] = []
+
+    func authorizationStatus() async -> SessionNotificationAuthorizationStatus {
+        status
+    }
+
+    func requestAuthorization() async throws -> Bool { true }
+
+    func deliver(_ payload: SessionNotificationPayload) async throws {
+        attemptedIdentifiers.append(payload.identifier)
+        if attemptedIdentifiers.count == 1 {
+            firstDeliveryStarted = true
+            firstDeliveryStartedContinuation?.resume()
+            firstDeliveryStartedContinuation = nil
+            try await withCheckedThrowingContinuation {
+                firstDeliveryContinuation = $0
+            }
+        }
+        delivered.append(payload)
+    }
+
+    func waitUntilFirstDeliveryStarted() async {
+        guard !firstDeliveryStarted else { return }
+        await withCheckedContinuation {
+            firstDeliveryStartedContinuation = $0
+        }
+    }
+
+    func resumeFirstDelivery(throwing error: Error) {
+        firstDeliveryContinuation?.resume(throwing: error)
+        firstDeliveryContinuation = nil
     }
 }
 

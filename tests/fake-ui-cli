@@ -39,5 +39,11 @@ if [ "$#" -eq 3 ] && [ "$1" = codex ] && [ "$2" = stop ] \
   exit 0
 fi
 
+if [ "$#" -eq 4 ] && [ "$1" = claude ] && [ "$2" = delete ] \
+    && [ "$3" = --force ] && [ "$4" = detach-claude-ui-completed ]; then
+  printf '%s\n' "$*" >>"$ACTIONS"
+  exit 0
+fi
+
 printf 'unexpected fake UI CLI invocation: %s\n' "$*" >&2
 exit 64

@@ -123,6 +123,64 @@ final class OnboardingLivePollerTests: XCTestCase {
         XCTAssertTrue(poller.installedCopyPresent)
     }
 
+    func testUpdateRunsEachSupportedStepAtItsContractCadence() async {
+        let sleeps = PollSleepRecorder()
+        var statusRefreshes = 0
+        let poller = makePoller(
+            refreshStatuses: { statusRefreshes += 1 },
+            providerCheckPassed: { true },
+            locate: { ProviderAvailability(codex: true, claude: false) },
+            heartbeatIsHealthy: { true },
+            installedCopyExists: { true },
+            sleep: { try await sleeps.recordAndStop($0) })
+
+        poller.update(for: .moveToApplications)
+        await waitUntil { await sleeps.count == 1 }
+        XCTAssertTrue(poller.installedCopyPresent)
+
+        poller.update(for: .permissions)
+        await waitUntil { await sleeps.count == 2 }
+        XCTAssertEqual(statusRefreshes, 1)
+
+        poller.update(for: .provider)
+        await waitUntil { await sleeps.count == 3 }
+        XCTAssertEqual(poller.providerAvailability, .init(codex: true, claude: false))
+
+        poller.update(for: .done)
+        await waitUntil { await sleeps.count == 4 }
+        XCTAssertTrue(poller.heartbeatHealthy)
+
+        let intervals = await sleeps.intervals
+        XCTAssertEqual(
+            intervals,
+            [3_000_000_000, 3_000_000_000, 5_000_000_000, 2_000_000_000])
+    }
+
+    func testUpdateIsIdempotentAndStopRearmsTheSameStep() async {
+        let sleeps = PollSleepRecorder()
+        let poller = makePoller(
+            installedCopyExists: { true },
+            sleep: { try await sleeps.recordAndStop($0) })
+
+        poller.update(for: .moveToApplications)
+        await waitUntil { await sleeps.count == 1 }
+        poller.update(for: .moveToApplications)
+        let countAfterDuplicate = await sleeps.count
+        XCTAssertEqual(countAfterDuplicate, 1)
+
+        poller.stop()
+        poller.update(for: .moveToApplications)
+        await waitUntil { await sleeps.count == 2 }
+
+        poller.update(for: .autoSetup(failureMessage: nil))
+        poller.update(for: .mainApp)
+        let countAfterInactiveSteps = await sleeps.count
+        XCTAssertEqual(countAfterInactiveSteps, 2)
+
+        await poller.tick(.autoSetup(failureMessage: "ignored"))
+        await poller.tick(.mainApp)
+    }
+
     private func makePoller(
         refreshStatuses: @escaping @MainActor () -> Void = {},
         servicesEnabled: @escaping @MainActor () -> Bool = { false },
@@ -133,7 +191,10 @@ final class OnboardingLivePollerTests: XCTestCase {
             ProviderAvailability()
         },
         heartbeatIsHealthy: @escaping @MainActor () -> Bool = { false },
-        installedCopyExists: @escaping () -> Bool = { false }
+        installedCopyExists: @escaping () -> Bool = { false },
+        sleep: @escaping (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
+        }
     ) -> OnboardingLivePoller {
         OnboardingLivePoller(
             refreshStatuses: refreshStatuses,
@@ -143,33 +204,47 @@ final class OnboardingLivePollerTests: XCTestCase {
             reconcile: reconcile,
             locate: locate,
             heartbeatIsHealthy: heartbeatIsHealthy,
-            installedCopyExists: installedCopyExists)
+            installedCopyExists: installedCopyExists,
+            sleep: sleep)
+    }
+
+    private func waitUntil(
+        _ predicate: @escaping () async -> Bool
+    ) async {
+        for _ in 0..<100 {
+            if await predicate() { return }
+            await Task.yield()
+        }
+        XCTFail("asynchronous poller condition was not reached")
+    }
+}
+
+private actor PollSleepRecorder {
+    private(set) var intervals: [UInt64] = []
+    var count: Int { intervals.count }
+
+    func recordAndStop(_ interval: UInt64) throws {
+        intervals.append(interval)
+        throw CancellationError()
     }
 }
 
 final class OnboardingProviderLocatorTests: XCTestCase {
-    private final class ShellStub: DetachCLIRunning, @unchecked Sendable {
-        private let lock = NSLock()
+    private actor ShellStub: DetachCLIRunning {
         private var results: [String: CLIResult] = [:]
         private var recordedScripts: [String] = []
 
         func set(_ name: String, _ result: CLIResult) {
-            lock.lock()
-            defer { lock.unlock() }
             results[name] = result
         }
 
         var scripts: [String] {
-            lock.lock()
-            defer { lock.unlock() }
-            return recordedScripts
+            recordedScripts
         }
 
         func run(
             arguments: [String], timeout: TimeInterval
         ) async throws -> CLIResult {
-            lock.lock()
-            defer { lock.unlock() }
             let script = arguments.last ?? ""
             recordedScripts.append(script)
             guard arguments.first == "-lc" else {
@@ -187,9 +262,9 @@ final class OnboardingProviderLocatorTests: XCTestCase {
 
     func testProbesLoginShellAndRequiresVersionSuccess() async {
         let stub = ShellStub()
-        stub.set("codex", CLIResult(
+        await stub.set("codex", CLIResult(
             exitCode: 0, stdout: "", stderr: "", timedOut: false))
-        stub.set("claude", CLIResult(
+        await stub.set("claude", CLIResult(
             exitCode: 1, stdout: "", stderr: "", timedOut: false))
         let locator = OnboardingProviderLocator(runner: stub)
 
@@ -198,13 +273,14 @@ final class OnboardingProviderLocatorTests: XCTestCase {
         XCTAssertTrue(availability.codex)
         XCTAssertFalse(availability.claude)
         XCTAssertTrue(availability.any)
-        XCTAssertEqual(stub.scripts.count, 2)
-        XCTAssertTrue(stub.scripts.allSatisfy { $0.contains("--version") })
+        let scripts = await stub.scripts
+        XCTAssertEqual(scripts.count, 2)
+        XCTAssertTrue(scripts.allSatisfy { $0.contains("--version") })
     }
 
     func testTimedOutProbeCountsAsAbsent() async {
         let stub = ShellStub()
-        stub.set("codex", CLIResult(
+        await stub.set("codex", CLIResult(
             exitCode: 0, stdout: "", stderr: "", timedOut: true))
         let locator = OnboardingProviderLocator(runner: stub)
 

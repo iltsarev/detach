@@ -2,6 +2,23 @@ import XCTest
 @testable import DetachKit
 
 final class TmuxStyleClientTests: XCTestCase {
+    func testErrorDescriptionsCoverTimeoutCommandAndEmptyResponse() {
+        XCTAssertEqual(
+            TmuxStyleClientError.timedOut.errorDescription,
+            L10n.string("detach config timed out"))
+        XCTAssertEqual(
+            TmuxStyleClientError.commandFailed("denied").errorDescription,
+            "denied")
+        XCTAssertEqual(
+            TmuxStyleClientError.invalidResponse("").errorDescription,
+            L10n.format(
+                "detach returned an unsupported tmux style: %@",
+                L10n.string("<empty>")))
+        XCTAssertEqual(
+            TmuxStyleClientError.invalidResponse("custom").errorDescription,
+            L10n.format("detach returned an unsupported tmux style: %@", "custom"))
+    }
+
     func testLoadsStyleThroughConfigGetter() async throws {
         let cli = FakeCLI()
         cli.responses["config tmux-style"] = .success(CLIResult(
@@ -55,6 +72,21 @@ final class TmuxStyleClientTests: XCTestCase {
             XCTFail("expected timeout")
         } catch {
             XCTAssertEqual(error as? TmuxStyleClientError, .timedOut)
+        }
+    }
+
+    func testCommandFailureWithoutStderrFallsBackToExitStatus() async {
+        let cli = FakeCLI()
+        cli.responses["config tmux-style detach"] = .success(CLIResult(
+            exitCode: 23, stdout: "", stderr: " \n", timedOut: false))
+
+        do {
+            try await TmuxStyleClient(cli: cli).setStyle(.detach)
+            XCTFail("expected command failure")
+        } catch {
+            XCTAssertEqual(
+                error as? TmuxStyleClientError,
+                .commandFailed(L10n.format("detach config exited with status %d", 23)))
         }
     }
 }

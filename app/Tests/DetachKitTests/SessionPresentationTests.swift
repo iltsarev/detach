@@ -31,6 +31,41 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertEqual(make(.collision).section, .problems)
     }
 
+    func testSectionDisplayNamesAreStableAndLocalized() {
+        XCTAssertEqual(SessionSection.answerReady.displayName, L10n.string("Answer ready"))
+        XCTAssertEqual(SessionSection.active.displayName, L10n.string("Working"))
+        XCTAssertEqual(SessionSection.finished.displayName, L10n.string("Finished"))
+        XCTAssertEqual(SessionSection.problems.displayName, L10n.string("Problems"))
+    }
+
+    func testEveryEffectiveStatusHasConsistentLifecyclePresentation() {
+        let cases: [(
+            EffectiveStatus, String, Bool, SessionSection, [SessionAction]
+        )] = [
+            (.starting, "starting", true, .active, [.attach, .stop]),
+            (.running, "running", true, .active, [.attach, .stop]),
+            (.recovering, "recovering", true, .active, [.attach, .stop]),
+            (.hung, "hung", true, .problems, [.attach, .stop]),
+            (.completed, "completed", false, .finished, [.resume, .delete]),
+            (.failed, "failed", false, .finished, [.resume, .delete]),
+            (.interrupted, "interrupted", false, .finished, [.resume, .delete]),
+            (.stopped, "stopped", false, .finished, [.resume, .delete]),
+            (.recoverable, "recoverable", false, .problems, [.recover, .delete]),
+            (.orphaned, "orphaned", false, .problems, [.resume, .delete]),
+            (.corrupt, "corrupt", false, .problems, [.delete]),
+            (.collision, "name collision", false, .problems, []),
+            (.unknown, "unknown", false, .problems, [.delete]),
+        ]
+
+        for (status, displayStatus, isLive, section, actions) in cases {
+            let session = make(status)
+            XCTAssertEqual(session.displayStatus, L10n.string(displayStatus), "status=\(status)")
+            XCTAssertEqual(session.isLive, isLive, "status=\(status)")
+            XCTAssertEqual(session.section, section, "status=\(status)")
+            XCTAssertEqual(session.availableActions, actions, "status=\(status)")
+        }
+    }
+
     func testActions() {
         XCTAssertEqual(make(.running).availableActions, [.attach, .stop])
         XCTAssertEqual(make(.completed).availableActions, [.resume, .delete])
@@ -51,6 +86,54 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertEqual(session.availableActions, [])
         XCTAssertEqual(session.healthReason, .runtimeProcessWithoutTmux)
         XCTAssertNotNil(session.healthReasonLabel)
+    }
+
+    func testEveryHealthReasonHasAnExplicitDiagnosticLabelPolicy() {
+        let reasons: [SessionHealthReason] = [
+            .healthy, .finished, .checkpointStale, .heartbeatStale, .heartbeatMissing,
+            .tmuxServerMissing, .paneExited, .foreignTmux, .malformedMetadata,
+            .runTokenMissing, .runTokenMismatch, .workerPIDMissing, .workerProcessLost,
+            .workerPIDMismatch, .providerPIDMissing, .providerProcessLost,
+            .providerPIDNotDescendant, .runtimeProcessWithoutTmux,
+            .recoverableCheckpoint, .noRecoveryCheckpoint,
+        ]
+
+        for reason in reasons {
+            var session = make(.running)
+            session.healthReason = reason
+            if reason == .healthy || reason == .finished {
+                XCTAssertNil(session.healthReasonLabel, "reason=\(reason)")
+            } else {
+                XCTAssertFalse(session.healthReasonLabel?.isEmpty ?? true, "reason=\(reason)")
+            }
+        }
+        XCTAssertNil(make(.running).healthReasonLabel)
+    }
+
+    func testContextUsageHandlesMissingInvalidAndSaturatedWindows() {
+        var session = make(.running)
+        XCTAssertNil(session.contextFraction)
+        XCTAssertNil(session.contextSummary)
+
+        session.contextUsedTokens = 12_400
+        XCTAssertNil(session.contextFraction)
+        XCTAssertEqual(session.contextSummary, L10n.format("%@ tokens", "12k"))
+
+        session.contextWindow = 100_000
+        XCTAssertEqual(session.contextFraction ?? -1, 0.124, accuracy: 0.000_001)
+        XCTAssertEqual(
+            session.contextSummary,
+            L10n.format("%@ · %@%% available", "12k", "88"))
+
+        session.contextUsedTokens = 150_000
+        XCTAssertEqual(session.contextFraction, 1)
+        XCTAssertEqual(
+            session.contextSummary,
+            L10n.format("%@ · %@%% available", "150k", "0"))
+
+        session.contextWindow = 0
+        XCTAssertNil(session.contextFraction)
+        XCTAssertEqual(session.contextSummary, L10n.format("%@ tokens", "150k"))
     }
 
     func testDisplayTitle() {
@@ -91,5 +174,26 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertEqual(
             make(.running).powerProtectionLabel,
             L10n.string("Sleep status unknown"))
+    }
+
+    func testPowerStatusCoversTransitionsAndEverySystemImage() {
+        XCTAssertEqual(
+            make(.running, powerState: .transitioning).powerProtectionLabel,
+            L10n.string("Enabling sleep protection"))
+
+        let images: [(PowerProtectionState?, String)] = [
+            (.protected, "shield.fill"),
+            (.allowed, "moon.zzz"),
+            (.transitioning, "arrow.triangle.2.circlepath"),
+            (.lowBattery, "battery.25"),
+            (.unavailable, "exclamationmark.triangle"),
+            (.unknown, "questionmark.circle"),
+            (nil, "questionmark.circle"),
+        ]
+        for (state, expected) in images {
+            XCTAssertEqual(
+                make(.running, powerState: state).powerProtectionSystemImage,
+                expected)
+        }
     }
 }

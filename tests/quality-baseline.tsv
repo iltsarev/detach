@@ -1,5 +1,5 @@
 schema	1
-ui_test_count_min	175
-business_test_count_min	294
-ui_line_coverage_min	22.21
-business_line_coverage_min	80.98
+ui_test_count_min	221
+business_test_count_min	433
+ui_line_coverage_min	25.80
+business_line_coverage_min	94.38

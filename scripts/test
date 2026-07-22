@@ -1,0 +1,124 @@
+#!/bin/bash
+
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+PLAN_ONLY=0
+
+usage() {
+  cat <<'EOF'
+usage: scripts/test [--plan] critical|unit|coverage|smoke|full
+
+critical  Fast safety-critical Swift and shell behavior.
+unit      Every Swift unit test without packaging or coverage analysis.
+coverage  Every Swift unit test with the enforced coverage contracts.
+smoke     Fresh packaged-app Accessibility and bundled-runtime smoke.
+full      Every automated repository readiness check.
+
+Only full is readiness evidence. Every other suite is a focused diagnostic.
+EOF
+}
+
+die() {
+  printf 'test: %s\n' "$*" >&2
+  exit 2
+}
+
+prepare_swift_environment() {
+  mkdir -p "$ROOT/app/.build/module-cache"
+  export CLANG_MODULE_CACHE_PATH="$ROOT/app/.build/module-cache"
+  export SWIFTPM_MODULECACHE_OVERRIDE="$CLANG_MODULE_CACHE_PATH"
+}
+
+if [ "${1:-}" = --plan ]; then
+  PLAN_ONLY=1
+  shift
+fi
+
+[ "$#" -eq 1 ] || {
+  usage >&2
+  exit 2
+}
+
+SUITE="$1"
+CRITICAL_FILTER='(ClamshellLockRunnerTests|DetachPowerCommandTests|DetachPowerExecutableTests|DetachStateCommandTests|DetachStateTests|DispatchPowerHeartbeatRunnerTests|DistributionClientTests|InstallationStorePowerStateTests|PowerAssertionControllerTests|PowerHeartbeatReaderTests|PowerHelperClientAuthorizationPolicyTests|PowerHelperHandoffStoreTests|PowerHelperLeaseServiceTests|PowerHelperLifetimeBarrierTests|PowerHelperPlatformTests|PowerHelperServiceTests|PowerHelperSystemHandoffLockTests|PowerHelperXPCClientTests|PowerHelperXPCServiceTests|ProcessChildCommandRunnerTests|SessionHealthTests|SessionIdentityTests|SessionMaintenanceTests|SessionStoreTests|StorageInspectorTests|StorageStoreTests|TerminalLauncherTests|UpdaterServiceTests|WatchdogHandoffStoreTests|WatchdogServiceTests)'
+
+plan_critical() {
+  printf '%s\n' \
+    'critical: tests/shell-safety.sh' \
+    "critical: cd app && swift test --disable-sandbox --filter '$CRITICAL_FILTER'"
+}
+
+plan_unit() {
+  printf '%s\n' 'unit: cd app && swift test --disable-sandbox'
+}
+
+plan_coverage() {
+  printf '%s\n' \
+    'coverage: cd app && swift test --enable-code-coverage --disable-sandbox' \
+    'coverage: tests/quality-ratchet.sh' \
+    'coverage: tests/quality-contracts.sh'
+}
+
+plan_smoke() {
+  printf '%s\n' \
+    'smoke: app/scripts/make-app.sh' \
+    'smoke: tests/ui-e2e-contract.sh' \
+    'smoke: tests/ui-e2e.sh' \
+    'smoke: tests/tmux-runtime.sh'
+}
+
+plan_full() {
+  printf '%s\n' 'full: scripts/quality-gate --mode repository'
+}
+
+case "$SUITE" in
+  critical) plan_critical ;;
+  unit) plan_unit ;;
+  coverage) plan_coverage ;;
+  smoke) plan_smoke ;;
+  full) plan_full ;;
+  *) die "unknown suite: $SUITE" ;;
+esac
+
+[ "$PLAN_ONLY" -eq 0 ] || exit 0
+
+case "$SUITE" in
+  critical)
+    prepare_swift_environment
+    "$ROOT/tests/shell-safety.sh"
+    (
+      cd -P "$ROOT/app"
+      swift test --disable-sandbox --filter "$CRITICAL_FILTER"
+    )
+    ;;
+  unit)
+    prepare_swift_environment
+    (
+      cd -P "$ROOT/app"
+      swift test --disable-sandbox
+    )
+    ;;
+  coverage)
+    prepare_swift_environment
+    (
+      cd -P "$ROOT/app"
+      mkdir -p .build/quality-codecov
+      build_path="$(swift build --show-bin-path)"
+      rm -f "$build_path/codecov/default.profdata"
+      LLVM_PROFILE_FILE="$ROOT/app/.build/quality-codecov/%p-%m.profraw" \
+        swift test --enable-code-coverage --disable-sandbox
+    )
+    "$ROOT/tests/quality-ratchet.sh"
+    "$ROOT/tests/quality-contracts.sh"
+    ;;
+  smoke)
+    "$ROOT/app/scripts/make-app.sh"
+    "$ROOT/tests/ui-e2e-contract.sh"
+    "$ROOT/tests/ui-e2e.sh"
+    "$ROOT/tests/tmux-runtime.sh"
+    ;;
+  full)
+    exec "$ROOT/scripts/quality-gate" --mode repository
+    ;;
+esac

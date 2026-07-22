@@ -5,6 +5,22 @@ import XCTest
 
 @MainActor
 final class UpdaterServiceTests: XCTestCase {
+    func testDevelopmentBundleKeepsInvalidUpdaterConfigurationDormant() {
+        let service = UpdaterService()
+
+        XCTAssertFalse(service.isAvailable)
+        XCTAssertTrue(service.shouldOfferManualDownload)
+        XCTAssertNil(service.lastUpdateCheckDate)
+        XCTAssertNotNil(service.unavailableReason)
+        XCTAssertTrue(
+            service.unavailableReason?.contains("local development") == true)
+
+        service.checkForUpdates()
+        service.setAutomaticallyChecksForUpdates(true)
+        XCTAssertFalse(service.canCheckForUpdates)
+        XCTAssertFalse(service.automaticallyChecksForUpdates)
+    }
+
     func testExpectedNonFailureResultsDoNotOfferFallback() {
         for code in [1001, 4007, 4008] {
             let error = NSError(domain: SUSparkleErrorDomain, code: code)

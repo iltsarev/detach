@@ -5,6 +5,80 @@ import XCTest
 
 @MainActor
 final class WatchdogServiceTests: XCTestCase {
+    func testServiceErrorsHaveActionableDescriptions() {
+        XCTAssertEqual(
+            WatchdogServiceError.bundledDefinitionMissing.errorDescription,
+            "The bundled watchdog definition is missing or incomplete.")
+        XCTAssertEqual(
+            WatchdogServiceError.registrationDidNotComplete.errorDescription,
+            "macOS did not finish registering the watchdog.")
+        XCTAssertEqual(
+            WatchdogServiceError.unregistrationBarrierDidNotComplete.errorDescription,
+            "macOS did not finish stopping the previous watchdog.")
+    }
+
+    func testMissingBundledDefinitionFailsBeforeRegistration() async {
+        let backend = FakeWatchdogBackend(
+            status: .notRegistered, registrations: [])
+        let fixture = makeFixture(backend: backend, digestProvider: { nil })
+        defer { fixture.cleanup() }
+
+        do {
+            try await fixture.service.enable()
+            XCTFail("Expected missing definition to fail")
+        } catch {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "The bundled watchdog definition is missing or incomplete.")
+        }
+
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testEnableFailsAfterBoundedUnconfirmedRegistrationRetries() async {
+        let backend = FakeWatchdogBackend(
+            status: .notRegistered,
+            registrations: Array(
+                repeating: .success(.notRegistered), count: 5))
+        var delays: [UInt64] = []
+        let fixture = makeFixture(
+            backend: backend, sleep: { delays.append($0) })
+        defer { fixture.cleanup() }
+
+        do {
+            try await fixture.service.enable()
+            XCTFail("Expected unconfirmed registration to fail")
+        } catch {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "macOS did not finish registering the watchdog.")
+        }
+
+        XCTAssertEqual(backend.registerCalls, 5)
+        XCTAssertEqual(
+            delays, [250_000_000, 500_000_000, 1_000_000_000, 2_000_000_000])
+    }
+
+    func testDisableUnavailableRegistrationClearsStaleDefinitionState() async throws {
+        let backend = FakeWatchdogBackend(
+            status: .unavailable, registrations: [])
+        let fixture = makeFixture(backend: backend)
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "stale", forKey: "powerWatchdogDefinitionDigest")
+        fixture.defaults.set(
+            true, forKey: "powerWatchdogDefinitionReconcilePending")
+
+        try await fixture.service.disable()
+
+        XCTAssertNil(fixture.defaults.string(
+            forKey: "powerWatchdogDefinitionDigest"))
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
+        XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
     func testInitialRegistrationIsAutomatic() async throws {
         let backend = FakeWatchdogBackend(
             status: .notRegistered,
@@ -518,6 +592,7 @@ final class WatchdogServiceTests: XCTestCase {
         lifetimeBarrierStatus: @escaping () throws
             -> WatchdogLifetimeBarrierStatus = { .released },
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
+        digestProvider: @escaping () -> String? = { "digest-current" },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> Fixture {
         let suite = "WatchdogServiceTests.\(UUID().uuidString)"
@@ -528,6 +603,7 @@ final class WatchdogServiceTests: XCTestCase {
             handoffStore: handoffStore,
             lifetimeBarrierStatus: lifetimeBarrierStatus,
             legacyWatchdogIsRunning: legacyWatchdogIsRunning,
+            digestProvider: digestProvider,
             sleep: sleep)
         return Fixture(
             service: service,
@@ -543,13 +619,14 @@ final class WatchdogServiceTests: XCTestCase {
         lifetimeBarrierStatus: @escaping () throws
             -> WatchdogLifetimeBarrierStatus = { .released },
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
+        digestProvider: @escaping () -> String? = { "digest-current" },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> WatchdogService {
         WatchdogService(
             backend: backend,
             defaults: defaults,
             handoffStore: handoffStore,
-            digestProvider: { "digest-current" },
+            digestProvider: digestProvider,
             lifetimeBarrierStatus: lifetimeBarrierStatus,
             legacyWatchdogIsRunning: legacyWatchdogIsRunning,
             sleep: sleep)

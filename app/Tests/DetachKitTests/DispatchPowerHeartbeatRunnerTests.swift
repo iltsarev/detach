@@ -62,4 +62,17 @@ final class DispatchPowerHeartbeatRunnerTests: XCTestCase {
             }
         XCTAssertGreaterThanOrEqual(probe.value, 2)
     }
+
+    func testOperationFailureIsPreservedWithoutWaitingForHeartbeat() {
+        let runner = DispatchPowerHeartbeatRunner(interval: 30)
+        let probe = Probe()
+
+        XCTAssertThrowsError(try runner.run(
+            heartbeat: { _ = probe.next() },
+            operation: { throw ExpectedFailure() }
+        )) { error in
+            XCTAssertTrue(error is ExpectedFailure)
+        }
+        XCTAssertEqual(probe.value, 0)
+    }
 }

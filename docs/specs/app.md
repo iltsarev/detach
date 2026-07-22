@@ -51,7 +51,8 @@ and result are all contained below the private root after symlink resolution;
 an escape, production identity, foreground identity, executable mismatch, or
 remaining payload fails closed before UI actions. The smoke drives the app's
 semantic Accessibility tree without activating it and verifies dashboard
-geometry, session selection, one fake-CLI stop action, the new-session sheet,
+geometry, session selection, one fake-CLI stop action, one completed-session
+delete with the exact provider/name/force arguments, the new-session sheet,
 and the empty state. This test-only path is otherwise dormant.
 
 The per-user watchdog has an additional launch-readiness rule. macOS can report

@@ -12,6 +12,58 @@ final class DetachStateTests: XCTestCase {
         XCTAssertFalse(SessionMetadataDocument.isUsable(
             Data(#"{"schema":2,"session_name":"detach-codex-project","project_dir":"/tmp/project"}"#.utf8),
             expectedSessionName: "detach-codex-project"))
+        XCTAssertFalse(SessionMetadataDocument.isUsable(
+            Data(#"{"schema":1,"session_name":"detach-codex-project","project_dir":null}"#.utf8),
+            expectedSessionName: "detach-codex-project"))
+        XCTAssertFalse(SessionMetadataDocument.isUsable(
+            Data(#"{"schema":true,"session_name":"detach-codex-project","project_dir":"/tmp/project"}"#.utf8),
+            expectedSessionName: "detach-codex-project"))
+        XCTAssertFalse(SessionMetadataDocument.isUsable(
+            Data("not-json".utf8),
+            expectedSessionName: "detach-codex-project"))
+    }
+
+    func testMetadataCreateRoundTripsEverySupportedScalar() throws {
+        let data = try SessionMetadataDocument.create(changes: [
+            .init(key: "text", value: .string("value")),
+            .init(key: "integer", value: .integer(-7)),
+            .init(key: "number", value: .number(1.5)),
+            .init(key: "flag", value: .bool(true)),
+            .init(key: "nothing", value: .null),
+        ])
+
+        XCTAssertEqual(try SessionMetadataDocument.scalar(in: data, paths: ["text"]), .string("value"))
+        XCTAssertEqual(try SessionMetadataDocument.scalar(in: data, paths: ["integer"]), .integer(-7))
+        XCTAssertEqual(try SessionMetadataDocument.scalar(in: data, paths: ["number"]), .number(1.5))
+        XCTAssertEqual(try SessionMetadataDocument.scalar(in: data, paths: ["flag"]), .bool(true))
+        XCTAssertNil(try SessionMetadataDocument.scalar(in: data, paths: ["nothing"]))
+    }
+
+    func testMetadataOperationsDistinguishMalformedJSONFromNonObjectJSON() {
+        XCTAssertThrowsError(try SessionMetadataDocument.scalar(
+            in: Data("not-json".utf8), paths: ["value"]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidJSON)
+        }
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            Data("[]".utf8), changes: []
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidMetadata)
+        }
+    }
+
+    func testMetadataOperationsRejectNonFiniteNumbers() {
+        let change = SessionMetadataDocument.Change(key: "number", value: .number(.nan))
+
+        XCTAssertThrowsError(try SessionMetadataDocument.create(changes: [change])) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidMetadata)
+        }
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            Data(#"{"schema":1}"#.utf8),
+            changes: [change]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidMetadata)
+        }
     }
 
     func testMetadataPatchPreservesUnknownFieldsAndNullSemantics() throws {
@@ -63,6 +115,23 @@ final class DetachStateTests: XCTestCase {
                 in: data,
                 paths: ["payload.id", "payload.session_id", "fallback"]),
             .string("nested"))
+
+        XCTAssertNil(try SessionMetadataDocument.scalar(
+            in: data, paths: ["", ".payload", "payload.", "payload.id.value"]))
+    }
+
+    func testMetadataReadRejectsContainersAndPreservesFractionalNumbers() throws {
+        let data = Data(#"{"object":{"nested":true},"array":[1],"fraction":2.5}"#.utf8)
+
+        XCTAssertEqual(
+            try SessionMetadataDocument.scalar(in: data, paths: ["fraction"]),
+            .number(2.5))
+        XCTAssertThrowsError(try SessionMetadataDocument.scalar(in: data, paths: ["object"])) { error in
+            XCTAssertEqual(error as? DetachStateError, .unsupportedScalar)
+        }
+        XCTAssertThrowsError(try SessionMetadataDocument.scalar(in: data, paths: ["array"])) { error in
+            XCTAssertEqual(error as? DetachStateError, .unsupportedScalar)
+        }
     }
 
     func testMetadataSessionMatchDefaultsProviderAndComparesSessionIgnoringCase() throws {
@@ -81,6 +150,53 @@ final class DetachStateTests: XCTestCase {
             claude,
             provider: .claude,
             expectedSessionID: "claude-id"))
+
+        XCTAssertFalse(SessionMetadataDocument.matchesSession(
+            Data("not-json".utf8), provider: .codex, expectedSessionID: "id"))
+        XCTAssertFalse(SessionMetadataDocument.matchesSession(
+            Data(#"{"provider":1,"agent_session_id":"id"}"#.utf8),
+            provider: .codex, expectedSessionID: "id"))
+        XCTAssertFalse(SessionMetadataDocument.matchesSession(
+            Data(#"{"provider":"codex","agent_session_id":1}"#.utf8),
+            provider: .codex, expectedSessionID: "id"))
+        XCTAssertFalse(SessionMetadataDocument.matchesSession(
+            Data(#"{"provider":"codex","agent_session_id":null,"codex_session_id":null}"#.utf8),
+            provider: .codex, expectedSessionID: "id"))
+    }
+
+    func testFileAndHandleTranscriptAPIsPreserveStreamingContracts() throws {
+        let data = Data("""
+        {"payload":{"id":"session-1"}}
+        {"payload":{"session_id":"fallback"}}
+        """.utf8)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let transcript = directory.appendingPathComponent("rollout.jsonl")
+        try data.write(to: transcript)
+
+        XCTAssertEqual(
+            try TranscriptDocument.firstScalar(inFileAt: transcript, paths: ["payload.id"]),
+            .string("session-1"))
+        XCTAssertTrue(try TranscriptDocument.isValid(
+            fileAt: transcript, provider: .codex, expectedSessionID: "session-1"))
+
+        let scalarPipe = Pipe()
+        scalarPipe.fileHandleForWriting.write(data)
+        try scalarPipe.fileHandleForWriting.close()
+        XCTAssertEqual(
+            try TranscriptDocument.firstScalar(
+                reading: scalarPipe.fileHandleForReading, paths: ["payload.session_id"]),
+            .string("fallback"))
+
+        let validationPipe = Pipe()
+        validationPipe.fileHandleForWriting.write(data)
+        try validationPipe.fileHandleForWriting.close()
+        XCTAssertTrue(try TranscriptDocument.isValid(
+            reading: validationPipe.fileHandleForReading,
+            provider: .codex,
+            expectedSessionID: "session-1"))
     }
 
     func testCodexJSONLValidationChecksEveryRecordAndRootIdentity() throws {
@@ -119,6 +235,27 @@ final class DetachStateTests: XCTestCase {
             valid, provider: .claude, expectedSessionID: "session-1"))
         XCTAssertFalse(TranscriptDocument.isValid(
             foreign, provider: .claude, expectedSessionID: "session-1"))
+        XCTAssertFalse(TranscriptDocument.isValid(
+            Data(#"{"type":"assistant"}"#.utf8),
+            provider: .claude,
+            expectedSessionID: "session-1"))
+        XCTAssertFalse(TranscriptDocument.isValid(
+            Data(#"{"sessionId":1}"#.utf8),
+            provider: .claude,
+            expectedSessionID: "session-1"))
+        XCTAssertFalse(TranscriptDocument.isValid(
+            Data(), provider: .claude, expectedSessionID: "session-1"))
+    }
+
+    func testCodexJSONLValidationRequiresRootPayloadAndIdentifier() {
+        XCTAssertFalse(TranscriptDocument.isValid(
+            Data(#"{"type":"event_msg"}"#.utf8),
+            provider: .codex,
+            expectedSessionID: "session-1"))
+        XCTAssertFalse(TranscriptDocument.isValid(
+            Data(#"{"payload":{}}"#.utf8),
+            provider: .codex,
+            expectedSessionID: "session-1"))
     }
 
     func testJSONLValidationStreamsGeneratedChunksWithoutRetainingTheTranscript() throws {
@@ -221,6 +358,37 @@ final class DetachStateTests: XCTestCase {
                 contextWindow: 1000,
                 agentTurnState: .waiting,
                 agentTurnID: "turn-1"))
+    }
+
+    func testCodexSummaryCoversInterruptedUnknownAndInvalidNumericEvents() {
+        let tail = Data("""
+        {"payload":{"model":"","type":"token_count","info":{"last_token_usage":{"input_tokens":true,"output_tokens":1.5},"model_context_window":"large"}}}
+        {"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1"}}
+        {"type":"event_msg","payload":{"type":"future_event","turn_id":"turn-2"}}
+        """.utf8)
+
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: tail, provider: .codex),
+            TranscriptSummary(
+                model: nil,
+                contextUsed: 0,
+                contextWindow: 0,
+                agentTurnState: .interrupted,
+                agentTurnID: "turn-1"))
+    }
+
+    func testSummaryClearsTurnStateWhenNoUsableIdentifierExists() {
+        let tail = Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":""}}
+        {"type":"user","uuid":"","message":{"role":"user","content":"go"}}
+        """.utf8)
+
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: tail, provider: .codex),
+            TranscriptSummary())
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: tail, provider: .claude),
+            TranscriptSummary())
     }
 
     func testClaudeSummaryIgnoresSidechainsAndToolResultUsers() throws {

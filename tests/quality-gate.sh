@@ -21,12 +21,16 @@ prepare_template() {
   mkdir -p "$TEMPLATE_REPO/scripts" "$TEMPLATE_REPO/tests/quality-gate-fixtures" \
     "$TEMPLATE_REPO/app/build"
   install -m 0755 "$ROOT/scripts/quality-gate" "$TEMPLATE_REPO/scripts/quality-gate"
+  install -m 0755 "$ROOT/scripts/test" "$TEMPLATE_REPO/scripts/test"
   install -m 0755 "$ROOT/tests/quality-ratchet.sh" "$ROOT/tests/release-budget-ratchet.sh" \
     "$ROOT/tests/shell-safety.sh" "$TEMPLATE_REPO/tests/"
-  install -m 0644 "$ROOT/tests/quality-baseline.tsv" "$ROOT/tests/release-budget.tsv" \
+  install -m 0644 "$ROOT/tests/quality-baseline.tsv" "$ROOT/tests/quality-file-baseline.tsv" \
+    "$ROOT/tests/release-budget.tsv" \
     "$TEMPLATE_REPO/tests/"
   printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/docs-contract.sh"
   chmod 0755 "$TEMPLATE_REPO/tests/docs-contract.sh"
+  printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/test-suite-contract.sh"
+  chmod 0755 "$TEMPLATE_REPO/tests/test-suite-contract.sh"
   printf '%s\n' baseline >"$TEMPLATE_REPO/README.md"
   printf '%s\n' actions.log results '*.out' >"$TEMPLATE_REPO/.gitignore"
   for stage in static gate-contract swift quality-contracts app ui-e2e codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow; do
@@ -147,6 +151,12 @@ printf '%s\n' docs >>"$REPO/README.md"
 plan="$(gate --base "$BASE" --plan)"
 [[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,release-budget' ]]
 
+setup_fixture quality-file-baseline
+printf 'Sources/DetachKit/NewCritical.swift\t95.00\n' \
+  >>"$REPO/tests/quality-file-baseline.tsv"
+plan="$(gate --plan)"
+[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow,release-budget' ]]
+
 setup_fixture unknown
 printf '%s\n' unknown >"$REPO/new-contract.data"
 plan="$(gate --plan 2>&1)"
@@ -175,7 +185,7 @@ mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct OddName {}' >"$REPO/app/Sources/DetachKit/line
 break.swift"
 plan="$(gate --plan --format json)"
-[[ "$plan" = '{"policy":8,"mode":"change","source_commit":"'* ]]
+[[ "$plan" = '{"policy":9,"mode":"change","source_commit":"'* ]]
 [[ "$plan" = *'"base_commit":"","input_fingerprint":"'* ]]
 [[ "$plan" = *'"stages":["static","swift","quality-contracts","app","ui-e2e","release-budget"]}' ]]
 
@@ -395,7 +405,7 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/tamper-first.out" 2>&1; then
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'8\trepository\tapp\tpassed\t0\tapp.log\tinvalid\t-' >>"$resume_dir/summary.tsv"
+printf '%s\n' $'9\trepository\tapp\tpassed\t0\tapp.log\tinvalid\t-' >>"$resume_dir/summary.tsv"
 if gate --mode repository --resume "$resume_dir" >"$REPO/tamper-second.out" 2>&1; then
   printf 'quality gate reused tampered summary evidence\n' >&2
   exit 1
@@ -457,7 +467,7 @@ if FAIL_STAGES=swift gate --mode repository >"$REPO/invalid-summary-first.out" 2
   exit 1
 fi
 resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-printf '%s\n' $'8\trepository\tstatic\tpassed\t0\tduplicate.log\tinvalid\t-' >>"$resume_dir/summary.tsv"
+printf '%s\n' $'9\trepository\tstatic\tpassed\t0\tduplicate.log\tinvalid\t-' >>"$resume_dir/summary.tsv"
 refresh_summary_digest "$resume_dir"
 if gate --mode repository --resume "$resume_dir" >"$REPO/invalid-summary-second.out" 2>&1; then
   printf 'quality gate accepted duplicate stage records\n' >&2

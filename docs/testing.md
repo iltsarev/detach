@@ -2,6 +2,24 @@
 
 ## Commands
 
+- `scripts/test critical` — fast diagnostic coverage for the highest-risk
+  state, ownership, storage, power, watchdog, and shell-safety contracts. Use
+  `scripts/test --plan critical` to inspect the pinned suites.
+- `scripts/test unit` — every Swift unit test without packaging or coverage
+  analysis; use it after a wider Swift edit when `critical` is too narrow.
+- `scripts/test coverage` — every coverage-enabled Swift test followed by the
+  locked-floor ratchet and the enforced test-count, critical-suite, aggregate
+  line-coverage, and safety-critical per-file coverage contracts. It deletes
+  only the active SwiftPM build path's prior coverage profile before measuring,
+  so stale or unrelated build-tree evidence cannot satisfy the command.
+- `scripts/test smoke` — builds a fresh app, validates and runs the isolated
+  packaged-app Accessibility flow, then verifies the bundled runtime. It needs
+  a logged-in WindowServer session and an environment that permits the private
+  app and tmux socket. Use `scripts/test --plan smoke` to inspect the steps.
+- `scripts/test full` — every automated repository check; it delegates exactly
+  to `scripts/quality-gate --mode repository` and is readiness evidence.
+  `critical` and `smoke` are focused diagnostics and never substitute for it.
+
 - `scripts/quality-gate` — the policy-versioned, impact-aware readiness entry
   point for agents. It selects mandatory checks from the diff and fails safe to
   the repository gate for unknown impact. See `docs/quality-gates.md`.
@@ -31,6 +49,9 @@
   classifies known execution-environment denials without weakening FAIL,
   applies stage budgets to ordinary local partial plans, exempts only the
   explicit GitHub-only budget-free plan, and raises the established UI floors.
+  Policy 9 adds contract-locked `critical`, `unit`, `coverage`, `smoke`, and
+  `full` operator entry points while retaining the quality gate as the only
+  readiness authority.
 
 - `DETACH_TEST_TMUX_BIN="$PWD/app/build/Detach.app/Contents/Resources/DetachCLI/tmux" tests/run.sh`
   — hermetic Codex integration with a fake provider, private tmux
@@ -53,7 +74,8 @@
   HOME/preferences/state below `/private/tmp`; it cannot use the installed
   Detach or user session state. Run the app build first. The UI smoke needs a
   logged-in WindowServer session but must not be granted broader filesystem or
-  production payload access.
+  production payload access. Its fake CLI allowlist covers only the exact
+  status/stop flow and completed-session forced delete asserted by the smoke.
 - `tests/release-preflight.sh` and `tests/publish-preflight.sh` — hermetic release
   tooling, arm64 appcast, production-DMG verification, exact artifact allowlist,
   and explicit publication-confirmation guards.
@@ -63,8 +85,11 @@
 - `cd app && swift test --enable-code-coverage --disable-sandbox`, followed by
   `tests/quality-contracts.sh` — unit tests plus fail-closed UI/business test
   count, critical-suite presence, and exact line-coverage floors. The current
-  floors are 175 UI tests, 294 business tests, 22.21% UI line coverage, and
-  80.98% stable business-core line coverage. The static
+  floors are 221 UI tests, 433 business tests, 25.80% UI line coverage, and
+  94.38% stable business-core line coverage. Thirteen safety-critical source
+  files also have independent measured floors, including 99.03-100% for typed
+  state, storage adapters, the power executable, tips, and doctor reporting.
+  The static
   policy branch runs the monotonic baseline ratchets in parallel with SwiftPM.
   `tests/quality-ratchet-contract.sh` and
   `tests/release-budget-ratchet-contract.sh` are fast negative diagnostics for

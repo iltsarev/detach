@@ -1,7 +1,7 @@
 # Quality gates
 
 `scripts/quality-gate` is the tracked readiness contract for local agents, CI,
-and releases. Policy version 8 derives
+and releases. Policy version 9 derives
 the mandatory set from the Git diff, and selects the full repository gate for
 unknown paths or changes to this policy itself. Its resource-aware scheduler
 runs isolated work concurrently without allowing two SwiftPM operations to
@@ -78,9 +78,51 @@ of these stages invokes SwiftPM. Distribution and hermetic release contracts
 form independent lanes. The gate therefore does not depend on writable user
 caches, ambient tmux, provider session state, or the installed Detach app.
 
-There are no quarantined tests in policy version 8. A future quarantine must be
+There are no quarantined tests in policy version 9. A future quarantine must be
 tracked here with an owner, expiry, and reason, and may not remove a release
 contract check.
+
+## Policy version 9: stable diagnostic test sets
+
+Policy 9 retains all policy-8 stages, coverage floors, safety properties, and
+timing ceilings. It adds stable operator-facing composition without weakening
+the sole readiness path:
+
+1. `scripts/test critical` runs shell safety plus pinned state, ownership,
+   storage, power, watchdog, and helper Swift suites for the fast high-risk
+   feedback loop.
+2. `scripts/test unit` runs the complete Swift suite without packaging, while
+   `scripts/test coverage` adds LLVM coverage, the locked-floor ratchet, and
+   the enforced quality contracts. Swift diagnostics use the repository-local
+   module cache and coverage resolves only the active SwiftPM build path after
+   removing its prior profile, preventing ambient-cache denial and stale
+   evidence selection.
+3. `scripts/test smoke` builds a fresh packaged app, validates and runs its
+   process-private Accessibility flow, and verifies the bundled runtime.
+4. `scripts/test full` delegates exactly to the repository quality gate. The
+   focused `critical` and `smoke` sets remain diagnostics, not readiness.
+5. Every set supports `--plan`, and `tests/test-suite-contract.sh` pins the
+   required constituents so a critical suite or product smoke step cannot be
+   silently dropped. That contract runs in the static stage.
+6. The packaged-app smoke additionally selects a completed Claude session and
+   proves that semantic Delete reaches only the exact process-private fake CLI
+   `claude delete --force` invocation; every other fake command remains denied.
+7. Aggregate DetachKit coverage can no longer hide a local regression in the
+   most safety-sensitive sources. `tests/quality-file-baseline.tsv` locks
+   independent line floors for session health/state/storage, power lifecycle,
+   helper XPC/platform, session storage, and doctor reporting. The quality
+   contracts require every tracked source in the LLVM report, while the static
+   ratchet rejects a lowered, removed, duplicated, malformed, or merge-base-
+   regressed floor.
+8. The policy-9 floor is the measured 221 UI tests at 25.80% line coverage and
+   433 business tests at 94.38%. Thirteen safety-critical sources have independent
+   floors; state encoding, storage adapters, tips, the power executable, and
+   doctor reporting are locked at 99.03-100%, while real IOKit and XPC adapter
+   lines remain covered by their separate integration and hardware gates.
+9. The gate's independent selection, failure, evidence, ratchet, shell-safety,
+   and history self-contracts run as isolated parallel shards. Every shard must
+   pass, and their output is collected deterministically; this keeps the
+   unchanged 100-second self-contract budget without dropping scenarios.
 
 ## Policy version 8: truthful resume and diagnosable execution
 

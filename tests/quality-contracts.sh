@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 APP_ROOT="$ROOT/app"
 BASELINE="$ROOT/tests/quality-baseline.tsv"
+FILE_BASELINE="$ROOT/tests/quality-file-baseline.tsv"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-quality-contracts.XXXXXX")"
 
 cleanup() {
@@ -17,20 +18,86 @@ baseline_value() {
   awk -F '\t' -v wanted="$key" '$1 == wanted {count++; value=$2} END {if (count != 1) exit 1; print value}' "$BASELINE"
 }
 
+critical_files=(
+  Sources/DetachKit/SessionHealth.swift
+  Sources/DetachKit/DetachState.swift
+  Sources/DetachKit/DetachStateCommand.swift
+  Sources/DetachKit/Storage.swift
+  Sources/DetachKit/StorageStore.swift
+  Sources/DetachKit/Tip.swift
+  Sources/DetachKit/DetachPowerCommand.swift
+  Sources/DetachKit/DetachPowerExecutable.swift
+  Sources/DetachKit/PowerHelperLeaseService.swift
+  Sources/DetachKit/PowerHelperXPC.swift
+  Sources/DetachKit/PowerHelperPlatform.swift
+  Sources/DetachKit/SessionStore.swift
+  Sources/DetachKit/DoctorReport.swift
+)
+
 [ -f "$BASELINE" ] && [ ! -L "$BASELINE" ] || {
   printf 'quality contracts: baseline is missing or unsafe\n' >&2
   exit 1
 }
-[ "$(baseline_value schema)" = 1 ] || {
-  printf 'quality contracts: unsupported baseline schema\n' >&2
+awk -F '\t' '
+  NF != 2 {exit 1}
+  $1 == "schema" {seen[$1]++; if ($2 != "1") exit 1; next}
+  $1 ~ /^(ui_test_count_min|business_test_count_min)$/ {
+    seen[$1]++; if ($2 !~ /^[0-9]+$/) exit 1; next
+  }
+  $1 ~ /^(ui_line_coverage_min|business_line_coverage_min)$/ {
+    seen[$1]++
+    if ($2 !~ /^[0-9]+([.][0-9]+)?$/ || $2 + 0 > 100) exit 1
+    next
+  }
+  {exit 1}
+  END {
+    if (seen["schema"] != 1 || seen["ui_test_count_min"] != 1 ||
+        seen["business_test_count_min"] != 1 ||
+        seen["ui_line_coverage_min"] != 1 ||
+        seen["business_line_coverage_min"] != 1) exit 1
+  }
+' "$BASELINE" || {
+  printf 'quality contracts: baseline schema is invalid\n' >&2
   exit 1
 }
 
-test_binary="$(find "$APP_ROOT/.build" \
-  -path '*DetachAppPackageTests.xctest/Contents/MacOS/DetachAppPackageTests' \
-  -type f -print | head -1)"
-profdata="$(find "$APP_ROOT/.build" -path '*/codecov/default.profdata' -type f -print | head -1)"
-[ -n "$test_binary" ] && [ -n "$profdata" ] || {
+[ -f "$FILE_BASELINE" ] && [ ! -L "$FILE_BASELINE" ] || {
+  printf 'quality contracts: per-file baseline is missing or unsafe\n' >&2
+  exit 1
+}
+awk -F '\t' '
+  NF != 2 {exit 1}
+  $1 == "schema" {schema++; if ($2 != "1") exit 1; next}
+  $1 !~ /^Sources\/DetachKit\/[A-Za-z0-9]+\.swift$/ {exit 1}
+  $2 !~ /^[0-9]+([.][0-9]+)?$/ || $2 + 0 > 100 {exit 1}
+  {files++; seen[$1]++}
+  END {
+    if (schema != 1 || files == 0) exit 1
+    for (path in seen) if (seen[path] != 1) exit 1
+  }
+' "$FILE_BASELINE" || {
+  printf 'quality contracts: per-file baseline schema is invalid\n' >&2
+  exit 1
+}
+for source in "${critical_files[@]}"; do
+  baseline_value_for_file="$(awk -F '\t' -v wanted="$source" \
+    '$1 == wanted {count++; value=$2} END {if (count != 1) exit 1; print value}' \
+    "$FILE_BASELINE")" || {
+      printf 'quality contracts: per-file baseline is missing: %s\n' "$source" >&2
+      exit 1
+    }
+done
+[ "$(awk -F '\t' '$1 != "schema" {count++} END {print count+0}' "$FILE_BASELINE")" \
+  = "${#critical_files[@]}" ] || {
+    printf 'quality contracts: per-file baseline contains an unknown source\n' >&2
+    exit 1
+}
+
+build_path="$(cd -P "$APP_ROOT" && swift build --show-bin-path)"
+test_binary="$build_path/DetachAppPackageTests.xctest/Contents/MacOS/DetachAppPackageTests"
+profdata="$build_path/codecov/default.profdata"
+[ -f "$test_binary" ] && [ ! -L "$test_binary" ] && \
+  [ -f "$profdata" ] && [ ! -L "$profdata" ] || {
   printf 'quality contracts: run the coverage-enabled Swift stage first\n' >&2
   exit 1
 }
@@ -113,5 +180,26 @@ assert_at_least 'business test count' "$business_tests" "$(baseline_value busine
 assert_at_least 'UI line coverage' "$ui_percent" "$(baseline_value ui_line_coverage_min)"
 assert_at_least 'business line coverage' "$business_percent" "$(baseline_value business_line_coverage_min)"
 
-printf 'Quality contracts passed: UI tests=%s coverage=%s%%; business tests=%s coverage=%s%%\n' \
-  "$ui_tests" "$ui_percent" "$business_tests" "$business_percent"
+file_count=0
+while IFS=$'\t' read -r source minimum; do
+  [ "$source" != schema ] || continue
+  actual="$(awk -v wanted="$source" '
+    $1 == wanted {
+      count++
+      total += $8
+      covered += $8 - $9
+    }
+    END {
+      if (count != 1 || total == 0) exit 1
+      printf "%.2f", 100 * covered / total
+    }
+  ' "$TMP_ROOT/coverage.txt")" || {
+    printf 'quality contracts: critical coverage source is missing: %s\n' "$source" >&2
+    exit 1
+  }
+  assert_at_least "per-file line coverage for $source" "$actual" "$minimum"
+  file_count=$((file_count + 1))
+done <"$FILE_BASELINE"
+
+printf 'Quality contracts passed: UI tests=%s coverage=%s%%; business tests=%s coverage=%s%%; critical files=%s\n' \
+  "$ui_tests" "$ui_percent" "$business_tests" "$business_percent" "$file_count"
