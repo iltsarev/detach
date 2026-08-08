@@ -4,7 +4,7 @@
 
 <h1 align="center">Detach</h1>
 
-<!-- Disposable ruleset validation fixture. -->  
+<!-- Disposable ruleset validation fixture. -->
 
 <p align="center">
   <strong>Close the terminal. Keep the agent running.</strong><br>
