@@ -8,6 +8,10 @@
 /docs/superpowers/
 /docs/work/
 
+# Local presentation sources are internal working material. They are not
+# repository inputs and must not affect impact analysis or quality gates.
+/presentations/
+
 # Local credentials and release overrides must stay outside Git. Public
 # examples can be explicitly re-included as *.example files when needed.
 .env

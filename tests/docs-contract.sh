@@ -67,5 +67,7 @@ done
 
 git -C "$ROOT" check-ignore -q docs/work/example.md ||
   fail 'temporary ExecPlans must remain ignored'
+git -C "$ROOT" check-ignore -q presentations/internal.html ||
+  fail 'internal presentation sources must remain ignored'
 
 printf 'Documentation and context contracts passed\n'

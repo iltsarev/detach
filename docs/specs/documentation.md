@@ -25,6 +25,8 @@ against the same deterministic quality gate.
 - Durable specs describe current contracts. Ignored `docs/work/` contains
   temporary executable plans. Imports are not used for detailed specs because
   Claude expands imports eagerly.
+- Ignored `presentations/` contains internal presentation sources. Git and the
+  quality gate do not treat these files as repository inputs.
 - Fast diagnostics close the edit loop; `scripts/quality-gate` remains the
   sole readiness entry point. A focused command or diagnostic stage is never
   presented as final evidence.

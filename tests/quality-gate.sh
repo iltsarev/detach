@@ -34,7 +34,7 @@ prepare_template() {
   printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/test-suite-contract.sh"
   chmod 0755 "$TEMPLATE_REPO/tests/test-suite-contract.sh"
   printf '%s\n' baseline >"$TEMPLATE_REPO/README.md"
-  printf '%s\n' actions.log results '*.out' >"$TEMPLATE_REPO/.gitignore"
+  printf '%s\n' actions.log results '*.out' /presentations/ >"$TEMPLATE_REPO/.gitignore"
   for stage in static gate-contract swift quality-contracts app ui-e2e codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow; do
     printf '#!/bin/bash\nset -eu\n[ -z "${DETACH_RELEASE_TIMING_OVERRIDE:-}" ] || { printf "release timing override leaked into stage\\n" >&2; exit 1; }\n[ -z "${DETACH_CONFIRM_RELEASE:-}" ] || { printf "release confirmation leaked into stage\\n" >&2; exit 1; }\n[ "${CLANG_MODULE_CACHE_PATH:-}" = "${GATE_EXPECTED_MODULE_CACHE:?}" ] || { printf "unexpected Clang module cache: %%s\\n" "${CLANG_MODULE_CACHE_PATH:-missing}" >&2; exit 1; }\n[ "${SWIFTPM_MODULECACHE_OVERRIDE:-}" = "$GATE_EXPECTED_MODULE_CACHE" ] || { printf "unexpected SwiftPM module cache: %%s\\n" "${SWIFTPM_MODULECACHE_OVERRIDE:-missing}" >&2; exit 1; }\nprintf "%%s\\n" "%s" >>"${GATE_ACTION_LOG:?}"\nsleep "${STAGE_SLEEP:-0}"\ncase " ${FAIL_STAGES:-} " in *" %s "*) exit 23 ;; esac\n' "$stage" "$stage" \
       >"$TEMPLATE_REPO/tests/quality-gate-fixtures/$stage"
@@ -118,6 +118,14 @@ setup_fixture docs-contract
 printf '%s\n' '# changed contract' >"$REPO/tests/docs-contract.sh"
 plan="$(gate --plan)"
 [[ "$plan" = *'stages=static' ]]
+
+setup_fixture ignored-presentations
+clean_plan="$(gate --plan)"
+mkdir -p "$REPO/presentations"
+printf '%s\n' '<html>internal</html>' >"$REPO/presentations/internal.html"
+ignored_plan="$(gate --plan)"
+[ "$ignored_plan" = "$clean_plan" ]
+[ -z "$(git -C "$REPO" ls-files --others --exclude-standard presentations)" ]
 
 setup_fixture swift
 mkdir -p "$REPO/app/Sources/DetachKit"
