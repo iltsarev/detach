@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Как построить систему инженерного качества: риск, проверки, доставка и обратная связь">
+  <title>Система инженерного качества</title>
+  <style>
+    :root {
+      --bg: #080a0f;
+      --fg: #f5f3eb;
+      --muted: #a5acba;
+      --dim: #697181;
+      --line: rgba(245, 243, 235, .15);
+      --panel: #11141c;
+      --green: #a7f46a;
+      --mint: #63e6be;
+      --cyan: #63d8ff;
+      --blue: #809dff;
+      --amber: #ffc466;
+      --red: #ff7474;
+      --violet: #c3a6ff;
+      --pad: clamp(28px, 5vw, 76px);
+      --wide: 1320px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--fg);
+      background:
+        radial-gradient(circle at 85% 12%, rgba(167,244,106,.08), transparent 26rem),
+        radial-gradient(circle at 10% 86%, rgba(99,216,255,.06), transparent 30rem),
+        var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    .deck { scroll-snap-type: y mandatory; }
+    .slide {
+      position: relative;
+      isolation: isolate;
+      display: grid;
+      align-items: center;
+      min-height: 100svh;
+      padding: var(--pad);
+      overflow: hidden;
+      scroll-snap-align: start;
+      scroll-snap-stop: always;
+      border-bottom: 1px solid rgba(245,243,235,.08);
+    }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 50px 50px;
+      mask-image: linear-gradient(to bottom, transparent 3%, black 20%, black 80%, transparent 97%);
+    }
+
+    .slide::after {
+      content: attr(data-number);
+      position: absolute;
+      top: clamp(18px, 3vw, 40px);
+      right: clamp(20px, 3vw, 48px);
+      color: var(--dim);
+      font: 700 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .12em;
+    }
+
+    .frame { width: min(100%, var(--wide)); margin: 0 auto; }
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 20px;
+      color: var(--green);
+      font: 750 12px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ""; width: 34px; height: 2px; background: currentColor; }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 1100px;
+      margin-bottom: 26px;
+      font-size: clamp(50px, 7.2vw, 106px);
+      line-height: .94;
+      letter-spacing: -.058em;
+      text-wrap: balance;
+    }
+    h2 {
+      max-width: 1140px;
+      margin-bottom: clamp(27px, 4vh, 46px);
+      font-size: clamp(34px, 4.35vw, 63px);
+      line-height: 1;
+      letter-spacing: -.045em;
+      text-wrap: balance;
+    }
+    h3 { margin-bottom: 9px; font-size: clamp(18px, 1.7vw, 25px); line-height: 1.12; letter-spacing: -.025em; }
+    p { color: var(--muted); font-size: clamp(16px, 1.4vw, 21px); line-height: 1.44; }
+    strong { color: var(--fg); }
+    em { color: var(--green); font-style: normal; }
+    code {
+      padding: .12em .38em;
+      color: var(--cyan);
+      background: rgba(99,216,255,.08);
+      border: 1px solid rgba(99,216,255,.18);
+      border-radius: 5px;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: .88em;
+      white-space: nowrap;
+    }
+    .lead { max-width: 900px; font-size: clamp(21px, 2.1vw, 31px); line-height: 1.3; letter-spacing: -.02em; }
+    .accent { color: var(--green); }
+    .danger { color: var(--red); }
+    .amber { color: var(--amber); }
+    .cyan { color: var(--cyan); }
+
+    .source {
+      position: absolute;
+      left: var(--pad);
+      bottom: clamp(14px, 2vw, 24px);
+      max-width: min(78vw, 1050px);
+      margin: 0;
+      color: #626a79;
+      font: 500 10px/1.35 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(260px, .5fr);
+      align-items: end;
+      gap: clamp(42px, 8vw, 120px);
+    }
+    .pulse {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      margin-bottom: 22px;
+      color: var(--green);
+      font: 750 12px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .pulse i { width: 9px; height: 9px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 7px rgba(167,244,106,.1), 0 0 24px rgba(167,244,106,.62); }
+    .hero-side { padding: 9px 0 9px 22px; border-left: 2px solid var(--green); color: var(--muted); font: 650 clamp(13px, 1.25vw, 17px)/1.65 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+
+    .manifesto {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+    }
+    .manifesto article {
+      min-height: 178px;
+      padding: 23px 22px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(150deg, rgba(255,255,255,.025), transparent 70%);
+    }
+    .manifesto .n { display: block; margin-bottom: 27px; color: var(--dim); font: 700 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .manifesto p { margin: 0; font-size: 14px; }
+    .manifesto .wide { grid-column: span 3; min-height: auto; display: flex; align-items: center; gap: 20px; border-left: 3px solid var(--green); }
+    .manifesto .wide h3 { margin: 0; color: var(--green); white-space: nowrap; }
+
+    .control-loop {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 0;
+      align-items: stretch;
+    }
+    .loop-node {
+      position: relative;
+      min-height: 250px;
+      padding: 24px 18px;
+      border: 1px solid var(--line);
+      border-right: 0;
+      background: rgba(255,255,255,.018);
+    }
+    .loop-node:last-child { border-right: 1px solid var(--line); }
+    .loop-node::after { content: "→"; position: absolute; z-index: 2; right: -13px; top: 45%; width: 26px; color: var(--green); background: var(--bg); text-align: center; font-size: 18px; }
+    .loop-node:last-child::after { display: none; }
+    .loop-node .n { color: var(--green); font: 750 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .loop-node h3 { margin-top: 42px; }
+    .loop-node p { margin: 0; font-size: 14px; line-height: 1.38; }
+    .feedback-arrow { width: 73%; margin: 22px auto 0; padding-top: 14px; border-top: 1px dashed rgba(99,216,255,.45); color: var(--cyan); text-align: center; font: 700 11px/1.4 ui-monospace, "SFMono-Regular", Menlo, monospace; letter-spacing: .05em; }
+
+    .quality-contract {
+      display: grid;
+      grid-template-columns: minmax(300px, .75fr) minmax(0, 1.25fr);
+      gap: clamp(44px, 8vw, 110px);
+      align-items: center;
+    }
+    .contract-card { padding: 28px; border: 1px solid rgba(167,244,106,.38); background: linear-gradient(145deg, rgba(167,244,106,.08), transparent 68%); }
+    .contract-card .formula { margin: 30px 0; color: var(--fg); font-size: clamp(27px, 3vw, 43px); line-height: 1.17; letter-spacing: -.045em; }
+    .contract-card p:last-child { margin-bottom: 0; }
+    .dimensions { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; }
+    .dimension { padding-top: 16px; border-top: 2px solid var(--tone, var(--cyan)); }
+    .dimension p { margin: 7px 0 0; font-size: 14px; }
+
+    .ownership {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .owner {
+      min-height: 270px;
+      padding: 26px 22px;
+      border-right: 1px solid var(--line);
+    }
+    .owner:last-child { border-right: 0; }
+    .owner .role { display: block; margin-bottom: 40px; color: var(--tone, var(--cyan)); font: 750 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; letter-spacing: .07em; text-transform: uppercase; }
+    .owner p { margin: 0; font-size: 14px; }
+    .owner ul { list-style: none; padding: 0; margin: 16px 0 0; }
+    .owner li { padding: 6px 0; color: var(--muted); font-size: 13px; }
+    .ownership-rule { margin: 25px 0 0; color: var(--muted); font-size: clamp(15px, 1.35vw, 19px); }
+
+    .three-loops { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .dev-loop {
+      position: relative;
+      min-height: 360px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 9%, transparent), transparent 64%);
+    }
+    .dev-loop::before { content: ""; position: absolute; left: -1px; right: -1px; top: -1px; height: 4px; background: var(--tone); }
+    .dev-loop .when { color: var(--tone); font: 750 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; text-transform: uppercase; }
+    .dev-loop h3 { margin-top: 38px; }
+    .dev-loop ul { list-style: none; padding: 0; margin: 22px 0 0; }
+    .dev-loop li { padding: 9px 0; border-bottom: 1px solid rgba(245,243,235,.08); color: var(--muted); font-size: 14px; }
+    .dev-loop li:last-child { border-bottom: 0; }
+    .dev-loop .decision { position: absolute; left: 28px; right: 28px; bottom: 24px; color: var(--fg); font-size: 13px; font-weight: 700; }
+
+    .risk-layout { display: grid; grid-template-columns: .8fr 1.2fr; gap: clamp(40px, 7vw, 95px); align-items: center; }
+    .risk-axis { display: grid; gap: 10px; }
+    .risk-tier { display: grid; grid-template-columns: 74px 1fr; gap: 18px; align-items: center; min-height: 74px; padding: 12px 18px; border: 1px solid var(--line); border-left: 4px solid var(--tone); background: rgba(255,255,255,.018); }
+    .risk-tier b { color: var(--tone); font: 800 17px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .risk-tier span { color: var(--muted); font-size: 14px; }
+    .risk-rules { display: grid; gap: 22px; }
+    .risk-rule { display: grid; grid-template-columns: 44px 1fr; gap: 18px; align-items: start; }
+    .risk-rule .mark { color: var(--green); font: 800 26px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .risk-rule p { margin: 0; font-size: clamp(15px, 1.3vw, 19px); }
+
+    .test-portfolio { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    .test-portfolio th, .test-portfolio td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: clamp(12px, 1vw, 15px); line-height: 1.35; }
+    .test-portfolio th { color: var(--dim); text-align: left; font: 750 10px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; letter-spacing: .07em; text-transform: uppercase; }
+    .test-portfolio td:first-child { width: 20%; color: var(--fg); font-weight: 700; }
+    .test-portfolio td:nth-child(2) { width: 25%; color: var(--cyan); }
+    .test-portfolio td:nth-child(3) { color: #c2c8d4; }
+    .test-portfolio td:nth-child(4) { color: #858d9d; }
+    .portfolio-rule { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 27px; }
+    .portfolio-rule p { margin: 0; padding-top: 14px; border-top: 2px solid var(--tone, var(--green)); font-size: 14px; }
+
+    .gate-design { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: clamp(44px, 7vw, 95px); align-items: center; }
+    .gate-chain { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .gate-principle { min-height: 150px; padding: 20px; border: 1px solid var(--line); background: rgba(255,255,255,.018); }
+    .gate-principle .n { display: block; margin-bottom: 24px; color: var(--green); font: 800 12px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .gate-principle p { margin: 8px 0 0; font-size: 13px; }
+    .anti-patterns { padding-left: 26px; border-left: 3px solid var(--red); }
+    .anti-patterns ul { list-style: none; padding: 0; margin: 20px 0 0; }
+    .anti-patterns li { position: relative; padding: 8px 0 8px 28px; color: var(--muted); font-size: clamp(14px, 1.2vw, 17px); line-height: 1.34; }
+    .anti-patterns li::before { content: "×"; position: absolute; left: 0; color: var(--red); font-weight: 850; }
+
+    .evidence-layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: clamp(44px, 7vw, 95px); align-items: center; }
+    .evidence-schema { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .evidence-item { min-height: 132px; padding: 18px; border: 1px solid var(--line); }
+    .evidence-item .glyph { display: block; margin-bottom: 24px; color: var(--cyan); font: 800 15px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .evidence-item p { margin: 7px 0 0; font-size: 13px; }
+    .evidence-test { padding: 26px; border: 1px solid rgba(167,244,106,.35); background: linear-gradient(145deg, rgba(167,244,106,.07), transparent); }
+    .evidence-test .question { margin: 24px 0; color: var(--fg); font-size: clamp(23px, 2.7vw, 39px); line-height: 1.16; letter-spacing: -.04em; }
+    .evidence-test p:last-child { margin-bottom: 0; }
+
+    .platform-map { display: grid; gap: 16px; }
+    .platform-row { display: grid; grid-template-columns: 140px 1fr; gap: 20px; align-items: center; }
+    .platform-label { color: var(--dim); text-align: right; font: 750 10px/1.3 ui-monospace, "SFMono-Regular", Menlo, monospace; letter-spacing: .07em; text-transform: uppercase; }
+    .platform-lane { display: flex; flex-wrap: wrap; gap: 9px; min-height: 57px; padding: 10px 12px; border-left: 2px solid var(--tone, var(--cyan)); background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 8%, transparent), transparent 70%); }
+    .platform-chip { padding: 10px 12px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: 700 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; white-space: nowrap; }
+    .platform-notes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; margin-top: 30px; }
+    .platform-notes article { padding-top: 15px; border-top: 2px solid var(--tone, var(--green)); }
+    .platform-notes p { margin: 7px 0 0; font-size: 13px; }
+
+    .metric-map { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+    .metric-column { border-top: 4px solid var(--tone); }
+    .metric-column h3 { margin-top: 20px; }
+    .metric-row { display: grid; grid-template-columns: 1.2fr .8fr; gap: 18px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+    .metric-row span { color: var(--muted); font-size: 14px; }
+    .metric-row b { color: var(--fg); font-size: 13px; font-weight: 700; text-align: right; }
+    .metric-warning { margin-top: 28px; padding: 17px 21px; border-left: 3px solid var(--amber); background: rgba(255,196,102,.05); color: var(--muted); font-size: 15px; }
+
+    .roadmap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; }
+    .roadmap-step { position: relative; min-height: 350px; padding: 26px 22px; border: 1px solid var(--line); border-right: 0; background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 8%, transparent), transparent 68%); }
+    .roadmap-step:last-child { border-right: 1px solid var(--line); }
+    .roadmap-step::before { content: ""; position: absolute; left: -1px; right: -1px; top: -1px; height: 4px; background: var(--tone); }
+    .roadmap-step .time { color: var(--tone); font: 800 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .roadmap-step h3 { margin-top: 38px; }
+    .roadmap-step ul { list-style: none; padding: 0; margin: 18px 0 0; }
+    .roadmap-step li { padding: 7px 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .roadmap-step .exit { position: absolute; left: 22px; right: 22px; bottom: 22px; padding-top: 13px; border-top: 1px solid var(--line); color: var(--fg); font-size: 12px; font-weight: 750; }
+
+    .target { display: grid; grid-template-columns: 1.05fr .95fr; gap: clamp(44px, 8vw, 105px); align-items: center; }
+    .score-list { display: grid; gap: 16px; }
+    .score { display: grid; grid-template-columns: 185px 1fr 92px; gap: 17px; align-items: center; }
+    .score span { color: var(--muted); font-size: 14px; }
+    .bar { height: 8px; background: #232834; }
+    .bar i { display: block; width: var(--score); height: 100%; background: var(--tone); }
+    .score b { color: var(--tone); font: 800 10px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace; text-align: right; text-transform: uppercase; }
+    .target-state { padding-left: 28px; border-left: 4px solid var(--green); }
+    .target-state .big { margin-bottom: 24px; color: var(--fg); font-size: clamp(28px, 3.2vw, 47px); line-height: 1.08; letter-spacing: -.045em; }
+    .blueprint { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; margin-top: 37px; border: 1px solid var(--line); background: var(--line); }
+    .blueprint div { min-height: 96px; padding: 15px; background: var(--bg); }
+    .blueprint b { display: block; margin-bottom: 8px; color: var(--green); font-size: 13px; }
+    .blueprint span { color: var(--muted); font-size: 12px; line-height: 1.34; }
+
+    .nav { position: fixed; z-index: 10; top: 50%; right: clamp(10px, 1.5vw, 24px); transform: translateY(-50%); display: grid; gap: 7px; padding: 10px 8px; border: 1px solid rgba(245,243,235,.1); border-radius: 99px; background: rgba(8,10,15,.74); backdrop-filter: blur(16px); }
+    .nav button { width: 7px; height: 7px; padding: 0; border: 0; border-radius: 50%; background: #49505f; cursor: pointer; transition: transform .2s ease, background .2s ease; }
+    .nav button:hover { background: var(--cyan); transform: scale(1.3); }
+    .nav button[aria-current="true"] { background: var(--green); transform: scale(1.45); }
+    .progress { position: fixed; z-index: 11; left: 0; top: 0; width: var(--progress, 0%); height: 3px; background: linear-gradient(90deg, var(--cyan), var(--green)); transition: width .22s ease; }
+    .controls { position: fixed; z-index: 10; right: clamp(18px, 3vw, 46px); bottom: 18px; display: flex; gap: 8px; opacity: .62; transition: opacity .2s ease; }
+    .controls:hover { opacity: 1; }
+    .controls button { width: 36px; height: 30px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: rgba(8,10,15,.78); cursor: pointer; }
+
+    @media (max-width: 980px) {
+      .slide { min-height: auto; padding-top: 72px; padding-bottom: 80px; }
+      .hero, .quality-contract, .risk-layout, .gate-design, .evidence-layout, .target { grid-template-columns: 1fr; }
+      .manifesto { grid-template-columns: 1fr 1fr; }
+      .manifesto .wide { grid-column: span 2; }
+      .control-loop { grid-template-columns: repeat(2, 1fr); }
+      .loop-node:nth-child(2n) { border-right: 1px solid var(--line); }
+      .loop-node:nth-child(2n)::after { display: none; }
+      .ownership, .roadmap { grid-template-columns: 1fr 1fr; }
+      .owner:nth-child(2), .roadmap-step:nth-child(2) { border-right: 1px solid var(--line); }
+      .three-loops { grid-template-columns: 1fr; }
+      .dev-loop { min-height: 310px; }
+      .platform-notes, .evidence-schema { grid-template-columns: 1fr 1fr; }
+      .nav { display: none; }
+      .source { position: static; margin-top: 34px; max-width: none; }
+      .table-scroll { overflow-x: auto; padding-bottom: 8px; }
+      .test-portfolio { min-width: 900px; }
+    }
+
+    @media (max-width: 640px) {
+      :root { --pad: 24px; }
+      .manifesto, .dimensions, .ownership, .roadmap, .portfolio-rule, .metric-map, .platform-notes, .evidence-schema { grid-template-columns: 1fr; }
+      .manifesto .wide { grid-column: span 1; display: block; }
+      .control-loop, .gate-chain { grid-template-columns: 1fr; }
+      .loop-node { border-right: 1px solid var(--line); }
+      .loop-node::after { display: none; }
+      .platform-row { grid-template-columns: 1fr; gap: 5px; }
+      .platform-label { text-align: left; }
+      .roadmap-step { border-right: 1px solid var(--line); }
+      .score { grid-template-columns: 130px 1fr; }
+      .score b { grid-column: 2; text-align: left; }
+      .blueprint { grid-template-columns: 1fr; }
+      .controls { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition: none !important; }
+    }
+
+    @media print {
+      @page { size: 13.333in 7.5in; margin: 0; }
+      html, body { background: var(--bg); print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .slide { width: 13.333in; height: 7.5in; min-height: 0; page-break-after: always; padding: .48in .62in; }
+      .nav, .progress, .controls { display: none !important; }
+      .source { left: .62in; bottom: .16in; }
+      h1 { font-size: 64px; }
+      h2 { font-size: 42px; margin-bottom: 24px; }
+      p { font-size: 15px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <nav class="nav" aria-label="Навигация по слайдам"></nav>
+  <div class="controls" aria-label="Управление презентацией">
+    <button type="button" data-go="prev" aria-label="Предыдущий слайд">↑</button>
+    <button type="button" data-go="next" aria-label="Следующий слайд">↓</button>
+  </div>
+
+  <main class="deck">
+    <section class="slide" id="start" data-number="01 / 14" aria-label="Титульный слайд">
+      <div class="frame hero">
+        <div>
+          <div class="pulse"><i></i> качество как управляемый процесс</div>
+          <p class="eyebrow">Система инженерного качества</p>
+          <h1>Как организовать <span class="accent">работу с качеством</span></h1>
+          <p class="lead">Практическая модель для команды, платформы и большой инженерной организации.</p>
+        </div>
+        <div class="hero-side">модель качества<br>ответственность<br>виды тестов<br>проверка готовности<br>платформа CI<br>метрики<br>план на 90 дней</div>
+      </div>
+      <p class="source">Модель применима к продуктам, сервисам, мобильным приложениям и монорепозиториям</p>
+    </section>
+
+    <section class="slide" id="principles" data-number="02 / 14" aria-label="Шесть принципов системы качества">
+      <div class="frame">
+        <p class="eyebrow">Шесть правил</p>
+        <h2>Система качества должна <span class="accent">управлять риском изменения</span></h2>
+        <div class="manifesto">
+          <article><span class="n">01</span><h3>Определите качество до изменения</h3><p>Сначала задайте требования и уровень риска. Затем изменяйте код.</p></article>
+          <article><span class="n">02</span><h3>Используйте проверяемые результаты</h3><p>Не принимайте решение только на основании уверенности разработчика.</p></article>
+          <article><span class="n">03</span><h3>Свяжите глубину проверки с риском</h3><p>Маленькое изменение может иметь большое влияние.</p></article>
+          <article><span class="n">04</span><h3>Назначьте ответственную команду</h3><p>У каждой ошибки должен быть ответственный и срок реакции.</p></article>
+          <article><span class="n">05</span><h3>Проверяйте продукт после доставки</h3><p>Поэтапная доставка, SLO и откат дополняют проверки до слияния.</p></article>
+          <article><span class="n">06</span><h3>Не снижайте минимальные требования</h3><p>Снижение покрытия или лимита требует явного решения.</p></article>
+          <article class="wide"><h3>Цель</h3><p>Сделайте риск видимым. Сделайте решение воспроизводимым. Обнаруживайте ошибку рано. Обеспечьте безопасный откат.</p></article>
+        </div>
+      </div>
+      <p class="source">Основа: действующие правила качества Detach и общая модель управления инженерным риском</p>
+    </section>
+
+    <section class="slide" id="control-loop" data-number="03 / 14" aria-label="Замкнутый процесс качества">
+      <div class="frame">
+        <p class="eyebrow">Замкнутый процесс</p>
+        <h2>Результаты работы продукта должны <span class="accent">изменять правила разработки</span></h2>
+        <div class="control-loop">
+          <article class="loop-node"><span class="n">01</span><h3>Требование</h3><p>Какой результат нужен пользователю и бизнесу?</p></article>
+          <article class="loop-node"><span class="n">02</span><h3>Риск</h3><p>Что может отказать? Какова область влияния?</p></article>
+          <article class="loop-node"><span class="n">03</span><h3>Контракт</h3><p>Какие свойства обязательны и наблюдаемы?</p></article>
+          <article class="loop-node"><span class="n">04</span><h3>Проверка</h3><p>Какие тесты и сигналы проверяют эти свойства?</p></article>
+          <article class="loop-node"><span class="n">05</span><h3>Решение</h3><p>Можно ли выполнить слияние, доставку или выпуск?</p></article>
+          <article class="loop-node"><span class="n">06</span><h3>Изменение правил</h3><p>Что показал продукт? Как нужно изменить контракт или тест?</p></article>
+        </div>
+        <div class="feedback-arrow">инцидент или дефект → новое требование, тест или правило проверки готовности</div>
+      </div>
+      <p class="source">Признак зрелости: данные продукта изменяют правила проверки до слияния</p>
+    </section>
+
+    <section class="slide" id="contract" data-number="04 / 14" aria-label="Контракт качества и измерения">
+      <div class="frame quality-contract">
+        <div class="contract-card">
+          <p class="eyebrow">Контракт качества</p>
+          <h2>Опишите <span class="accent">проверяемое требование</span></h2>
+          <p class="formula">результат<br>+ обязательное свойство<br>+ граница<br>+ способ проверки<br>+ откат</p>
+          <p>Тест или сигнал продукта должен иметь возможность опровергнуть контракт.</p>
+        </div>
+        <div>
+          <h3>Обязательные области качества</h3>
+          <div class="dimensions">
+            <article class="dimension" style="--tone:var(--green)"><h3>Корректность</h3><p>Бизнес-правила, данные, переходы состояний и обратная совместимость.</p></article>
+            <article class="dimension" style="--tone:var(--red)"><h3>Безопасность</h3><p>Владение, авторизация, секреты, опасные действия и цепочка поставки.</p></article>
+            <article class="dimension" style="--tone:var(--cyan)"><h3>Надёжность</h3><p>Доступность, идемпотентность, лимиты времени, восстановление и деградация.</p></article>
+            <article class="dimension" style="--tone:var(--blue)"><h3>Эксплуатация</h3><p>Журналы, метрики, трассировки, диагностика, доставка и откат.</p></article>
+            <article class="dimension" style="--tone:var(--amber)"><h3>Опыт пользователя</h3><p>Задержка, доступность интерфейса, текст, внешний вид и восстановление.</p></article>
+            <article class="dimension" style="--tone:var(--violet)"><h3>Доставка</h3><p>Повторяемость, целостность файлов, происхождение выпуска и время доставки.</p></article>
+          </div>
+        </div>
+      </div>
+      <p class="source">Для каждого критического пути задайте контракт, уровень риска, проверки и способ отката</p>
+    </section>
+
+    <section class="slide" id="ownership" data-number="05 / 14" aria-label="Распределение ответственности за качество">
+      <div class="frame">
+        <p class="eyebrow">Ответственность</p>
+        <h2>Команда продукта отвечает за качество. <span class="accent">Платформа предоставляет общий процесс.</span></h2>
+        <div class="ownership">
+          <article class="owner" style="--tone:var(--green)"><span class="role">Команда продукта</span><h3>Отвечает за результат</h3><p>Владеет контрактом и дефектами после выпуска.</p><ul><li>оценка риска</li><li>тесты вместе с кодом</li><li>готовность к откату</li></ul></article>
+          <article class="owner" style="--tone:var(--cyan)"><span class="role">Платформа качества</span><h3>Отвечает за общий путь</h3><p>Предоставляет проверку готовности и среду тестов.</p><ul><li>правила выбора</li><li>инфраструктура тестов</li><li>работа с нестабильными тестами</li></ul></article>
+          <article class="owner" style="--tone:var(--amber)"><span class="role">Эксперты области</span><h3>Отвечают за высокий риск</h3><p>Безопасность, конфиденциальность, SRE и Accessibility.</p><ul><li>специальные проверки</li><li>исключения риска</li><li>ручные проверки</li></ul></article>
+          <article class="owner" style="--tone:var(--violet)"><span class="role">Руководители</span><h3>Отвечают за правила</h3><p>Не допускают обход обязательной ошибки.</p><ul><li>обязательные проверки</li><li>лимиты качества</li><li>обучение организации</li></ul></article>
+        </div>
+        <p class="ownership-rule"><strong>Ошибочная модель:</strong> QA отвечает за качество, а разработчики отвечают только за скорость. Такая модель отделяет дефект от команды, которая создала изменение.</p>
+      </div>
+      <p class="source">Модель: ответственность команды продукта, общая платформа и независимые эксперты для высокого риска</p>
+    </section>
+
+    <section class="slide" id="loops" data-number="06 / 14" aria-label="Три цикла обратной связи">
+      <div class="frame">
+        <p class="eyebrow">Три цикла обратной связи</p>
+        <h2>Система должна давать <span class="accent">быстрые и реалистичные результаты</span></h2>
+        <div class="three-loops">
+          <article class="dev-loop" style="--tone:var(--cyan)"><span class="when">секунды → минуты</span><h3>Во время изменения</h3><ul><li>статический анализ</li><li>целевые модульные тесты</li><li>проверки локального контракта</li><li>диагностика для разработчика</li></ul><p class="decision">Решение: продолжить изменение</p></article>
+          <article class="dev-loop" style="--tone:var(--green)"><span class="when">минуты → час</span><h3>До слияния</h3><ul><li>проверка по уровню риска</li><li>компонентные и интеграционные тесты</li><li>отчёты и файлы проверки</li><li>обязательная проверка PR</li></ul><p class="decision">Решение: разрешить слияние</p></article>
+          <article class="dev-loop" style="--tone:var(--amber)"><span class="when">минуты → дни</span><h3>После доставки</h3><ul><li>доставка для ограниченной группы</li><li>SLO и лимит ошибок</li><li>синтетические тесты и телеметрия</li><li>изменение правил после инцидента</li></ul><p class="decision">Решение: продолжить, остановить или откатить</p></article>
+        </div>
+      </div>
+      <p class="source">Ранние тесты дают быстрый результат. Поздние тесты проверяют реальную среду.</p>
+    </section>
+
+    <section class="slide" id="risk" data-number="07 / 14" aria-label="Уровни риска изменения">
+      <div class="frame risk-layout">
+        <div>
+          <p class="eyebrow">Уровни риска</p>
+          <h2>Оценивайте <span class="accent">влияние изменения</span>, а не его размер</h2>
+          <div class="risk-axis">
+            <div class="risk-tier" style="--tone:var(--dim)"><b>T0</b><span>Документы и метаданные. Нет влияния во время работы.</span></div>
+            <div class="risk-tier" style="--tone:var(--cyan)"><b>T1</b><span>Изолированное и обратимое изменение.</span></div>
+            <div class="risk-tier" style="--tone:var(--green)"><b>T2</b><span>Критический путь, данные или совместимость.</span></div>
+            <div class="risk-tier" style="--tone:var(--amber)"><b>T3</b><span>Безопасность, деньги, конфиденциальность или миграция.</span></div>
+            <div class="risk-tier" style="--tone:var(--red)"><b>?</b><span>Неизвестный путь или неизвестная зависимость.</span></div>
+          </div>
+        </div>
+        <div class="risk-rules">
+          <div class="risk-rule"><span class="mark">01</span><p><strong>Уровень риска задаёт проверки.</strong> Он также задаёт рецензентов, способ доставки и ручные действия.</p></div>
+          <div class="risk-rule"><span class="mark">02</span><p><strong>Неизвестное влияние требует полной проверки.</strong> Не используйте сокращённый путь для неизвестного изменения.</p></div>
+          <div class="risk-rule"><span class="mark">03</span><p><strong>Храните классификацию в коде.</strong> Отрицательные тесты должны проверять выбор и ошибку по умолчанию.</p></div>
+          <div class="risk-rule"><span class="mark">04</span><p><strong>Ограничивайте исключение.</strong> Укажите точные commits, ответственного, причину, срок и журнал решения.</p></div>
+        </div>
+      </div>
+      <p class="source">Пример: Detach scripts/quality-gate и scripts/release-impact</p>
+    </section>
+
+    <section class="slide" id="portfolio" data-number="08 / 14" aria-label="Архитектура набора тестов">
+      <div class="frame">
+        <p class="eyebrow">Набор тестов</p>
+        <h2>Выбирайте тесты по <span class="accent">типу возможного отказа</span></h2>
+        <div class="table-scroll">
+          <table class="test-portfolio">
+            <thead><tr><th>Вид проверки</th><th>Основное свойство</th><th>Что находит</th><th>Что не заменяет</th></tr></thead>
+            <tbody>
+              <tr><td>Статическая</td><td>быстро и повторяемо</td><td>Синтаксис, опасные команды, расхождение документов и снижение правил</td><td>Поведение во время работы</td></tr>
+              <tr><td>Модульная</td><td>точная причина ошибки</td><td>Бизнес-логику, машины состояний, обязательные свойства и крайние случаи</td><td>Соединение компонентов</td></tr>
+              <tr><td>Контрактная</td><td>границы владения</td><td>Схемы, API, совместимость, адаптеры и миграции</td><td>Реальную инфраструктуру</td></tr>
+              <tr><td>Интеграционная</td><td>совместную работу</td><td>Базу данных, очереди, внешние протоколы, сборку и установку</td><td>Полный путь пользователя</td></tr>
+              <tr><td>Сквозная</td><td>критический путь</td><td>Несовпадение слоёв, разрешения, форму доставки и семантику интерфейса</td><td>Все варианты поведения</td></tr>
+              <tr><td>В продукте</td><td>реальную среду</td><td>Нагрузку, топологию, конфигурацию и редкие совместные отказы</td><td>Предотвращение до слияния</td></tr>
+              <tr><td>Ручная</td><td>неавтоматизируемое</td><td>Восприятие интерфейса, системные разрешения, оборудование и формальное решение</td><td>Регулярную регрессию</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="portfolio-rule"><p style="--tone:var(--green)"><strong>Покрытие задаёт минимум.</strong> Используйте общее значение и отдельные значения для критических файлов.</p><p style="--tone:var(--amber)"><strong>Сквозных тестов должно быть мало.</strong> Они дороги и хуже указывают причину ошибки.</p></div>
+      </div>
+      <p class="source">Набор должен содержать раннее предотвращение, интеграционную проверку и обнаружение в продукте</p>
+    </section>
+
+    <section class="slide" id="gate" data-number="09 / 14" aria-label="Как проектировать проверку готовности">
+      <div class="frame gate-design">
+        <div>
+          <p class="eyebrow">Проверка готовности</p>
+          <h2>Проверка готовности должна <span class="accent">принимать одно решение</span></h2>
+          <div class="gate-chain">
+            <article class="gate-principle"><span class="n">01</span><h3>Одна команда</h3><p>Локальная работа, CI и выпуск используют одни правила.</p></article>
+            <article class="gate-principle"><span class="n">02</span><h3>Выбор по влиянию</h3><p>Изменение выбирает достаточный набор. Неизвестное влияние выбирает полный набор.</p></article>
+            <article class="gate-principle"><span class="n">03</span><h3>Ошибка по умолчанию</h3><p>Превышение времени, отказ среды и неполный результат дают FAIL.</p></article>
+            <article class="gate-principle"><span class="n">04</span><h3>Понятная ошибка</h3><p>Результат указывает стадию, команду, журнал и команду диагностики.</p></article>
+            <article class="gate-principle"><span class="n">05</span><h3>Запрет снижения</h3><p>Отдельные тесты защищают минимумы тестов, покрытия и времени.</p></article>
+            <article class="gate-principle"><span class="n">06</span><h3>Тест правил</h3><p>Тесты проверяют выбор, возобновление, отчёты и статусы ошибок.</p></article>
+          </div>
+        </div>
+        <div class="anti-patterns">
+          <h3>Ошибочные решения</h3>
+          <ul>
+            <li>Повторять красный тест без установленной причины</li>
+            <li>Пропускать отказ изолированной среды или исполнителя</li>
+            <li>Запускать полный набор для каждого изменения</li>
+            <li>Считать рост покрытия ростом качества</li>
+            <li>Хранить ручную проверку только в памяти эксперта</li>
+            <li>Разрешать агенту самому выбирать достаточность проверки</li>
+          </ul>
+        </div>
+      </div>
+      <p class="source">Требования: версия правил, выбор по влиянию, ошибка по умолчанию и тесты самой проверки</p>
+    </section>
+
+    <section class="slide" id="evidence" data-number="10 / 14" aria-label="Стандарт результатов проверки">
+      <div class="frame evidence-layout">
+        <div>
+          <p class="eyebrow">Результаты проверки</p>
+          <h2>Результат должен оставаться <span class="accent">проверяемым после запуска</span></h2>
+          <div class="evidence-schema">
+            <article class="evidence-item"><span class="glyph">#01</span><h3>Входные данные</h3><p>Commit, база, diff, конфигурация и версия правил.</p></article>
+            <article class="evidence-item"><span class="glyph">#02</span><h3>План</h3><p>Уровень риска, выбранные стадии и зависимости.</p></article>
+            <article class="evidence-item"><span class="glyph">#03</span><h3>Выполнение</h3><p>Тип исполнителя, время, статус и повторные запуски.</p></article>
+            <article class="evidence-item"><span class="glyph">#04</span><h3>Выходные данные</h3><p>Журналы, отчёты тестов, файлы и диагностика.</p></article>
+            <article class="evidence-item"><span class="glyph">#05</span><h3>Целостность</h3><p>Хеш-суммы, происхождение и неизменяемое хранение.</p></article>
+            <article class="evidence-item"><span class="glyph">#06</span><h3>Решение</h3><p>Причина PASS или FAIL, ответственный и срок исключения.</p></article>
+          </div>
+        </div>
+        <div class="evidence-test">
+          <h3>Контрольный вопрос</h3>
+          <p class="question">Можно ли установить, <strong>что прошло</strong>, <strong>для каких байтов</strong> и <strong>по какой версии правил</strong>?</p>
+          <p>Если нельзя, это журнал диагностики. Это не результат готовности.</p>
+        </div>
+      </div>
+      <p class="source">Возобновление допустимо только для тех же входных данных и полного совместимого результата</p>
+    </section>
+
+    <section class="slide" id="platform" data-number="11 / 14" aria-label="Платформа CI и качества">
+      <div class="frame">
+        <p class="eyebrow">Платформа качества</p>
+        <h2>Отделите правила от <span class="accent">системы выполнения</span></h2>
+        <div class="platform-map">
+          <div class="platform-row"><div class="platform-label">Граф изменения</div><div class="platform-lane" style="--tone:var(--violet)"><span class="platform-chip">diff</span><span class="platform-chip">зависимости</span><span class="platform-chip">ответственные</span><span class="platform-chip">уровень риска</span><span class="platform-chip">обязательные проверки</span></div></div>
+          <div class="platform-row"><div class="platform-label">Правила</div><div class="platform-lane" style="--tone:var(--green)"><span class="platform-chip">выбор</span><span class="platform-chip">минимумы</span><span class="platform-chip">исключения</span><span class="platform-chip">ручные проверки</span></div></div>
+          <div class="platform-row"><div class="platform-label">Выполнение</div><div class="platform-lane" style="--tone:var(--cyan)"><span class="platform-chip">изолированные исполнители</span><span class="platform-chip">удалённый кеш</span><span class="platform-chip">части тестов</span><span class="platform-chip">изоляция ресурсов</span><span class="platform-chip">лимиты времени</span></div></div>
+          <div class="platform-row"><div class="platform-label">Результаты</div><div class="platform-lane" style="--tone:var(--blue)"><span class="platform-chip">отчёты</span><span class="platform-chip">хеш-суммы</span><span class="platform-chip">происхождение</span><span class="platform-chip">история</span><span class="platform-chip">API аудита</span></div></div>
+          <div class="platform-row"><div class="platform-label">Доставка</div><div class="platform-lane" style="--tone:var(--amber)"><span class="platform-chip">обязательная проверка PR</span><span class="platform-chip">ограниченная группа</span><span class="platform-chip">защита SLO</span><span class="platform-chip">откат</span></div></div>
+        </div>
+        <div class="platform-notes">
+          <article style="--tone:var(--green)"><h3>Основной путь</h3><p>Стандартный путь должен быть быстрее и безопаснее обхода.</p></article>
+          <article style="--tone:var(--cyan)"><h3>Изоляция</h3><p>Результат не должен зависеть от данных разработчика и системных утилит.</p></article>
+          <article style="--tone:var(--amber)"><h3>Ресурсы</h3><p>Планировщик должен учитывать CPU, диск, общие стенды и критический путь.</p></article>
+          <article style="--tone:var(--violet)"><h3>Интерфейс</h3><p>Платформа должна показывать план, причину выбора и команду диагностики.</p></article>
+        </div>
+      </div>
+      <p class="source">В большой организации проверка готовности должна быть продуктом платформенной команды</p>
+    </section>
+
+    <section class="slide" id="metrics" data-number="12 / 14" aria-label="Метрики системы качества">
+      <div class="frame">
+        <p class="eyebrow">Метрики</p>
+        <h2>Измеряйте <span class="accent">эффективность управления риском</span></h2>
+        <div class="metric-map">
+          <div class="metric-column" style="--tone:var(--green)">
+            <h3>Ранние показатели</h3>
+            <div class="metric-row"><span>Время проверки p50 и p95</span><b>скорость результата</b></div>
+            <div class="metric-row"><span>Доля нестабильных тестов и возраст ошибки</span><b>доверие к тестам</b></div>
+            <div class="metric-row"><span>Ложный выбор проверок</span><b>стоимость правил</b></div>
+            <div class="metric-row"><span>Покрытие критических путей проверками</span><b>полнота контрактов</b></div>
+            <div class="metric-row"><span>Готовность к откату</span><b>обратимость</b></div>
+            <div class="metric-row"><span>Количество и срок исключений</span><b>долг правил</b></div>
+          </div>
+          <div class="metric-column" style="--tone:var(--amber)">
+            <h3>Итоговые показатели</h3>
+            <div class="metric-row"><span>Дефекты после выпуска по тяжести</span><b>результат проверки</b></div>
+            <div class="metric-row"><span>Доля неуспешных изменений</span><b>качество доставки</b></div>
+            <div class="metric-row"><span>MTTD и MTTR</span><b>скорость восстановления</b></div>
+            <div class="metric-row"><span>Расход лимита ошибок SLO</span><b>влияние на пользователя</b></div>
+            <div class="metric-row"><span>Доля откатов и срочных исправлений</span><b>риск выпуска</b></div>
+            <div class="metric-row"><span>Повторные инциденты</span><b>качество обучения</b></div>
+          </div>
+        </div>
+        <div class="metric-warning"><strong>Не используйте косвенный показатель как цель.</strong> Покрытие и количество тестов задают минимум. Они не измеряют качество продукта напрямую.</div>
+      </div>
+      <p class="source">Основная цель: меньше тяжёлых дефектов при стабильной или более быстрой доставке результата проверки</p>
+    </section>
+
+    <section class="slide" id="roadmap" data-number="13 / 14" aria-label="План внедрения системы качества">
+      <div class="frame">
+        <p class="eyebrow">План на 90 дней</p>
+        <h2>Внедряйте систему в порядке <span class="accent">контракт → проверка → управление → обучение</span></h2>
+        <div class="roadmap">
+          <article class="roadmap-step" style="--tone:var(--cyan)"><span class="time">ДНИ 0–30</span><h3>Опишите риск</h3><ul><li>критические пути и виды отказов</li><li>ответственные команды и контракты</li><li>перечень текущих тестов</li><li>единые команды диагностики</li></ul><p class="exit">Результат: каждый критический путь имеет ответственного и карту проверок</p></article>
+          <article class="roadmap-step" style="--tone:var(--green)"><span class="time">ДНИ 31–60</span><h3>Создайте проверку готовности</h3><ul><li>одна команда</li><li>diff → риск → стадии</li><li>ошибка по умолчанию</li><li>отчёты, время и понятные ошибки</li></ul><p class="exit">Результат: один запуск даёт воспроизводимое решение</p></article>
+          <article class="roadmap-step" style="--tone:var(--amber)"><span class="time">ДНИ 61–90</span><h3>Защитите доставку</h3><ul><li>обязательная проверка PR</li><li>минимумы и правила исключений</li><li>ручные проверки выпуска</li><li>ограниченная группа и контракт отката</li></ul><p class="exit">Результат: обход FAIL требует явного решения руководителя</p></article>
+          <article class="roadmap-step" style="--tone:var(--violet)"><span class="time">СЛЕДУЮЩИЙ КВАРТАЛ</span><h3>Увеличьте масштаб</h3><ul><li>удалённое выполнение и разделение тестов</li><li>хранилище результатов</li><li>владение нестабильными тестами</li><li>изменение правил после инцидента</li></ul><p class="exit">Результат: стоимость CI не растёт линейно с числом команд</p></article>
+        </div>
+      </div>
+      <p class="source">Начните с модели решения и карты критических рисков. Не начинайте с полной переработки тестов.</p>
+    </section>
+
+    <section class="slide" id="target" data-number="14 / 14" aria-label="Целевая система качества">
+      <div class="frame">
+        <p class="eyebrow">Целевое состояние</p>
+        <h2>Качество должно быть <span class="accent">частью процесса разработки</span></h2>
+        <div class="target">
+          <div class="score-list">
+            <div class="score" style="--score:94%;--tone:var(--green)"><span>Описание риска</span><div class="bar"><i></i></div><b>явное</b></div>
+            <div class="score" style="--score:91%;--tone:var(--green)"><span>Целостность результатов</span><div class="bar"><i></i></div><b>проверяемая</b></div>
+            <div class="score" style="--score:88%;--tone:var(--cyan)"><span>Скорость результата</span><div class="bar"><i></i></div><b>по уровням</b></div>
+            <div class="score" style="--score:86%;--tone:var(--blue)"><span>Управление доставкой</span><div class="bar"><i></i></div><b>обязательное</b></div>
+            <div class="score" style="--score:82%;--tone:var(--amber)"><span>Обучение по продукту</span><div class="bar"><i></i></div><b>замкнутое</b></div>
+            <div class="score" style="--score:76%;--tone:var(--violet)"><span>Масштаб платформы</span><div class="bar"><i></i></div><b>экономичный</b></div>
+          </div>
+          <div class="target-state">
+            <p class="big">Каждое изменение имеет <strong>риск, ответственного, проверки и способ отката</strong>.</p>
+            <p>Агент, человек и CI используют одни правила. Данные продукта изменяют контракты и тесты. Повторный запуск без причины не меняет FAIL на PASS.</p>
+          </div>
+        </div>
+        <div class="blueprint">
+          <div><b>1 · Контракт</b><span>Опишите результат, обязательные свойства и границы</span></div>
+          <div><b>2 · Классификация</b><span>Diff и зависимости определяют уровень риска</span></div>
+          <div><b>3 · Проверка</b><span>Запустите минимально достаточный набор</span></div>
+          <div><b>4 · Управление</b><span>Требуйте проверку PR и ограничивайте исключения</span></div>
+          <div><b>5 · Обучение</b><span>Сигнал продукта должен изменять правила</span></div>
+        </div>
+      </div>
+      <p class="source">Цель: управляемая система качества с проверяемыми результатами и постоянной обратной связью</p>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll('.slide')];
+      const nav = document.querySelector('.nav');
+      const progress = document.querySelector('.progress');
+      let current = 0;
+
+      const go = (index) => {
+        const next = Math.max(0, Math.min(slides.length - 1, index));
+        slides[next].scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      };
+
+      slides.forEach((slide, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('aria-label', `Слайд ${index + 1}: ${slide.getAttribute('aria-label') || ''}`);
+        button.addEventListener('click', () => go(index));
+        nav.appendChild(button);
+      });
+
+      const dots = [...nav.querySelectorAll('button')];
+      const update = (index) => {
+        current = index;
+        dots.forEach((dot, i) => dot.setAttribute('aria-current', i === index ? 'true' : 'false'));
+        progress.style.setProperty('--progress', `${((index + 1) / slides.length) * 100}%`);
+        history.replaceState(null, '', `#${slides[index].id}`);
+      };
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (visible) update(slides.indexOf(visible.target));
+      }, { threshold: [0.52, 0.72] });
+
+      slides.forEach(slide => observer.observe(slide));
+
+      document.addEventListener('keydown', (event) => {
+        if (['ArrowDown', 'ArrowRight', 'PageDown', ' '].includes(event.key)) {
+          event.preventDefault();
+          go(current + 1);
+        } else if (['ArrowUp', 'ArrowLeft', 'PageUp'].includes(event.key)) {
+          event.preventDefault();
+          go(current - 1);
+        } else if (event.key === 'Home') {
+          event.preventDefault();
+          go(0);
+        } else if (event.key === 'End') {
+          event.preventDefault();
+          go(slides.length - 1);
+        }
+      });
+
+      document.querySelector('[data-go="prev"]').addEventListener('click', () => go(current - 1));
+      document.querySelector('[data-go="next"]').addEventListener('click', () => go(current + 1));
+
+      const hashIndex = slides.findIndex(slide => `#${slide.id}` === location.hash);
+      if (hashIndex >= 0) requestAnimationFrame(() => go(hashIndex));
+      update(hashIndex >= 0 ? hashIndex : 0);
+    })();
+  </script>
+</body>
+</html>

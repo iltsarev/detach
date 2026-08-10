@@ -1,0 +1,1441 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Как в Detach построены agentic-driven development и quality gates">
+  <title>Detach · Разработка с агентами</title>
+  <style>
+    :root {
+      --ink: #f6f4ec;
+      --muted: #a7adbb;
+      --dim: #727989;
+      --night: #090b11;
+      --panel: #11141d;
+      --panel-2: #171b26;
+      --line: rgba(246, 244, 236, 0.16);
+      --cyan: #67e8f9;
+      --blue: #7c9cff;
+      --lime: #c8ff69;
+      --amber: #ffbe62;
+      --red: #ff7272;
+      --violet: #c7a6ff;
+      --slide-pad: clamp(28px, 5vw, 76px);
+      --content: 1320px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--night);
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 78% 14%, rgba(103, 232, 249, 0.08), transparent 24rem),
+        radial-gradient(circle at 14% 80%, rgba(124, 156, 255, 0.06), transparent 28rem),
+        var(--night);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    button, a { font: inherit; }
+
+    .deck {
+      scroll-snap-type: y mandatory;
+    }
+
+    .slide {
+      position: relative;
+      min-height: 100svh;
+      scroll-snap-align: start;
+      scroll-snap-stop: always;
+      display: grid;
+      align-items: center;
+      padding: var(--slide-pad);
+      border-bottom: 1px solid rgba(246, 244, 236, 0.08);
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      background-image:
+        linear-gradient(rgba(255,255,255,.027) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.027) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: linear-gradient(to bottom, transparent 2%, black 22%, black 78%, transparent 98%);
+    }
+
+    .slide::after {
+      content: attr(data-number);
+      position: absolute;
+      right: clamp(20px, 3vw, 48px);
+      top: clamp(18px, 3vw, 40px);
+      color: var(--dim);
+      font: 600 12px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .12em;
+    }
+
+    .frame {
+      width: min(100%, var(--content));
+      margin: 0 auto;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 22px;
+      color: var(--cyan);
+      font: 700 12px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 34px;
+      height: 2px;
+      background: currentColor;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 1100px;
+      margin-bottom: 26px;
+      font-size: clamp(48px, 7.1vw, 104px);
+      line-height: .94;
+      letter-spacing: -.055em;
+      text-wrap: balance;
+    }
+
+    h2 {
+      max-width: 1100px;
+      margin-bottom: clamp(28px, 4vh, 48px);
+      font-size: clamp(34px, 4.4vw, 64px);
+      line-height: 1;
+      letter-spacing: -.045em;
+      text-wrap: balance;
+    }
+
+    h3 {
+      margin-bottom: 10px;
+      font-size: clamp(18px, 1.7vw, 25px);
+      line-height: 1.1;
+      letter-spacing: -.02em;
+    }
+
+    p {
+      color: var(--muted);
+      font-size: clamp(16px, 1.45vw, 21px);
+      line-height: 1.45;
+    }
+
+    strong { color: var(--ink); }
+    em { color: var(--cyan); font-style: normal; }
+
+    .lead {
+      max-width: 840px;
+      font-size: clamp(20px, 2vw, 30px);
+      line-height: 1.32;
+      letter-spacing: -.02em;
+    }
+
+    .accent { color: var(--lime); }
+    .warn { color: var(--amber); }
+    .danger { color: var(--red); }
+    .quiet { color: var(--muted); }
+
+    .mono, code {
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: .9em;
+    }
+
+    code {
+      color: var(--cyan);
+      background: rgba(103, 232, 249, .08);
+      border: 1px solid rgba(103, 232, 249, .18);
+      border-radius: 6px;
+      padding: .12em .38em;
+      white-space: nowrap;
+    }
+
+    .source {
+      position: absolute;
+      left: var(--slide-pad);
+      bottom: clamp(14px, 2vw, 24px);
+      max-width: min(78vw, 1000px);
+      margin: 0;
+      color: #686f7e;
+      font: 500 10px/1.35 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr);
+      align-items: end;
+      gap: clamp(38px, 7vw, 120px);
+    }
+
+    .hero-stamp {
+      border-left: 2px solid var(--cyan);
+      padding: 8px 0 8px 22px;
+      font: 600 clamp(13px, 1.2vw, 17px)/1.65 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      color: var(--muted);
+    }
+
+    .hero-stamp b { color: var(--ink); }
+
+    .signal {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 22px;
+      color: var(--lime);
+      font: 700 12px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .signal i {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 7px rgba(200, 255, 105, .1), 0 0 24px rgba(200, 255, 105, .65);
+    }
+
+    .thesis {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .thesis article {
+      min-height: 235px;
+      padding: 28px 24px 24px;
+      border-right: 1px solid var(--line);
+    }
+
+    .thesis article:last-child { border-right: 0; }
+
+    .thesis .index {
+      display: block;
+      margin-bottom: 44px;
+      color: var(--dim);
+      font: 600 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .thesis p { margin: 0; font-size: clamp(14px, 1.25vw, 18px); }
+
+    .verdict {
+      margin-top: 30px;
+      display: flex;
+      align-items: baseline;
+      gap: 20px;
+    }
+
+    .verdict b {
+      color: var(--lime);
+      font-size: clamp(28px, 3vw, 44px);
+      letter-spacing: -.04em;
+    }
+
+    .verdict span { color: var(--muted); font-size: clamp(15px, 1.4vw, 20px); }
+
+    .loop {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(110px, 1fr));
+      align-items: stretch;
+      gap: 0;
+    }
+
+    .loop-step {
+      position: relative;
+      min-height: 255px;
+      padding: 24px 18px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,.025), transparent);
+    }
+
+    .loop-step:last-child { border-right: 1px solid var(--line); }
+
+    .loop-step::after {
+      content: "→";
+      position: absolute;
+      z-index: 2;
+      right: -13px;
+      top: 46%;
+      width: 26px;
+      text-align: center;
+      color: var(--cyan);
+      background: var(--night);
+      font-size: 18px;
+    }
+
+    .loop-step:last-child::after { display: none; }
+
+    .loop-step .num {
+      color: var(--cyan);
+      font: 700 12px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .loop-step h3 { margin-top: 46px; }
+    .loop-step p { margin: 0; font-size: 14px; line-height: 1.4; }
+
+    .human-loop {
+      margin: 22px auto 0;
+      width: min(760px, 80%);
+      padding-top: 16px;
+      border-top: 1px dashed rgba(255, 190, 98, .45);
+      color: var(--amber);
+      text-align: center;
+      font: 650 12px/1.4 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .05em;
+    }
+
+    .contract-stack {
+      display: grid;
+      grid-template-columns: minmax(300px, .9fr) minmax(0, 1.1fr);
+      gap: clamp(40px, 8vw, 110px);
+      align-items: center;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .layer {
+      position: relative;
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 18px;
+      align-items: center;
+      min-height: 66px;
+      padding: 14px 20px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.025);
+    }
+
+    .layer::before {
+      content: "";
+      position: absolute;
+      left: -1px;
+      top: -1px;
+      bottom: -1px;
+      width: 4px;
+      background: var(--tone, var(--cyan));
+    }
+
+    .layer b { font-size: 16px; }
+    .layer span { color: var(--muted); font-size: 14px; }
+
+    .layer.plan {
+      width: 84%;
+      margin: 14px auto;
+      border-style: dashed;
+      --tone: var(--amber);
+    }
+
+    .principles {
+      display: grid;
+      gap: 20px;
+    }
+
+    .principle {
+      display: grid;
+      grid-template-columns: 46px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .principle .mark {
+      color: var(--lime);
+      font: 700 26px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .principle p { margin: 0; font-size: clamp(15px, 1.3vw, 19px); }
+
+    .context-map {
+      display: grid;
+      grid-template-columns: 1fr 120px 1fr;
+      gap: 0;
+      align-items: stretch;
+    }
+
+    .context-column {
+      display: grid;
+      grid-template-rows: repeat(5, 1fr);
+      border: 1px solid var(--line);
+    }
+
+    .context-row {
+      display: grid;
+      align-items: center;
+      min-height: 64px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .context-row:last-child { border-bottom: 0; }
+    .context-row small { color: var(--dim); display: block; margin-top: 3px; }
+
+    .context-router {
+      position: relative;
+      display: grid;
+      place-items: center;
+      color: var(--cyan);
+      font: 700 12px/1.35 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .context-router::before,
+    .context-router::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      width: 34%;
+      height: 1px;
+      background: var(--cyan);
+    }
+
+    .context-router::before { left: 0; }
+    .context-router::after { right: 0; }
+
+    .context-bottom {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+      margin-top: 28px;
+    }
+
+    .context-note {
+      padding-top: 16px;
+      border-top: 2px solid var(--tone, var(--cyan));
+    }
+
+    .context-note p { margin: 0; font-size: 15px; }
+
+    .ladder {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      align-items: end;
+    }
+
+    .rung {
+      position: relative;
+      min-height: var(--h);
+      padding: 20px 18px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 10%, transparent), transparent 72%);
+    }
+
+    .rung::before {
+      content: "";
+      position: absolute;
+      left: -1px;
+      right: -1px;
+      top: -1px;
+      height: 4px;
+      background: var(--tone);
+    }
+
+    .rung .speed {
+      display: block;
+      margin-bottom: 20px;
+      color: var(--tone);
+      font: 700 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .rung p { margin: 14px 0 0; font-size: 14px; line-height: 1.38; }
+
+    .readiness-rule {
+      margin-top: 26px;
+      padding: 18px 22px;
+      border-left: 3px solid var(--lime);
+      background: rgba(200, 255, 105, .05);
+      color: var(--muted);
+      font-size: clamp(15px, 1.35vw, 19px);
+    }
+
+    .impact-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: clamp(12px, 1vw, 15px);
+    }
+
+    .impact-table th,
+    .impact-table td {
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    .impact-table thead th {
+      color: var(--dim);
+      font: 700 10px/1.15 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .impact-table th:first-child,
+    .impact-table td:first-child {
+      width: 25%;
+      text-align: left;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 12px rgba(103,232,249,.35);
+    }
+
+    .dot.forced { background: var(--lime); box-shadow: 0 0 12px rgba(200,255,105,.35); }
+    .empty { color: #343947; }
+
+    .fail-safe {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 24px;
+      margin-top: 30px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .fail-safe .arrow { color: var(--red); font-size: 30px; }
+
+    .topology {
+      display: grid;
+      gap: 18px;
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 135px 1fr;
+      gap: 22px;
+      align-items: center;
+    }
+
+    .phase-label {
+      color: var(--dim);
+      font: 700 11px/1.35 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      text-align: right;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .stage-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      min-height: 58px;
+      padding: 10px 12px;
+      border-left: 2px solid var(--tone, var(--cyan));
+      background: linear-gradient(90deg, color-mix(in srgb, var(--tone, var(--cyan)) 8%, transparent), transparent 65%);
+    }
+
+    .stage-chip {
+      padding: 10px 13px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      font: 650 12px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      white-space: nowrap;
+    }
+
+    .stage-chip.critical { border-color: rgba(200,255,105,.45); color: var(--lime); }
+    .stage-chip.optional { border-style: dashed; color: var(--muted); }
+
+    .topology-notes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 26px;
+      margin-top: 30px;
+    }
+
+    .topology-notes p { margin: 8px 0 0; font-size: 14px; }
+
+    .coverage-strip {
+      display: grid;
+      grid-template-columns: 1fr 1.3fr 1fr;
+      gap: 1px;
+      margin-bottom: 26px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+
+    .metric {
+      padding: 18px 20px;
+      background: var(--night);
+    }
+
+    .metric b {
+      display: block;
+      margin-bottom: 5px;
+      font-size: clamp(25px, 2.8vw, 40px);
+      letter-spacing: -.04em;
+    }
+
+    .metric span { color: var(--muted); font-size: 13px; }
+
+    .find-matrix {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .find-matrix th,
+    .find-matrix td {
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: clamp(12px, 1vw, 15px);
+      line-height: 1.35;
+    }
+
+    .find-matrix th {
+      color: var(--dim);
+      text-align: left;
+      font: 700 10px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .find-matrix td:first-child { width: 23%; color: var(--ink); font-weight: 650; }
+    .find-matrix td:nth-child(2) { color: #c3cad7; }
+    .find-matrix td:nth-child(3) { color: #8d94a3; }
+
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, .78fr);
+      gap: clamp(42px, 7vw, 100px);
+      align-items: center;
+    }
+
+    .evidence-chain {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .evidence-chain article {
+      min-height: 142px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.022);
+    }
+
+    .evidence-chain .glyph {
+      display: block;
+      margin-bottom: 28px;
+      color: var(--cyan);
+      font: 700 16px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .evidence-chain p { margin: 8px 0 0; font-size: 13px; }
+
+    .anti-cheat {
+      border-left: 3px solid var(--red);
+      padding-left: 26px;
+    }
+
+    .anti-cheat ul,
+    .reuse-list,
+    .gap-list {
+      list-style: none;
+      padding: 0;
+      margin: 20px 0 0;
+    }
+
+    .anti-cheat li,
+    .reuse-list li,
+    .gap-list li {
+      position: relative;
+      padding: 8px 0 8px 26px;
+      color: var(--muted);
+      font-size: clamp(14px, 1.2vw, 17px);
+      line-height: 1.35;
+    }
+
+    .anti-cheat li::before,
+    .gap-list li::before {
+      content: "×";
+      position: absolute;
+      left: 0;
+      color: var(--red);
+      font-weight: 800;
+    }
+
+    .reuse-list li::before {
+      content: "↗";
+      position: absolute;
+      left: 0;
+      color: var(--lime);
+      font-weight: 800;
+    }
+
+    .governance-flow {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0;
+      align-items: center;
+    }
+
+    .gov-node {
+      position: relative;
+      min-height: 160px;
+      padding: 20px 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.022);
+    }
+
+    .gov-node + .gov-node { border-left: 0; }
+
+    .gov-node::after {
+      content: "→";
+      position: absolute;
+      right: -12px;
+      top: 38%;
+      z-index: 2;
+      width: 24px;
+      color: var(--cyan);
+      background: var(--night);
+      text-align: center;
+    }
+
+    .gov-node:last-child::after { display: none; }
+    .gov-node b { display: block; margin: 20px 0 10px; font-size: 15px; }
+    .gov-node p { margin: 0; font-size: 12px; line-height: 1.35; }
+    .gov-node .tag { color: var(--cyan); font: 700 10px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    .gov-node.guard { border-top: 3px solid var(--lime); }
+    .gov-node.human { border-top: 3px solid var(--amber); }
+
+    .governance-rule {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 36px;
+      margin-top: 32px;
+    }
+
+    .governance-rule p {
+      margin: 0;
+      padding-top: 15px;
+      border-top: 1px solid var(--line);
+      font-size: 15px;
+    }
+
+    .boundary {
+      display: grid;
+      grid-template-columns: 1fr 72px 1fr;
+      align-items: stretch;
+      gap: 0;
+    }
+
+    .boundary-side {
+      padding: 28px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.02);
+    }
+
+    .boundary-side.auto { border-top: 4px solid var(--lime); }
+    .boundary-side.manual { border-top: 4px solid var(--amber); }
+
+    .boundary-side ul {
+      list-style: none;
+      margin: 24px 0 0;
+      padding: 0;
+    }
+
+    .boundary-side li {
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(246,244,236,.09);
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .boundary-side li:last-child { border-bottom: 0; }
+
+    .boundary-divider {
+      position: relative;
+      display: grid;
+      place-items: center;
+      color: var(--red);
+      font: 800 11px/1.3 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      text-align: center;
+      text-transform: uppercase;
+      writing-mode: vertical-rl;
+    }
+
+    .boundary-divider::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 1px;
+      background: rgba(255,114,114,.45);
+      z-index: -1;
+    }
+
+    .boundary-divider span { padding: 12px 6px; background: var(--night); }
+
+    .bigtech {
+      display: grid;
+      grid-template-columns: .9fr 1.1fr;
+      gap: clamp(42px, 7vw, 100px);
+    }
+
+    .reuse-core {
+      border: 1px solid rgba(200,255,105,.35);
+      padding: 28px;
+      background: linear-gradient(145deg, rgba(200,255,105,.08), transparent 65%);
+    }
+
+    .reuse-core .formula {
+      margin: 34px 0;
+      color: var(--ink);
+      font-size: clamp(26px, 3vw, 42px);
+      line-height: 1.18;
+      letter-spacing: -.04em;
+    }
+
+    .reuse-core p:last-child { margin-bottom: 0; }
+
+    .scale-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px 24px;
+    }
+
+    .scale-grid article {
+      padding-top: 16px;
+      border-top: 2px solid var(--tone, var(--cyan));
+    }
+
+    .scale-grid p { margin: 8px 0 0; font-size: 14px; }
+
+    .scoreboard {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr);
+      gap: clamp(44px, 7vw, 90px);
+      align-items: center;
+    }
+
+    .score-list { display: grid; gap: 17px; }
+
+    .score {
+      display: grid;
+      grid-template-columns: 190px 1fr 90px;
+      gap: 18px;
+      align-items: center;
+    }
+
+    .score span { color: var(--muted); font-size: 14px; }
+
+    .bar {
+      height: 8px;
+      background: #232835;
+      overflow: hidden;
+    }
+
+    .bar i {
+      display: block;
+      width: var(--score);
+      height: 100%;
+      background: var(--tone, var(--cyan));
+    }
+
+    .score b {
+      color: var(--tone, var(--cyan));
+      font: 700 11px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      text-align: right;
+      text-transform: uppercase;
+    }
+
+    .final-verdict {
+      padding-left: 28px;
+      border-left: 4px solid var(--lime);
+    }
+
+    .final-verdict .big {
+      margin: 0 0 22px;
+      color: var(--ink);
+      font-size: clamp(28px, 3.2vw, 46px);
+      line-height: 1.08;
+      letter-spacing: -.04em;
+    }
+
+    .final-verdict p:last-child { margin-bottom: 0; }
+
+    .blueprint {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1px;
+      margin-top: 38px;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .blueprint div {
+      min-height: 95px;
+      padding: 16px;
+      background: var(--night);
+    }
+
+    .blueprint b { display: block; margin-bottom: 9px; color: var(--lime); font-size: 13px; }
+    .blueprint span { color: var(--muted); font-size: 12px; line-height: 1.35; }
+
+    .nav {
+      position: fixed;
+      z-index: 10;
+      top: 50%;
+      right: clamp(10px, 1.5vw, 24px);
+      transform: translateY(-50%);
+      display: grid;
+      gap: 7px;
+      padding: 10px 8px;
+      border: 1px solid rgba(246,244,236,.1);
+      border-radius: 99px;
+      background: rgba(9,11,17,.72);
+      backdrop-filter: blur(16px);
+    }
+
+    .nav button {
+      width: 7px;
+      height: 7px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: #4a5060;
+      cursor: pointer;
+      transition: transform .2s ease, background .2s ease;
+    }
+
+    .nav button:hover { background: var(--cyan); transform: scale(1.3); }
+    .nav button[aria-current="true"] { background: var(--lime); transform: scale(1.45); }
+
+    .progress {
+      position: fixed;
+      z-index: 11;
+      left: 0;
+      top: 0;
+      width: var(--progress, 0%);
+      height: 3px;
+      background: linear-gradient(90deg, var(--cyan), var(--lime));
+      transition: width .22s ease;
+    }
+
+    .controls {
+      position: fixed;
+      z-index: 10;
+      right: clamp(18px, 3vw, 46px);
+      bottom: 18px;
+      display: flex;
+      gap: 8px;
+      opacity: .62;
+      transition: opacity .2s ease;
+    }
+
+    .controls:hover { opacity: 1; }
+
+    .controls button {
+      width: 36px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      background: rgba(9,11,17,.76);
+      cursor: pointer;
+    }
+
+    .controls button:hover { color: var(--ink); border-color: rgba(103,232,249,.5); }
+
+    .hint {
+      position: absolute;
+      right: var(--slide-pad);
+      bottom: clamp(14px, 2vw, 24px);
+      color: #686f7e;
+      font: 500 10px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    @media (max-width: 980px) {
+      .slide { min-height: auto; padding-top: 72px; padding-bottom: 80px; }
+      .hero-grid, .contract-stack, .evidence-grid, .bigtech, .scoreboard { grid-template-columns: 1fr; }
+      .thesis { grid-template-columns: 1fr 1fr; }
+      .thesis article:nth-child(2) { border-right: 0; }
+      .thesis article:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .loop { grid-template-columns: repeat(2, 1fr); }
+      .loop-step:nth-child(2n)::after { display: none; }
+      .ladder { grid-template-columns: 1fr; align-items: stretch; }
+      .rung { min-height: auto; }
+      .topology-notes, .evidence-chain { grid-template-columns: 1fr 1fr; }
+      .governance-flow { grid-template-columns: repeat(2, 1fr); }
+      .gov-node + .gov-node { border-left: 1px solid var(--line); }
+      .gov-node::after { display: none; }
+      .impact-table { min-width: 900px; }
+      .table-scroll { overflow-x: auto; padding-bottom: 8px; }
+      .nav { display: none; }
+      .source { position: static; margin-top: 34px; max-width: none; }
+      .hint { display: none; }
+    }
+
+    @media (max-width: 640px) {
+      :root { --slide-pad: 24px; }
+      .thesis, .context-bottom, .governance-rule, .scale-grid, .topology-notes, .evidence-chain { grid-template-columns: 1fr; }
+      .thesis article { border-right: 0; border-bottom: 1px solid var(--line); }
+      .loop { grid-template-columns: 1fr; }
+      .loop-step::after { display: none; }
+      .context-map { grid-template-columns: 1fr; gap: 14px; }
+      .context-router { min-height: 48px; }
+      .context-router::before, .context-router::after { width: 37%; }
+      .phase { grid-template-columns: 1fr; gap: 5px; }
+      .phase-label { text-align: left; }
+      .coverage-strip { grid-template-columns: 1fr; }
+      .boundary { grid-template-columns: 1fr; gap: 18px; }
+      .boundary-divider { min-height: 42px; writing-mode: initial; }
+      .boundary-divider::before { left: 0; right: 0; top: 50%; bottom: auto; width: auto; height: 1px; }
+      .governance-flow, .blueprint { grid-template-columns: 1fr; }
+      .score { grid-template-columns: 130px 1fr; }
+      .score b { grid-column: 2; text-align: left; }
+      .controls { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition: none !important; }
+    }
+
+    @media print {
+      @page { size: 13.333in 7.5in; margin: 0; }
+      html, body { background: var(--night); print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .slide { width: 13.333in; height: 7.5in; min-height: 0; page-break-after: always; padding: .48in .62in; }
+      .nav, .progress, .controls, .hint { display: none !important; }
+      .source { left: .62in; bottom: .16in; }
+      h1 { font-size: 64px; }
+      h2 { font-size: 42px; margin-bottom: 24px; }
+      p { font-size: 15px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <nav class="nav" aria-label="Навигация по слайдам"></nav>
+  <div class="controls" aria-label="Управление презентацией">
+    <button type="button" data-go="prev" aria-label="Предыдущий слайд">↑</button>
+    <button type="button" data-go="next" aria-label="Следующий слайд">↓</button>
+  </div>
+
+  <main class="deck">
+    <section class="slide" id="start" data-number="01 / 14" aria-label="Титульный слайд">
+      <div class="frame hero-grid">
+        <div>
+          <div class="signal"><i></i> политика 12 · проверяемые результаты</div>
+          <p class="eyebrow">Система разработки Detach</p>
+          <h1>Разработка с агентами и <span class="accent">проверки качества</span></h1>
+          <p class="lead">Текущий процесс разработки. Роли документов, тестов, проверки <code>quality-gate</code>, CI и выпуска.</p>
+        </div>
+        <div class="hero-stamp"><b>Содержание</b><br>процесс разработки<br>спецификации<br>наборы тестов<br>проверка готовности<br>выпуск<br>применение в бигтехе</div>
+      </div>
+      <p class="source">Разбор текущего репозитория · 10 августа 2026</p>
+      <span class="hint">↓ или пробел — следующий слайд</span>
+    </section>
+
+    <section class="slide" id="thesis" data-number="02 / 14" aria-label="Главный вывод">
+      <div class="frame">
+        <p class="eyebrow">Главный вывод</p>
+        <h2>В репозитории действует <span class="accent">полный процесс разработки с агентами</span></h2>
+        <div class="thesis">
+          <article><span class="index">01 · КОНТЕКСТ</span><h3>Агент читает нужные правила</h3><p>Файл <code>AGENTS.md</code> направляет агента к одной спецификации.</p></article>
+          <article><span class="index">02 · КОНТРАКТ</span><h3>Требования хранятся в репозитории</h3><p>README, спецификации и тесты описывают текущее поведение.</p></article>
+          <article><span class="index">03 · ПРОВЕРКА</span><h3>Изменение проходит обязательные тесты</h3><p>Состав тестов зависит от изменённых файлов.</p></article>
+          <article><span class="index">04 · ДОСТАВКА</span><h3>CI запрещает непроверенное слияние</h3><p>Выпуск использует дополнительные автоматические и ручные проверки.</p></article>
+        </div>
+        <div class="verdict"><b>Процесс работает</b><span>Он подходит для одного продукта. Масштаб организации пока не проверен.</span></div>
+      </div>
+      <p class="source">AGENTS.md · docs/specs/documentation.md · docs/quality-gates.md · .github/workflows/quality-gates.yml</p>
+    </section>
+
+    <section class="slide" id="loop" data-number="03 / 14" aria-label="Полный цикл разработки">
+      <div class="frame">
+        <p class="eyebrow">Процесс разработки</p>
+        <h2>Процесс содержит <span class="accent">восемь обязательных действий</span></h2>
+        <div class="loop" aria-label="Этапы процесса разработки">
+          <article class="loop-step"><span class="num">01</span><h3>Задача</h3><p>Определите результат, ограничения и риск.</p></article>
+          <article class="loop-step"><span class="num">02</span><h3>Контекст</h3><p>Прочитайте одну спецификацию из карты в <code>AGENTS.md</code>.</p></article>
+          <article class="loop-step"><span class="num">03</span><h3>Контракт</h3><p>Уточните наблюдаемое поведение. Создайте ExecPlan для сложной задачи.</p></article>
+          <article class="loop-step"><span class="num">04</span><h3>Изменение</h3><p>Измените код, тест и спецификацию вместе.</p></article>
+          <article class="loop-step"><span class="num">05</span><h3>Диагностика</h3><p>Запустите один целевой тест.</p></article>
+          <article class="loop-step"><span class="num">06</span><h3>Готовность</h3><p>Запустите <code>quality-gate</code> для текущего изменения.</p></article>
+          <article class="loop-step"><span class="num">07</span><h3>Запрос на слияние</h3><p>Добавьте только файлы задачи. Дождитесь обязательной проверки CI.</p></article>
+          <article class="loop-step"><span class="num">08</span><h3>Основная ветка</h3><p>Выполните слияние через PR. Проверьте равенство с upstream.</p></article>
+        </div>
+        <div class="human-loop">Человек определяет требование и выполняет ручные проверки выпуска</div>
+      </div>
+      <p class="source">AGENTS.md: Start here · Verification loop · Definition of done</p>
+    </section>
+
+    <section class="slide" id="contracts" data-number="04 / 14" aria-label="Зачем нужны спецификации и документы">
+      <div class="frame contract-stack">
+        <div>
+          <p class="eyebrow">Документы и код</p>
+          <h2>Каждый документ имеет <span class="accent">одну функцию</span></h2>
+          <div class="stack" aria-label="Иерархия инженерных контрактов">
+            <div class="layer" style="--tone:var(--violet)"><b>README</b><span>Описывает поведение для пользователя</span></div>
+            <div class="layer" style="--tone:var(--cyan)"><b>Спецификация</b><span>Описывает границы и обязательные свойства</span></div>
+            <div class="layer plan"><b>ExecPlan</b><span>Хранит временный план сложной задачи. Git его игнорирует.</span></div>
+            <div class="layer" style="--tone:var(--blue)"><b>Код</b><span>Реализует текущий контракт</span></div>
+            <div class="layer" style="--tone:var(--lime)"><b>Тест</b><span>Проверяет конкретное свойство</span></div>
+            <div class="layer" style="--tone:var(--amber)"><b>Quality gate</b><span>Определяет достаточный набор проверок</span></div>
+          </div>
+        </div>
+        <div class="principles">
+          <div class="principle"><span class="mark">01</span><p><strong>Отделяйте временный план от постоянного контракта.</strong> После задачи сохраните только действующие требования.</p></div>
+          <div class="principle"><span class="mark">02</span><p><strong>Используйте один термин для одного понятия.</strong> Не пересказывайте код в спецификации.</p></div>
+          <div class="principle"><span class="mark">03</span><p><strong>Устраняйте противоречие.</strong> Согласуйте требование, если README, спецификация, код и тест различаются.</p></div>
+          <div class="principle"><span class="mark">04</span><p><strong>Обновляйте текст вместе с поведением.</strong> Зелёный тест не исправляет устаревший документ.</p></div>
+        </div>
+      </div>
+      <p class="source">docs/specs/README.md · docs/specs/documentation.md · docs/exec-plan-template.md</p>
+    </section>
+
+    <section class="slide" id="context" data-number="05 / 14" aria-label="Контекст агента">
+      <div class="frame">
+        <p class="eyebrow">Контекст агента</p>
+        <h2>Агент получает <span class="accent">только нужный контекст</span></h2>
+        <div class="context-map">
+          <div class="context-column" aria-label="Области изменения">
+            <div class="context-row"><strong>Среда выполнения</strong><small>CLI · состояние · хранилище · tmux</small></div>
+            <div class="context-row"><strong>Питание</strong><small>helper · watchdog · закрытая крышка</small></div>
+            <div class="context-row"><strong>Приложение</strong><small>интерфейс · начальная настройка · Sparkle</small></div>
+            <div class="context-row"><strong>Выпуск</strong><small>сборка · подпись · публикация</small></div>
+            <div class="context-row"><strong>Документы</strong><small>правила агента · спецификации · тестовый процесс</small></div>
+          </div>
+          <div class="context-router">карта<br>AGENTS</div>
+          <div class="context-column" aria-label="Маршрутизированные спецификации">
+            <div class="context-row"><strong>runtime.md</strong><small>+ один тест Swift или shell</small></div>
+            <div class="context-row"><strong>power.md</strong><small>+ целевой набор Power</small></div>
+            <div class="context-row"><strong>app.md</strong><small>+ целевой набор интерфейса</small></div>
+            <div class="context-row"><strong>release.md</strong><small>+ одна проверка выпуска</small></div>
+            <div class="context-row"><strong>documentation.md</strong><small>+ docs-contract.sh</small></div>
+          </div>
+        </div>
+        <div class="context-bottom">
+          <div class="context-note" style="--tone:var(--lime)"><h3>Результат</h3><p>Агент быстрее находит требования. Codex и Claude Code используют одинаковые правила.</p></div>
+          <div class="context-note" style="--tone:var(--amber)"><h3>Условие</h3><p>Карта и спецификации должны быть актуальны. Тест документации проверяет их структуру.</p></div>
+        </div>
+      </div>
+      <p class="source">AGENTS.md: менее 200 строк и 8 KiB · каждая спецификация: не более 12 KiB · CLAUDE.md: только @AGENTS.md</p>
+    </section>
+
+    <section class="slide" id="feedback" data-number="06 / 14" aria-label="Диагностические тесты и проверка готовности">
+      <div class="frame">
+        <p class="eyebrow">Наборы тестов</p>
+        <h2>Используйте быстрый тест во время работы. <span class="accent">Используйте full для готовности.</span></h2>
+        <div class="ladder">
+          <article class="rung" style="--h:170px;--tone:var(--cyan)"><span class="speed">САМЫЙ БЫСТРЫЙ</span><h3>critical</h3><p>Безопасность shell и тесты состояния, владения, хранилища, питания и watchdog.</p></article>
+          <article class="rung" style="--h:205px;--tone:var(--blue)"><span class="speed">БЫСТРЫЙ</span><h3>unit</h3><p>Все тесты Swift без сборки приложения и анализа покрытия.</p></article>
+          <article class="rung" style="--h:245px;--tone:var(--violet)"><span class="speed">С ПОКРЫТИЕМ</span><h3>coverage</h3><p>Тесты Swift и минимальные значения количества тестов и покрытия.</p></article>
+          <article class="rung" style="--h:285px;--tone:var(--amber)"><span class="speed">ГОТОВЫЙ ПРОДУКТ</span><h3>smoke</h3><p>Новая сборка приложения, проверка Accessibility и встроенная среда выполнения.</p></article>
+          <article class="rung" style="--h:325px;--tone:var(--lime)"><span class="speed">ГОТОВНОСТЬ</span><h3>full</h3><p><code>quality-gate --mode repository</code> запускает все автоматические проверки.</p></article>
+        </div>
+        <div class="readiness-rule"><strong>Правило:</strong> <code>--stage</code>, <code>critical</code>, <code>unit</code>, <code>coverage</code> и <code>smoke</code> дают диагностические результаты. Только <code>quality-gate</code> даёт результат готовности.</div>
+      </div>
+      <p class="source">scripts/test · tests/test-suite-contract.sh · docs/testing.md</p>
+    </section>
+
+    <section class="slide" id="impact" data-number="07 / 14" aria-label="Выбор проверок по влиянию изменения">
+      <div class="frame">
+        <p class="eyebrow">Выбор проверок</p>
+        <h2><code>quality-gate</code> читает diff и выбирает <span class="accent">обязательные проверки</span></h2>
+        <div class="table-scroll">
+          <table class="impact-table" aria-label="Примеры выбора стадий по изменённым путям">
+            <thead><tr><th>Изменение</th><th>static</th><th>swift</th><th>качество</th><th>приложение</th><th>провайдеры</th><th>установка</th><th>tmux</th><th>выпуск</th><th>время</th></tr></thead>
+            <tbody>
+              <tr><td>Документация / spec</td><td><span class="dot forced"></span></td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td></tr>
+              <tr><td>Код приложения Swift</td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot forced"></span></td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td><td class="empty">—</td><td><span class="dot"></span></td></tr>
+              <tr><td>Состояние или хранилище</td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot forced"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td class="empty">—</td><td><span class="dot"></span></td></tr>
+              <tr><td>CLI / detach-core</td><td><span class="dot"></span></td><td class="empty">—</td><td class="empty">—</td><td><span class="dot forced"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td class="empty">—</td><td><span class="dot"></span></td></tr>
+              <tr><td>Правила выпуска</td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot forced"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td></tr>
+              <tr><td>Неизвестный путь</td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td><td><span class="dot forced"></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="fail-safe"><span><strong>Влияние известно</strong><br>Запускаются только нужные проверки.</span><span class="arrow">→</span><span><strong class="danger">Влияние неизвестно</strong><br>Запускается полная проверка репозитория.</span></div>
+      </div>
+      <p class="source">scripts/quality-gate: select_for_path() · стадия app всегда добавляет ui-e2e</p>
+    </section>
+
+    <section class="slide" id="topology" data-number="08 / 14" aria-label="Топология quality gate">
+      <div class="frame">
+        <p class="eyebrow">Порядок выполнения</p>
+        <h2>14 стадий выполняются <span class="accent">в заданном порядке</span></h2>
+        <div class="topology" aria-label="Порядок исполнения стадий quality gate">
+          <div class="phase"><div class="phase-label">План<br>до запуска</div><div class="stage-line" style="--tone:var(--violet)"><span class="stage-chip">анализ diff</span><span class="stage-chip">классификация влияния</span><span class="stage-chip">отпечаток входных данных</span><span class="stage-chip optional">--plan --explain</span></div></div>
+          <div class="phase"><div class="phase-label">Сборка<br>последовательно</div><div class="stage-line" style="--tone:var(--cyan)"><span class="stage-chip">static</span><span class="stage-chip critical">swift + coverage</span><span class="stage-chip">quality-contracts</span><span class="stage-chip critical">app</span></div></div>
+          <div class="phase"><div class="phase-label">Группа 1<br>параллельно</div><div class="stage-line" style="--tone:var(--blue)"><span class="stage-chip">ui-e2e</span><span class="stage-chip">codex</span><span class="stage-chip">claude</span><span class="stage-chip">tmux-runtime</span><span class="stage-chip">gate-contract</span></div></div>
+          <div class="phase"><div class="phase-label">Группа 2<br>параллельно</div><div class="stage-line" style="--tone:var(--amber)"><span class="stage-chip">distribution</span><span class="stage-chip">release-preflight</span><span class="stage-chip">publish-preflight</span><span class="stage-chip">release-workflow</span></div></div>
+          <div class="phase"><div class="phase-label">Итог<br>ошибка по умолчанию</div><div class="stage-line" style="--tone:var(--lime)"><span class="stage-chip critical">release-budget</span><span class="stage-chip">манифест</span><span class="stage-chip">хеш-суммы</span><span class="stage-chip">JUnit</span><span class="stage-chip">отчёт</span></div></div>
+        </div>
+        <div class="topology-notes">
+          <div><h3>Ресурсы</h3><p>Анализ покрытия и сборка приложения не конкурируют с тяжёлыми тестами.</p></div>
+          <div><h3>Зависимости</h3><p>Проверки интерфейса, провайдеров и tmux требуют успешную сборку приложения.</p></div>
+          <div><h3>Время</h3><p>Общий локальный лимит равен 180 секундам. Каждая стадия имеет свой лимит.</p></div>
+        </div>
+      </div>
+      <p class="source">scripts/quality-gate · tests/release-budget.tsv · docs/quality-gates.md</p>
+    </section>
+
+    <section class="slide" id="coverage" data-number="09 / 14" aria-label="Что находят тестовые слои">
+      <div class="frame">
+        <p class="eyebrow">Область проверки</p>
+        <h2>Каждый вид проверки находит <span class="accent">ограниченный класс дефектов</span></h2>
+        <div class="coverage-strip" aria-label="Текущие минимальные уровни тестов и покрытия">
+          <div class="metric"><b>221</b><span>минимальное количество тестов интерфейса</span></div>
+          <div class="metric"><b>433 · 94,38%</b><span>тесты и покрытие основного кода</span></div>
+          <div class="metric"><b>13 файлов</b><span>отдельные минимальные значения покрытия</span></div>
+        </div>
+        <table class="find-matrix" aria-label="Что находят и не находят проверки">
+          <thead><tr><th>Слой</th><th>Что находит</th><th>Что не доказывает</th></tr></thead>
+          <tbody>
+            <tr><td>Статический анализ</td><td>Синтаксис shell, пробелы, структура документов, снижение минимальных значений, опасные команды shell.</td><td>Поведение во время работы, интерфейс и работу macOS.</td></tr>
+            <tr><td>Swift и покрытие</td><td>Бизнес-логику, машины состояний, правила владения, правила аренды и снижение покрытия.</td><td>Реальный XPC, WindowServer, подпись и оборудование.</td></tr>
+            <tr><td>Приложение и интерфейс</td><td>Новую сборку, семантику Accessibility, разрешённые команды тестового CLI и устаревшие артефакты.</td><td>Визуальные детали, реальную учётную запись и установленный продукт.</td></tr>
+            <tr><td>Codex и Claude</td><td>Жизненный цикл с частным tmux и частным хранилищем состояния.</td><td>Сеть, аутентификацию и будущие изменения внешних CLI.</td></tr>
+            <tr><td>Установка и tmux</td><td>Неизменяемый набор файлов, установку, ремонт, удаление, arm64, связи библиотек и вспомогательные процессы.</td><td>Реальное заверение Apple, системные окна Finder и разные рабочие Mac.</td></tr>
+            <tr><td>Процесс выпуска</td><td>Возобновление, грязный или разошедшийся Git, повторный тег, ошибку ручной проверки и неверный хеш удалённого файла.</td><td>Физическую закрытую крышку и качество начальной настройки.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="source">Источники: docs/testing.md · tests/quality-baseline.tsv · tests/quality-file-baseline.tsv · tests/quality-contracts.sh</p>
+    </section>
+
+    <section class="slide" id="evidence" data-number="10 / 14" aria-label="Результаты проверки и их целостность">
+      <div class="frame evidence-grid">
+        <div>
+        <p class="eyebrow">Результаты проверки</p>
+          <h2>PASS относится к <span class="accent">точной версии изменения</span></h2>
+          <div class="evidence-chain">
+            <article><span class="glyph">#01</span><h3>Версия</h3><p>Политика, исходный commit, базовый commit и отпечаток diff.</p></article>
+            <article><span class="glyph">#02</span><h3>Выполнение</h3><p>Выбранные стадии, время, тип среды и статус.</p></article>
+            <article><span class="glyph">#03</span><h3>Файлы</h3><p>Отчёт TSV, манифест, JUnit, Markdown и диагностика.</p></article>
+            <article><span class="glyph">#04</span><h3>Целостность</h3><p>SHA-256 для отчёта и журнала каждой стадии.</p></article>
+            <article><span class="glyph">#05</span><h3>Возобновление</h3><p>Можно использовать только результат с тем же отпечатком.</p></article>
+            <article><span class="glyph">#06</span><h3>Происхождение</h3><p>Повторно используемая стадия сохраняет исходный запуск и время.</p></article>
+          </div>
+        </div>
+        <div class="anti-cheat">
+          <h3>Эти условия всегда дают ошибку</h3>
+          <ul>
+            <li>Изменённые байты, commit или базовая ссылка</li>
+            <li>Отсутствующая или неверная хеш-сумма журнала</li>
+            <li>Превышение времени, прерывание или ошибка зависимости</li>
+            <li>Запрет sandbox или socket имеет статус environment-failed</li>
+            <li>Возобновление после превышения времени</li>
+            <li>Успешная отдельная стадия <code>--stage</code></li>
+          </ul>
+        </div>
+      </div>
+      <p class="source">scripts/quality-gate · docs/quality-gates.md: Policy 8 · docs/testing.md</p>
+    </section>
+
+    <section class="slide" id="governance" data-number="11 / 14" aria-label="Управление слиянием и выпуском">
+      <div class="frame">
+        <p class="eyebrow">Слияние и выпуск</p>
+        <h2>Локальный PASS не разрешает <span class="accent">слияние или выпуск</span></h2>
+        <div class="governance-flow" aria-label="Путь изменения от локального diff до релиза">
+          <article class="gov-node"><span class="tag">ЛОКАЛЬНО</span><b>Файлы задачи</b><p>Сохраните чужие изменения. Добавьте в Git только файлы задачи.</p></article>
+          <article class="gov-node guard"><span class="tag">ЛОКАЛЬНО</span><b>PASS</b><p>Запустите выбранные проверки и измерьте время на эталонном Mac.</p></article>
+          <article class="gov-node"><span class="tag">GIT</span><b>Рабочая ветка</b><p>Проверьте публичный diff. Выполните commit и push.</p></article>
+          <article class="gov-node guard"><span class="tag">CI</span><b>Проверка PR</b><p>Запустите ту же команду без локальных ограничений времени.</p></article>
+          <article class="gov-node"><span class="tag">MAIN</span><b>Слияние</b><p>Ruleset требует успешную задачу <code>quality-gates</code>. Обход запрещён.</p></article>
+          <article class="gov-node human"><span class="tag">ВЫПУСК</span><b>Подпись и ручные тесты</b><p>Выполните заверение Apple, реальный тест питания и выбранные ручные проверки.</p></article>
+          <article class="gov-node guard"><span class="tag">УДАЛЁННО</span><b>Проверка файлов</b><p>Скачайте каждый файл выпуска. Сверьте его хеш-сумму.</p></article>
+        </div>
+        <div class="governance-rule">
+          <p><strong>CI не измеряет время эталонного Mac.</strong> CI запускает все функциональные проверки и проверки минимальных значений.</p>
+          <p><strong>Выпуск использует отдельную команду.</strong> Единственная команда выпуска — <code>scripts/release-version X.Y.Z</code>.</p>
+        </div>
+      </div>
+      <p class="source">Источники: .github/workflows/quality-gates.yml · docs/specs/documentation.md · docs/specs/release.md</p>
+    </section>
+
+    <section class="slide" id="limits" data-number="12 / 14" aria-label="Границы автоматизации">
+      <div class="frame">
+        <p class="eyebrow">Границы автоматизации</p>
+        <h2>Автоматические и ручные проверки имеют <span class="accent">разные области</span></h2>
+        <div class="boundary">
+          <div class="boundary-side auto">
+            <h3>Автоматизация доказывает</h3>
+            <ul>
+              <li>Контракты кода и машины состояний</li>
+              <li>Минимальные количества тестов и значения покрытия</li>
+              <li>Новую сборку и изолированные интеграционные тесты</li>
+              <li>Установку, среду выполнения и процесс выпуска</li>
+              <li>Правила самого <code>quality-gate</code></li>
+            </ul>
+          </div>
+          <div class="boundary-divider"><span>граница проверки</span></div>
+          <div class="boundary-side manual">
+            <h3>Человек и реальная среда доказывают</h3>
+            <ul>
+              <li>Работу Mac с закрытой крышкой</li>
+              <li>Реальный тест подписанных компонентов питания</li>
+              <li>Finder, системные разрешения и начальную настройку</li>
+              <li>Качество локализации и визуального опыта</li>
+              <li>Правильность исходного требования</li>
+            </ul>
+          </div>
+        </div>
+        <div class="readiness-rule" style="border-color:var(--amber);background:rgba(255,190,98,.05)"><strong>Ограничение:</strong> модульные тесты и тесты синтаксического анализа не проверяют реальную работу с закрытой крышкой. Для этого нужен контролируемый тест на реальном Mac.</div>
+      </div>
+      <p class="source">Источники: docs/specs/power.md · docs/specs/release.md · docs/testing.md §Clean installation and system UI release checklist</p>
+    </section>
+
+    <section class="slide" id="reuse" data-number="13 / 14" aria-label="Что переиспользовать в бигтехе">
+      <div class="frame bigtech">
+        <div class="reuse-core">
+        <p class="eyebrow">Применение в бигтехе</p>
+          <h2>Переносите <span class="accent">процесс и правила</span>, а не скрипты проекта</h2>
+          <p class="formula">малый контекст<br>+ постоянные контракты<br>+ выбор по diff<br>+ проверяемые результаты</p>
+          <p>Эта модель не зависит от Swift, macOS или GitHub Actions. Её можно применить в монорепозитории, сервисе или мобильном приложении.</p>
+        </div>
+        <div>
+          <h3>Что можно применить без существенных изменений</h3>
+          <ul class="reuse-list">
+            <li>Короткие правила агента и карта «задача → спецификация»</li>
+            <li>Разделение постоянной спецификации и временного плана</li>
+            <li>Одна команда готовности для локальной работы, CI и выпуска</li>
+            <li>Полная проверка при неизвестном влиянии</li>
+            <li>Запрет снижения покрытия, количества тестов и лимитов времени</li>
+            <li>Возобновляемые результаты, связанные с точными входными данными</li>
+            <li>Разделение диагностических команд и команды готовности</li>
+          </ul>
+          <h3 style="margin-top:30px">Что нужно добавить для большой организации</h3>
+          <div class="scale-grid">
+            <article style="--tone:var(--cyan)"><h3>Владение</h3><p>Каталог сервисов, CODEOWNERS, уровни риска и обязательные рецензенты.</p></article>
+            <article style="--tone:var(--blue)"><h3>Платформа</h3><p>Удалённое выполнение, кеш, разделение тестов и сервис правил.</p></article>
+            <article style="--tone:var(--amber)"><h3>Цепочка поставки</h3><p>SAST, проверка зависимостей и SBOM, подтверждение происхождения.</p></article>
+            <article style="--tone:var(--violet)"><h3>Обучение</h3><p>Дефекты после выпуска, нестабильные тесты, ложные ошибки и время доставки.</p></article>
+          </div>
+        </div>
+      </div>
+      <p class="source">В репозитории есть правила и проверяемые результаты. Не найдены CODEOWNERS, SAST, проверка зависимостей, mutation tests или fuzz tests.</p>
+    </section>
+
+    <section class="slide" id="verdict" data-number="14 / 14" aria-label="Итоговая оценка зрелости">
+      <div class="frame">
+        <p class="eyebrow">Оценка зрелости</p>
+        <h2>Процесс имеет <span class="accent">высокую зрелость в одном репозитории</span></h2>
+        <div class="scoreboard">
+          <div class="score-list" aria-label="Качественная оценка зрелости">
+            <div class="score" style="--score:92%;--tone:var(--lime)"><span>Управление контекстом</span><div class="bar"><i></i></div><b>высокая</b></div>
+            <div class="score" style="--score:88%;--tone:var(--lime)"><span>Контракты</span><div class="bar"><i></i></div><b>высокая</b></div>
+            <div class="score" style="--score:94%;--tone:var(--lime)"><span>Автоматические проверки</span><div class="bar"><i></i></div><b>высокая</b></div>
+            <div class="score" style="--score:86%;--tone:var(--cyan)"><span>Изоляция тестов</span><div class="bar"><i></i></div><b>высокая</b></div>
+            <div class="score" style="--score:78%;--tone:var(--amber)"><span>Ручные проверки</span><div class="bar"><i></i></div><b>определены</b></div>
+            <div class="score" style="--score:54%;--tone:var(--violet)"><span>Масштаб бигтеха</span><div class="bar"><i></i></div><b>не проверен</b></div>
+          </div>
+          <div class="final-verdict">
+            <p class="big">Агент выполняет работу <strong>по правилам репозитория</strong>.</p>
+            <p>Качество зависит от четырёх условий: актуальная спецификация, подходящий тест, обязательная проверка готовности и защищённое слияние.</p>
+          </div>
+        </div>
+        <div class="blueprint" aria-label="Минимальный план переиспользования">
+          <div><b>1 · Направление</b><span>Область изменения → спецификация → быстрый тест</span></div>
+          <div><b>2 · Контракт</b><span>Результат, обязательные свойства, границы и проверка</span></div>
+          <div><b>3 · Выбор</b><span>Diff → уровень риска → обязательные стадии</span></div>
+          <div><b>4 · Связь</b><span>Commit → отпечаток → журналы с хеш-суммами</span></div>
+          <div><b>5 · Управление</b><span>Обязательная проверка PR и явные ручные проверки</span></div>
+        </div>
+      </div>
+      <p class="source">Сводная оценка по AGENTS.md, docs/specs/*, docs/testing.md, docs/quality-gates.md, scripts/quality-gate и CI workflow</p>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll('.slide')];
+      const nav = document.querySelector('.nav');
+      const progress = document.querySelector('.progress');
+      let current = 0;
+
+      const go = (index) => {
+        const next = Math.max(0, Math.min(slides.length - 1, index));
+        slides[next].scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      };
+
+      slides.forEach((slide, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('aria-label', `Слайд ${index + 1}: ${slide.getAttribute('aria-label') || ''}`);
+        button.addEventListener('click', () => go(index));
+        nav.appendChild(button);
+      });
+
+      const dots = [...nav.querySelectorAll('button')];
+      const update = (index) => {
+        current = index;
+        dots.forEach((dot, i) => dot.setAttribute('aria-current', i === index ? 'true' : 'false'));
+        progress.style.setProperty('--progress', `${((index + 1) / slides.length) * 100}%`);
+        history.replaceState(null, '', `#${slides[index].id}`);
+      };
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (visible) update(slides.indexOf(visible.target));
+      }, { threshold: [0.52, 0.72] });
+
+      slides.forEach(slide => observer.observe(slide));
+
+      document.addEventListener('keydown', (event) => {
+        if (['ArrowDown', 'ArrowRight', 'PageDown', ' '].includes(event.key)) {
+          event.preventDefault();
+          go(current + 1);
+        } else if (['ArrowUp', 'ArrowLeft', 'PageUp'].includes(event.key)) {
+          event.preventDefault();
+          go(current - 1);
+        } else if (event.key === 'Home') {
+          event.preventDefault();
+          go(0);
+        } else if (event.key === 'End') {
+          event.preventDefault();
+          go(slides.length - 1);
+        }
+      });
+
+      document.querySelector('[data-go="prev"]').addEventListener('click', () => go(current - 1));
+      document.querySelector('[data-go="next"]').addEventListener('click', () => go(current + 1));
+
+      const hashIndex = slides.findIndex(slide => `#${slide.id}` === location.hash);
+      if (hashIndex >= 0) requestAnimationFrame(() => go(hashIndex));
+      update(hashIndex >= 0 ? hashIndex : 0);
+    })();
+  </script>
+</body>
+</html>
