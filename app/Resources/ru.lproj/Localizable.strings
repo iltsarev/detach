@@ -127,7 +127,6 @@
 "Installing command-line tools and checking components…" = "Устанавливаем командные инструменты и проверяем компоненты…";
 "Keep-awake" = "Keep-awake";
 "Launch Codex or Claude in Terminal" = "Запустить Codex или Claude в терминале";
-"Launch in Terminal" = "Запустить в терминале";
 "Launch in %@" = "Запустить в %@";
 "Launching…" = "Запуск…";
 "Leave empty and type in the terminal." = "Можно оставить пустым и писать в терминале.";
