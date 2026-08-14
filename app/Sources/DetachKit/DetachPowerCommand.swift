@@ -198,12 +198,13 @@ public struct POSIXChildProcessLauncher: ChildProcessLaunching {
 
         let changeDirectoryResult = request.currentDirectoryURL.path.withCString {
             path in
-            posix_spawn_file_actions_addchdir(&fileActions, path)
+            // POSIX addchdir is macOS 26+; Darwin addchdir_np is the 15+ equivalent.
+            posix_spawn_file_actions_addchdir_np(&fileActions, path)
         }
         guard changeDirectoryResult == 0 else {
             throw posixError(
                 changeDirectoryResult,
-                operation: "posix_spawn_file_actions_addchdir")
+                operation: "posix_spawn_file_actions_addchdir_np")
         }
 
         let argumentStrings =

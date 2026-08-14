@@ -2102,7 +2102,7 @@ def run_stage_worker(stage: str) -> int:
                 "-c",
                 "release",
                 "--triple",
-                "arm64-apple-macosx26.0",
+                "arm64-apple-macosx15.0",
                 "--scratch-path",
                 ".build",
                 "--product",

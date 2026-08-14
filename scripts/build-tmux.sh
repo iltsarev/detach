@@ -110,8 +110,8 @@ build_arch() {
   cmake="$(command -v cmake 2>/dev/null || true)"
   [ -x "$cmake" ] || die "cmake is required to build the pinned libevent source"
   jobs="$(/usr/sbin/sysctl -n hw.logicalcpu 2>/dev/null || printf 4)"
-  common_cflags="-arch $arch -isysroot $sdk -mmacosx-version-min=26.0 -O2"
-  common_ldflags="-arch $arch -isysroot $sdk -mmacosx-version-min=26.0"
+  common_cflags="-arch $arch -isysroot $sdk -mmacosx-version-min=15.0 -O2"
+  common_ldflags="-arch $arch -isysroot $sdk -mmacosx-version-min=15.0"
   fingerprint="$({
     printf '%s\n' \
       'schema=1' \
@@ -120,7 +120,7 @@ build_arch() {
       "libevent=$LIBEVENT_SHA256" \
       "utf8proc=$UTF8PROC_SHA256" \
       "arch=$arch" \
-      'deployment=26.0' \
+      'deployment=15.0' \
       "sdk=$sdk_version"
     "$cc" --version | /usr/bin/head -1
   } | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
@@ -150,7 +150,7 @@ build_arch() {
       -DCMAKE_AR="$ar" \
       -DCMAKE_RANLIB="$ranlib" \
       -DCMAKE_OSX_ARCHITECTURES="$arch" \
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
       -DCMAKE_OSX_SYSROOT="$sdk" \
       -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DEVENT__LIBRARY_TYPE=STATIC \

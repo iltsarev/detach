@@ -4,7 +4,7 @@
 
 `app/` is a SwiftPM package containing `DetachKit`, `DetachApp`,
 `DetachWatchdog`, `DetachState`, `DetachPower`, and `DetachPowerHelper`. The app
-bundles and signs arm64-only versions of every executable, the immutable CLI
+bundles and signs arm64-only macOS 15.0 executables, the immutable CLI
 payload, pinned tmux sources/licenses/provenance, Sparkle, and the complete
 pinned Sparkle license notice.
 

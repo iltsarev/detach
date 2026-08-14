@@ -317,11 +317,12 @@ public struct BoundedProcessRunner: Sendable {
         }
         if let directory = request.currentDirectoryURL {
             actionResult = directory.path.withCString {
-                posix_spawn_file_actions_addchdir(&actions, $0)
+                // POSIX addchdir is macOS 26+; Darwin addchdir_np is the 15+ equivalent.
+                posix_spawn_file_actions_addchdir_np(&actions, $0)
             }
             guard actionResult == 0 else {
                 throw BoundedProcessError.posix(
-                    operation: "posix_spawn_file_actions_addchdir",
+                    operation: "posix_spawn_file_actions_addchdir_np",
                     code: actionResult)
             }
         }
