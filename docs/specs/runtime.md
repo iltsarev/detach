@@ -195,22 +195,23 @@ in two helpers.
 
 ### Provider identity and checkpoints
 
-Claude gets a wrapper-owned UUID via `--session-id`. Codex identity is resolved
-after launch by matching the run-token originator in rollout files and Codex's
-SQLite threads, refusing an ambiguous first binding. When the provider later
-switches to another run-owned user thread mid-run (for example `/clear`),
-discovery rebinds identity, transcript, and checkpoints to the newest
-originator-matched thread within one heartbeat or checkpoint tick, records the
-superseded thread ids so the next switch is again unambiguous, and keeps the
-current binding on a creation-time tie. Subagent threads never rebind a
-session. Wrapper-owned provider flags are rejected; policy defaults apply only
-when the user did not supply an allowed override.
+Claude gets a wrapper-owned UUID via `--session-id`. Resume uses `--resume`
+if a transcript exists, else `--session-id` for that owned UUID. Codex
+identity is resolved after launch by matching the run-token originator in
+rollout files and Codex's SQLite threads, refusing an ambiguous first
+binding. When the provider later switches to another run-owned user thread
+(for example `/clear`), discovery rebinds identity, transcript, and
+checkpoints to the newest originator-matched thread within one heartbeat or
+checkpoint tick, records the superseded thread ids, and keeps the current
+binding on a creation-time tie. Subagent threads never rebind a session.
+Wrapper-owned provider flags are rejected; policy defaults apply only when
+the user did not supply an allowed override.
 
-Every 300 seconds by default, a per-session lock protects checkpoint creation.
+A per-session lock protects checkpoint creation every 300 seconds.
 A checkpoint contains metadata, validated provider JSONL, pane capture, and a
 repository root from a real `.git` ancestor. Codex adds an integrity-checked
 SQLite backup. Claude archives its matching project session and companions.
-Provider-created hard links become independent regular files in staging.
+Staging copies provider hard links as regular files.
 Archives and restore destinations still reject hard links and non-plain
 entries. A provider test override can disable the final `/bin/sync`.
 
