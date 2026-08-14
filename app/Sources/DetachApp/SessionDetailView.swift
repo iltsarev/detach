@@ -125,7 +125,7 @@ struct SessionDetailView: View {
                              help: projectDir)
                 }
                 if let uuid = session.agentSessionId {
-                    uuidChip(uuid)
+                    SessionUUIDChip(uuid: uuid)
                 }
                 if let created = session.createdAt {
                     metaChip(L10n.format(
@@ -184,33 +184,6 @@ struct SessionDetailView: View {
         .background(Capsule().fill(.quaternary.opacity(0.6)))
         .help(help ?? text)
         .frame(maxWidth: 320, alignment: .leading)
-    }
-
-    private func uuidChip(_ uuid: String) -> some View {
-        HStack(spacing: 4) {
-            Text(shortUUID(uuid))
-                .appFont(.caption, design: .monospaced)
-                .lineLimit(1)
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(uuid, forType: .string)
-            } label: {
-                Image(systemName: "doc.on.doc")
-                    .appFont(.caption2)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(L10n.string("Copy session UUID"))
-        }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(.quaternary.opacity(0.6)))
-        .help(uuid)
-    }
-
-    private func shortUUID(_ uuid: String) -> String {
-        guard uuid.count > 13 else { return uuid }
-        return "\(uuid.prefix(8))…\(uuid.suffix(4))"
     }
 
     private func abbreviatePath(_ path: String) -> String {
@@ -391,6 +364,79 @@ struct SessionDetailView: View {
                 actionError = message
             }
         }
+    }
+}
+
+enum SessionUUIDPresentation {
+    static func shortDisplay(_ uuid: String) -> String {
+        guard uuid.count > 13 else { return uuid }
+        return "\(uuid.prefix(8))…\(uuid.suffix(4))"
+    }
+
+    @discardableResult
+    static func copy(_ uuid: String, to pasteboard: NSPasteboard = .general) -> Bool {
+        pasteboard.clearContents()
+        return pasteboard.setString(uuid, forType: .string)
+    }
+}
+
+/// The whole chip is the control. A nested icon-only button inside
+/// `FlowLayout` often misses clicks on macOS.
+struct SessionUUIDChip: View {
+    let uuid: String
+    @State private var copied = false
+    @State private var resetTask: Task<Void, Never>?
+
+    var body: some View {
+        Button(action: copyUUID) {
+            HStack(spacing: 4) {
+                Text(SessionUUIDPresentation.shortDisplay(uuid))
+                    .appFont(.caption, design: .monospaced)
+                    .lineLimit(1)
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .appFont(.caption2)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .foregroundStyle(copied ? Brand.teal : .secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background {
+                Capsule().fill(
+                    copied
+                        ? AnyShapeStyle(Brand.teal.opacity(0.20))
+                        : AnyShapeStyle(.quaternary.opacity(0.6)))
+            }
+            .contentShape(Capsule())
+            .animation(.easeInOut(duration: 0.18), value: copied)
+        }
+        .buttonStyle(ChipPressStyle())
+        .help(copied ? L10n.string("Copied") : uuid)
+        .accessibilityLabel(L10n.string("Copy session UUID"))
+        .accessibilityValue(uuid)
+        .accessibilityAddTraits(.isButton)
+        .onDisappear {
+            resetTask?.cancel()
+        }
+    }
+
+    private func copyUUID() {
+        guard SessionUUIDPresentation.copy(uuid) else { return }
+        copied = true
+        resetTask?.cancel()
+        resetTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            copied = false
+        }
+    }
+}
+
+private struct ChipPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
