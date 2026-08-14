@@ -33,6 +33,24 @@ enum AppFontSize {
     }
 }
 
+/// Settings content may be taller than a laptop screen. The window stays
+/// inside the visible frame and a comfortable pane height; the form scrolls.
+enum SettingsWindowLayout {
+    static let chromeHeight: CGFloat = 88
+    static let minimumContentHeight: CGFloat = 360
+    static let comfortableContentHeight: CGFloat = 560
+
+    static func contentHeight(
+        base: CGFloat,
+        fontPointSize: Double,
+        visibleScreenHeight: CGFloat
+    ) -> CGFloat {
+        let preferred = AppFontSize.settingsHeight(base: base, for: fontPointSize)
+        let screenLimit = max(minimumContentHeight, visibleScreenHeight - chromeHeight)
+        return min(preferred, comfortableContentHeight, screenLimit)
+    }
+}
+
 /// Keeps text-size changes local to Settings until the user applies them.
 struct AppFontSizeDraft: Equatable {
     private(set) var appliedValue: Double
