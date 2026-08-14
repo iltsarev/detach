@@ -1365,6 +1365,13 @@
       "test_domain": "session-ui-source"
     },
     {
+      "pattern": "app/Sources/DetachApp/TerminalPreferencePicker.swift",
+      "priority": 870,
+      "release_domain": "safe",
+      "spec": "docs/specs/app.md",
+      "test_domain": "session-ui-source"
+    },
+    {
       "pattern": "app/Sources/DetachApp/Session*.swift",
       "priority": 870,
       "release_domain": "safe",
@@ -2707,6 +2714,7 @@
         "app/Sources/DetachApp/Settings*.swift",
         "app/Sources/DetachApp/SetupGuidance.swift",
         "app/Sources/DetachApp/SidebarView.swift",
+        "app/Sources/DetachApp/TerminalPreferencePicker.swift",
         "app/Sources/DetachApp/TextSize.swift",
         "app/Sources/DetachApp/Theme.swift",
         "app/Sources/DetachApp/TipsBar.swift",

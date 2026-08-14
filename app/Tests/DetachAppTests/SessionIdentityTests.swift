@@ -35,4 +35,10 @@ final class SessionActionPresentationTests: XCTestCase {
                 terminalDisplayName: "Ghostty"),
             "Recover in Ghostty")
     }
+
+    func testLaunchTitleNamesTheSelectedApplication() {
+        XCTAssertEqual(
+            TerminalLaunchPresentation.title(terminalDisplayName: "iTerm2"),
+            "Launch in iTerm2")
+    }
 }

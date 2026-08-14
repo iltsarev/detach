@@ -149,6 +149,7 @@ route	870	app/Sources/DetachApp/EmptySessionsView.swift	swift-source	safe	docs/s
 route	870	app/Sources/DetachApp/LogTextView.swift	swift-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/MenuBar*.swift	swift-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/NewSessionSheet.swift	session-ui-source	safe	docs/specs/app.md
+route	870	app/Sources/DetachApp/TerminalPreferencePicker.swift	session-ui-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/Session*.swift	session-ui-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/SidebarView.swift	session-ui-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/TextSize.swift	swift-source	safe	docs/specs/app.md

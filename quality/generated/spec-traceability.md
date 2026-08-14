@@ -178,6 +178,7 @@ It lists current specification ownership and verification links.
 - `app/Sources/DetachApp/Settings*.swift`
 - `app/Sources/DetachApp/SetupGuidance.swift`
 - `app/Sources/DetachApp/SidebarView.swift`
+- `app/Sources/DetachApp/TerminalPreferencePicker.swift`
 - `app/Sources/DetachApp/TextSize.swift`
 - `app/Sources/DetachApp/Theme.swift`
 - `app/Sources/DetachApp/TipsBar.swift`
