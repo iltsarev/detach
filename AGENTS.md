@@ -1,6 +1,6 @@
 # Detach agent guide
 
-Detach is a macOS 26+ reliability harness for persistent Codex CLI and Claude
+Detach is a macOS 15+ reliability harness for persistent Codex CLI and Claude
 Code sessions. It owns a private tmux runtime, recovery checkpoints, typed
 state, an app, and two-layer power protection. Users install and authenticate
 the providers separately.

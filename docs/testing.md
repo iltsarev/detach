@@ -232,7 +232,7 @@ matrix for the signed candidate. Automated tests cover Repair, keep/purge
 Uninstall, reinstall, failed updates, CLI synchronization, and helper
 replacement. This checklist covers only Finder and real macOS approval UI.
 
-1. Start a clean macOS 26 or later Apple Silicon account or VM in English.
+1. Start a clean macOS 15 or later Apple Silicon account or VM in English.
    Open the signed DMG. Confirm that Detach blocks setup from the DMG and tells
    you to move the app. Use Finder to copy Detach to `/Applications`.
 2. Complete onboarding. Approve the background item and power helper. Allow

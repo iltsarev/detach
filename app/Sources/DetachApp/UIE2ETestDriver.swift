@@ -871,12 +871,13 @@ enum UIE2ETestDriver {
             guard visited.insert(identifier).inserted else { continue }
             result.append(element)
             guard depth < 20 else { continue }
-            var children = (element.accessibilityWindows() ?? [])
-                + (element.accessibilityChildren() ?? [])
-                + (element.accessibilityVisibleChildren() ?? [])
-                + (element.accessibilityContents() ?? [])
-                + (element.accessibilityRows() ?? [])
-                + (element.accessibilityVisibleRows() ?? [])
+            var children: [Any] = []
+            children.append(contentsOf: element.accessibilityWindows() ?? [])
+            children.append(contentsOf: element.accessibilityChildren() ?? [])
+            children.append(contentsOf: element.accessibilityVisibleChildren() ?? [])
+            children.append(contentsOf: element.accessibilityContents() ?? [])
+            children.append(contentsOf: element.accessibilityRows() ?? [])
+            children.append(contentsOf: element.accessibilityVisibleRows() ?? [])
             if let view = element as? NSView {
                 children.append(contentsOf: view.subviews)
             }

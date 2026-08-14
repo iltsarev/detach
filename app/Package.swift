@@ -15,7 +15,7 @@ let appLinkerSettings: [LinkerSetting] = appBuildMarkerFile.map { markerFile in
 
 let package = Package(
     name: "DetachApp",
-    platforms: [.macOS("26.0")],
+    platforms: [.macOS("15.0")],
     products: [
         .executable(name: "detach-power", targets: ["DetachPower"]),
         .executable(name: "detach-power-helper", targets: ["DetachPowerHelper"]),

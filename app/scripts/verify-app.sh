@@ -10,7 +10,7 @@ INFO="$APP/Contents/Info.plist"
 AGENT="$APP/Contents/Library/LaunchAgents/dev.tsarev.detach.power-watchdog.plist"
 POWER_DAEMON="$APP/Contents/Library/LaunchDaemons/dev.tsarev.detach.power-helper.plist"
 EXPECTED_VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
-EXPECTED_MINIMUM_SYSTEM_VERSION="26.0"
+EXPECTED_MINIMUM_SYSTEM_VERSION="15.0"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.5}"
 SPARKLE_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/Sparkle/LICENSE.txt"
 SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
@@ -97,13 +97,20 @@ for metadata in \
     exit 1
   fi
 done
-# `plutil -lint` only accepts property lists even though the other plutil
-# operations support JSON. Parse the payload manifest explicitly as JSON.
-plutil -p "$PAYLOAD/payload.json" >/dev/null
+# `plutil -lint` and `plutil -p` reject JSON on macOS 15. Convert still
+# parses the manifest, so use that as the syntax check.
+plutil -convert xml1 -o /dev/null "$PAYLOAD/payload.json"
 [ "$(plutil -extract CFBundleShortVersionString raw -o - "$INFO")" = "$EXPECTED_VERSION" ]
 [ "$(plutil -extract LSMinimumSystemVersion raw -o - "$INFO")" = \
   "$EXPECTED_MINIMUM_SYSTEM_VERSION" ] || {
   printf 'App minimum system version must be %s\n' \
+    "$EXPECTED_MINIMUM_SYSTEM_VERSION" >&2
+  exit 1
+}
+[ "$(plutil -extract LSMinimumSystemVersion raw -o - \
+  "$APP_ROOT/Resources/DetachWatchdog-Info.plist")" = \
+  "$EXPECTED_MINIMUM_SYSTEM_VERSION" ] || {
+  printf 'Watchdog Info.plist minimum system version must be %s\n' \
     "$EXPECTED_MINIMUM_SYSTEM_VERSION" >&2
   exit 1
 }
@@ -227,7 +234,7 @@ cmp -s "$SPARKLE_LICENSE_SOURCE" "$SPARKLE_LICENSE" || {
   printf 'Bundled Sparkle license notice must have mode 0644\n' >&2
   exit 1
 }
-plutil -p "$TMUX_THIRD_PARTY/provenance.json" >/dev/null
+plutil -convert xml1 -o /dev/null "$TMUX_THIRD_PARTY/provenance.json"
 [ -x "$TMUX_BUILDER" ] || {
   printf 'Bundled tmux builder is unavailable for provenance verification\n' >&2
   exit 1
@@ -271,16 +278,45 @@ verify_dynamic_dependencies() {
   fi
 }
 
+minimum_system_version() {
+  local binary="$1"
+
+  otool -l "$binary" | awk '
+      $1 == "cmd" && $2 == "LC_BUILD_VERSION" { kind = "build"; next }
+      $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { kind = "legacy"; next }
+      $1 == "cmd" { kind = ""; next }
+      kind == "build" && $1 == "minos" && !found { print $2; found = 1 }
+      kind == "legacy" && $1 == "version" && !found { print $2; found = 1 }
+    '
+}
+
+version_le() {
+  local left="$1"
+  local right="$2"
+
+  [ -n "$left" ] && [ -n "$right" ] || return 1
+  [ "$(printf '%s\n%s\n' "$left" "$right" | sort -V | head -1)" = "$left" ]
+}
+
 verify_minimum_system_version() {
   local binary="$1"
   local minimum
 
-  minimum="$(otool -l "$binary" | awk '
-      $1 == "cmd" && $2 == "LC_BUILD_VERSION" { in_build_version = 1; next }
-      in_build_version && $1 == "minos" && !found { print $2; found = 1 }
-    ')"
+  minimum="$(minimum_system_version "$binary")"
   [ "$minimum" = "$EXPECTED_MINIMUM_SYSTEM_VERSION" ] || {
     printf '%s minimum system version is %s, expected %s\n' \
+      "$binary" "${minimum:-missing}" "$EXPECTED_MINIMUM_SYSTEM_VERSION" >&2
+    exit 1
+  }
+}
+
+verify_minimum_system_version_at_most() {
+  local binary="$1"
+  local minimum
+
+  minimum="$(minimum_system_version "$binary")"
+  version_le "$minimum" "$EXPECTED_MINIMUM_SYSTEM_VERSION" || {
+    printf '%s minimum system version is %s, must be %s or older\n' \
       "$binary" "${minimum:-missing}" "$EXPECTED_MINIMUM_SYSTEM_VERSION" >&2
     exit 1
   }
@@ -315,9 +351,10 @@ done
   exit 1
 }
 
-SPARKLE_FEED_URL="$(plutil -extract SUFeedURL raw -o - "$INFO" 2>/dev/null || true)"
-SPARKLE_PUBLIC_ED_KEY="$(plutil -extract SUPublicEDKey raw -o - "$INFO" 2>/dev/null || true)"
-DOWNLOAD_URL="$(plutil -extract DetachDownloadURL raw -o - "$INFO" 2>/dev/null || true)"
+# macOS 15 prints a missing-key error on stdout; only keep a successful extract.
+SPARKLE_FEED_URL="$(plutil -extract SUFeedURL raw -o - "$INFO" 2>/dev/null)" || SPARKLE_FEED_URL=""
+SPARKLE_PUBLIC_ED_KEY="$(plutil -extract SUPublicEDKey raw -o - "$INFO" 2>/dev/null)" || SPARKLE_PUBLIC_ED_KEY=""
+DOWNLOAD_URL="$(plutil -extract DetachDownloadURL raw -o - "$INFO" 2>/dev/null)" || DOWNLOAD_URL=""
 if [ -n "$SPARKLE_FEED_URL" ] || [ -n "$SPARKLE_PUBLIC_ED_KEY" ]; then
   [[ "$SPARKLE_FEED_URL" =~ ^https://[^[:space:]]+$ ]] || {
     printf 'SUFeedURL must be HTTPS\n' >&2
@@ -594,6 +631,22 @@ for arch in $(lipo -archs "$APP/Contents/MacOS/DetachWatchdog"); do
     printf 'Watchdog embedded build mismatch for %s\n' "$arch" >&2
     exit 1
   }
+  WATCHDOG_MINOS="$(printf '%s\n' "$HELPER_STRINGS" | awk '
+    /<key>LSMinimumSystemVersion<\/key>/ {
+      if (match($0, /<string>[^<]+<\/string>/)) {
+        print substr($0, RSTART, RLENGTH)
+        exit
+      }
+      getline
+      print
+      exit
+    }
+  ')"
+  [ "$WATCHDOG_MINOS" = "<string>$EXPECTED_MINIMUM_SYSTEM_VERSION</string>" ] || {
+    printf 'Watchdog embedded minimum system version is %s, expected %s\n' \
+      "${WATCHDOG_MINOS:-missing}" "$EXPECTED_MINIMUM_SYSTEM_VERSION" >&2
+    exit 1
+  }
 done
 codesign -d --entitlements "$ENTITLEMENTS_DIR/app.plist" --xml "$APP" >/dev/null 2>&1
 codesign -d --entitlements "$ENTITLEMENTS_DIR/helper.plist" --xml \
@@ -678,6 +731,14 @@ arm64_binaries=(
 )
 for arm64_binary in "${arm64_binaries[@]}"; do
   verify_arm64_only "$arm64_binary"
+done
+for sparkle_binary in \
+  "$SPARKLE_BINARY" \
+  "$AUTOUPDATE" \
+  "$UPDATER_BINARY" \
+  "$INSTALLER_BINARY" \
+  "$DOWNLOADER_BINARY"; do
+  verify_minimum_system_version_at_most "$sparkle_binary"
 done
 
 printf 'Verified %s\n' "$APP"

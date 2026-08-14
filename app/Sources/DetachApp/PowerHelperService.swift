@@ -307,12 +307,13 @@ final class PowerHelperService {
         let systemHandoffLock = try systemHandoffLockProvider()
         if systemHandoffLock == nil {
             // Before the first helper launch no root-owned rendezvous inode
-            // exists yet. That pristine shape is safe only when no helper from
-            // this boot has ever held the lifetime barrier. Once either file
-            // exists, refusing the operation is safer than falling back to a
-            // per-user lock that cannot serialize Fast User Switching.
-            guard status != .enabled,
-                  try lifetimeBarrierStatus() == .missing else {
+            // exists yet. That shape is safe only when this boot never held
+            // the lifetime barrier. A leftover SMAppService "enabled" bit
+            // without that barrier is a dead registration, not a live helper.
+            // Once the lifetime file exists, refusing the operation is safer
+            // than falling back to a per-user lock that cannot serialize
+            // Fast User Switching.
+            guard try lifetimeBarrierStatus() == .missing else {
                 throw PowerHelperServiceError
                     .unregistrationBarrierDidNotComplete
             }
@@ -346,6 +347,16 @@ final class PowerHelperService {
             case .preparing:
                 switch status {
                 case .enabled:
+                    if try lifetimeBarrierStatus() == .missing {
+                        // launchd/BTM can keep an enabled job that never
+                        // spawned. There is no live helper to prepare.
+                        transaction.phase = .unregisterSubmitted
+                        transaction.bootSessionIdentifier =
+                            try currentBootSession()
+                        transaction.lifetimeBarrierExpected = false
+                        try handoffStore.save(transaction)
+                        continue
+                    }
                     let preparation = try await lifecycle
                         .prepareForUnregistration()
                     guard preparation == .prepared else {

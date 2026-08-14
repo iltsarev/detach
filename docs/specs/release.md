@@ -21,8 +21,11 @@ change real power state, upload assets, or claim publication.
   head as its ordered parents and the tested tree. Tag that merge, verify the
   remote `main` and tag, and remove only the matching temporary branch. No
   actor has a general `main` ruleset bypass or direct-main release path.
-- The app, watchdog, bundled tmux, state helper, power client, root helper, and
-  Sparkle executables contain only `arm64`. Intel Macs are unsupported.
+- The app, watchdog, bundled tmux, state helper, power client, and root helper
+  target macOS 15.0 and contain only `arm64`. Intel Macs are unsupported.
+  Bundled Sparkle executables contain only `arm64` and must not require a
+  newer macOS than 15.0. The watchdog embedded Info.plist must state the same
+  15.0 floor. `app/scripts/verify-app.sh` checks both.
 - The pinned tmux source build may reuse only an arm64 product keyed by the
   builder, source checksums, SDK, compiler, and deployment target; every copied
   cache product passes the normal architecture and linkage validation.

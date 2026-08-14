@@ -17,7 +17,7 @@ final class UIE2EEventWindowResolverTests: XCTestCase {
             defer: false)
         let view = NSView(frame: NSRect(x: 20, y: 20, width: 40, height: 20))
         owner.contentView?.addSubview(view)
-        let point = NSPoint(x: 200, y: 200)
+        let point = NSPoint(x: owner.frame.midX, y: owner.frame.midY)
 
         XCTAssertTrue(behind.frame.intersects(owner.frame))
         XCTAssertIdentical(UIE2EEventWindowResolver.owner(of: view), owner)
@@ -36,7 +36,7 @@ final class UIE2EEventWindowResolverTests: XCTestCase {
             styleMask: .titled,
             backing: .buffered,
             defer: false)
-        let point = NSPoint(x: 200, y: 200)
+        let point = NSPoint(x: candidate.frame.midX, y: candidate.frame.midY)
 
         XCTAssertNil(UIE2EEventWindowResolver.owner(of: view))
         XCTAssertIdentical(
