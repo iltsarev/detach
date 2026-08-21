@@ -167,7 +167,10 @@ original `ZDOTDIR` for that process. Open, Resume, and Recover use the selected
 terminal, with Terminal as fallback.
 The new-session sheet accepts an optional UTF-8 name up to 100 bytes. It rejects
 control characters, explains invalid input, blocks launch, and passes one
-shell-quoted `--name` argument. The app uses `display_name` as the title, with
+shell-quoted `--name` argument. The launch button names the selected terminal. Terminal choice and an optional
+initial prompt are behind Advanced on the new-session sheet. Expanding Advanced
+grows the sheet downward and keeps the top edge fixed.
+The app uses `display_name` as the title, with
 the project/internal name fallback for old records.
 Notifications are opt-in. One app poller deduplicates baseline and transitions.
 
