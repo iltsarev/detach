@@ -108,7 +108,7 @@ private extension SettingsDestination {
         case .general: 450
         case .terminal: 460
         case .notifications: 350
-        case .system: 780
+        case .system: 560
         case .updates: 420
         }
     }
@@ -178,6 +178,16 @@ struct SettingsView: View {
         fontSizeDraft?.previewValue ?? AppFontSize.clamped(fontPointSize)
     }
 
+    private var settingsContentSize: CGSize {
+        let visibleHeight = NSScreen.main?.visibleFrame.height ?? 720
+        return CGSize(
+            width: AppFontSize.settingsWidth(for: fontPointSize),
+            height: SettingsWindowLayout.contentHeight(
+                base: navigation.selectedTab.baseHeight,
+                fontPointSize: fontPointSize,
+                visibleScreenHeight: visibleHeight))
+    }
+
     private var previewFontPointSizeBinding: Binding<Double> {
         Binding(
             get: { previewFontPointSize },
@@ -230,10 +240,8 @@ struct SettingsView: View {
             .tag(SettingsDestination.updates)
         }
         .appFontSize(fontPointSize)
-        .frame(
-            width: AppFontSize.settingsWidth(for: fontPointSize),
-            height: AppFontSize.settingsHeight(
-                base: navigation.selectedTab.baseHeight, for: fontPointSize))
+        .frame(width: settingsContentSize.width, height: settingsContentSize.height)
+        .background(SettingsWindowFrame(size: settingsContentSize))
         .task {
             let clampedFontPointSize = AppFontSize.clamped(fontPointSize)
             if fontSizeDraft == nil {
@@ -1276,6 +1284,44 @@ struct SettingsView: View {
         ]
         guard let url = candidates.lazy.compactMap(URL.init(string:)).first else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+/// `.windowResizability(.contentSize)` follows the Form's ideal height, so
+/// System would grow off-screen. Pin the Settings window to the pane size.
+private struct SettingsWindowFrame: NSViewRepresentable {
+    var size: CGSize
+
+    func makeNSView(context: Context) -> SettingsWindowFrameView {
+        let view = SettingsWindowFrameView()
+        view.size = size
+        return view
+    }
+
+    func updateNSView(_ view: SettingsWindowFrameView, context: Context) {
+        view.size = size
+    }
+}
+
+private final class SettingsWindowFrameView: NSView {
+    var size = CGSize.zero {
+        didSet { apply() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        apply()
+    }
+
+    private func apply() {
+        guard let window, size.width > 0, size.height > 0 else { return }
+        window.contentMinSize = size
+        window.contentMaxSize = size
+        let current = window.contentView?.bounds.size ?? .zero
+        if abs(current.width - size.width) > 0.5
+            || abs(current.height - size.height) > 0.5 {
+            window.setContentSize(size)
+        }
     }
 }
 
