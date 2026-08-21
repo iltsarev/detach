@@ -720,6 +720,39 @@ grep -Fx 'outside sentinel' "$outside" >/dev/null
 [ ! -d "$DETACH_CLAUDE_STATE_ROOT/sessions/$session" ]
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
 
+# A wrapper-owned Claude UUID with no transcript (welcome screen, then stop)
+# must resume with --session-id instead of failing as "not found".
+empty_label='Empty resume'
+export FAKE_CLAUDE_SLEEP=20
+export FAKE_CLAUDE_EXIT=0
+export FAKE_CLAUDE_EXPECT_RESTORED=0
+reset_fake_claude_ready
+empty_output="$("$SCRIPT" claude --name "$empty_label" --detach -- 'empty resume')"
+wait_for_fake_claude_ready
+empty_session="$(printf '%s\n' "$empty_output" | awk '/^Started / { print $2; exit }')"
+empty_meta="$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/meta.json"
+empty_id="$("$STATE_HELPER" meta get "$empty_meta" agent_session_id)"
+[[ "$empty_id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]
+"$SCRIPT" claude stop "$empty_label"
+! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
+rm -rf \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id"
+rm -f \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session.tar" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/transcript.jsonl"
+"$STATE_HELPER" meta patch "$empty_meta" --null transcript_path --null last_checkpoint_at
+reset_fake_claude_ready
+"$SCRIPT" resume --detach "$empty_id"
+wait_for_fake_claude_ready
+grep -Fx -- '--session-id' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+! grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$empty_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$STATE_HELPER" meta matches "$empty_meta" claude "$empty_id"
+"$SCRIPT" claude stop "$empty_label"
+"$SCRIPT" claude delete --force "$empty_label"
+[ ! -d "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session" ]
+
 # Claude uses the same default history-series contract as Codex: a completed
 # run remains intact while the next fresh conversation receives a new slot.
 default_slug="$(basename "$ROOT" | LC_ALL=C tr -cs 'A-Za-z0-9_-' '-' | \

@@ -3783,13 +3783,23 @@ resume_agent_session() {
         rollout="$saved_rollout"
       fi
     fi
-    [ -n "$rollout" ] || die "Claude session '$id' was not found"
-    restore_matching_claude_checkpoint "$session" "$id" "$rollout" || \
-      die "could not restore the matching Claude checkpoint"
-    valid_claude_transcript "$rollout" "$id" || die "Claude transcript for '$id' is missing or invalid"
-    start_under_project_lock "$session" "$cwd" "$display_name" \
-      "$id" "$rollout" 0 resume "$id" "$@" || \
-      die "could not start Claude resume session"
+    if [ -n "$rollout" ]; then
+      restore_matching_claude_checkpoint "$session" "$id" "$rollout" || \
+        die "could not restore the matching Claude checkpoint"
+    fi
+    if [ -n "$rollout" ] && valid_claude_transcript "$rollout" "$id"; then
+      start_under_project_lock "$session" "$cwd" "$display_name" \
+        "$id" "$rollout" 0 resume "$id" "$@" || \
+        die "could not start Claude resume session"
+    else
+      # Detach owns this UUID. Claude never wrote a transcript, and no
+      # matching checkpoint can recreate one, so --resume would fail.
+      # Start a new provider run with the same --session-id.
+      [ "$saved_id" = "$id" ] || die "Claude session '$id' was not found"
+      start_under_project_lock "$session" "$cwd" "$display_name" \
+        "$id" "" 0 "$@" || \
+        die "could not start Claude resume session"
+    fi
     [ "$detach" -eq 1 ] || attach_session "$session"
     return
   fi

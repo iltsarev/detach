@@ -386,7 +386,7 @@ detach reconcile --dry-run --json
 | `detach <provider> [start]` | Start a fresh conversation for the current project. |
 | `detach <provider> attach [name]` | Attach to a live managed session. |
 | `detach list [--json]` | List Codex and Claude sessions together; JSON mode emits JSONL. |
-| `detach resume <uuid>` | Detect provider and project, then continue that conversation. |
+| `detach resume <uuid>` | Detect provider and project, then continue that conversation. If Claude has not written a transcript yet, Resume starts the same owned session again. |
 | `detach <provider> status [name]` | Show runtime, checkpoint, and power state. |
 | `detach <provider> logs [--ansi] [name]` | Read retained output without attaching. |
 | `detach <provider> stop [name]` | Stop a live session only when its managed runtime is proven. |
