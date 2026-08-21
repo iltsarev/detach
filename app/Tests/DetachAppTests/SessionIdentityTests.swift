@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import DetachKit
 @testable import DetachApp
@@ -14,6 +15,27 @@ final class SessionIdentityTests: XCTestCase {
         XCTAssertLessThan(SessionIdentity.emphasis(for: .completed), 1)
         XCTAssertLessThan(SessionIdentity.emphasis(for: .stopped), 1)
         XCTAssertLessThan(SessionIdentity.emphasis(for: .interrupted), 1)
+    }
+}
+
+final class SessionUUIDPresentationTests: XCTestCase {
+    func testShortDisplayKeepsShortValuesAndTruncatesLongUUIDs() {
+        XCTAssertEqual(SessionUUIDPresentation.shortDisplay("abc"), "abc")
+        XCTAssertEqual(
+            SessionUUIDPresentation.shortDisplay("a9f58f1d-1234-5678-9abc-def012342ed9"),
+            "a9f58f1d…2ed9")
+    }
+
+    func testCopyWritesTheFullUUIDToThePasteboard() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        XCTAssertTrue(
+            SessionUUIDPresentation.copy(
+                "a9f58f1d-1234-5678-9abc-def012342ed9",
+                to: pasteboard))
+        XCTAssertEqual(
+            pasteboard.string(forType: .string),
+            "a9f58f1d-1234-5678-9abc-def012342ed9")
     }
 }
 
