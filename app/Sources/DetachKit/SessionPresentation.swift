@@ -29,7 +29,23 @@ public extension Session {
     }
 
     var isWaitingForUser: Bool {
-        effectiveStatus == .running && agentTurnState == .waiting
+        effectiveStatus == .running
+            && (agentTurnState == .waiting || agentTurnState == .needsInput)
+    }
+
+    /// A provider emitted a structured question or elicitation, rather than
+    /// merely finishing a normal turn.
+    var needsUserInput: Bool {
+        guard agentTurnState == .needsInput else { return false }
+        return switch effectiveStatus {
+        // A lost Detach worker can make an attached provider look recoverable
+        // while its live transcript still contains an actionable question.
+        // The structured provider signal is more specific than that health
+        // fallback and should keep the pet actionable.
+        case .starting, .running, .recovering, .recoverable: true
+        case .completed, .failed, .interrupted, .stopped, .hung, .orphaned,
+             .corrupt, .collision, .unknown: false
+        }
     }
 
     /// Whether the provider process is still expected to produce live output.

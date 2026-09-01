@@ -261,12 +261,16 @@ final class SessionStoreTests: XCTestCase {
             provider: .codex,
             projectDirectory: project,
             name: "Rev (ai)",
-            prompt: "review this")
+            prompt: "review this",
+            providerArguments: ["--disable", "deferred-tools"])
 
         XCTAssertEqual(
             cli.calls,
             [
-                ["codex", "--name", "Rev (ai)", "--detach", "--", "review this"],
+                [
+                    "codex", "--name", "Rev (ai)", "--detach", "--",
+                    "--disable", "deferred-tools", "review this",
+                ],
                 ["list", "--json"],
             ])
         XCTAssertEqual(cli.currentDirectories, [project])
@@ -668,6 +672,25 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(
             cli: cli,
             pollSleep: { try await sleep.sleep(nanoseconds: $0) })
+
+        store.startPolling(interval: 0.01)
+        await sleep.waitUntilStarted()
+
+        let intervals = await sleep.intervals
+        XCTAssertEqual(intervals, [500_000_000])
+        store.stopPolling()
+        await sleep.waitUntilCancelled()
+    }
+
+    func testVisiblePetKeepsBaseCadenceWhileMainWindowIsBackgrounded() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let sleep = PollSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            pollSleep: { try await sleep.sleep(nanoseconds: $0) })
+        store.updateCadence(foreground: false)
+        store.updatePetCadence(visible: true)
 
         store.startPolling(interval: 0.01)
         await sleep.waitUntilStarted()

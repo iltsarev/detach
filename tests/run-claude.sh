@@ -322,8 +322,8 @@ if claude_part_selected lifecycle; then
 
 bash -n "$SCRIPT"
 bash -n "$ROOT/tests/fake-claude"
-[ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
-[ "$($SCRIPT config tmux-style)" = "detach" ]
+[ "$("$SCRIPT" __version)" = "$(<"$ROOT/VERSION")" ]
+[ "$("$SCRIPT" config tmux-style)" = "detach" ]
 [ "$("$SCRIPT" claude __session_color /fixtures/harness)" = "#C2410C" ]
 
 # Color allocation is shared across providers. A path-derived collision walks
@@ -573,6 +573,15 @@ json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
   "$human_label" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "working" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "$session_id" ]
+printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion"}]},"uuid":"ask-user-1","timestamp":"2099-01-01T00:03:01.500Z"}\n' \
+  "$session_id" >>"$transcript"
+json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "needs_input" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "ask-user-1" ]
+wait_for_file_text "$power_activity" waiting
+printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":[{"type":"tool_result"}]},"uuid":"answer-user-1","timestamp":"2099-01-01T00:03:01.750Z"}\n' \
+  "$session_id" >>"$transcript"
+wait_for_file_text "$power_activity" working
 printf '{"type":"system","subtype":"turn_duration","isSidechain":false,"sessionId":"%s","uuid":"turn-duration-1","timestamp":"2099-01-01T00:03:02.000Z"}\n' \
   "$session_id" >>"$transcript"
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"

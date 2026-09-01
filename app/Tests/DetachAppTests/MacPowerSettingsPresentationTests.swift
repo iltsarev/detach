@@ -310,11 +310,15 @@ final class MacPowerActiveSessionTests: XCTestCase {
                 powerStateRoot: root),
             sessionStore: sessionStore,
             storageStore: StorageStore(cli: cli),
+            petCoordinator: PetCoordinator(
+                defaults: UserDefaults(suiteName: UUID().uuidString)!,
+                libraryRoot: root.appendingPathComponent("pets")),
             updater: UpdaterService(),
             notifications: SessionNotificationService(
                 center: SilentNotificationCenter(),
                 identifierProvider: { "settings-test" }),
-            navigation: SettingsNavigation(selectedTab: .system))
+            navigation: SettingsNavigation(selectedTab: .system),
+            mainNavigation: MainNavigation())
 
         XCTAssertNotEqual(view.macPowerPresentation.reason, .noActiveSessions)
         XCTAssertEqual(view.macPowerPresentation.reason, .sessionsNotHolding(1))

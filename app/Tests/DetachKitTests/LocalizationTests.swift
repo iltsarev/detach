@@ -63,6 +63,36 @@ final class LocalizationTests: XCTestCase {
                 bundle: resources,
                 locale: Locale(identifier: "ru")),
             "Включена температурная защита")
+        XCTAssertEqual(
+            L10n.string(
+                "Add Pet…",
+                bundle: resources,
+                locale: Locale(identifier: "ru")),
+            "Добавить питомца…")
+        XCTAssertEqual(
+            L10n.string(
+                "Generate Random Pet",
+                bundle: resources,
+                locale: Locale(identifier: "ru")),
+            "Сгенерировать питомца")
+        XCTAssertEqual(
+            L10n.string(
+                "Generating Pet…",
+                bundle: resources,
+                locale: Locale(identifier: "ru")),
+            "Генерируем питомца…")
+        XCTAssertEqual(
+            L10n.string(
+                "Continue Pet Generation",
+                bundle: resources,
+                locale: Locale(identifier: "ru")),
+            "Продолжить генерацию питомца")
+        XCTAssertEqual(
+            L10n.string(
+                "Starting a managed Codex CLI session…",
+                bundle: resources,
+                locale: Locale(identifier: "ru")),
+            "Запускаем управляемую CLI-сессию Codex…")
     }
 
     func testLocalizationTablesHaveMatchingKeysAndEnglishFallbacks() throws {

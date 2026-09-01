@@ -4,6 +4,11 @@ import Foundation
 
 _ = umask(0o077)
 
+if Array(CommandLine.arguments.dropFirst()) == ["mcp", "workspace-dependencies"] {
+    WorkspaceDependenciesMCPServer.serve()
+    exit(EXIT_SUCCESS)
+}
+
 do {
     let output = try DetachStateCommand.run(
         arguments: Array(CommandLine.arguments.dropFirst()))

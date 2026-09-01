@@ -125,6 +125,14 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertEqual(session.agentTurnState, .unknown)
     }
 
+    func testStructuredInputStateDecodes() throws {
+        let line = running.replacingOccurrences(
+            of: "\"finished_at\":null",
+            with: "\"finished_at\":null,\"agent_turn_state\":\"needs_input\",\"agent_turn_id\":\"turn\"")
+        let session = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+        XCTAssertEqual(session.agentTurnState, .needsInput)
+    }
+
     func testWrongSchemaIsFlagged() {
         let line = running.replacingOccurrences(of: "\"schema\":1", with: "\"schema\":2")
         let result = SessionListParser.parse(line)

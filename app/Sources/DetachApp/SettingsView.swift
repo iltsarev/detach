@@ -184,6 +184,7 @@ private extension SettingsDestination {
     var baseHeight: CGFloat {
         switch self {
         case .general: 620
+        case .pets: 640
         case .terminal: 460
         case .notifications: 350
         case .system: 780
@@ -199,9 +200,11 @@ struct SettingsView: View {
     /// scene, so CLI path and cadence changes are applied here as well.
     let sessionStore: SessionStore
     let storageStore: StorageStore
+    @ObservedObject var petCoordinator: PetCoordinator
     @ObservedObject var updater: UpdaterService
     @ObservedObject var notifications: SessionNotificationService
     @ObservedObject var navigation: SettingsNavigation
+    @ObservedObject var mainNavigation: MainNavigation
 
     @AppStorage("detachPath", store: AppSettings.defaults)
     private var detachPath = AppSettings.initialDetachPath
@@ -293,6 +296,16 @@ struct SettingsView: View {
                 tabLabel(L10n.string("General"), systemImage: "gearshape.fill", color: .systemGray)
             }
             .tag(SettingsDestination.general)
+            PetSettingsView(
+                coordinator: petCoordinator,
+                navigation: mainNavigation,
+                sessionStore: sessionStore,
+                detachPath: activeDetachPath
+            ).tabItem {
+                tabLabel(L10n.string("Pets"), systemImage: "pawprint.fill",
+                         color: NSColor(Brand.indigo))
+            }
+            .tag(SettingsDestination.pets)
             terminalTab.tabItem {
                 tabLabel(L10n.string("Terminal"), systemImage: "terminal.fill",
                          color: NSColor(Brand.teal))

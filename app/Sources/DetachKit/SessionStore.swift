@@ -51,6 +51,7 @@ public final class SessionStore {
     private var pollTask: Task<Void, Never>?
     private var baseInterval: TimeInterval = 2
     private var foreground = true
+    private var petVisible = false
     private var refreshGeneration: UInt64 = 0
     @ObservationIgnored private let pollSleep: @Sendable (UInt64) async throws -> Void
 
@@ -99,8 +100,15 @@ public final class SessionStore {
         self.foreground = foreground
     }
 
+    /// A visible floating pet is a live status surface even when the main
+    /// window is closed. Keep provider-turn transitions on the normal polling
+    /// cadence so its animation does not lag behind the sessions it represents.
+    public func updatePetCadence(visible: Bool) {
+        petVisible = visible
+    }
+
     private var currentInterval: TimeInterval {
-        foreground ? baseInterval : max(baseInterval * 5, 10)
+        foreground || petVisible ? baseInterval : max(baseInterval * 5, 10)
     }
 
     /// Returns this request's valid typed snapshot even when a newer refresh
@@ -164,7 +172,8 @@ public final class SessionStore {
         provider: Provider,
         projectDirectory: URL,
         name: String?,
-        prompt: String?
+        prompt: String?,
+        providerArguments: [String] = []
     ) async -> SessionStartResult {
         let existingIDs = Set(sessions.map(\.id))
         var arguments = [provider.rawValue]
@@ -172,8 +181,12 @@ public final class SessionStore {
             arguments += ["--name", name]
         }
         arguments.append("--detach")
-        if let prompt, !prompt.isEmpty {
-            arguments += ["--", prompt]
+        if !providerArguments.isEmpty || prompt?.isEmpty == false {
+            arguments.append("--")
+            arguments += providerArguments
+            if let prompt, !prompt.isEmpty {
+                arguments.append(prompt)
+            }
         }
 
         do {

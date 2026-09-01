@@ -401,6 +401,49 @@ final class DetachStateTests: XCTestCase {
                 agentTurnID: "turn-1"))
     }
 
+    func testCodexSummaryDistinguishesStructuredInputFromTurnCompletion() {
+        let request = Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+        {"type":"event_msg","payload":{"type":"item_started","turn_id":"turn-1","item":{"type":"request_user_input"}}}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: request, provider: .codex),
+            TranscriptSummary(
+                agentTurnState: .needsInput,
+                agentTurnID: "turn-1"))
+
+        let continued = Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+        {"type":"event_msg","payload":{"type":"item_started","turn_id":"turn-1","item":{"type":"elicitation_request"}}}
+        {"type":"event_msg","payload":{"type":"item_started","turn_id":"turn-1","item":{"type":"agent_message"}}}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: continued, provider: .codex),
+            TranscriptSummary(
+                agentTurnState: .working,
+                agentTurnID: "turn-1"))
+
+        let longTurnTail = Data("""
+        partial-prefix}
+        {"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-long","item":{"type":"CommandExecution"}}}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: longTurnTail, provider: .codex),
+            TranscriptSummary(
+                agentTurnState: .working,
+                agentTurnID: "turn-long"))
+
+        let answeredRequest = Data("""
+        partial-prefix}
+        {"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-question","item":{"type":"request_user_input"}}}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: answeredRequest, provider: .codex),
+            TranscriptSummary(
+                agentTurnState: .working,
+                agentTurnID: "turn-question"))
+    }
+
     func testSummaryClearsTurnStateWhenNoUsableIdentifierExists() {
         let tail = Data("""
         {"type":"event_msg","payload":{"type":"task_started","turn_id":""}}
@@ -432,5 +475,42 @@ final class DetachStateTests: XCTestCase {
                 contextWindow: nil,
                 agentTurnState: .waiting,
                 agentTurnID: "real-user"))
+    }
+
+    func testClaudeSummaryDistinguishesAskUserQuestionFromPlainText() {
+        let plain = Data("""
+        {"type":"user","uuid":"turn-1","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"answer-1","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+        {"type":"system","subtype":"turn_duration","uuid":"turn-1"}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: plain, provider: .claude),
+            TranscriptSummary(
+                contextUsed: 0,
+                agentTurnState: .waiting,
+                agentTurnID: "turn-1"))
+
+        let question = Data("""
+        {"type":"user","uuid":"turn-1","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"question-1","message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: question, provider: .claude),
+            TranscriptSummary(
+                contextUsed: 0,
+                agentTurnState: .needsInput,
+                agentTurnID: "question-1"))
+
+        let answered = Data("""
+        {"type":"user","uuid":"turn-1","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"question-1","message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}
+        {"type":"user","uuid":"tool-result","message":{"role":"user","content":[{"type":"tool_result"}]}}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: answered, provider: .claude),
+            TranscriptSummary(
+                contextUsed: 0,
+                agentTurnState: .working,
+                agentTurnID: "question-1"))
     }
 }
