@@ -679,6 +679,20 @@ grep -Fx "release --session $session --run-token $stopped_run_token" \
   "$FAKE_POWER_RELEASES_FILE" >/dev/null
 claude_scenario_event pass SC-SESSION-STOP-CLAUDE
 
+[ -s "$checkpoint/transcript.jsonl" ]
+resume_checkpoint_before="$(cksum "$checkpoint/transcript.jsonl")"
+if FAKE_POWER_FAIL_RUN=1 \
+  "$SCRIPT" resume --detach "$session_id"; then
+  printf 'resume unexpectedly passed a failed worker readiness handshake\n' >&2
+  exit 1
+fi
+[ -s "$checkpoint/transcript.jsonl" ] || {
+  printf 'failed resume deleted the last Claude checkpoint transcript\n' >&2
+  exit 1
+}
+[ "$(cksum "$checkpoint/transcript.jsonl")" = "$resume_checkpoint_before" ]
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+
 if [ "$CLAUDE_TEST_PART" = lifecycle ]; then
   "$SCRIPT" claude delete --force "$human_label"
 fi

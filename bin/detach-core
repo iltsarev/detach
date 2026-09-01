@@ -3863,7 +3863,7 @@ resume_agent_session() {
       restore_matching_claude_checkpoint "$session" "$id" "$rollout" || \
         die "could not restore the matching Claude checkpoint"
       start_under_project_lock "$session" "$cwd" "$display_name" \
-        "$id" "$rollout" 0 resume "$id" "$@" || \
+        "$id" "$rollout" 1 resume "$id" "$@" || \
         die "could not start Claude resume session"
     elif claude_matching_checkpoint_exists "$session" "$id"; then
       [ -n "$rollout" ] && safe_claude_transcript_path "$rollout" "$id" || \
@@ -3873,7 +3873,7 @@ resume_agent_session() {
       valid_claude_transcript "$rollout" "$id" || \
         die "Claude transcript for '$id' is missing or invalid"
       start_under_project_lock "$session" "$cwd" "$display_name" \
-        "$id" "$rollout" 0 resume "$id" "$@" || \
+        "$id" "$rollout" 1 resume "$id" "$@" || \
         die "could not start Claude resume session"
     elif [ "$saved_id" = "$id" ]; then
       # Detach owns this UUID. Claude never wrote a transcript, and no
@@ -3901,7 +3901,7 @@ resume_agent_session() {
   valid_jsonl "$rollout" "$id" || die "Codex rollout for '$id' is missing or invalid"
 
   start_under_project_lock "$session" "$cwd" "$display_name" \
-    "$id" "$rollout" 0 resume "$id" "$@" || \
+    "$id" "$rollout" 1 resume "$id" "$@" || \
     die "could not start Codex resume session"
   [ "$detach" -eq 1 ] || attach_session "$session"
 }

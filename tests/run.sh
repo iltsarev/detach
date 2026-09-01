@@ -1130,12 +1130,28 @@ if [ "$CODEX_TEST_PART" = resume ] || [ "$CODEX_TEST_PART" = resume-identity ]; 
   bootstrap_codex_checkpoint
 fi
 
-# Explicit resume follows Codex semantics and accepts the exact thread UUID.
+# A failed power handshake must not delete the last Resume checkpoint.
 export FAKE_CODEX_INIT_DELAY=0
 export FAKE_CODEX_SLEEP=1
 expected_rollout="$("$STATE_HELPER" meta get "$meta" transcript_path)"
 [ -n "$expected_rollout" ]
 [ -f "$expected_rollout" ]
+[ -s "$checkpoint/rollout.jsonl" ] || cp -p "$expected_rollout" "$checkpoint/rollout.jsonl"
+[ -s "$checkpoint/rollout.jsonl" ]
+resume_checkpoint_before="$(cksum "$checkpoint/rollout.jsonl")"
+if FAKE_POWER_FAIL_RUN=1 \
+  "$DETACH" resume --name integration --detach "$expected_id"; then
+  printf 'resume unexpectedly passed a failed worker readiness handshake\n' >&2
+  exit 1
+fi
+[ -s "$checkpoint/rollout.jsonl" ] || {
+  printf 'failed resume deleted the last checkpoint rollout\n' >&2
+  exit 1
+}
+[ "$(cksum "$checkpoint/rollout.jsonl")" = "$resume_checkpoint_before" ]
+! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
+
+# Explicit resume follows Codex semantics and accepts the exact thread UUID.
 cp -p "$expected_rollout" "$checkpoint/rollout.jsonl"
 printf '{damaged rollout\n' >"$expected_rollout"
 uppercase_id="$(printf '%s' "$expected_id" | tr '[:lower:]' '[:upper:]')"

@@ -155,8 +155,9 @@ without a state directory and never reports success over leftover state.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user
-session. They do not promise survival across logout or reboot; an explicit
-kill of tmux/provider ends the live run. Recovery checkpoints remain available.
+session. They do not promise survival across logout or reboot. A kill of
+tmux or provider ends the live run. Resume keeps the last
+checkpoint until the new run is ready.
 Provider test parts need private state, socket, and artifact roots; their
 parent orders events and requires every part. Small hosts reuse lifecycle
 checkpoints in three Codex and two Claude parts; larger hosts use finer parts.
