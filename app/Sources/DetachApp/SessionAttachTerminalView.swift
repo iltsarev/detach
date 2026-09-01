@@ -360,6 +360,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
     let detachPath: String
     let session: Session
     let fontPointSize: CGFloat
+    var focusRequestID: UUID? = nil
     var baseEnvironment: [String: String] = ProcessInfo.processInfo.environment
     var onTerminated: (Int32?) -> Void = { _ in }
 
@@ -390,6 +391,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         context.coordinator.onTerminated = onTerminated
         context.coordinator.controller.onTerminated = onTerminated
         context.coordinator.controller.applyFont(pointSize: fontPointSize)
+        context.coordinator.focusIfRequested(focusRequestID, in: view)
     }
 
     static func dismantleNSView(
@@ -406,6 +408,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         let controller: SessionAttachController
         var onTerminated: (Int32?) -> Void
         private var keyboardMonitor: Any?
+        private var handledFocusRequestID: UUID?
 
         init(controller: SessionAttachController, onTerminated: @escaping (Int32?) -> Void) {
             self.controller = controller
@@ -424,6 +427,22 @@ struct SessionAttachTerminalView: NSViewRepresentable {
                     in: view,
                     send: view.send)
             }
+        }
+
+        func focusIfRequested(_ requestID: UUID?, in view: LocalProcessTerminalView) {
+            guard shouldHandleFocusRequest(requestID) else { return }
+            DispatchQueue.main.async { [weak view] in
+                guard let view, let window = view.window else { return }
+                window.makeFirstResponder(view)
+            }
+        }
+
+        func shouldHandleFocusRequest(_ requestID: UUID?) -> Bool {
+            guard let requestID, requestID != handledFocusRequestID else {
+                return false
+            }
+            handledFocusRequestID = requestID
+            return true
         }
 
         func routeKeyboardEvent(

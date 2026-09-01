@@ -223,6 +223,20 @@ final class SessionAttachTerminalTests: XCTestCase {
             })
     }
 
+    func testTerminalFocusRequestIsHandledOnce() throws {
+        let session = try XCTUnwrap(Self.session())
+        let coordinator = SessionAttachTerminalView(
+            detachPath: "/tmp/detach",
+            session: session,
+            fontPointSize: 14).makeCoordinator()
+        let requestID = UUID()
+
+        XCTAssertFalse(coordinator.shouldHandleFocusRequest(nil))
+        XCTAssertTrue(coordinator.shouldHandleFocusRequest(requestID))
+        XCTAssertFalse(coordinator.shouldHandleFocusRequest(requestID))
+        XCTAssertTrue(coordinator.shouldHandleFocusRequest(UUID()))
+    }
+
     @MainActor
     func testStoppedSessionDetailUsesTheLogFallback() throws {
         let session = try XCTUnwrap(Self.session(status: "stopped"))

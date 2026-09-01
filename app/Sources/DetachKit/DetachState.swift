@@ -595,12 +595,23 @@ public enum TranscriptDocument {
               let event = payload["type"] as? String else {
             return
         }
+        if codexRequestsUserInput(payload), event != "item_completed" {
+            result.agentTurnState = .needsInput
+            result.agentTurnID = turnID
+            return
+        }
         switch event {
         case "task_started", "turn_started":
             result.agentTurnState = .working
             result.agentTurnID = turnID
         case "task_complete", "turn_complete":
             result.agentTurnState = .waiting
+            result.agentTurnID = turnID
+        case "item_started", "item_completed":
+            // A long active turn can outgrow the bounded transcript tail and
+            // lose its task_started record. Fresh item events still carry the
+            // exact turn identity and independently prove ongoing work.
+            result.agentTurnState = .working
             result.agentTurnID = turnID
         case "turn_aborted":
             result.agentTurnState = .interrupted
@@ -632,6 +643,12 @@ public enum TranscriptDocument {
             return
         }
 
+        if type == "assistant", containsAskUserQuestion(message?["content"]) {
+            result.agentTurnState = .needsInput
+            result.agentTurnID = turnID
+            return
+        }
+
         if type == "system", record["subtype"] as? String == "turn_duration" {
             result.agentTurnState = .waiting
             result.agentTurnID = turnID
@@ -640,12 +657,61 @@ public enum TranscriptDocument {
 
         guard type == "user",
               !isJSONTrue(record["isMeta"]),
-              message?["role"] as? String == "user",
-              !containsToolResult(message?["content"]) else {
+              message?["role"] as? String == "user" else {
+            return
+        }
+        if containsToolResult(message?["content"]) {
+            if result.agentTurnState == .needsInput {
+                result.agentTurnState = .working
+            }
             return
         }
         result.agentTurnState = .working
         result.agentTurnID = turnID
+    }
+
+    private static func codexRequestsUserInput(
+        _ payload: [String: Any]
+    ) -> Bool {
+        containsStructuralValue(
+            payload,
+            matching: [
+                "request_user_input",
+                "elicitation_request",
+                "mcp_elicitation",
+            ])
+    }
+
+    private static func containsStructuralValue(
+        _ value: Any,
+        matching expected: Set<String>
+    ) -> Bool {
+        if let object = value as? [String: Any] {
+            for (key, nested) in object {
+                if ["type", "name", "tool_name"].contains(key),
+                   let text = nested as? String,
+                   expected.contains(text.lowercased()) {
+                    return true
+                }
+                if containsStructuralValue(nested, matching: expected) {
+                    return true
+                }
+            }
+        } else if let array = value as? [Any] {
+            return array.contains {
+                containsStructuralValue($0, matching: expected)
+            }
+        }
+        return false
+    }
+
+    private static func containsAskUserQuestion(_ value: Any?) -> Bool {
+        guard let content = value as? [Any] else { return false }
+        return content.contains { item in
+            guard let object = item as? [String: Any] else { return false }
+            return object["type"] as? String == "tool_use"
+                && object["name"] as? String == "AskUserQuestion"
+        }
     }
 
     private static func containsToolResult(_ value: Any?) -> Bool {

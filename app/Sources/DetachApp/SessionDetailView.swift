@@ -6,6 +6,7 @@ struct SessionDetailView: View {
     let session: Session
     let store: SessionStore
     let detachPath: String
+    var terminalFocusRequestID: UUID? = nil
     @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
     private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
@@ -253,6 +254,7 @@ struct SessionDetailView: View {
                     detachPath: detachPath,
                     session: session,
                     fontPointSize: fontPointSize,
+                    focusRequestID: terminalFocusRequestID,
                     onTerminated: { _ in
                         handleTerminalExit(generation: generation)
                     })

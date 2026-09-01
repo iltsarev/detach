@@ -24,6 +24,8 @@ SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424ae
 SWIFTTERM_BUNDLE="$ROOT/app/build/Detach.app/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
 SWIFTTERM_SHADER="$SWIFTTERM_BUNDLE/Shaders.metal"
 SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
+BUILTIN_PET_SPRITESHEET_SHA256="484a758e192a915354c5e63d5d230fae07a400c418fd40b2755eaaefa2d5f380"
+BUILTIN_PET="$ROOT/app/build/Detach.app/Contents/Resources/Pets/lumi"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-tmux-contract.XXXXXX")"
 
 cleanup() {
@@ -348,6 +350,14 @@ grep -F 'ditto "$bundle" "$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"' \
 grep -F 'SWIFTTERM_BUNDLE="$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"' \
   "$VERIFY_APP" >/dev/null
 grep -F 'Missing bundled SwiftTerm resource bundle' "$VERIFY_APP" >/dev/null
+[ -f "$BUILTIN_PET/pet.json" ]
+[ -f "$BUILTIN_PET/spritesheet.webp" ]
+[ "$(/usr/bin/shasum -a 256 "$BUILTIN_PET/spritesheet.webp" | \
+  /usr/bin/awk '{print $1}')" = "$BUILTIN_PET_SPRITESHEET_SHA256" ]
+grep -F 'install -m 0644 "$BUILTIN_PET_SOURCE/spritesheet.webp"' \
+  "$MAKE_APP" >/dev/null
+grep -F 'Bundled pet spritesheet does not match the validated source' \
+  "$VERIFY_APP" >/dev/null
 grep -F 'Bundled SwiftTerm Metal shader does not match SwiftTerm %s' \
   "$VERIFY_APP" >/dev/null
 grep -F 'thin_sparkle_to_arm64 "$FRAMEWORKS/Sparkle.framework"' "$MAKE_APP" >/dev/null

@@ -1,9 +1,11 @@
+import AppKit
 import SwiftUI
 import DetachKit
 
 @MainActor
 struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
     private var fontPointSize = AppFontSize.defaultValue
@@ -22,9 +24,12 @@ struct RootView: View {
     @ObservedObject var notifications: SessionNotificationService
     @ObservedObject var tips: TipSession
     @ObservedObject var settingsNavigation: SettingsNavigation
+    @ObservedObject var petCoordinator: PetCoordinator
+    let petWindowController: PetWindowController
 
     @State private var selectedID: String?
     @State private var shortcutAssignments: [SessionShortcutAssignment] = []
+    @State private var terminalFocusRequest: MainNavigation.TerminalFocusRequest?
 
     private var selectedSession: Session? {
         store.sessions.first { $0.id == selectedID }
@@ -55,7 +60,13 @@ struct RootView: View {
                         if store.sessions.isEmpty && store.state == .ok {
                             EmptySessionsView()
                         } else if let session = selectedSession {
-                            SessionDetailView(session: session, store: store, detachPath: detachPath)
+                            SessionDetailView(
+                                session: session,
+                                store: store,
+                                detachPath: detachPath,
+                                terminalFocusRequestID:
+                                    terminalFocusRequest?.sessionID == session.id
+                                        ? terminalFocusRequest?.id : nil)
                                 .id(session.id)
                         } else {
                             ContentUnavailableView {
@@ -96,13 +107,28 @@ struct RootView: View {
             // keep notifications fed from the same single poller. The
             // transition detector baselines on its first successful snapshot,
             // so historical sessions never fire as fresh notifications.
-            store.onSnapshot = { [weak notifications, weak shortcuts] sessions in
+            store.onSnapshot = {
+                [weak notifications, weak shortcuts, weak petCoordinator] sessions in
                 shortcuts?.reconcile(sessions)
                 await notifications?.observe(sessions)
+                petCoordinator?.observe(sessions)
             }
             await store.configure(cli: ProcessDetachCLI(
                 executable: URL(fileURLWithPath: detachPath)))
             await installation.bootstrap()
+        }
+        .task {
+            petWindowController.configure(
+                coordinator: petCoordinator,
+                navigation: navigation,
+                onVisibilityChange: { visible in
+                    store.updatePetCadence(visible: visible)
+                },
+                openMainWindow: {
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                })
+            petCoordinator.reloadLibrary()
         }
         .task(id: notificationsEnabled) {
             guard AppSettings.uiE2E == nil else { return }
@@ -137,6 +163,12 @@ struct RootView: View {
         }
         .onReceive(shortcuts.$assignments) { assignments in
             shortcutAssignments = assignments
+        }
+        .onChange(of: navigation.terminalFocusRequest, initial: true) { _, request in
+            guard let request else { return }
+            selectedID = request.sessionID
+            terminalFocusRequest = request
+            navigation.terminalFocusRequest = nil
         }
         .onAppear { store.updateCadence(foreground: true) }
         .onDisappear { store.updateCadence(foreground: false) }

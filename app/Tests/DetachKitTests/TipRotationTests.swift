@@ -59,10 +59,10 @@ final class TipRotationTests: XCTestCase {
         XCTAssertEqual(Set(identifiers).count, identifiers.count)
     }
 
-    func testCatalogContainsEightTipsAndLinksEverySettingsTab() {
+    func testCatalogContainsNineTipsAndLinksEverySettingsTab() {
         let destinations = Set(TipCatalog.all.compactMap(\.destination))
 
-        XCTAssertEqual(TipCatalog.all.count, 8)
+        XCTAssertEqual(TipCatalog.all.count, 9)
         XCTAssertEqual(destinations, Set(SettingsDestination.allCases))
     }
 

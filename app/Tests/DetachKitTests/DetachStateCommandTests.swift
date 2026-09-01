@@ -97,6 +97,17 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testEmitSessionAcceptsStructuredInputState() throws {
+        let output = try DetachStateCommand.run(arguments: [
+            "emit", "session", "codex", "detach-codex-question", "running",
+            "--agent-turn-state", "needs_input",
+            "--agent-turn-id", "turn-1",
+        ])
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: output) as? [String: Any])
+        XCTAssertEqual(object["agent_turn_state"] as? String, "needs_input")
+    }
+
     func testEmitSessionPreservesDisplayNamePlaceholderCharacters() throws {
         for displayName in ["-", "?"] {
             let output = try DetachStateCommand.run(arguments: [

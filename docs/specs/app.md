@@ -59,25 +59,26 @@ onboarding or Repair, an enabled watchdog without a fresh heartbeat uses the
 durable unregister/barrier/register transaction. Ordinary activation does not
 replace it for a temporarily stale heartbeat.
 
-The menu bar is display-only. Its prompt mark is filled for protected, dim for
-sleep allowed, badged for attention, and outlined for unknown. Starting,
-running, and recovering sessions are active; hung sessions are not. Green means
-working and orange means waiting. Waiting outranks working. A badge hides both
-tints so power warnings stay visible. Monochrome states remain template; tints
-resolve from label or system colors. VoiceOver names
-the session state. The first menu line is `state · reason · freshness`.
-Protected counts working sessions. Allowed names all-waiting or an unprotected
-working session and never claims no sessions. The shared `checked_at` heartbeat
-reader and session poller supply the glyph and words. UI never calls `pmset` or
-root XPC. Freshness uses the document timestamp, not file mtime. One
-`detach list --json` poller serves the window, notifications, and menu. It runs
-faster with a window, slower without, and never stops. Closing the last
-window keeps the app and icon.
-⌘Q and Quit end the app while sessions, checkpoints, and protection continue.
-Settings → General owns both menu bar toggles. Settings → System keeps the only
-Mac Power status and approval controls. The Settings window follows the hosting
-screen; System scrolls. Temperature safety has its own warning shape and the
-text **Mac can sleep: temperature**.
+The display-only menu mark is filled for protected, dim for sleep allowed,
+badged for attention, and outlined for unknown. Starting/running/recovering are
+active; hung is not. Waiting wins over working. VoiceOver names every state.
+`state · reason · freshness` uses typed heartbeat time, not mtime. Protected
+counts workers; Allowed never claims no sessions while one is active. One
+session poller serves the window, notifications, menu, and pet and only slows
+when all are hidden. Closing windows keeps the app alive; Quit does not stop
+sessions. General owns menu toggles; System owns scrolling Mac Power controls.
+
+Pets loads regular v1 8x9 or v2 8x11 PNG/WebP packages. The bundled pet is a
+read-only fallback; matching user IDs win. Import is atomic. Needs input needs
+an event or terminal controls. Drag moves; click opens the top session or tie.
+
+Generation requires regular `hatch-pet` and sibling `detach-state` files. It
+starts one managed Codex CLI session and registers, for that invocation only, a
+required stdio MCP exposing the read-only `load_workspace_dependencies` tool.
+Global Codex config stays unchanged and the app stays closed. Settings
+tracks IDs, spins while a turn works, opens its session for attention, and
+selects a valid v2 package. Failure, disappearance, or timeout clears tracking.
+Detach never synthesizes rows.
 
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface

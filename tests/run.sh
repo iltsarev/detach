@@ -67,6 +67,44 @@ fi
   printf 'detach-state test helper is missing: %s\n' "$STATE_HELPER" >&2
   exit 1
 }
+codex_prompt_state="$(printf '%s\n' \
+  'Would you like to run the following command?' \
+  '› 1. Yes, proceed (y)' \
+  '  2. No, and tell Codex what to do differently (esc)' \
+  'Press enter to confirm or esc to cancel' | \
+  DETACH_CORE_ENTRYPOINT=1 DETACH_PROVIDER=codex \
+    "$ROOT/bin/detach-core" __pane_prompt_state)"
+[ "$codex_prompt_state" = "needs_input" ]
+claude_prompt_state="$(printf '%s\n' \
+  '────────────────────────────────────────' \
+  ' ☐ Задача' \
+  '❯ 1. Первый вариант' \
+  'Enter to select · ↑/↓ to navigate · Esc to cancel' | \
+  DETACH_CORE_ENTRYPOINT=1 DETACH_PROVIDER=claude \
+    "$ROOT/bin/detach-core" __pane_prompt_state)"
+[ "$claude_prompt_state" = "needs_input" ]
+stale_codex_prompt_state="$(printf '%s\n' \
+  'Would you like to run the following command?' \
+  '› 1. Yes, proceed (y)' \
+  'Press enter to confirm or esc to cancel' \
+  '• Running the approved command' | \
+  DETACH_CORE_ENTRYPOINT=1 DETACH_PROVIDER=codex \
+    "$ROOT/bin/detach-core" __pane_prompt_state)"
+[ "$stale_codex_prompt_state" = "working" ]
+stale_claude_prompt_state="$(printf '%s\n' \
+  ' ☐ Задача' \
+  '❯ 1. Первый вариант' \
+  'Enter to select · ↑/↓ to navigate · Esc to cancel' \
+  '● Working on your answer' | \
+  DETACH_CORE_ENTRYPOINT=1 DETACH_PROVIDER=claude \
+    "$ROOT/bin/detach-core" __pane_prompt_state)"
+[ "$stale_claude_prompt_state" = "working" ]
+plain_prompt_state="$(printf '%s\n' \
+  'Агент закончил обычный ответ.' \
+  'Press enter to confirm or esc to cancel' | \
+  DETACH_CORE_ENTRYPOINT=1 DETACH_PROVIDER=codex \
+    "$ROOT/bin/detach-core" __pane_prompt_state)"
+[ "$plain_prompt_state" = "working" ]
 integer_boundary_file="$TMP_ROOT/integer-boundary.json"
 printf '%s\n' \
   '{"maximum":9223372036854775807,"above":9223372036854775808}' \
@@ -1199,6 +1237,15 @@ grep -Fx -- '--activity-file' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$power_activity" "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- '--activity-source-file' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$power_activity_source" "$FAKE_POWER_ARGS_FILE" >/dev/null
+printf '{"timestamp":"2099-01-01T00:09:59Z","type":"event_msg","payload":{"type":"request_user_input","turn_id":"%s"}}\n' \
+  "$turn_id" >>"$turn_rollout"
+json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "needs_input" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "$turn_id" ]
+wait_for_file_text "$power_activity" waiting
+printf '{"timestamp":"2099-01-01T00:09:59.500Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"%s"}}\n' \
+  "$turn_id" >>"$turn_rollout"
+wait_for_file_text "$power_activity" working
 printf '{"timestamp":"2099-01-01T00:10:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"%s"}}\n' \
   "$turn_id" >>"$turn_rollout"
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"

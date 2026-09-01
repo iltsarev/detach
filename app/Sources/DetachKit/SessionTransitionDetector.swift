@@ -52,7 +52,8 @@ public struct SessionTransitionDetector: Sendable {
                 (Lifecycle($0), Snapshot($0))
             })
             pendingInterrupted.formIntersection(snapshots.keys)
-            for session in sessions where session.agentTurnState == .waiting {
+            for session in sessions where session.agentTurnState == .waiting
+                    || session.agentTurnState == .needsInput {
                 guard let turnID = session.agentTurnID, !turnID.isEmpty else { continue }
                 let fallbackKey = conversationFallbackKey(for: session)
                 if let agentKey = conversationAgentKey(for: session) {
@@ -96,7 +97,8 @@ public struct SessionTransitionDetector: Sendable {
             }
 
             if session.effectiveStatus == .running,
-               session.agentTurnState == .waiting,
+               session.agentTurnState == .waiting
+                    || session.agentTurnState == .needsInput,
                let turnID = session.agentTurnID,
                !turnID.isEmpty,
                !hasSeenWaitingTurn(turnID, for: session) {

@@ -3210,7 +3210,9 @@ refresh_power_activity_state() {
     write_power_activity_state "$activity_file" working
     return
   fi
-  [ "$TRANSCRIPT_AGENT_TURN_STATE" != "waiting" ] || state="waiting"
+  case "$TRANSCRIPT_AGENT_TURN_STATE" in
+    waiting|needs_input) state="waiting" ;;
+  esac
   if [ "$state" = "waiting" ]; then
     if [ "$transcript" != "$POWER_ACTIVITY_WAITING_SOURCE_TRANSCRIPT" ] || \
        [ "$verified_signature" != "$POWER_ACTIVITY_WAITING_SOURCE_SIGNATURE" ]; then
@@ -3928,10 +3930,47 @@ transcript_model_context() {
   done < <("$STATE_BIN" jsonl summary "$PROVIDER" "$transcript" --tsv 2>/dev/null)
 
   case "$TRANSCRIPT_AGENT_TURN_STATE" in
-    working|waiting|interrupted) ;;
+    working|waiting|needs_input|interrupted) ;;
     *) TRANSCRIPT_AGENT_TURN_STATE=""; TRANSCRIPT_AGENT_TURN_ID="" ;;
   esac
   [ -n "$TRANSCRIPT_AGENT_TURN_ID" ] || TRANSCRIPT_AGENT_TURN_STATE=""
+}
+
+# Provider permission dialogs and interactive selectors are painted into the
+# terminal before their tool event is committed to the transcript. Detect only
+# the stable control footer plus a provider-specific choice marker; assistant
+# prose by itself never becomes an input request.
+pane_snapshot_requests_user_input() {
+  local provider="$1"
+  local snapshot
+  local footer
+
+  snapshot="$(tail -n 60)" || return 1
+  footer="$(printf '%s\n' "$snapshot" | awk 'NF { line = $0 } END { print line }')"
+  case "$provider" in
+    codex)
+      printf '%s\n' "$footer" | grep -Fq 'Press enter to confirm or esc to cancel' &&
+        printf '%s\n' "$snapshot" | grep -Fq '› 1. Yes, proceed'
+      ;;
+    claude)
+      printf '%s\n' "$footer" | grep -Fq 'Enter to select' &&
+        printf '%s\n' "$footer" | grep -Fq 'Esc to cancel' &&
+        printf '%s\n' "$snapshot" | grep -Fq '☐' &&
+        printf '%s\n' "$snapshot" | grep -Fq '❯ 1.'
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+pane_requests_user_input() {
+  local session="$1"
+  local pane
+
+  tmux_has_session "$session" || return 1
+  pane="$(tmux_pane_id "$session" 2>/dev/null || true)"
+  [ -n "$pane" ] || return 1
+  "${TMUX_CMD[@]}" capture-pane -p -J -S -60 -t "$pane" 2>/dev/null |
+    tail -n 60 | pane_snapshot_requests_user_input "$PROVIDER"
 }
 
 process_is_owned_alive() {
@@ -4385,6 +4424,11 @@ list_session_records() {
       session_color="$(session_color_for "$PROVIDER" "$cwd")" || session_color=''
     fi
     transcript_model_context "$META_TRANSCRIPT_PATH"
+    if pane_requests_user_input "$session"; then
+      TRANSCRIPT_AGENT_TURN_STATE="needs_input"
+      [ -n "$TRANSCRIPT_AGENT_TURN_ID" ] || \
+        TRANSCRIPT_AGENT_TURN_ID="pane:$session"
+    fi
     if [ "$json_mode" = "1" ]; then
       prepare_list_json_args \
         "$session" "$status" "$id" "$checkpoint" "$cwd" "$created" \
@@ -4998,6 +5042,15 @@ case "${1:-}" in
     shift
     [ "$#" -eq 1 ] || exit 1
     session_color_for "$PROVIDER" "$1"
+    ;;
+  __pane_prompt_state)
+    shift
+    [ "$#" -eq 0 ] || exit 1
+    if pane_snapshot_requests_user_input "$PROVIDER"; then
+      printf 'needs_input\n'
+    else
+      printf 'working\n'
+    fi
     ;;
   __allocate_session_color)
     shift

@@ -162,10 +162,23 @@ final class SessionPresentationTests: XCTestCase {
     func testWaitingTurnHasAttentionStatusWhileRemainingActive() {
         let waiting = make(.running, turnState: .waiting)
         XCTAssertTrue(waiting.isWaitingForUser)
+        XCTAssertFalse(waiting.needsUserInput)
         XCTAssertTrue(waiting.isLive)
         XCTAssertEqual(waiting.displayStatus, L10n.string("answer ready"))
         XCTAssertEqual(waiting.section, .answerReady)
         XCTAssertEqual(waiting.availableActions, [.attach, .stop])
+
+        let question = make(.running, turnState: .needsInput)
+        XCTAssertTrue(question.isWaitingForUser)
+        XCTAssertTrue(question.needsUserInput)
+        XCTAssertEqual(question.section, .answerReady)
+
+        let recoverableQuestion = make(.recoverable, turnState: .needsInput)
+        XCTAssertFalse(recoverableQuestion.isWaitingForUser)
+        XCTAssertTrue(recoverableQuestion.needsUserInput)
+
+        let finishedQuestion = make(.completed, turnState: .needsInput)
+        XCTAssertFalse(finishedQuestion.needsUserInput)
     }
 
     func testAnswerReadySectionDoesNotChangeSessionLifecycle() {
