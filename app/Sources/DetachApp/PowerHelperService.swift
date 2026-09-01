@@ -29,6 +29,7 @@ protocol PowerHelperLifecycleRunning: AnyObject {
     func prepareForUnregistration() async throws
         -> PowerHelperUnregistrationPreparation
     func cancelUnregistration() async throws
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws
 }
 
 @MainActor
@@ -63,6 +64,18 @@ final class SystemPowerHelperLifecycleRunner:
     func cancelUnregistration() async throws {
         let result = try await cli.run(
             arguments: ["helper", "cancel-unregistration"], timeout: 35)
+        guard !result.timedOut, result.exitCode == 0 else {
+            throw PowerHelperServiceError.lifecycleCommandFailed(
+                Self.failureMessage(result))
+        }
+    }
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        let result = try await cli.run(
+            arguments: [
+                "helper", "set-low-battery-threshold", "\(threshold.rawValue)",
+            ],
+            timeout: 35)
         guard !result.timedOut, result.exitCode == 0 else {
             throw PowerHelperServiceError.lifecycleCommandFailed(
                 Self.failureMessage(result))
@@ -295,6 +308,12 @@ final class PowerHelperService {
 
     func openApprovalSettings() {
         SMAppService.openSystemSettingsLoginItems()
+    }
+
+    func setLowBatteryThreshold(
+        _ threshold: PowerLowBatteryThreshold
+    ) async throws {
+        try await lifecycle.setLowBatteryThreshold(threshold)
     }
 
     private func performExclusiveOperation(

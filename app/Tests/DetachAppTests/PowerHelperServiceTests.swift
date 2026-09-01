@@ -79,6 +79,50 @@ final class PowerHelperServiceTests: XCTestCase {
         ])
     }
 
+    func testServiceSetsTheLowBatteryFloorThroughTheLifecycle() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .enabled, registrations: [])
+        let lifecycle = FakePowerHelperLifecycle()
+        let fixture = makeFixture(backend: backend, lifecycle: lifecycle)
+        defer { fixture.cleanup() }
+
+        try await fixture.service.setLowBatteryThreshold(.percent20)
+        XCTAssertEqual(lifecycle.thresholdCalls, [.percent20])
+
+        lifecycle.setThresholdError =
+            PowerHelperServiceError.lifecycleCommandFailed("threshold failed")
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.setLowBatteryThreshold(.percent15)
+        }
+        XCTAssertEqual(lifecycle.thresholdCalls, [.percent20, .percent15])
+    }
+
+    func testLifecycleRunnerSetsTheLowBatteryFloorThroughDetachPower() async throws {
+        let cli = LifecycleCLI(responses: [
+            .success(CLIResult(
+                exitCode: 0, stdout: "", stderr: "", timedOut: false)),
+            .success(CLIResult(
+                exitCode: 2, stdout: "", stderr: "low-battery threshold must be 10, 15, or 20",
+                timedOut: false)),
+        ])
+        let runner = SystemPowerHelperLifecycleRunner(cli: cli)
+
+        try await runner.setLowBatteryThreshold(.percent15)
+        do {
+            try await runner.setLowBatteryThreshold(.percent20)
+            XCTFail("Expected threshold failure")
+        } catch {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "low-battery threshold must be 10, 15, or 20")
+        }
+        let calls = await cli.calls()
+        XCTAssertEqual(calls.arguments, [
+            ["helper", "set-low-battery-threshold", "15"],
+            ["helper", "set-low-battery-threshold", "20"],
+        ])
+    }
+
     func testServiceErrorsHaveActionableDescriptions() {
         let cases: [(PowerHelperServiceError, String)] = [
             (
@@ -1338,7 +1382,7 @@ private final class RootPowerBackend: ClosedLidProtectionControlling {
 }
 
 private struct RootBatteryReader: PowerBatterySafetyReading {
-    func isLowBattery() throws -> Bool { false }
+    func isLowBattery(thresholdPercent: Int) throws -> Bool { false }
 }
 
 private struct RootBootSessionReader: PowerBootSessionReading {
@@ -1368,6 +1412,10 @@ private final class RootBackedPowerHelperLifecycle:
     func cancelUnregistration() async throws {
         cancelCalls += 1
         _ = try service.cancelUnregistration()
+    }
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        _ = try service.setLowBatteryThreshold(threshold)
     }
 }
 
@@ -1437,8 +1485,10 @@ private final class FakePowerHelperBackend: PowerHelperRegistrationBackend {
 private final class FakePowerHelperLifecycle: PowerHelperLifecycleRunning {
     var preparations: [Result<PowerHelperUnregistrationPreparation, Error>]
     var cancelError: Error?
+    var setThresholdError: Error?
     private(set) var prepareCalls = 0
     private(set) var cancelCalls = 0
+    private(set) var thresholdCalls: [PowerLowBatteryThreshold] = []
 
     init(
         preparations: [Result<PowerHelperUnregistrationPreparation, Error>] = [
@@ -1461,6 +1511,11 @@ private final class FakePowerHelperLifecycle: PowerHelperLifecycleRunning {
     func cancelUnregistration() async throws {
         cancelCalls += 1
         if let cancelError { throw cancelError }
+    }
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        thresholdCalls.append(threshold)
+        if let setThresholdError { throw setThresholdError }
     }
 }
 

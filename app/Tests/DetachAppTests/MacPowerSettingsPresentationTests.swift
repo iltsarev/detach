@@ -1,3 +1,4 @@
+import AppKit
 import DetachKit
 import SwiftUI
 import XCTest
@@ -318,6 +319,82 @@ final class MacPowerActiveSessionTests: XCTestCase {
 
         XCTAssertNotEqual(view.macPowerPresentation.reason, .noActiveSessions)
         XCTAssertEqual(view.macPowerPresentation.reason, .sessionsNotHolding(1))
+    }
+
+    func testSystemTabBuildsTheLowBatteryFloorPicker() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let checkedAt = ISO8601DateFormatter().string(from: Date())
+        try Data(
+            """
+            {"state":"ok","power_state":"allowed",\
+            "checked_at":"\(checkedAt)","low_battery_threshold":15}
+            """
+                .utf8
+        ).write(to: root.appendingPathComponent("watchdog-status.json"))
+
+        let powerHelper = SettingsPowerHelperProbe()
+        let installation = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root,
+            powerHelper: powerHelper)
+        let idle = LiveSessionListCLI(stdout: sessionJSON(status: "stopped"))
+        let view = SettingsView(
+            installation: installation,
+            sessionStore: SessionStore(cli: idle),
+            storageStore: StorageStore(cli: idle),
+            updater: UpdaterService(),
+            notifications: SessionNotificationService(
+                center: SilentNotificationCenter(),
+                identifierProvider: { "settings-threshold-test" }),
+            navigation: SettingsNavigation(selectedTab: .system))
+
+        let host = NSHostingView(rootView: view.systemTab)
+        host.setFrameSize(NSSize(width: 720, height: 900))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.lowBatteryThresholdBinding.wrappedValue, .percent15)
+
+        view.lowBatteryThresholdBinding.wrappedValue = .percent20
+        let written = await powerHelper.waitForThreshold()
+        XCTAssertEqual(written, .percent20)
+        await Task.yield()
+        XCTAssertEqual(installation.lowBatteryThreshold, .percent20)
+    }
+}
+
+@MainActor
+private final class SettingsPowerHelperProbe: InstallationPowerHelperServicing {
+    var status: PowerHelperRegistrationStatus = .enabled
+    private var lastThreshold: PowerLowBatteryThreshold?
+    private var waiter: CheckedContinuation<PowerLowBatteryThreshold, Never>?
+
+    func reconcileAfterAppUpdate() async throws -> PowerHelperReconciliationOutcome {
+        .complete
+    }
+
+    func enable() async throws {
+        status = .enabled
+    }
+
+    func disable() async throws {
+        status = .notRegistered
+    }
+
+    func openApprovalSettings() {}
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        lastThreshold = threshold
+        waiter?.resume(returning: threshold)
+        waiter = nil
+    }
+
+    func waitForThreshold() async -> PowerLowBatteryThreshold {
+        if let lastThreshold {
+            return lastThreshold
+        }
+        return await withCheckedContinuation { waiter = $0 }
     }
 }
 

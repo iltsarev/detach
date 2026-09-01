@@ -209,7 +209,7 @@ final class PowerHelperPlatformTests: XCTestCase {
                 exitCode: 0,
                 standardOutput: "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t42%; discharging"),
         ]
-        let reader = PMSetBatterySafetyReader(thresholdPercent: 10, runner: runner)
+        let reader = PMSetBatterySafetyReader(runner: runner)
 
         XCTAssertTrue(try reader.isLowBattery())
         XCTAssertFalse(try reader.isLowBattery())
@@ -246,10 +246,26 @@ final class PowerHelperPlatformTests: XCTestCase {
                 standardOutput: "Now drawing from 'Battery Power'\n A 100%;"),
         ]
 
-        XCTAssertTrue(try PMSetBatterySafetyReader(
-            thresholdPercent: -20, runner: runner).isLowBattery())
-        XCTAssertTrue(try PMSetBatterySafetyReader(
-            thresholdPercent: 120, runner: runner).isLowBattery())
+        XCTAssertTrue(try PMSetBatterySafetyReader(runner: runner)
+            .isLowBattery(thresholdPercent: -20))
+        XCTAssertTrue(try PMSetBatterySafetyReader(runner: runner)
+            .isLowBattery(thresholdPercent: 120))
+    }
+
+    func testBatterySafetyHonorsTheCallerThreshold() throws {
+        let runner = FakeCommandRunner()
+        runner.results = [
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "Now drawing from 'Battery Power'\n -InternalBattery-0\t12%; discharging"),
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "Now drawing from 'Battery Power'\n -InternalBattery-0\t12%; discharging"),
+        ]
+        let reader = PMSetBatterySafetyReader(runner: runner)
+
+        XCTAssertFalse(try reader.isLowBattery(thresholdPercent: 10))
+        XCTAssertTrue(try reader.isLowBattery(thresholdPercent: 15))
     }
 
     func testBatterySafetyRejectsUnknownPowerSourceAndCommandFailure() {

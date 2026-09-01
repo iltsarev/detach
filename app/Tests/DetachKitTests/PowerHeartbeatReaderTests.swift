@@ -18,6 +18,7 @@ final class PowerHeartbeatReaderTests: XCTestCase {
         XCTAssertEqual(snapshot.effectivePowerState, .protected)
         XCTAssertEqual(snapshot.effectiveThermalState, .nominal)
         XCTAssertFalse(snapshot.isThermallyLimited)
+        XCTAssertEqual(snapshot.effectiveLowBatteryThreshold, .percent10)
         XCTAssertEqual(snapshot.age(relativeTo: referenceDate), 30)
     }
 
@@ -142,6 +143,33 @@ final class PowerHeartbeatReaderTests: XCTestCase {
 
         XCTAssertEqual(snapshot.effectiveThermalState, .unknown)
         XCTAssertFalse(snapshot.isThermallyLimited)
+        XCTAssertEqual(snapshot.effectiveLowBatteryThreshold, .percent10)
+    }
+
+    func testFreshHeartbeatExposesThePersistedLowBatteryFloor() throws {
+        let url = try write(document(
+            checkedAt: "2026-07-15T11:59:59Z",
+            lowBatteryThreshold: 20))
+        defer { remove(url) }
+
+        let snapshot = PowerHeartbeatReader(statusURL: url)
+            .read(now: referenceDate)
+
+        XCTAssertEqual(snapshot.effectiveLowBatteryThreshold, .percent20)
+    }
+
+    func testUnhealthyHeartbeatNeverGuessesTheLowBatteryFloor() throws {
+        let url = try write(document(
+            state: "status_failed",
+            checkedAt: "2026-07-15T11:59:59Z",
+            lowBatteryThreshold: 20))
+        defer { remove(url) }
+
+        let snapshot = PowerHeartbeatReader(statusURL: url)
+            .read(now: referenceDate)
+
+        XCTAssertEqual(snapshot.lowBatteryThreshold, .percent20)
+        XCTAssertEqual(snapshot.effectiveLowBatteryThreshold, .percent10)
     }
 
     func testDefaultStatusURLPrecedence() {
@@ -180,12 +208,17 @@ final class PowerHeartbeatReaderTests: XCTestCase {
         powerState: String = "protected",
         checkedAt: String,
         thermalState: String = "nominal",
-        thermalSafetyActive: Bool = false
+        thermalSafetyActive: Bool = false,
+        lowBatteryThreshold: Int? = nil
     ) -> String {
-        """
+        let thresholdField = lowBatteryThreshold.map {
+            ",\"low_battery_threshold\":\($0)"
+        } ?? ""
+        return """
         {"schema":1,"state":"\(state)","power_state":"\(powerState)",\
         "checked_at":"\(checkedAt)","thermal_state":"\(thermalState)",\
-        "thermal_safety_active":\(thermalSafetyActive),"exit_status":0}
+        "thermal_safety_active":\(thermalSafetyActive)\(thresholdField),\
+        "exit_status":0}
         """
     }
 

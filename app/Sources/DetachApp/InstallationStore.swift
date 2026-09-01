@@ -26,6 +26,7 @@ protocol InstallationPowerHelperServicing: AnyObject {
     func enable() async throws
     func disable() async throws
     func openApprovalSettings()
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws
 }
 
 extension PowerHelperService: InstallationPowerHelperServicing {}
@@ -65,6 +66,7 @@ final class InstallationStore {
     private(set) var lastInstallMessage: String?
     private(set) var distributionMatchesBundle = false
     private(set) var powerProtectionState: PowerProtectionState = .unknown
+    private(set) var lowBatteryThreshold: PowerLowBatteryThreshold = .default
     /// True only after a coordinated reconciliation finished with the helper
     /// reported `.enabled` and no error — the readiness barrier. A bare
     /// `SMAppService.status` read is never sufficient: after approval the
@@ -154,6 +156,7 @@ final class InstallationStore {
             bundledMetadata = nil
         }
         powerProtectionState = watchdogHeartbeat.effectivePowerState
+        lowBatteryThreshold = watchdogHeartbeat.effectiveLowBatteryThreshold
     }
 
     static func makeDistributionClient(
@@ -185,6 +188,26 @@ final class InstallationStore {
         let snapshot = heartbeatReader.read()
         watchdogHeartbeat = snapshot
         powerProtectionState = snapshot.effectivePowerState
+        lowBatteryThreshold = snapshot.effectiveLowBatteryThreshold
+    }
+
+    func setLowBatteryThreshold(
+        _ threshold: PowerLowBatteryThreshold
+    ) async {
+        do {
+            try await powerHelper.setLowBatteryThreshold(threshold)
+            powerHelperError = nil
+            lowBatteryThreshold = threshold
+            refreshPowerProtectionState()
+            // The watchdog may still carry the previous floor. Keep the
+            // value the helper just accepted until a later healthy snapshot
+            // confirms it.
+            if watchdogHeartbeat.effectiveLowBatteryThreshold != threshold {
+                lowBatteryThreshold = threshold
+            }
+        } catch {
+            powerHelperError = error.localizedDescription
+        }
     }
 
     /// Pure registration-status read for live onboarding polling: no

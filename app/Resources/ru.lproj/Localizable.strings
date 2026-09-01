@@ -251,7 +251,8 @@
 "Sleep Protection Helper" = "Системный помощник защиты от сна";
 "Stop active Detach sessions before removing the power helper." = "Остановите активные сессии Detach перед удалением системного помощника.";
 "Switch to this macOS user before updating the power helper." = "Переключитесь на этого пользователя macOS перед обновлением системного помощника.";
-"At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "При заряде 10% или ниже либо при серьёзной тепловой нагрузке Detach снимает защиту от сна, чтобы Mac мог уснуть.";
+"At %d%% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "При заряде %d%% или ниже либо при серьёзной тепловой нагрузке Detach снимает защиту от сна, чтобы Mac мог уснуть.";
+"Release sleep protection at" = "Снимать защиту от сна при";
 "The background monitor reported power state: %@" = "Фоновый монитор сообщил состояние энергозащиты: %@";
 "The background power monitor has not started yet" = "Фоновый монитор энергозащиты ещё не запускался";
 "The background power monitor is starting or needs attention" = "Фоновый монитор энергозащиты запускается или требует внимания";

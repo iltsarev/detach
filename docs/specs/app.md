@@ -131,9 +131,9 @@ recorded and the journal cleared. Approval and retry failures remain pending for
 the next launch. An ordinary helper SIGTERM/SIGINT uses only the process-local
 termination gate and must not create persistent update state.
 
-Settings → System owns the only **Mac Power** status and approval block. Helper
-Ready requires a doctor live XPC check. Registration alone is Needs attention.
-During doctor or reconciliation, show Checking, not failure. Power
+Settings → System owns **Mac Power** status, 10–20% floor, and approval.
+Helper Ready requires a doctor live XPC check. Registration alone is Needs
+attention. During doctor or reconciliation, show Checking, not failure. Power
 requires a healthy watchdog heartbeat no older than three minutes; otherwise it
 is `unknown`. Refresh on Settings open, app activation, and every ten seconds
 while visible.

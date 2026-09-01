@@ -88,6 +88,8 @@ final class DetachPowerCommandTests: XCTestCase {
         var releaseError: Error?
         var prepareError: Error?
         var cancelError: Error?
+        var setThresholdError: Error?
+        private(set) var setThresholdCalls: [Int] = []
         var onAcquire: (() -> Void)?
         var acquireConfirmed = true
         var renewConfirmed = true
@@ -143,6 +145,12 @@ final class DetachPowerCommandTests: XCTestCase {
             events.append("helper.cancel-unregistration")
             cancelCalls += 1
             if let cancelError { throw cancelError }
+        }
+
+        func setLowBatteryThreshold(_ percent: Int) throws {
+            events.append("helper.set-low-battery-threshold")
+            setThresholdCalls.append(percent)
+            if let setThresholdError { throw setThresholdError }
         }
     }
 
@@ -356,6 +364,7 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertEqual(object["low_battery"] as? Bool, false)
         XCTAssertEqual(object["thermal_state"] as? String, "nominal")
         XCTAssertEqual(object["thermal_safety_active"] as? Bool, false)
+        XCTAssertEqual(object["low_battery_threshold"] as? Int, 10)
         XCTAssertNil(object["leaseCount"])
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(events.values, ["helper.status"])
@@ -1169,7 +1178,11 @@ final class DetachPowerCommandTests: XCTestCase {
         let cases: [([String], String)] = [
             (["status"], "usage: detach-power status --json"),
             (["helper", "unknown"],
-             "usage: detach-power helper prepare-unregistration|cancel-unregistration"),
+             "usage: detach-power helper prepare-unregistration|cancel-unregistration|set-low-battery-threshold PERCENT"),
+            (["helper", "set-low-battery-threshold"],
+             "usage: detach-power helper prepare-unregistration|cancel-unregistration|set-low-battery-threshold PERCENT"),
+            (["helper", "set-low-battery-threshold", "7"],
+             "usage: detach-power helper prepare-unregistration|cancel-unregistration|set-low-battery-threshold PERCENT"),
             (["release", "--session"],
              "release requires --session NAME and --run-token TOKEN"),
             (["release", "--unknown", "value"],
@@ -1226,12 +1239,19 @@ final class DetachPowerCommandTests: XCTestCase {
                 "helper", "cancel-unregistration",
             ]),
             .lifecycle)
+        XCTAssertEqual(
+            try command.execute(arguments: [
+                "helper", "set-low-battery-threshold", "15",
+            ]),
+            .lifecycle)
 
         XCTAssertEqual(helper.prepareCalls, 1)
         XCTAssertEqual(helper.cancelCalls, 1)
+        XCTAssertEqual(helper.setThresholdCalls, [15])
         XCTAssertEqual(events.values, [
             "helper.prepare-unregistration",
             "helper.cancel-unregistration",
+            "helper.set-low-battery-threshold",
         ])
         XCTAssertTrue(child.commands.isEmpty)
     }
@@ -1258,6 +1278,10 @@ final class DetachPowerCommandTests: XCTestCase {
         ])) { XCTAssertTrue($0 is ExpectedFailure) }
         XCTAssertThrowsError(try command.execute(arguments: [
             "helper", "cancel-unregistration",
+        ])) { XCTAssertTrue($0 is ExpectedFailure) }
+        helper.setThresholdError = ExpectedFailure()
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "helper", "set-low-battery-threshold", "20",
         ])) { XCTAssertTrue($0 is ExpectedFailure) }
     }
 

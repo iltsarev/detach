@@ -320,7 +320,8 @@ The app, menu bar, CLI, and tmux status bar use the same state:
 - **Mac can sleep: temperature**
 - an honest unknown state when the helper or health report cannot be trusted
 
-At 10% battery or lower while on battery power, Detach releases its sleep
+Settings → System sets the battery floor to 10%, 15%, or 20%. The default and
+minimum is 10%. At that floor while on battery power, Detach releases its sleep
 assertions. At a public macOS thermal state of `serious` or `critical`, it
 immediately releases both layers that it owns and refuses new protected runs.
 The provider can continue only while macOS keeps the machine awake. Protection

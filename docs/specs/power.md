@@ -40,9 +40,10 @@ signed as `dev.tsarev.detach.power` by the same Team ID and only when the
 connection's audit-token-derived effective UID matches the non-root owner of
 `/dev/console`. Root, loginwindow/no-console, and other local UIDs are rejected;
 do not replace either audit-token check with PID-based validation. Its XPC
-surface is limited to status, acquire, renew, release, and the typed
-prepare/cancel unregistration lifecycle; it must never execute arbitrary paths,
-shell strings, or provider commands as root.
+surface is limited to status, acquire, renew, release, the typed
+prepare/cancel unregistration lifecycle, and the typed low-battery threshold
+mutation; it must never execute arbitrary paths, shell strings, or provider
+commands as root.
 
 Before it creates the listener or changes power state, the helper must pass a
 strict check of its own signature with Security network access enabled. This
@@ -95,12 +96,16 @@ a two-second timeout. The readable tmux power label refreshes every ten seconds
 while working and every 30 seconds while waiting, rather than spawning one root
 status request every two seconds per session.
 
-The low-battery threshold is 10% while on battery power. The helper releases
-closed-lid protection it owns, the wrapper releases its IOKit assertion, and the
-provider is allowed to finish only while the Mac remains awake. Initial
-acquisition fails closed at low battery. A borrowed external setting cannot be
-turned off, so status must never falsely report the low-battery safe state while
-that setting remains active.
+The low-battery threshold is 10%, 15%, or 20% while on battery power. The
+default and minimum is 10%. Settings → System writes the floor through the
+typed helper XPC method. The helper persists it in helper state. A missing or
+unknown stored value becomes 10%. Any other write is rejected. `detach config`
+does not own this value. The helper releases closed-lid protection it owns, the
+wrapper releases its IOKit assertion, and the provider is allowed to finish
+only while the Mac remains awake. Initial acquisition fails closed at low
+battery. A borrowed external setting cannot be turned off, so status must never
+falsely report the low-battery safe state while that setting remains active.
+The live floor crosses helper status, CLI JSON, and the watchdog heartbeat.
 
 Thermal safety uses only public `ProcessInfo.thermalState`. `serious` and
 `critical` latch safety immediately: the helper restores Detach-owned

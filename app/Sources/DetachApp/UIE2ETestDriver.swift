@@ -651,8 +651,13 @@ enum UIE2ETestDriver {
                 FileManager.default.fileExists(atPath: configuration.root
                     .appendingPathComponent("fake/quick-chat-started").path)
             }
-            try await waitUntil("quick chat selection") {
-                find(identifier: "session-detail-detach-codex-ui-quick") != nil
+            if find(identifier: "session-detail-detach-codex-ui-quick") == nil {
+                try await clickMeasuredUntil(
+                    identifier: "session-row-detach-codex-ui-quick",
+                    name: "quick chat session",
+                    outcome: "quick chat selection") {
+                    find(identifier: "session-detail-detach-codex-ui-quick") != nil
+                }
             }
             checks.append("quick-chat-command-starts-session")
 
@@ -767,6 +772,10 @@ enum UIE2ETestDriver {
         try await revealGeometry(
             identifier: "settings-installation", name: "Installation")
         checks.append("settings-system-reveals-storage-and-installation")
+        settingsWindow.performClose(nil)
+        try await waitUntil("settings window closes") {
+            !settingsWindow.isVisible
+        }
         return checks
     }
 

@@ -32,7 +32,7 @@ final class PowerHelperXPCServiceTests: XCTestCase {
 
     private struct Battery: PowerBatterySafetyReading {
         let low: Bool
-        func isLowBattery() throws -> Bool { low }
+        func isLowBattery(thresholdPercent: Int) throws -> Bool { low }
     }
 
     private struct BootSession: PowerBootSessionReading {
@@ -58,6 +58,7 @@ final class PowerHelperXPCServiceTests: XCTestCase {
         XCTAssertNil(replyError)
         XCTAssertEqual(decoded?.state, .allowed)
         XCTAssertEqual(decoded?.helperReachable, true)
+        XCTAssertEqual(decoded?.lowBatteryThreshold, .percent10)
     }
 
     func testAcquireConfirmsOnlyFullyProtectedLease() throws {
@@ -272,6 +273,42 @@ final class PowerHelperXPCServiceTests: XCTestCase {
             failedCancel.fulfill()
         }
         wait(for: [failedCancel], timeout: 1)
+    }
+
+    func testSetLowBatteryThresholdRejectsUnknownPercentsAndPersistsPresets() throws {
+        let store = MemoryStore()
+        let bridge = try makeBridge(lowBattery: false, store: store)
+
+        let rejected = expectation(description: "rejected threshold")
+        bridge.setLowBatteryThreshold(percent: 7) { error in
+            XCTAssertEqual(
+                error?.code,
+                PowerHelperXPCService.ErrorCode.invalidLowBatteryThreshold
+                    .rawValue)
+            rejected.fulfill()
+        }
+        wait(for: [rejected], timeout: 1)
+        XCTAssertEqual(store.state?.lowBatteryThreshold, .percent10)
+
+        let accepted = expectation(description: "accepted threshold")
+        bridge.setLowBatteryThreshold(percent: 15) { error in
+            XCTAssertNil(error)
+            accepted.fulfill()
+        }
+        wait(for: [accepted], timeout: 1)
+        XCTAssertEqual(store.state?.lowBatteryThreshold, .percent15)
+
+        let status = expectation(description: "status after set")
+        var decoded: PowerProtectionStatus?
+        bridge.status { data, _ in
+            if let data {
+                decoded = try? JSONDecoder().decode(
+                    PowerProtectionStatus.self, from: data as Data)
+            }
+            status.fulfill()
+        }
+        wait(for: [status], timeout: 1)
+        XCTAssertEqual(decoded?.lowBatteryThreshold, .percent15)
     }
 
     private func makeBridge(

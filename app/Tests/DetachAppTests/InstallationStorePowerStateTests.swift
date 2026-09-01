@@ -321,6 +321,44 @@ final class InstallationStorePowerStateTests: XCTestCase {
             powerStateRoot: root)
 
         XCTAssertEqual(store.powerProtectionState, .protected)
+        XCTAssertEqual(store.lowBatteryThreshold, .percent10)
+    }
+
+    func testHealthyHeartbeatPublishesTheHelperLowBatteryFloor() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":15}"#,
+            to: root)
+
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        XCTAssertEqual(store.lowBatteryThreshold, .percent15)
+    }
+
+    func testSetLowBatteryThresholdWritesThroughTheHelper() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":10}"#,
+            to: root)
+        let powerHelper = InstallationPowerHelperProbe(status: .enabled)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root,
+            powerHelper: powerHelper)
+
+        await store.setLowBatteryThreshold(.percent20)
+        XCTAssertEqual(powerHelper.lastThreshold, .percent20)
+        XCTAssertEqual(store.lowBatteryThreshold, .percent20)
+        XCTAssertNil(store.powerHelperError)
+
+        powerHelper.setThresholdError = InstallationProbeError.powerHelper
+        await store.setLowBatteryThreshold(.percent15)
+        XCTAssertEqual(store.lowBatteryThreshold, .percent20)
+        XCTAssertEqual(store.powerHelperError, "power helper probe failed")
     }
 
     func testStaleHeartbeatDoesNotClaimPowerState() throws {
@@ -1247,6 +1285,8 @@ private final class InstallationPowerHelperProbe:
     private(set) var enableCallCount = 0
     private(set) var disableCallCount = 0
     private(set) var openSettingsCallCount = 0
+    private(set) var lastThreshold: PowerLowBatteryThreshold?
+    var setThresholdError: Error?
 
     init(
         status: PowerHelperRegistrationStatus,
@@ -1276,6 +1316,11 @@ private final class InstallationPowerHelperProbe:
 
     func openApprovalSettings() {
         openSettingsCallCount += 1
+    }
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        lastThreshold = threshold
+        if let setThresholdError { throw setThresholdError }
     }
 }
 

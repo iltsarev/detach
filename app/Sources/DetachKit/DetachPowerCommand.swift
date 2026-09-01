@@ -426,6 +426,7 @@ public struct DetachPowerStatusReport: Equatable, Codable, Sendable {
     public let lowBattery: Bool
     public let thermalState: PowerThermalState
     public let thermalSafetyActive: Bool
+    public let lowBatteryThreshold: PowerLowBatteryThreshold
 
     public init(status: PowerProtectionStatus) {
         schema = 1
@@ -438,6 +439,7 @@ public struct DetachPowerStatusReport: Equatable, Codable, Sendable {
         lowBattery = status.lowBattery
         thermalState = status.thermalState
         thermalSafetyActive = status.thermalSafetyActive
+        lowBatteryThreshold = status.lowBatteryThreshold
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -451,6 +453,7 @@ public struct DetachPowerStatusReport: Equatable, Codable, Sendable {
         case lowBattery = "low_battery"
         case thermalState = "thermal_state"
         case thermalSafetyActive = "thermal_safety_active"
+        case lowBatteryThreshold = "low_battery_threshold"
     }
 }
 
@@ -786,10 +789,17 @@ public struct DetachPowerCommand: Sendable {
             case ["cancel-unregistration"]:
                 try lifecycleClient.cancelUnregistration()
                 return .lifecycle
+            case let args where args.first == "set-low-battery-threshold":
+                guard args.count == 2,
+                      let raw = Int(args[1]),
+                      PowerLowBatteryThreshold(rawValue: raw) != nil
+                else {
+                    throw DetachPowerCommandError.usage(Self.helperUsage)
+                }
+                try lifecycleClient.setLowBatteryThreshold(raw)
+                return .lifecycle
             default:
-                throw DetachPowerCommandError.usage(
-                    "usage: detach-power helper "
-                        + "prepare-unregistration|cancel-unregistration")
+                throw DetachPowerCommandError.usage(Self.helperUsage)
             }
         case "release":
             let identity = try parseIdentityArguments(
@@ -805,11 +815,17 @@ public struct DetachPowerCommand: Sendable {
                     + "[--activity-source-file ABSOLUTE_PATH] "
                     + "-- COMMAND [ARGS...] "
                     + "| detach-power helper "
-                    + "prepare-unregistration|cancel-unregistration "
+                    + "prepare-unregistration|cancel-unregistration|"
+                    + "set-low-battery-threshold PERCENT "
                     + "| detach-power release --session NAME "
                     + "--run-token TOKEN")
         }
     }
+
+    private static let helperUsage =
+        "usage: detach-power helper "
+        + "prepare-unregistration|cancel-unregistration|"
+        + "set-low-battery-threshold PERCENT"
 
     private func executeRun(
         identity: PowerLeaseIdentity,

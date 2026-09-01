@@ -186,7 +186,7 @@ private extension SettingsDestination {
         case .general: 620
         case .terminal: 460
         case .notifications: 350
-        case .system: 780
+        case .system: 860
         case .updates: 420
         }
     }
@@ -885,7 +885,7 @@ struct SettingsView: View {
 
     // MARK: - System
 
-    private var systemTab: some View {
+    var systemTab: some View {
         Form {
             Section {
                 NightSceneIllustration()
@@ -916,8 +916,21 @@ struct SettingsView: View {
                 if let error = installation.watchdogError {
                     Text(error).settingsMessage(color: .red)
                 }
-                Text(L10n.string(
-                    "At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep."))
+                Picker(
+                    L10n.string("Release sleep protection at"),
+                    selection: lowBatteryThresholdBinding
+                ) {
+                    ForEach(PowerLowBatteryThreshold.allCases, id: \.self) { value in
+                        Text("\(value.rawValue)%").tag(value)
+                    }
+                }
+                .disabled(
+                    !installation.powerHelperReadinessConfirmed
+                        || installation.isBusy)
+                .accessibilityIdentifier("settings-low-battery-threshold")
+                Text(L10n.format(
+                    "At %d%% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.",
+                    installation.lowBatteryThreshold.rawValue))
                     .settingsMessage()
             }
             Section(L10n.string("Bundled Runtime")) {
@@ -1122,6 +1135,14 @@ struct SettingsView: View {
             let (sum, overflow) = total.addingReportingOverflow(session.allocatedBytes)
             return overflow ? .max : sum
         }
+    }
+
+    var lowBatteryThresholdBinding: Binding<PowerLowBatteryThreshold> {
+        Binding(
+            get: { installation.lowBatteryThreshold },
+            set: { newValue in
+                Task { await installation.setLowBatteryThreshold(newValue) }
+            })
     }
 
     var macPowerPresentation: MacPowerSettingsPresentation {

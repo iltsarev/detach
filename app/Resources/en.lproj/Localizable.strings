@@ -251,7 +251,8 @@
 "Sleep Protection Helper" = "Sleep Protection Helper";
 "Stop active Detach sessions before removing the power helper." = "Stop active Detach sessions before removing the power helper.";
 "Switch to this macOS user before updating the power helper." = "Switch to this macOS user before updating the power helper.";
-"At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.";
+"At %d%% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "At %d%% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.";
+"Release sleep protection at" = "Release sleep protection at";
 "The background monitor reported power state: %@" = "The background monitor reported power state: %@";
 "The background power monitor has not started yet" = "The background power monitor has not started yet";
 "The background power monitor is starting or needs attention" = "The background power monitor is starting or needs attention";

@@ -588,20 +588,20 @@ public struct PMSetClosedLidProtectionController: ClosedLidProtectionControlling
 /// Conservative low-battery guard using the system pmset utility bundled with
 /// macOS. A parsing failure is thrown so callers fail closed.
 public struct PMSetBatterySafetyReader: PowerBatterySafetyReading {
-    public static let defaultThresholdPercent = 10
+    public static let defaultThresholdPercent = PowerLowBatteryThreshold.default.rawValue
 
-    private let thresholdPercent: Int
     private let runner: any RootCommandRunning
 
     public init(
-        thresholdPercent: Int = PMSetBatterySafetyReader.defaultThresholdPercent,
         runner: any RootCommandRunning = RootProcessCommandRunner()
     ) {
-        self.thresholdPercent = min(100, max(0, thresholdPercent))
         self.runner = runner
     }
 
-    public func isLowBattery() throws -> Bool {
+    public func isLowBattery(
+        thresholdPercent: Int = PMSetBatterySafetyReader.defaultThresholdPercent
+    ) throws -> Bool {
+        let thresholdPercent = min(100, max(0, thresholdPercent))
         let command = RootCommand(
             executable: "/usr/bin/pmset", arguments: ["-g", "batt"])
         let result = try runner.run(command)
