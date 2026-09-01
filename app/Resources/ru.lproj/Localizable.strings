@@ -153,7 +153,6 @@
 "Recover" = "Восстановить";
 "Reconnect" = "Переподключиться";
 "Recover in %@" = "Восстановить в %@";
-"Refresh interval" = "Интервал обновления";
 "Refresh terminal list" = "Обновить список терминалов";
 "Reinstall command-line tools" = "Переустановить командные инструменты";
 "Remove everything, including checkpoints…" = "Удалить всё, включая чекпойнты…";
@@ -278,7 +277,6 @@
 "Text size preview" = "Предпросмотр размера текста";
 "Apply" = "Применить";
 "%d pt" = "%d пт";
-"%d sec" = "%d с";
 "Command line" = "Командная строка";
 "Answer ready · 2 min ago" = "Ответ готов · 2 мин назад";
 "tmux status line" = "Строка статуса tmux";

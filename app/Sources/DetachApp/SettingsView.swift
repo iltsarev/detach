@@ -64,7 +64,7 @@ struct MacPowerSettingsPresentation: Equatable {
             }
         case .allowed:
             // The heartbeat wins, but never claim "no sessions" while the
-            // session poller can see live ones.
+            // session snapshot can see live ones.
             if let activeSessionCount, activeSessionCount > 0 {
                 if workingSessionCount == 0 {
                     reason = .waitingSessions(activeSessionCount)
@@ -195,8 +195,8 @@ private extension SettingsDestination {
 struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     let installation: InstallationStore
-    /// The app-level shared session poller. Settings can be the only open
-    /// scene, so CLI path and cadence changes are applied here as well.
+    /// The app-level shared session source. Settings can be the only open
+    /// scene, so CLI path changes are applied here as well.
     let sessionStore: SessionStore
     let storageStore: StorageStore
     @ObservedObject var updater: UpdaterService
@@ -205,7 +205,6 @@ struct SettingsView: View {
 
     @AppStorage("detachPath", store: AppSettings.defaults)
     private var detachPath = AppSettings.initialDetachPath
-    @AppStorage("pollInterval", store: AppSettings.defaults) private var pollInterval = 2.0
     @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
     private var fontPointSize = AppFontSize.defaultValue
     @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
@@ -366,9 +365,6 @@ struct SettingsView: View {
             draft.synchronizeAppliedValue(clamped)
             fontSizeDraft = draft
         }
-        .onChange(of: pollInterval) { _, value in
-            sessionStore.startPolling(interval: value)
-        }
         .onChange(of: detachPath) { _, _ in
             Task {
                 await sessionStore.configure(cli: ProcessDetachCLI(
@@ -502,20 +498,6 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.indigo)
                     .disabled(fontSizeDraft?.hasChanges != true)
-                }
-                HStack(spacing: 8) {
-                    Text(L10n.string("Refresh interval"))
-                    Spacer(minLength: 12)
-                    Slider(value: $pollInterval, in: 1...10, step: 1) {
-                        Text(L10n.string("Refresh interval"))
-                    }
-                    .labelsHidden()
-                    .frame(width: 150)
-                    Text(L10n.format("%d sec", Int(pollInterval)))
-                        .appFont(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 44, alignment: .trailing)
                 }
                 Toggle(L10n.string("Show tips"), isOn: $tipsEnabled)
 // quality-coverage:begin ui-e2e-instrumentation

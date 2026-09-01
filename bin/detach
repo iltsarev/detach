@@ -20,6 +20,7 @@ usage() {
     '  detach codex [COMMAND] [ARGS...]' \
     '  detach claude [COMMAND] [ARGS...]' \
     '  detach list [--json]' \
+    '  detach watch --json' \
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
     '  detach storage --json' \
     '  detach storage cleanup --dry-run --json [--session NAME ...]' \
@@ -401,6 +402,19 @@ list_all() {
   return "$status"
 }
 
+watch_all() {
+  [ "$#" -eq 1 ] && [ "$1" = "--json" ] || \
+    die "watch requires --json"
+  [ -x "$STATE_BIN" ] || die "state helper not found: $STATE_BIN"
+  # The ready event is emitted only after the native stream is installed, so
+  # the app can take a fresh typed snapshot without a refresh/watch race.
+  exec "$STATE_BIN" events watch --json \
+    --state-root "$STATE_ROOT" \
+    --signal "$STATE_ROOT/session-change" \
+    --transcript-root "$CODEX_PROVIDER_ROOT/sessions" \
+    --transcript-root "$CLAUDE_PROVIDER_ROOT/projects"
+}
+
 storage_report() {
   [ -x "$STATE_BIN" ] || die "state helper not found: $STATE_BIN"
   list_all --json | "$STATE_BIN" storage report \
@@ -622,6 +636,10 @@ main() {
           die "unknown list option: $1"
           ;;
       esac
+      ;;
+    watch)
+      shift
+      watch_all "$@"
       ;;
     resume)
       shift

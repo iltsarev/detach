@@ -4,14 +4,8 @@
 
 Detach.app installs an immutable payload under
 `~/.local/libexec/detach/versions/<semver>-<hash>/`. It switches
-`~/.local/bin/detach` atomically. Order:
-
-1. `detach`
-2. `detach-core`
-3. `detach-install`
-4. `detach-state`
-5. `detach-power`
-6. `tmux`
+`~/.local/bin/detach` atomically. Payload order is `detach`, `detach-core`,
+`detach-install`, `detach-state`, `detach-power`, then `tmux`.
 
 Install and Repair validate a complete payload before CLI activation. Failure
 keeps the active payload. A live or retained managed session blocks
@@ -31,8 +25,8 @@ CLI LaunchAgent stays removed.
 
 - **`bin/detach`** is the only command on PATH. It resolves owned executables as
   immutable siblings and selects `codex` or `claude`. It owns cross-provider
-  `list`, UUID-aware `resume`, storage and reconcile previews, `power status`,
-  config, doctor, repair, and uninstall.
+  `list`, native `watch`, UUID-aware `resume`, storage and reconcile previews,
+  `power status`, config, doctor, repair, and uninstall.
 - **`bin/detach-core`** owns the provider-neutral session lifecycle, inline
   provider adaptations, checkpoint/recovery policy, tmux status, and internal
   self-reinvocation commands. It rejects direct invocation unless the frontend
@@ -45,18 +39,17 @@ remain user-owned and are found through `PATH` or provider-specific test
 overrides. macOS-supplied `sqlite3`, `tar`, `env`, and `lockf` stay explicit,
 injectable platform utilities.
 
-Critical shared-state operations self-reinvoke the core under `lockf`
-(`__checkpoint_once_locked`, `__delete_locked`, `__start_tmux_session_locked`). Start, Resume, Stop, Recover, and Delete also
-share a per-session operation lock so their whole state transitions serialize
-before narrower install/project/checkpoint locks. New shared mutations should
-keep the lock around the whole child process and preserve that lock order.
-The install lock covers the full start readiness wait; its acquisition
-timeout stays above the worst-case hold.
+Critical mutations self-reinvoke core under `lockf`:
+`__checkpoint_once_locked`, `__delete_locked`, and
+`__start_tmux_session_locked`. Start, Resume, Stop, Recover, and Delete also
+serialize through a per-session lock before narrower install, project, and
+checkpoint locks. Keep this order and the lock around the whole child. The
+install lock covers readiness; its timeout exceeds the worst hold.
 
 ### Typed state boundary
 
 `detach-state` is the JSON boundary. Do not edit JSON in shell. It owns typed
-metadata, JSONL, health, reconcile, storage, and emit operations.
+metadata, JSONL, health, reconcile, storage, emit, and event operations.
 `meta snapshots` enumerates one owned sessions root through anchored directory
 descriptors, accepts no path stream, rejects unsafe session or checkpoint
 directories, and opens only owned regular files of at most 1 MiB with
@@ -90,6 +83,14 @@ counts. The provider command waits up to 30 seconds for the checkpoint lock,
 then rechecks managed tmux liveness and ownership, rejecting symlinked or
 foreign-owned state/session directories. A partial failure keeps each failed
 session and reports it explicitly.
+
+### Session change events
+
+`watch --json` execs the state helper. Its schema-1 hints are not truth; each
+requires full `list --json`. FSEvents filters the private signal and provider
+JSONL. Bursts yield leading and 150 ms trailing hints; drops or root changes
+yield `resync`. Lifecycle changes replace the signal after owned Start metadata
+or Delete; heartbeats do not. Activation repairs missed delivery.
 
 ### Session lifecycle and tmux
 
@@ -157,23 +158,18 @@ Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user
 session. They do not promise survival across logout or reboot; an explicit
 kill of tmux/provider ends the live run. Recovery checkpoints remain available.
-Provider test parts need private state, socket, and artifact roots; their
-parent orders events and requires every part. Small hosts reuse lifecycle
-checkpoints in three Codex and two Claude parts; larger hosts use finer parts.
+Provider test parts use private roots; the parent orders and requires all.
+Small hosts use three Codex and two Claude parts.
 
 Detach status options use session-local `@detach*` keys and never touch a
-foreign tmux server. The strip blends an identity color, uses light text and a
-solid edge, and shows power and time on the right.
-Each managed session sets `Detach · <project basename>` as the terminal title,
-following the active tmux session independent of styling.
-Finished sessions keep a faint hue. Failures use reserved red, which the
-eight-hue identity palette omits. Allocation scans both providers
-under the Start/Resume/Recover install lock. Known terminal history keeps its
-identity but reserves no hue. Unknown state stays conservative. Keep a
-current unique hue; otherwise choose the first free hue from the stable
-provider/project preference, duplicating only after all eight are used.
-Style snapshots save and restore both sides and lengths. An old snapshot without right-side data preserves the
-user's `status-right`. Plain text is the primary power signal: `MAC AWAKE`,
+foreign server. The strip shows identity, power, and time. Sessions set
+`Detach · <project basename>` as the title. Finished sessions fade; failures
+use red outside the eight identity hues. Allocation scans both providers under
+the Start/Resume/Recover install lock. History keeps identity but reserves no
+hue. Unknown is conservative. Keep a unique hue; otherwise use the stable
+provider/project preference and duplicate after all eight.
+Style snapshots restore both sides and lengths; an old one preserves the
+user's `status-right`. Text is the primary power signal: `MAC AWAKE`,
 `MAC CAN SLEEP`, `LOW BATTERY`, `MAC CAN SLEEP: TEMPERATURE`,
 `POWER UNAVAILABLE`, or a transition. App wording is equivalent and icons are
 secondary.
@@ -191,6 +187,7 @@ the original copy tables immediately.
 `list --json` emits JSONL schema 1 with optional `display_name`, power and turn
 state, opaque turn ID, PIDs, health, reconcile, freshness, ownership,
 and cleanup fields. Keep the emitter and Swift `Session` decoder synchronized.
+`watch --json` emits only change hints and never replaces this snapshot.
 Provider lifecycle records, never terminal text, supply turn state
 and the private run-token activity file defined in `power.md`.
 Typed cleanup uses `cleanup_eligible`.

@@ -140,12 +140,11 @@ final class QuickChatTests: XCTestCase {
                     selectedID = sessionID
                     selected.fulfill()
                 },
-                createProjectDirectory: { directory, _ in directory },
-                discoverySleep: { _ in
-                    await cli.waitUntilStartBegan()
-                })
+                createProjectDirectory: { directory, _ in directory })
         }
 
+        await cli.waitUntilStartBegan()
+        await store.refresh() // the production FSEvents hint requests this snapshot
         await fulfillment(of: [selected], timeout: 1)
         XCTAssertEqual(selectedID, "detach-codex-tmp-1")
         XCTAssertEqual(store.sessions.first?.effectiveStatus, .starting)
@@ -172,12 +171,11 @@ final class QuickChatTests: XCTestCase {
                 providerRawValue: Provider.codex.rawValue,
                 directoryPath: "/tmp",
                 onSessionAvailable: { _ in selected.fulfill() },
-                createProjectDirectory: { directory, _ in directory },
-                discoverySleep: { _ in
-                    await cli.waitUntilStartBegan()
-                })
+                createProjectDirectory: { directory, _ in directory })
         }
 
+        await cli.waitUntilStartBegan()
+        await store.refresh() // the production FSEvents hint requests this snapshot
         await fulfillment(of: [selected], timeout: 1)
         await cli.finishStart(exitCode: 17, stderr: "start refused\n")
         let result = await launch.value

@@ -27,8 +27,8 @@ protocol SessionNotificationCenterBackend {
 }
 
 /// App-level notification consumer. It observes the shared session snapshot
-/// store (one `detach list --json` poller for the whole app), so closing the
-/// main window does not stop notifications and no second subprocess loop runs.
+/// store (one event stream for the whole app), so closing the main window does
+/// not stop notifications and no second subprocess loop runs.
 @MainActor
 final class SessionNotificationService: ObservableObject {
     @Published private(set) var authorizationStatus: SessionNotificationAuthorizationStatus = .unknown
@@ -257,7 +257,7 @@ final class SessionNotificationService: ObservableObject {
                     "Could not show notification: %@",
                     error.localizedDescription)
                 if generation == pendingGeneration {
-                    // Put the exact same payload back so a later poll retries
+                    // Put the exact same payload back so a later snapshot retries
                     // with the same system identifier.
                     pendingPayloads.insert(payload, at: 0)
                     return

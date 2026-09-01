@@ -68,11 +68,11 @@ resolve from label or system colors. VoiceOver names
 the session state. The first menu line is `state · reason · freshness`.
 Protected counts working sessions. Allowed names all-waiting or an unprotected
 working session and never claims no sessions. The shared `checked_at` heartbeat
-reader and session poller supply the glyph and words. UI never calls `pmset` or
-root XPC. Freshness uses the document timestamp, not file mtime. One
-`detach list --json` poller serves the window, notifications, and menu. It runs
-faster with a window, slower without, and never stops. Closing the last
-window keeps the app and icon.
+reader and one `detach watch --json` source supply them. Each
+schema-1 hint, activation, or `resync` triggers `list --json`; only the
+newest hint waits. No list timer runs. UI never
+calls `pmset` or root XPC. Freshness uses the document timestamp. Closing the
+last window keeps the app, event source, and icon.
 ⌘Q and Quit end the app while sessions, checkpoints, and protection continue.
 Settings → General owns both menu bar toggles. Settings → System keeps the only
 Mac Power status and approval controls. The Settings window follows the hosting
@@ -87,10 +87,10 @@ shows **Copied**.
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
 
-Every app CLI invocation runs in a fresh process group that drains stdout and
-stderr. Its deadline sends TERM then KILL to the group. A pipe-only descendant
-cannot hold the caller past the drain deadline. GUI PATH orders NVM and mise
-Node directories by semantic version.
+Bounded CLI calls use process groups, drain both outputs, and send TERM then
+KILL at the deadline. Pipe-only descendants cannot extend that deadline. The
+native event process uses `exec` and ends on cancellation. GUI PATH sorts
+NVM/mise Node directories by semantic version.
 
 Helper replacement is a durable fail-closed transaction. One versioned JSON
 journal records `preparing`, `unregisterSubmitted`, `removed`, or `registering`,
@@ -166,15 +166,16 @@ and rejects invalid input. Launch runs in Detach. Advanced holds the prompt
 below a fixed top. Titles use `display_name`, then the project or internal name.
 Command-N opens New session. Its chooser starts at the default project or the
 selection's parent. Command-T starts the chosen provider in a private 0700
-`detach-chat-<UUID>` directory in the quick-chat folder (`/tmp` default). It
-selects the typed `starting` session despite an overlapping poll, before runtime
-readiness. Invalid folders block launch.
+`detach-chat-<UUID>` below its folder (`/tmp` default). An event
+selects an unambiguous `starting` session before readiness, without polling.
+Invalid folders block launch.
 Command-1 through Command-9 open main and select numbered Working or Answer
 ready sessions. Numbers appear in rows and stay stable across both sections.
 When a session leaves them, the earliest waiting session gets its number;
 extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
-Notifications are opt-in. One poller deduplicates baseline and transitions.
+Notifications are opt-in. Snapshots deduplicate transitions. A delayed
+snapshot distinguishes `interrupted` from Stop.
 
 Sparkle 2 and SwiftTerm 1.19.0 are pinned. The exact SwiftTerm shader bundle is
 shipped and verified. Sparkle keeps its symlink layout and is signed inside-out.

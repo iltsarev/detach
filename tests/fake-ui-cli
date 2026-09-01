@@ -18,6 +18,27 @@ esac
 
 printf '%s\n' "$*" >>"$INVOCATIONS"
 
+if [ "$#" -eq 2 ] && [ "$1" = watch ] && [ "$2" = --json ]; then
+  fixture_signature() {
+    local marker
+    printf '%s' "$(<"$STATE")"
+    for marker in \
+      recovered resumed stopped-deleted new-session-started quick-chat-started; do
+      [ ! -e "$ROOT/fake/$marker" ] || printf ':%s' "$marker"
+    done
+  }
+  signature="$(fixture_signature)"
+  printf '%s\n' '{"schema":1,"event":"ready"}'
+  trap 'exit 0' HUP INT TERM
+  while sleep 0.05; do
+    next_signature="$(fixture_signature)"
+    [ "$next_signature" = "$signature" ] && continue
+    signature="$next_signature"
+    printf '%s\n' '{"schema":1,"event":"changed"}'
+  done
+  exit 0
+fi
+
 if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
   if [ "$(<"$STATE")" = empty ]; then
     exit 0
@@ -46,8 +67,11 @@ if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
   printf '%s\n' \
     '{"schema":1,"provider":"codex","session_name":"detach-codex-ui-running","name":"UI Running","effective_status":"running","created_at":"2026-07-22T08:00:00Z","model":"gpt-ui-fixture","agent_turn_state":"working","session_color":"#36C5F0","power_protection_state":"protected","health_actions":["attach","stop"]}' \
     "$recoverable" \
-    "$completed" \
-    '{"schema":1,"provider":"codex","session_name":"detach-codex-ui-stopped","name":"UI Stopped","effective_status":"stopped","created_at":"2026-07-22T06:00:00Z","finished_at":"2026-07-22T06:30:00Z","exit_status":143,"session_color":"#1D4ED8","power_protection_state":"allowed","health_actions":["delete"]}'
+    "$completed"
+  if [ ! -f "$ROOT/fake/stopped-deleted" ]; then
+    printf '%s\n' \
+      '{"schema":1,"provider":"codex","session_name":"detach-codex-ui-stopped","name":"UI Stopped","effective_status":"stopped","created_at":"2026-07-22T06:00:00Z","finished_at":"2026-07-22T06:30:00Z","exit_status":143,"session_color":"#1D4ED8","power_protection_state":"allowed","health_actions":["delete"]}'
+  fi
   [ -z "$started" ] || printf '%s\n' "$started"
   [ -z "$quick" ] || printf '%s\n' "$quick"
   exit 0
@@ -162,6 +186,11 @@ fi
 if [ "$#" -eq 4 ] && [ "$1" = codex ] && [ "$2" = delete ] \
     && [ "$3" = --force ] && [ "$4" = detach-codex-ui-stopped ]; then
   printf '%s\n' "$*" >>"$ACTIONS"
+  # Let the UI driver record the accepted action before the event arrives.
+  # This proves that a later typed snapshot, not an earlier refresh, closes
+  # the deletion flow.
+  sleep 0.1
+  : >"$ROOT/fake/stopped-deleted"
   exit 0
 fi
 

@@ -18,7 +18,7 @@ public struct SessionTransition: Equatable, Sendable {
 }
 
 /// Finds attention-worthy state changes between successful `list --json`
-/// polls. The first observation only establishes a baseline, so launching the
+/// snapshots. The first observation only establishes a baseline, so launching the
 /// app does not replay notifications for every historical finished session.
 public struct SessionTransitionDetector: Sendable {
     private struct Lifecycle: Hashable, Sendable {
@@ -80,9 +80,9 @@ public struct SessionTransitionDetector: Sendable {
                     transitions.append(SessionTransition(kind: .failed, session: session))
                 } else if previousStatus != .interrupted {
                     // `detach stop` briefly passes through interrupted before
-                    // recording stopped. Require one more successful poll so
+                    // recording stopped. Require one more successful snapshot so
                     // a user-requested stop does not look like a crash. This
-                    // also covers a new session that crashed between polls.
+                    // also covers a new session that crashed between snapshots.
                     pendingInterrupted.insert(lifecycle)
                 }
                 continue

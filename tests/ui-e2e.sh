@@ -14,6 +14,7 @@ APP_PID=""
 approved_invocation() {
   case "$1" in
     'list --json'|\
+    'watch --json'|\
     'codex logs --ansi detach-codex-ui-running'|\
     'codex attach detach-codex-ui-running'|\
     'codex logs --ansi detach-codex-ui-recoverable'|\

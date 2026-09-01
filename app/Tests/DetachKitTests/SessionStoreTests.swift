@@ -97,45 +97,113 @@ private actor OverlappingStartCLI: DetachCLIRunning {
     }
 }
 
-private actor PollSleepProbe {
-    private(set) var intervals: [UInt64] = []
-    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
-    private var cancellationWaiters: [CheckedContinuation<Void, Never>] = []
-    private var sleepContinuation: CheckedContinuation<Void, Error>?
-    private var cancelled = false
+private final class EventCLI: DetachCLIRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var output: String
+    private var continuation:
+        AsyncThrowingStream<SessionEvent, Error>.Continuation?
+    private var subscriptionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var callWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var callCount = 0
 
-    func sleep(nanoseconds: UInt64) async throws {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                sleepContinuation = continuation
-                intervals.append(nanoseconds)
-                let waiters = startedWaiters
-                startedWaiters.removeAll()
-                waiters.forEach { $0.resume() }
+    init(output: String) {
+        self.output = output
+    }
+
+    func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
+        let (output, ready) = lock.withLock { () -> (String, [CheckedContinuation<Void, Never>]) in
+            callCount += 1
+            let count = callCount
+            let ready = callWaiters.filter { $0.0 <= count }.map(\.1)
+            callWaiters.removeAll { $0.0 <= count }
+            return (self.output, ready)
+        }
+        ready.forEach { $0.resume() }
+        return CLIResult(
+            exitCode: 0,
+            stdout: output,
+            stderr: "",
+            timedOut: false)
+    }
+
+    func sessionEvents() -> AsyncThrowingStream<SessionEvent, Error> {
+        AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let waiters = lock.withLock {
+                self.continuation = continuation
+                let waiters = subscriptionWaiters
+                subscriptionWaiters.removeAll()
+                return waiters
             }
-        } onCancel: {
-            Task { await self.cancelSleep() }
+            waiters.forEach { $0.resume() }
         }
     }
 
-    func waitUntilStarted() async {
-        if !intervals.isEmpty { return }
-        await withCheckedContinuation { startedWaiters.append($0) }
+    func emit(_ kind: SessionEventKind) {
+        let continuation: AsyncThrowingStream<SessionEvent, Error>.Continuation? =
+            lock.withLock { self.continuation }
+        continuation?.yield(SessionEvent(event: kind))
     }
 
-    func waitUntilCancelled() async {
-        if cancelled { return }
-        await withCheckedContinuation { cancellationWaiters.append($0) }
+    func setOutput(_ output: String) {
+        lock.withLock { self.output = output }
     }
 
-    private func cancelSleep() {
-        cancelled = true
-        sleepContinuation?.resume(throwing: CancellationError())
-        sleepContinuation = nil
-        let waiters = cancellationWaiters
-        cancellationWaiters.removeAll()
-        waiters.forEach { $0.resume() }
+    func waitUntilSubscribed() async {
+        await withCheckedContinuation { waiter in
+            let subscribed = lock.withLock {
+                if continuation != nil { return true }
+                subscriptionWaiters.append(waiter)
+                return false
+            }
+            if subscribed {
+                waiter.resume()
+            }
+        }
     }
+
+    func waitForCallCount(_ expected: Int) async {
+        await withCheckedContinuation { waiter in
+            let reached = lock.withLock {
+                if callCount >= expected { return true }
+                callWaiters.append((expected, waiter))
+                return false
+            }
+            if reached {
+                waiter.resume()
+            }
+        }
+    }
+
+    var currentCallCount: Int {
+        lock.withLock { callCount }
+    }
+}
+
+private actor ConfirmationSleepProbe {
+    private var callCount = 0
+    private var callWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var sleepers: [CheckedContinuation<Void, Never>] = []
+
+    func sleep() async {
+        callCount += 1
+        let ready = callWaiters.filter { $0.0 <= callCount }
+        callWaiters.removeAll { $0.0 <= callCount }
+        ready.forEach { $0.1.resume() }
+        await withCheckedContinuation { sleepers.append($0) }
+    }
+
+    func waitForCallCount(_ expected: Int) async {
+        if callCount >= expected { return }
+        await withCheckedContinuation { callWaiters.append((expected, $0)) }
+    }
+
+    func resumeSleepers() {
+        let current = sleepers
+        sleepers.removeAll()
+        current.forEach { $0.resume() }
+    }
+
+    func calls() -> Int { callCount }
 }
 
 @MainActor
@@ -273,7 +341,7 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(result, SessionStartResult(sessionID: "detach-codex-p-1"))
     }
 
-    func testStartDetachedKeepsItsSelectionWhenABackgroundPollSupersedesPublication() async {
+    func testStartDetachedKeepsItsSelectionWhenAnOverlappingRefreshSupersedesPublication() async {
         let cli = OverlappingStartCLI(listOutput: line)
         let store = SessionStore(cli: cli)
         let project = URL(fileURLWithPath: "/tmp/p", isDirectory: true)
@@ -635,50 +703,41 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(cli.calls, callsBeforeActions)
     }
 
-    func testPollingStartsImmediatelySupportsIdleCadenceAndStopsCleanly() async {
-        let cli = FakeCLI()
-        cli.responses["list --json"] = ok(line)
-        let sleep = PollSleepProbe()
-        let store = SessionStore(
-            cli: cli,
-            pollSleep: { try await sleep.sleep(nanoseconds: $0) })
+    func testNativeEventsRequestTypedSnapshotsWithoutAPeriodicLoop() async {
+        let cli = EventCLI(output: line)
+        let store = SessionStore(cli: cli)
         var snapshots: [[Session]] = []
         store.onSnapshot = { snapshots.append($0) }
-        store.updateCadence(foreground: false)
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+        XCTAssertEqual(cli.currentCallCount, 0)
 
-        store.startPolling(interval: 0.01)
-        await sleep.waitUntilStarted()
+        cli.emit(.ready)
+        await cli.waitForCallCount(1)
+        let initial = expectation(description: "initial event snapshot")
+        if !store.sessions.isEmpty { initial.fulfill() }
+        else {
+            store.onSnapshot = {
+                snapshots.append($0)
+                initial.fulfill()
+            }
+        }
+        await fulfillment(of: [initial], timeout: 1)
 
-        let intervals = await sleep.intervals
-        XCTAssertEqual(intervals, [10_000_000_000])
-        XCTAssertEqual(cli.calls, [["list", "--json"]])
-        XCTAssertEqual(snapshots.map { $0.map(\.sessionName) }, [["detach-codex-p-1"]])
-        XCTAssertEqual(store.state, .ok)
+        cli.setOutput("")
+        let changed = expectation(description: "changed event snapshot")
+        store.onSnapshot = {
+            snapshots.append($0)
+            if $0.isEmpty { changed.fulfill() }
+        }
+        cli.emit(.changed)
+        await fulfillment(of: [changed], timeout: 1)
 
-        store.stopPolling()
-        await sleep.waitUntilCancelled()
-
-        XCTAssertEqual(cli.calls, [["list", "--json"]])
+        XCTAssertEqual(snapshots.last, [])
+        store.stopObserving()
     }
 
-    func testForegroundPollingUsesTheBoundedBaseInterval() async {
-        let cli = FakeCLI()
-        cli.responses["list --json"] = ok(line)
-        let sleep = PollSleepProbe()
-        let store = SessionStore(
-            cli: cli,
-            pollSleep: { try await sleep.sleep(nanoseconds: $0) })
-
-        store.startPolling(interval: 0.01)
-        await sleep.waitUntilStarted()
-
-        let intervals = await sleep.intervals
-        XCTAssertEqual(intervals, [500_000_000])
-        store.stopPolling()
-        await sleep.waitUntilCancelled()
-    }
-
-    func testSnapshotObserverReceivesEverySuccessfulPoll() async {
+    func testSnapshotObserverReceivesEverySuccessfulTypedSnapshot() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line)
         let store = SessionStore(cli: cli)
@@ -686,13 +745,40 @@ final class SessionStoreTests: XCTestCase {
         store.onSnapshot = { snapshots.append($0) }
 
         await store.refresh()
-        await store.refresh() // unchanged list still advances the observer
+        await store.refresh() // unchanged state still advances transition evidence
 
         XCTAssertEqual(snapshots.count, 2)
         XCTAssertEqual(snapshots.last?.count, 1)
     }
 
-    func testSnapshotObserverIsNotCalledForFailedPolls() async {
+    func testInterruptedConfirmationRefreshRunsOnlyOncePerTransition() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"interrupted""#))
+        let probe = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in await probe.sleep() })
+        let confirmed = expectation(description: "confirmation snapshot")
+        var snapshotCount = 0
+        store.onSnapshot = { _ in
+            snapshotCount += 1
+            if snapshotCount == 2 { confirmed.fulfill() }
+        }
+
+        await store.refresh()
+        await probe.waitForCallCount(1)
+        await probe.resumeSleepers()
+        await fulfillment(of: [confirmed], timeout: 1)
+        await Task.yield()
+        let confirmationCalls = await probe.calls()
+
+        XCTAssertEqual(snapshotCount, 2)
+        XCTAssertEqual(confirmationCalls, 1)
+    }
+
+    func testSnapshotObserverIsNotCalledForFailedSnapshots() async {
         let cli = FakeCLI()
         let store = SessionStore(cli: cli)
         var snapshotCount = 0

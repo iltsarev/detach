@@ -427,6 +427,63 @@ if codex_part_selected preflight; then
   bash -n "$ROOT/bin/detach-core"
   [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
 
+  # The app's long-lived source must be the public CLI, backed by one native
+  # process. Prove lifecycle and transcript writes produce leading/trailing
+  # typed hints on a normal user-data volume (FSEvents excludes some temporary
+  # filesystem implementations).
+  (
+    event_root="$ROOT/app/build/session-events-$$"
+    event_output="$event_root/events.jsonl"
+    event_pid=""
+    cleanup_event_probe() {
+      [ -z "$event_pid" ] || kill "$event_pid" 2>/dev/null || true
+      [ -z "$event_pid" ] || wait "$event_pid" 2>/dev/null || true
+      rm -rf "$event_root"
+    }
+    trap cleanup_event_probe EXIT
+    mkdir -p \
+      "$event_root/state" \
+      "$event_root/codex/sessions" \
+      "$event_root/claude/projects"
+    DETACH_STATE_ROOT="$event_root/state" \
+    CODEX_HOME="$event_root/codex" \
+    CLAUDE_CONFIG_DIR="$event_root/claude" \
+      "$SCRIPT" watch --json >"$event_output" &
+    event_pid=$!
+    wait_for_file_text "$event_output" '"event":"ready"'
+    "$STATE_HELPER" events publish "$event_root/state/session-change"
+    wait_for_file_text "$event_output" '"event":"changed"'
+    touch "$event_root/codex/sessions/turn.jsonl"
+    event_attempts=0
+    while [ "$event_attempts" -lt 80 ] && \
+          [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 3 ]; do
+      event_attempts=$((event_attempts + 1))
+      sleep 0.05
+    done
+    [ "$(grep -c '"event":"changed"' "$event_output")" -ge 3 ]
+  )
+
+  heartbeat_source="$(sed -n \
+    '/^runtime_heartbeat_locked() {/,/^runtime_heartbeat_once() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$heartbeat_source" | \
+    grep -F 'state_update_meta_for_run_without_event' >/dev/null
+  state_mutation_source="$(sed -n \
+    '/^state_update_meta() {/,/^state_update_meta_without_event() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$state_mutation_source" | \
+    grep -F 'publish_session_event' >/dev/null
+  start_source="$(sed -n \
+    '/^start_tmux_session() {/,/^running_session_for_project() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
+    grep -F 'publish_session_event' >/dev/null
+  delete_source="$(sed -n \
+    '/^delete_locked() {/,/^restore_rollout_if_needed() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$delete_source" | \
+    grep -F 'publish_session_event' >/dev/null
+
 if FAKE_POWER_STATE=unavailable run_codex --name power-preflight --detach -- \
   'must not start without power protection' >/dev/null 2>&1; then
   printf 'start unexpectedly passed an unavailable power preflight\n' >&2

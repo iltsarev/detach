@@ -25,6 +25,13 @@ public struct SessionStartResult: Equatable, Sendable {
 
 @Observable @MainActor
 public final class SessionStore {
+    private struct SessionWaiter {
+        let provider: Provider
+        let projectPath: String
+        let excludedIDs: Set<String>
+        let continuation: CheckedContinuation<String?, Never>
+    }
+
     private enum Mutation {
         case stop
         case delete
@@ -41,66 +48,86 @@ public final class SessionStore {
     public private(set) var lastUpdated: Date?
     public private(set) var state: State = .ok
 
-    /// Called after every successful poll — including an unchanged list — so
+    /// Called after every successful typed snapshot — including an unchanged list — so
     /// a transition detector can advance its baseline. The store is the single
-    /// app-level `list --json` poller; notifications and the menu bar consume
-    /// these snapshots instead of running their own subprocess loops.
+    /// app-level session source; notifications and the menu bar consume these
+    /// snapshots instead of running their own subprocess loops.
     @ObservationIgnored public var onSnapshot: (@MainActor ([Session]) async -> Void)?
 
     private var cli: DetachCLIRunning
-    private var pollTask: Task<Void, Never>?
-    private var baseInterval: TimeInterval = 2
-    private var foreground = true
+    private var eventTask: Task<Void, Never>?
+    private var interruptedConfirmationTask: Task<Void, Never>?
+    private var confirmedInterruptedSessionIDs: Set<String> = []
+    private var eventGeneration: UInt64 = 0
     private var refreshGeneration: UInt64 = 0
-    @ObservationIgnored private let pollSleep: @Sendable (UInt64) async throws -> Void
+    private var sessionWaiters: [UUID: SessionWaiter] = [:]
+    @ObservationIgnored private let confirmationSleep:
+        @Sendable (UInt64) async throws -> Void
 
     public init(cli: DetachCLIRunning) {
         self.cli = cli
-        self.pollSleep = { try await Task.sleep(nanoseconds: $0) }
+        self.confirmationSleep = { try await Task.sleep(nanoseconds: $0) }
     }
 
     init(
         cli: DetachCLIRunning,
-        pollSleep: @escaping @Sendable (UInt64) async throws -> Void
+        confirmationSleep: @escaping @Sendable (UInt64) async throws -> Void
     ) {
         self.cli = cli
-        self.pollSleep = pollSleep
+        self.confirmationSleep = confirmationSleep
     }
 
     /// Swaps the CLI (for example after the installed payload activates) and
-    /// refreshes immediately. The polling cadence is unchanged.
+    /// establishes a fresh typed snapshot before replacing the event stream.
     public func configure(cli: DetachCLIRunning) async {
+        stopObserving()
         self.cli = cli
         await refresh()
+        startObserving()
     }
 
-    public func startPolling(interval: TimeInterval) {
-        baseInterval = max(interval, 0.5)
-        pollTask?.cancel()
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refresh()
-                guard let delay = self?.currentInterval else { return }
-                try? await self?.pollSleep(UInt64(delay * 1_000_000_000))
+    /// Starts one bounded stream of native change hints. The initial `ready`
+    /// event closes the refresh/watch race by requesting another full list
+    /// only after FSEvents is installed.
+    public func startObserving() {
+        guard eventTask == nil else { return }
+        eventGeneration &+= 1
+        let generation = eventGeneration
+        let cli = self.cli
+        eventTask = Task { [weak self] in
+            defer {
+                if let self, generation == self.eventGeneration {
+                    self.eventTask = nil
+                }
+            }
+            do {
+                for try await _ in cli.sessionEvents() {
+                    guard !Task.isCancelled,
+                          let self,
+                          generation == self.eventGeneration else { return }
+                    await self.refresh()
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                // A full refresh on app activation restarts a failed stream.
+                // Keep the last typed snapshot instead of replacing it with
+                // an event-transport diagnostic.
             }
         }
     }
 
-    public func stopPolling() {
-        pollTask?.cancel()
-        pollTask = nil
+    public func stopObserving() {
+        eventGeneration &+= 1
+        eventTask?.cancel()
+        eventTask = nil
     }
 
-    /// Foreground (a visible window or open menu wants fresh data) polls at
-    /// the base interval. Idle polling slows down but never stops, so
-    /// notifications and the menu bar stay truthful after the last window
-    /// closes.
-    public func updateCadence(foreground: Bool) {
-        self.foreground = foreground
-    }
-
-    private var currentInterval: TimeInterval {
-        foreground ? baseInterval : max(baseInterval * 5, 10)
+    /// Repairs missed or failed event delivery without introducing a timer.
+    /// App activation is a natural resynchronization boundary.
+    public func resynchronize() async {
+        await refresh()
+        startObserving()
     }
 
     /// Returns this request's valid typed snapshot even when a newer refresh
@@ -129,18 +156,116 @@ public final class SessionStore {
             let snapshot = parsed.sessions.sorted {
                 ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
             }
-            // Polling, explicit refreshes, and CLI reconfiguration may overlap
-            // while their subprocesses are suspended. Only the latest request
-            // may publish state or notify transition consumers.
+            // Event refreshes, explicit refreshes, and CLI reconfiguration may
+            // overlap while their subprocesses are suspended. Only the latest
+            // request may publish state or notify transition consumers.
             guard generation == refreshGeneration else { return snapshot }
-            sessions = snapshot
+            if sessions != snapshot { sessions = snapshot }
+            resolveSessionWaiters(from: snapshot)
             lastUpdated = Date()
             state = .ok
             if let onSnapshot { await onSnapshot(sessions) }
+            scheduleInterruptedConfirmation(for: snapshot)
             return snapshot
         } catch {
             if generation == refreshGeneration { state = .cliMissing }
             return []
+        }
+    }
+
+    /// Suspends without polling until a valid typed snapshot contains one
+    /// unambiguous new session for the requested provider and project.
+    public func waitForSession(
+        provider: Provider,
+        projectDirectory: URL,
+        excluding excludedIDs: Set<String>
+    ) async -> String? {
+        let projectPath = Self.canonicalProjectPath(projectDirectory.path)
+        if let match = Self.matchingSessionID(
+            in: sessions,
+            provider: provider,
+            projectPath: projectPath,
+            excludedIDs: excludedIDs) {
+            return match
+        }
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                sessionWaiters[waiterID] = SessionWaiter(
+                    provider: provider,
+                    projectPath: projectPath,
+                    excludedIDs: excludedIDs,
+                    continuation: continuation)
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelSessionWaiter(waiterID)
+            }
+        }
+    }
+
+    private func resolveSessionWaiters(from snapshot: [Session]) {
+        let resolved = sessionWaiters.compactMap { id, waiter -> (UUID, String)? in
+            guard let sessionID = Self.matchingSessionID(
+                in: snapshot,
+                provider: waiter.provider,
+                projectPath: waiter.projectPath,
+                excludedIDs: waiter.excludedIDs) else { return nil }
+            return (id, sessionID)
+        }
+        for (id, sessionID) in resolved {
+            sessionWaiters.removeValue(forKey: id)?
+                .continuation.resume(returning: sessionID)
+        }
+    }
+
+    private func cancelSessionWaiter(_ id: UUID) {
+        sessionWaiters.removeValue(forKey: id)?.continuation.resume(returning: nil)
+    }
+
+    private static func matchingSessionID(
+        in sessions: [Session],
+        provider: Provider,
+        projectPath: String,
+        excludedIDs: Set<String>
+    ) -> String? {
+        let candidates = sessions.filter {
+            !excludedIDs.contains($0.id)
+                && $0.provider == provider
+                && $0.projectDir.map(canonicalProjectPath) == projectPath
+        }
+        return candidates.count == 1 ? candidates[0].id : nil
+    }
+
+    private func scheduleInterruptedConfirmation(for snapshot: [Session]) {
+        let interruptedIDs = Set(snapshot.lazy
+            .filter { $0.effectiveStatus == .interrupted }
+            .map(\.id))
+        confirmedInterruptedSessionIDs.formIntersection(interruptedIDs)
+        guard !interruptedIDs.isEmpty else {
+            interruptedConfirmationTask?.cancel()
+            interruptedConfirmationTask = nil
+            return
+        }
+        let unconfirmedIDs = interruptedIDs.subtracting(
+            confirmedInterruptedSessionIDs)
+        guard !unconfirmedIDs.isEmpty else { return }
+
+        interruptedConfirmationTask?.cancel()
+        interruptedConfirmationTask = Task { [weak self] in
+            do {
+                try await self?.confirmationSleep(350_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.confirmedInterruptedSessionIDs.formUnion(unconfirmedIDs)
+            self.interruptedConfirmationTask = nil
+            await self.refresh()
         }
     }
 

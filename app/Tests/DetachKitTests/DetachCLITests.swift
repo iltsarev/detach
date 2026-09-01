@@ -170,6 +170,52 @@ final class DetachCLITests: XCTestCase {
         } catch {}
     }
 
+    func testSessionEventStreamUsesWatchDecodesAndEndsWithConsumer() async throws {
+        let pidFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-cli-watch-\(UUID().uuidString)")
+        let cli = ProcessDetachCLI(executable: try fixture("""
+        [ "$1" = watch ] && [ "$2" = --json ] || exit 9
+        printf '%s\n' "$$" >'\(pidFile.path)'
+        printf '%s\n' '{"schema":1,"event":"ready"}'
+        sleep 0.05
+        printf '%s\n' '{"schema":1,"event":"changed"}'
+        exec /bin/sleep 30
+        """))
+        let events = Task {
+            var iterator = cli.sessionEvents().makeAsyncIterator()
+            return (try await iterator.next(), try await iterator.next())
+        }
+        let (ready, changed) = try await events.value
+        XCTAssertEqual(ready, SessionEvent(event: .ready))
+        XCTAssertEqual(changed, SessionEvent(event: .changed))
+        let pid = try XCTUnwrap(Int32(
+            String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { _ = Darwin.kill(pid, SIGKILL) }
+
+        XCTAssertTrue(waitForProcessExit(pid, timeout: 1))
+    }
+
+    func testSessionEventStreamRejectsInvalidOrFailedOutput() async throws {
+        let invalid = ProcessDetachCLI(executable: try fixture("printf 'not-json\\n'"))
+        var invalidIterator = invalid.sessionEvents().makeAsyncIterator()
+        do {
+            _ = try await invalidIterator.next()
+            XCTFail("expected invalid event failure")
+        } catch {
+            XCTAssertEqual(error as? DetachCLIStreamError, .invalidEvent)
+        }
+
+        let failed = ProcessDetachCLI(executable: try fixture("exit 7"))
+        var failedIterator = failed.sessionEvents().makeAsyncIterator()
+        do {
+            _ = try await failedIterator.next()
+            XCTFail("expected event process failure")
+        } catch {
+            XCTAssertEqual(error as? DetachCLIStreamError, .exited(7))
+        }
+    }
+
     private func processExists(_ pid: Int32) -> Bool {
         Darwin.kill(pid, 0) == 0 || errno == EPERM
     }

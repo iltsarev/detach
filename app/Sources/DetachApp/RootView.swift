@@ -12,10 +12,9 @@ struct RootView: View {
     @AppStorage(AppSettings.tipsEnabledKey, store: AppSettings.defaults)
     private var tipsEnabled = true
     let detachPath: String
-    let pollInterval: Double
     let installation: InstallationStore
-    /// App-level shared store: the window only adjusts its cadence and never
-    /// stops it, so notifications and the menu bar stay fed after close.
+    /// App-level shared store: its event stream outlives this window, so
+    /// notifications and the menu bar stay current after close.
     let store: SessionStore
     @ObservedObject var navigation: MainNavigation
     @ObservedObject var shortcuts: SessionShortcutRegistry
@@ -90,10 +89,9 @@ struct RootView: View {
         .frame(
             minWidth: AppFontSize.minimumWindowSize(for: fontPointSize).width,
             minHeight: AppFontSize.minimumWindowSize(for: fontPointSize).height)
-        .task(id: pollInterval) { store.startPolling(interval: pollInterval) }
         .task(id: detachPath) {
             // The store outlives this window; rewire it to the active CLI and
-            // keep notifications fed from the same single poller. The
+            // keep notifications fed from the same event source. The
             // transition detector baselines on its first successful snapshot,
             // so historical sessions never fire as fresh notifications.
             store.onSnapshot = { [weak notifications, weak shortcuts] sessions in
@@ -120,6 +118,7 @@ struct RootView: View {
             guard phase == .active else { return }
             Task {
                 guard AppSettings.uiE2E == nil else { return }
+                await store.resynchronize()
                 await installation.refreshContext()
                 await notifications.refreshAuthorizationStatus()
             }
@@ -138,8 +137,6 @@ struct RootView: View {
         .onReceive(shortcuts.$assignments) { assignments in
             shortcutAssignments = assignments
         }
-        .onAppear { store.updateCadence(foreground: true) }
-        .onDisappear { store.updateCadence(foreground: false) }
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
         .background {

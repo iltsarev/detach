@@ -108,6 +108,12 @@ public struct CLIResult: Equatable, Sendable {
     }
 }
 
+public enum DetachCLIStreamError: Error, Equatable, Sendable {
+    case unavailable
+    case invalidEvent
+    case exited(Int32)
+}
+
 public protocol DetachCLIRunning: Sendable {
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult
     func run(
@@ -115,6 +121,7 @@ public protocol DetachCLIRunning: Sendable {
         timeout: TimeInterval,
         currentDirectoryURL: URL?
     ) async throws -> CLIResult
+    func sessionEvents() -> AsyncThrowingStream<SessionEvent, Error>
 }
 
 public extension DetachCLIRunning {
@@ -124,6 +131,12 @@ public extension DetachCLIRunning {
         currentDirectoryURL _: URL?
     ) async throws -> CLIResult {
         try await run(arguments: arguments, timeout: timeout)
+    }
+
+    func sessionEvents() -> AsyncThrowingStream<SessionEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish(throwing: DetachCLIStreamError.unavailable)
+        }
     }
 }
 
@@ -227,5 +240,53 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
             stdout: String(decoding: result.standardOutput, as: UTF8.self),
             stderr: String(decoding: result.standardError, as: UTF8.self),
             timedOut: result.timedOut)
+    }
+
+    public func sessionEvents() -> AsyncThrowingStream<SessionEvent, Error> {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.arguments = ["watch", "--json"]
+        process.environment = environment
+        process.currentDirectoryURL = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true)
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) {
+            continuation in
+            let task = Task.detached {
+                defer {
+                    if process.isRunning { process.terminate() }
+                    try? output.fileHandleForReading.close()
+                }
+                do {
+                    try Task.checkCancellation()
+                    try process.run()
+                    for try await line in output.fileHandleForReading.bytes.lines {
+                        try Task.checkCancellation()
+                        guard let event = SessionEventParser.parse(line) else {
+                            throw DetachCLIStreamError.invalidEvent
+                        }
+                        continuation.yield(event)
+                    }
+                    process.waitUntilExit()
+                    guard Task.isCancelled || process.terminationStatus == 0 else {
+                        throw DetachCLIStreamError.exited(process.terminationStatus)
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+                if process.isRunning { process.terminate() }
+                try? output.fileHandleForReading.close()
+            }
+        }
     }
 }

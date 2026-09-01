@@ -73,6 +73,7 @@ release_version() {
 }
 
 STATE_BASE_ROOT="${DETACH_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/detach}"
+SESSION_EVENT_FILE="$STATE_BASE_ROOT/session-change"
 CONFIG_ROOT="${DETACH_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/detach}"
 CONFIG_FILE="$CONFIG_ROOT/config"
 INSTALL_STATE_ROOT="${DETACH_INSTALL_STATE_ROOT:-$STATE_BASE_ROOT}"
@@ -1577,7 +1578,32 @@ state_update_meta() {
 
   meta="$(session_meta "$session")"
   [ -f "$meta" ] || return 1
+  "$STATE_BIN" meta patch "$meta" "$@" || return 1
+  publish_session_event
+}
+
+state_update_meta_without_event() {
+  local session="$1"
+  shift
+  local meta
+
+  meta="$(session_meta "$session")"
+  [ -f "$meta" ] || return 1
   "$STATE_BIN" meta patch "$meta" "$@"
+}
+
+state_update_meta_for_run_without_event() {
+  local session="$1"
+  local run_token="$2"
+  shift 2
+
+  state_update_meta_without_event "$session" --run-token "$run_token" "$@"
+}
+
+publish_session_event() {
+  # This token is a lossy wake-up hint, not durable state. A missed hint is
+  # repaired by the watch resync and app activation snapshots.
+  "$STATE_BIN" events publish "$SESSION_EVENT_FILE" >/dev/null 2>&1 || true
 }
 
 state_update_meta_for_run() {
@@ -3003,7 +3029,8 @@ runtime_heartbeat_locked() {
   if [ "$PROVIDER" = "codex" ]; then
     discover_codex_session "$session" "$run_token" >/dev/null 2>&1 || true
   fi
-  state_update_meta_for_run "$session" "$run_token" "${update_args[@]}"
+  state_update_meta_for_run_without_event \
+    "$session" "$run_token" "${update_args[@]}"
 }
 
 runtime_heartbeat_once() {
@@ -3588,6 +3615,10 @@ start_tmux_session() {
     env_args+=( "$arg" )
   done < <(tmux_environment_args)
 
+  # Publish `starting` only after tmux ownership and presentation metadata are
+  # complete. An event consumer must never observe the new managed row as a
+  # transient foreign-session collision.
+  publish_session_event
   "${TMUX_CMD[@]}" respawn-pane -k \
     -t "$pane_id" \
     -c "$cwd" \
@@ -4626,6 +4657,7 @@ delete_locked() {
     "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove tmux session '$session'"
   fi
   rm -rf -- "$dir" || die "could not completely remove session state: $dir"
+  publish_session_event
   printf 'Deleted %s\n' "$session"
 }
 

@@ -47,6 +47,9 @@ not be the weak link.
 - **See what needs you now.** Sessions that wait for a reply move into
   **Answer ready**. Notifications and the menu bar show when a turn finishes,
   fails, or becomes recoverable.
+- **Get changes without a refresh delay.** Native filesystem events wake the
+  dashboard when lifecycle or provider turn data changes. Detach does not run
+  a repeating session-list timer while nothing changes.
 - **Return the correct way.** Attach to a live process, Resume a provider
   conversation, or Recover an interrupted Detach run from a validated local
   checkpoint.
@@ -146,14 +149,21 @@ The live terminal processes PTY input and output as events. Its on-demand GPU
 renderer repaints only when content changes. A steady cursor avoids an idle
 redraw timer. If Metal is unavailable, Detach keeps the CoreGraphics renderer.
 
+The dashboard also updates from events. Detach coalesces a provider transcript
+burst into one update at the start and one after output becomes quiet. Each
+event reads a complete typed session list. A dropped event or app activation
+causes a full resync. There is no Refresh interval setting and no periodic
+session-list process while state is idle.
+
 <details>
 <summary><strong>How a new in-app session starts</strong></summary>
 
-Detach runs the CLI with `--detach` in the selected project and refreshes the
-session list. When it finds one new matching session, it selects the session
-and opens the embedded terminal. A start error stays in the sheet so that you
-can correct it. Terminal, iTerm2, Warp, or another configured shell runner
-remains available from the named fallback button.
+Detach runs the CLI with `--detach` in the selected project. It waits for the
+event-driven typed session source. When one new matching `starting` session
+appears, Detach selects it and opens the embedded terminal before the full
+readiness check ends. A start error stays in the sheet so that you can correct
+it. Terminal, iTerm2, Warp, or another configured shell runner remains
+available from the named fallback button.
 
 </details>
 
@@ -422,6 +432,7 @@ detach claude --name "Rev (ai)" -- "review the repository"
 # Monitor and return.
 detach list
 detach list --json
+detach watch --json
 detach claude attach review
 detach resume SESSION_UUID
 
@@ -436,6 +447,7 @@ detach reconcile --dry-run --json
 | `detach <provider> [start]` | Start a fresh conversation for the current project. |
 | `detach <provider> attach [name]` | Attach to a live managed session. |
 | `detach list [--json]` | List Codex and Claude sessions together. JSON mode emits JSONL. |
+| `detach watch --json` | Stream typed `ready`, `changed`, and `resync` hints for session consumers. Read `list --json` after each hint. |
 | `detach resume <uuid>` | Detect the provider and project, then continue the conversation. An owned Claude session without a transcript restarts with the same UUID. |
 | `detach <provider> status [name]` | Show runtime, checkpoint, and power state. |
 | `detach <provider> logs [--ansi] [name]` | Read retained output without attaching. |
@@ -458,6 +470,7 @@ For automation and diagnosis:
 
 ```bash
 detach list --json
+detach watch --json
 detach reconcile --dry-run --json
 detach cleanup --dry-run --json
 ```

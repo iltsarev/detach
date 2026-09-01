@@ -153,7 +153,6 @@
 "Recover" = "Recover";
 "Reconnect" = "Reconnect";
 "Recover in %@" = "Recover in %@";
-"Refresh interval" = "Refresh interval";
 "Refresh terminal list" = "Refresh terminal list";
 "Reinstall command-line tools" = "Reinstall command-line tools";
 "Remove everything, including checkpoints…" = "Remove everything, including checkpoints…";
@@ -278,7 +277,6 @@
 "Text size preview" = "Text size preview";
 "Apply" = "Apply";
 "%d pt" = "%d pt";
-"%d sec" = "%d sec";
 "Command line" = "Command line";
 "Answer ready · 2 min ago" = "Answer ready · 2 min ago";
 "tmux status line" = "tmux status line";

@@ -16,6 +16,7 @@ public enum DetachStateCommandError: Error, Equatable, Sendable {
     case invalidStorageInventory
     case invalidStorageReport
     case unsafeStorageSelection(String)
+    case unsafeEventSignal
 }
 
 /// The command contract shared by the `detach-state` executable and unit
@@ -101,9 +102,23 @@ public enum DetachStateCommand {
             return try maintenanceReconcile(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("events", "publish"):
+            return try eventPublish(Array(arguments.dropFirst(2)))
         default:
             throw DetachStateCommandError.invalidArguments
         }
+    }
+
+    private static func eventPublish(_ arguments: [String]) throws -> Data {
+        guard arguments.count == 1 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        do {
+            try SessionEventSignal.publish(atPath: arguments[0])
+        } catch {
+            throw DetachStateCommandError.unsafeEventSignal
+        }
+        return Data()
     }
 
     private static func storageReport(
