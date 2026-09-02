@@ -36,7 +36,6 @@ final class SessionNotificationService: ObservableObject {
 
     private let center: SessionNotificationCenterBackend
     private let identifierProvider: () -> String
-    private let powerReader: PowerHeartbeatReader?
     private var detector = SessionTransitionDetector()
     private var pendingPayloads: [SessionNotificationPayload] = []
     private var pendingGeneration: UInt64 = 0
@@ -45,24 +44,19 @@ final class SessionNotificationService: ObservableObject {
     private var configurationGeneration: UInt64 = 0
     private var authorizationStatusGeneration: UInt64 = 0
     private var authorizationRequestTask: Task<Bool, Error>?
-    private var powerMonitorTask: Task<Void, Never>?
     private var thermalSafetyWasActive = false
 
     init(identifierProvider: @escaping () -> String = { UUID().uuidString }) {
         center = SystemSessionNotificationCenter()
         self.identifierProvider = identifierProvider
-        powerReader = PowerHeartbeatReader(
-            statusURL: PowerHeartbeatReader.defaultStatusURL())
     }
 
     init(
         center: SessionNotificationCenterBackend,
-        identifierProvider: @escaping () -> String = { UUID().uuidString },
-        powerReader: PowerHeartbeatReader? = nil
+        identifierProvider: @escaping () -> String = { UUID().uuidString }
     ) {
         self.center = center
         self.identifierProvider = identifierProvider
-        self.powerReader = powerReader
     }
 
     /// Synchronizes the app preference with macOS authorization. The system
@@ -75,11 +69,7 @@ final class SessionNotificationService: ObservableObject {
         isEnabled = enabled
         errorMessage = nil
 
-        if enabled {
-            startPowerMonitoring()
-        } else {
-            powerMonitorTask?.cancel()
-            powerMonitorTask = nil
+        if !enabled {
             thermalSafetyWasActive = false
         }
 
@@ -197,20 +187,6 @@ final class SessionNotificationService: ObservableObject {
             pendingPayloads.append(contentsOf: payloads)
         case .denied:
             clearPendingPayloads()
-        }
-    }
-
-    private func startPowerMonitoring() {
-        guard powerMonitorTask == nil, let powerReader else { return }
-        powerMonitorTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                await self?.observePower(powerReader.read())
-                do {
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
-                } catch {
-                    return
-                }
-            }
         }
     }
 

@@ -312,6 +312,83 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertEqual(result.reason, .checkpointStale)
     }
 
+    func testProcessInspectorFollowsOnlyTheBoundedOwnedParentChain() {
+        let identities: [Int32: SessionProcessIdentity] = [
+            30: SessionProcessIdentity(parentPID: 20, userID: 501),
+            20: SessionProcessIdentity(parentPID: 10, userID: 501),
+            10: SessionProcessIdentity(parentPID: 1, userID: 501),
+        ]
+        var reads: [Int32] = []
+
+        let result = SessionProcessHealthInspector.inspect(
+            tmuxState: .live,
+            workerPID: "10",
+            providerPID: "30",
+            panePID: "10",
+            userID: 501,
+            lookup: { pid in
+                reads.append(pid)
+                return identities[pid]
+            })
+
+        XCTAssertEqual(result, SessionProcessHealth(worker: .alive, provider: .alive))
+        XCTAssertEqual(Set(reads), Set([10, 20, 30]))
+        XCTAssertEqual(reads.count, 3, "one record must read each PID at most once")
+    }
+
+    func testProcessInspectorRejectsWrongPaneAndForeignOwnership() {
+        let owned: [Int32: SessionProcessIdentity] = [
+            10: SessionProcessIdentity(parentPID: 1, userID: 501),
+            30: SessionProcessIdentity(parentPID: 10, userID: 501),
+        ]
+        let paneMismatch = SessionProcessHealthInspector.inspect(
+            tmuxState: .live,
+            workerPID: "10",
+            providerPID: "30",
+            panePID: "99",
+            userID: 501,
+            lookup: { owned[$0] })
+        let foreign = SessionProcessHealthInspector.inspect(
+            tmuxState: .missing,
+            workerPID: "10",
+            providerPID: "30",
+            panePID: "-",
+            userID: 502,
+            lookup: { owned[$0] })
+
+        XCTAssertEqual(
+            paneMismatch,
+            SessionProcessHealth(worker: .mismatch, provider: .mismatch))
+        XCTAssertEqual(foreign, SessionProcessHealth(worker: .dead, provider: .dead))
+    }
+
+    func testProcessInspectorKeepsInvalidPIDsUnknownAndBoundsCycles() {
+        var reads = 0
+        let invalid = SessionProcessHealthInspector.inspect(
+            tmuxState: .missing,
+            workerPID: "-",
+            providerPID: "0",
+            panePID: "not-a-pid",
+            userID: 501,
+            lookup: { _ in reads += 1; return nil })
+        let cyclic = SessionProcessHealthInspector.inspect(
+            tmuxState: .missing,
+            workerPID: "10",
+            providerPID: "20",
+            panePID: "-",
+            userID: 501,
+            lookup: { pid in
+                reads += 1
+                return SessionProcessIdentity(
+                    parentPID: pid == 20 ? 21 : 20,
+                    userID: 501)
+            })
+
+        XCTAssertEqual(invalid, SessionProcessHealth(worker: .unknown, provider: .unknown))
+        XCTAssertEqual(cyclic, SessionProcessHealth(worker: .alive, provider: .mismatch))
+        XCTAssertLessThanOrEqual(reads, 3, "cycle identities must stay cached")
+    }
+
     private func evaluate(
         metadataValid: Bool = true,
         runtimeIdentityExpected: Bool = true,

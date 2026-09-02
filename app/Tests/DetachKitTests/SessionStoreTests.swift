@@ -226,6 +226,30 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNotNil(store.lastUpdated)
     }
 
+    func testCachedRowsPaintImmediatelyButStayNonAuthoritativeUntilRefresh() async throws {
+        let suite = "SessionStoreCacheTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = UserDefaultsSessionSnapshotCache(defaults: defaults)
+        let cached = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+        cache.store([cached])
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+
+        let store = SessionStore(cli: cli, snapshotCache: cache)
+
+        XCTAssertEqual(store.sessions.map(\.id), [cached.id])
+        XCTAssertTrue(store.sessions[0].availableActions.isEmpty)
+        XCTAssertFalse(store.hasFreshSnapshot)
+        XCTAssertNil(store.lastUpdated)
+
+        await store.refresh()
+
+        XCTAssertTrue(store.hasFreshSnapshot)
+        XCTAssertEqual(store.sessions[0].availableActions, [.attach, .stop])
+        XCTAssertNotNil(store.lastUpdated)
+    }
+
     func testRefreshSortsNewestSessionsFirstAndUsesDistantPastForMissingDates() async {
         let cli = FakeCLI()
         let olderWithoutDate = line
@@ -810,6 +834,61 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(second.calls, [["list", "--json"]])
     }
 
+    func testConfigureWaitsForReadyAndTakesOnlyOneColdStartSnapshot() async {
+        let cli = EventCLI(output: line)
+        let store = SessionStore(cli: FakeCLI())
+
+        let configuration = Task { @MainActor in
+            await store.configure(cli: cli)
+        }
+        await cli.waitUntilSubscribed()
+        XCTAssertEqual(cli.currentCallCount, 0)
+
+        cli.emit(.ready)
+        await configuration.value
+
+        XCTAssertEqual(cli.currentCallCount, 1)
+        XCTAssertEqual(store.sessions.count, 1)
+        store.stopObserving()
+    }
+
+    func testConfigureBoundsAWatcherThatNeverBecomesReady() async {
+        let cli = EventCLI(output: line)
+        let store = SessionStore(
+            cli: FakeCLI(),
+            confirmationSleep: { _ in },
+            eventReadinessSleep: { _ in })
+
+        await store.configure(cli: cli)
+
+        XCTAssertEqual(cli.currentCallCount, 1)
+        XCTAssertEqual(store.sessions.count, 1)
+        store.stopObserving()
+    }
+
+    func testOverlappingConfigureCannotPublishTheStoppedObserver() async {
+        let first = EventCLI(output: line)
+        let second = EventCLI(output: "")
+        let store = SessionStore(cli: FakeCLI())
+        let firstConfiguration = Task { @MainActor in
+            await store.configure(cli: first)
+        }
+        await first.waitUntilSubscribed()
+
+        let secondConfiguration = Task { @MainActor in
+            await store.configure(cli: second)
+        }
+        await second.waitUntilSubscribed()
+        second.emit(.ready)
+        await secondConfiguration.value
+        await firstConfiguration.value
+
+        XCTAssertEqual(first.currentCallCount, 0)
+        XCTAssertEqual(second.currentCallCount, 1)
+        XCTAssertTrue(store.sessions.isEmpty)
+        store.stopObserving()
+    }
+
     func testLateResultFromPreviousCLICannotOverwriteReconfiguredStore() async {
         let first = DelayedCLI()
         let store = SessionStore(cli: first)
@@ -826,5 +905,28 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(store.sessions, [])
         XCTAssertEqual(store.state, .ok)
         XCTAssertEqual(second.calls, [["list", "--json"]])
+    }
+
+    func testPreviousCLIResultCannotPublishWhileReplacementWaitsForReady() async {
+        let first = DelayedCLI()
+        let store = SessionStore(cli: first)
+        let staleRefresh = Task { await store.refresh() }
+        await first.waitUntilStarted()
+
+        let second = EventCLI(output: "")
+        let configuration = Task { @MainActor in
+            await store.configure(cli: second)
+        }
+        await second.waitUntilSubscribed()
+        await first.finish(with: CLIResult(
+            exitCode: 0, stdout: line, stderr: "", timedOut: false))
+        _ = await staleRefresh.value
+        XCTAssertTrue(store.sessions.isEmpty)
+
+        second.emit(.ready)
+        await configuration.value
+        XCTAssertEqual(second.currentCallCount, 1)
+        XCTAssertTrue(store.sessions.isEmpty)
+        store.stopObserving()
     }
 }

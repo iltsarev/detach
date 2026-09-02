@@ -249,7 +249,7 @@ final class MacPowerActiveSessionTests: XCTestCase {
         XCTAssertEqual(counts.working, 1)
     }
 
-    func testHeartbeatStartsBeforeStorageFinishesAndAwaitsCancel() async {
+    func testInitialHeartbeatStartsBeforeStorageFinishesAndAwaitsCancel() async {
         var events: [String] = []
         var runFinished = false
         let storageGate = StorageRefreshGate()
@@ -260,8 +260,7 @@ final class MacPowerActiveSessionTests: XCTestCase {
                     events.append("storage-start")
                     await storageGate.waitForRelease()
                     events.append("storage-end")
-                },
-                sleepNanoseconds: 1_000_000_000)
+                })
             runFinished = true
         }
         await storageGate.waitUntilEntered()
@@ -275,18 +274,12 @@ final class MacPowerActiveSessionTests: XCTestCase {
         XCTAssertTrue(events.contains("storage-end"))
     }
 
-    func testHeartbeatRepeatsAfterTheSleepInterval() async {
+    func testSystemPaneDoesNotPollHeartbeatAfterInitialRefresh() async {
         var powerCount = 0
-        let task = Task {
-            await SystemTabHeartbeatRefresh.run(
-                refreshPower: { powerCount += 1 },
-                refreshStorage: {},
-                sleepNanoseconds: 8_000_000)
-        }
-        try? await Task.sleep(nanoseconds: 25_000_000)
-        task.cancel()
-        await task.value
-        XCTAssertGreaterThanOrEqual(powerCount, 2)
+        await SystemTabHeartbeatRefresh.run(
+            refreshPower: { powerCount += 1 },
+            refreshStorage: {})
+        XCTAssertEqual(powerCount, 1)
     }
 
     func testSettingsSystemPaneCountsAStartingSession() async throws {

@@ -7,13 +7,11 @@ Detach.app installs an immutable payload under
 `~/.local/bin/detach` atomically. Payload order is `detach`, `detach-core`,
 `detach-install`, `detach-state`, `detach-power`, then `tmux`.
 
-Install and Repair validate a complete payload before CLI activation. Failure
-keeps the active payload. A live or retained managed session blocks
-replacement; retry can succeed later. One PATH entry supports login
-and interactive modes. `--keep-state` preserves checkpoints across reinstall.
-`--purge-state` removes Detach state, not `~/.codex` or `~/.claude`. Uninstall
-restores an unchanged profile, or removes only the Detach entry from a changed
-profile. Source edits require app sync or Repair.
+Install and Repair validate the payload before activation; failure keeps the
+active payload. A live or retained session defers replacement. One PATH entry
+supports all shells. `--keep-state` preserves checkpoints. `--purge-state`
+removes Detach state, not provider data. Uninstall restores an unchanged
+profile or removes only its own entry. Source edits require app sync or Repair.
 
 The app registers its power LaunchDaemon and per-user watchdog with
 `SMAppService`. The root helper needs one administrator approval. The portable
@@ -32,44 +30,49 @@ CLI LaunchAgent stays removed.
   self-reinvocation commands. It rejects direct invocation unless the frontend
   supplies `DETACH_CORE_ENTRYPOINT=1`.
 
-Tests may inject binary and state paths with `DETACH_*` variables. Production
-must default tmux, `detach-state`, and `detach-power` to the immutable sibling
-payload, never Homebrew or another ambient installation. Provider binaries
-remain user-owned and are found through `PATH` or provider-specific test
-overrides. macOS-supplied `sqlite3`, `tar`, `env`, and `lockf` stay explicit,
-injectable platform utilities.
+Tests inject paths through explicit `DETACH_*` environments. An app CLI strips
+them except in isolated UI tests. Production resolves tmux and state/power
+helpers only as immutable siblings. Providers resolve through `PATH`.
 
-Critical mutations self-reinvoke core under `lockf`:
-`__checkpoint_once_locked`, `__delete_locked`, and
-`__start_tmux_session_locked`. Start, Resume, Stop, Recover, and Delete also
-serialize through a per-session lock before narrower install, project, and
-checkpoint locks. Keep this order and the lock around the whole child. The
-install lock covers readiness; its timeout exceeds the worst hold.
+`client switch` targets one exact attached client on the private tmux socket.
+It requires its PID, user ID, expected source, and a live managed target. A
+failed proof causes no mutation. Attach can declare synchronized-output support
+to hold the complete frame until the target redraw.
+
+Critical mutations self-reinvoke core under `lockf`. Start, Resume, Stop,
+Recover, and Delete serialize through a per-session lock before narrower
+install, project, and checkpoint locks. Keep this order and the lock around the
+whole child. The install lock covers readiness; its timeout exceeds the worst
+hold.
 
 ### Typed state boundary
 
 `detach-state` is the JSON boundary. Do not edit JSON in shell. It owns typed
 metadata, JSONL, health, reconcile, storage, emit, and event operations.
 `meta snapshots` enumerates one owned sessions root through anchored directory
-descriptors, accepts no path stream, rejects unsafe session or checkpoint
-directories, and opens only owned regular files of at most 1 MiB with
-`O_NOFOLLOW`.
+descriptors. It rejects unsafe directories and opens only owned regular files
+of at most 1 MiB with `O_NOFOLLOW`.
 Integer conversion must not trap. Storage reports allocated and logical bytes,
 excludes provider storage, does not follow symlinks, and authorizes cleanup
 only after a complete scan with explicit `cleanup_eligible: true`.
 
-Per-session `meta.json` uses schema 1, internal `session_name`, optional
-`display_name`, and a `run_token`. Older documents without `display_name`
-remain valid. A stale worker or checkpoint loop must not overwrite replacement
-run metadata. New runs publish `health_schema=1`, exact worker/provider PIDs,
-worker heartbeat time, and checkpoint epoch. Health combines managed tmux/pane
-state, run token, PID ownership and ancestry, valid metadata, heartbeat, and
-checkpoint freshness. Stale data alone cannot classify a proven live provider
-as hung. A recorded live runtime without managed tmux permits no signal,
-replacement, recovery, or deletion. Wait for the exact processes to exit.
-Anything restored into provider storage passes canonical path, symlink,
-session-ID, and JSONL validation, is written to a temporary file, validated
-again, and only then moved into place.
+Per-session `meta.json` schema 1 has internal `session_name`, optional
+`display_name`, and `run_token`. Older documents remain valid. Stale workers
+cannot overwrite a replacement run. New runs publish `health_schema=1`, exact
+worker/provider PIDs, heartbeat, and checkpoint epoch. Health uses tmux, run
+token, PID ownership, metadata, and checkpoint freshness. Stale data cannot
+make a proven live provider hung. A runtime without managed tmux blocks
+mutations until its exact processes exit.
+
+The JSON list reads both providers concurrently and emits Codex before Claude.
+Each captures one all-pane tmux snapshot and one clock sample. `proc_pidinfo`
+reads only recorded worker/provider PIDs and 64 parents. An empty tmux expansion
+is missing; a present wrong identity is a collision. Mutations repeat ownership,
+pane, run-token, and process-group checks.
+
+Typed state caches Codex checkpoint assessment in a receipt bound to provider,
+session ID, and file identity. A change forces a full scan. Restore ignores the
+receipt, validates a temporary copy, then replaces the live file.
 
 State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
@@ -86,11 +89,11 @@ session and reports it explicitly.
 
 ### Session change events
 
-`watch --json` execs the state helper. Its schema-1 hints are not truth; each
-requires full `list --json`. FSEvents filters the private signal and provider
-JSONL. Bursts yield leading and 150 ms trailing hints; drops or root changes
-yield `resync`. Lifecycle changes replace the signal after owned Start metadata
-or Delete; heartbeats do not. Activation repairs missed delivery.
+`watch --json` execs the state helper and exits with its parent or cancellation.
+Lossy hints require `list --json`. FSEvents accepts only exact transcripts from
+usable metadata. Bursts yield leading and 150 ms trailing hints. Drops or root
+changes yield `resync`. Lifecycle signals refresh roots; heartbeats do not.
+Missing provider roots are omitted. Activation repairs loss.
 
 ### Session lifecycle and tmux
 
@@ -206,10 +209,10 @@ unambiguous, and keeps the current binding on a creation-time tie. Subagent
 threads never rebind a session. Wrapper-owned provider flags are rejected;
 policy defaults apply only without an allowed override.
 
-Every 300 seconds by default, a per-session lock protects checkpoint creation.
-A checkpoint contains metadata, validated provider JSONL, pane capture, and a
-repository root from a real `.git` ancestor. Codex adds an integrity-checked
-SQLite backup. Claude archives its matching project session and companions.
+By default, a per-session lock protects a checkpoint every 300 seconds. It has
+metadata, validated provider JSONL, pane capture, and a repository root from a
+real `.git` ancestor. Codex removes temporary sidecars after its checked SQLite
+backup. Claude archives its matching project session and companions.
 Provider-created hard links become independent regular files in staging;
 archives and restore destinations still reject hard links and non-plain
 entries. A provider test override can disable the final `/bin/sync`.

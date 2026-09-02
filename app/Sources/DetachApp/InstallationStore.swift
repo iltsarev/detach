@@ -59,7 +59,15 @@ final class InstallationStore {
     private(set) var report: DoctorReport?
     private(set) var watchdogStatus: WatchdogStatus = .unavailable
     private(set) var watchdogError: String?
-    private(set) var watchdogHeartbeat: PowerHeartbeatSnapshot
+    /// Timestamp-only watchdog writes update the backing snapshot without
+    /// invalidating SwiftUI. A semantic power or freshness change uses the
+    /// observation registrar and redraws all dependent surfaces at once.
+    @ObservationIgnored private var watchdogHeartbeatStorage:
+        PowerHeartbeatSnapshot
+    var watchdogHeartbeat: PowerHeartbeatSnapshot {
+        access(keyPath: \.watchdogHeartbeat)
+        return watchdogHeartbeatStorage
+    }
     private(set) var powerHelperStatus: PowerHelperRegistrationStatus = .unavailable
     private(set) var powerHelperError: String?
     private(set) var lastInstallMessage: String?
@@ -97,6 +105,9 @@ final class InstallationStore {
     @ObservationIgnored private var pendingContextRepair = false
     @ObservationIgnored private var contextOperationWaiters:
         [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var heartbeatMonitor: PowerHeartbeatMonitor?
+    @ObservationIgnored var onPowerSnapshot:
+        (@MainActor (PowerHeartbeatSnapshot) async -> Void)?
 
     init(
         detachPath: String,
@@ -123,7 +134,7 @@ final class InstallationStore {
             statusURL: self.powerStateRoot
                 .appendingPathComponent("watchdog-status.json"))
         self.heartbeatReader = heartbeatReader
-        watchdogHeartbeat = heartbeatReader.read()
+        watchdogHeartbeatStorage = heartbeatReader.read()
         self.defaults = defaults
         onboardingEverCompleted = defaults.bool(
             forKey: Self.onboardingCompletedKey)
@@ -182,9 +193,47 @@ final class InstallationStore {
     var isBusy: Bool { phase == .syncing || contextOperationRunning }
 
     func refreshPowerProtectionState() {
-        let snapshot = heartbeatReader.read()
-        watchdogHeartbeat = snapshot
-        powerProtectionState = snapshot.effectivePowerState
+        publishPowerSnapshot(heartbeatReader.read())
+    }
+
+    func startPowerObservation() {
+        guard heartbeatMonitor == nil else { return }
+        let monitor = PowerHeartbeatMonitor(reader: heartbeatReader) {
+            [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                self?.publishPowerSnapshot(snapshot)
+            }
+        }
+        heartbeatMonitor = monitor
+        monitor.start()
+        if let onPowerSnapshot {
+            let snapshot = watchdogHeartbeat
+            Task { @MainActor in
+                await onPowerSnapshot(snapshot)
+            }
+        }
+    }
+
+    private func publishPowerSnapshot(_ snapshot: PowerHeartbeatSnapshot) {
+        let previous = watchdogHeartbeatStorage
+        let presentedStateChanged = !snapshot.hasSamePresentedState(as: previous)
+        if presentedStateChanged {
+            withMutation(keyPath: \.watchdogHeartbeat) {
+                watchdogHeartbeatStorage = snapshot
+            }
+        } else {
+            // Keep checked_at current without waking every view that reads the
+            // heartbeat. The vnode monitor still reschedules its stale
+            // deadline from every document.
+            watchdogHeartbeatStorage = snapshot
+        }
+        if snapshot.effectivePowerState != powerProtectionState {
+            powerProtectionState = snapshot.effectivePowerState
+        }
+        guard presentedStateChanged, let onPowerSnapshot else { return }
+        Task { @MainActor in
+            await onPowerSnapshot(snapshot)
+        }
     }
 
     /// Pure registration-status read for live onboarding polling: no
@@ -240,19 +289,25 @@ final class InstallationStore {
         onboardingEverCompleted: Bool,
         input: OnboardingStepInput
     ) -> OnboardingStep {
-        // A returning user must never see a transient setup card while the
-        // app bootstraps, refreshes, or waits for active power leases to end.
-        // Keep the dashboard mounted until a completed check publishes a real
-        // actionable state.
+        let step = SetupGuidance.step(for: input)
+        // A returning user keeps access to existing sessions when power
+        // readiness regresses. The dashboard and Settings surface the error;
+        // the runtime still fails closed before starting a new provider.
         if onboardingEverCompleted {
             switch phase {
             case .idle, .syncing, .updateDeferred, .ready:
                 return .mainApp
             case .actionRequired, .failed:
-                break
+                if !input.isStableApplicationLocation {
+                    return .moveToApplications
+                }
+                if !input.distributionMatchesBundle {
+                    return step
+                }
+                return .mainApp
             }
         }
-        return SetupGuidance.step(for: input)
+        return step
     }
 
     func bootstrap() async {

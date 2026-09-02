@@ -286,7 +286,10 @@ final class DetachStateTests: XCTestCase {
         let root = Data(#"{"payload":{"id":"session-1"}}"#.utf8)
         let event = Data(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#.utf8)
         var chunkIndex = 0
-        let eventCount = 100_000
+        // Twenty thousand independently supplied records are large enough to
+        // distinguish streaming from a one-shot parser without dominating the
+        // full coverage run on every change.
+        let eventCount = 20_000
 
         let valid = try TranscriptDocument.isValid(
             provider: .codex,

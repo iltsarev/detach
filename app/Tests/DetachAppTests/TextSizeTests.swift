@@ -177,4 +177,28 @@ final class TextSizeTests: XCTestCase {
         let source = NSAttributedString(string: "log")
         XCTAssertTrue(LogTextView.resizedText(source, to: 0) === source)
     }
+
+    @MainActor
+    func testLogCanvasCanBePopulatedBeforeItsFirstPresentation() throws {
+        let source = NSAttributedString(
+            string: "cached output",
+            attributes: [.font: NSFont.monospacedSystemFont(
+                ofSize: 11, weight: .regular)])
+        let scrollView = LogTextView.makeScrollView()
+        let coordinator = LogTextView.Coordinator()
+
+        XCTAssertEqual(
+            scrollView.accessibilityIdentifier(),
+            "session-preview-log")
+
+        LogTextView.apply(
+            text: source,
+            pointSize: 14,
+            to: scrollView,
+            coordinator: coordinator)
+
+        let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)
+        XCTAssertEqual(textView.string, "cached output")
+        XCTAssertTrue(coordinator.lastText === source)
+    }
 }

@@ -432,6 +432,8 @@
 "⌘N opens New session. ⌘T starts Quick chat immediately." = "⌘N opens New session. ⌘T starts Quick chat immediately.";
 "Could not start quick chat" = "Could not start quick chat";
 "Quick chat folder is unavailable: %@" = "Quick chat folder is unavailable: %@";
+"Could not identify the active terminal client" = "Could not identify the active terminal client";
+"Could not switch the terminal session" = "Could not switch the terminal session";
 
 /* Menu bar item */
 "Open Detach" = "Open Detach";
@@ -446,3 +448,5 @@
 "Show Detach in the menu bar" = "Show Detach in the menu bar";
 "Show active session count next to the icon" = "Show active session count next to the icon";
 "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own." = "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own.";
+"Only a signed Detach release can update the background monitor." = "Only a signed Detach release can update the background monitor.";
+"Only a signed Detach release can update the power helper." = "Only a signed Detach release can update the power helper.";

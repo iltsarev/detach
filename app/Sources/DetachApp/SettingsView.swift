@@ -118,25 +118,15 @@ enum MacPowerActiveSessions {
     }
 }
 
-/// Heartbeat refresh for Settings → System. The SwiftUI `.task` wrapper
-/// only calls this; XCTest cannot map that modifier.
+/// One initial Settings → System refresh. Later heartbeat changes arrive from
+/// the app-level event monitor; storage remains an explicit pane load.
 enum SystemTabHeartbeatRefresh {
     static func run(
         refreshPower: () -> Void,
-        refreshStorage: () async -> Void,
-        sleepNanoseconds: UInt64 = 10_000_000_000
+        refreshStorage: () async -> Void
     ) async {
         refreshPower()
-        async let storageRefresh: Void = refreshStorage()
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: sleepNanoseconds)
-            } catch {
-                break
-            }
-            refreshPower()
-        }
-        await storageRefresh
+        await refreshStorage()
     }
 }
 

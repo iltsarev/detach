@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import DetachKit
 
 @MainActor
@@ -16,6 +17,8 @@ struct RootView: View {
     /// App-level shared store: its event stream outlives this window, so
     /// notifications and the menu bar stay current after close.
     let store: SessionStore
+    let sessionLogSnapshots: SessionLogSnapshotCache
+    let terminalScreens: SessionTerminalScreenCache
     @ObservedObject var navigation: MainNavigation
     @ObservedObject var shortcuts: SessionShortcutRegistry
     @ObservedObject var notifications: SessionNotificationService
@@ -24,6 +27,7 @@ struct RootView: View {
 
     @State private var selectedID: String?
     @State private var shortcutAssignments: [SessionShortcutAssignment] = []
+    @State private var initialSetupComplete = false
 
     private var selectedSession: Session? {
         store.sessions.first { $0.id == selectedID }
@@ -54,8 +58,12 @@ struct RootView: View {
                         if store.sessions.isEmpty && store.state == .ok {
                             EmptySessionsView()
                         } else if let session = selectedSession {
-                            SessionDetailView(session: session, store: store, detachPath: detachPath)
-                                .id(session.id)
+                            SessionDetailSwitcher(
+                                session: session,
+                                store: store,
+                                detachPath: detachPath,
+                                sessionLogSnapshots: sessionLogSnapshots,
+                                terminalScreens: terminalScreens)
                         } else {
                             ContentUnavailableView {
                                 Label {
@@ -90,17 +98,35 @@ struct RootView: View {
             minWidth: AppFontSize.minimumWindowSize(for: fontPointSize).width,
             minHeight: AppFontSize.minimumWindowSize(for: fontPointSize).height)
         .task(id: detachPath) {
+            initialSetupComplete = false
+            installation.onPowerSnapshot = { [weak notifications] snapshot in
+                await notifications?.observePower(snapshot)
+            }
+            installation.startPowerObservation()
+            sessionLogSnapshots.configure(
+                cli: ProcessDetachCLI(
+                    executable: URL(fileURLWithPath: detachPath)),
+                configurationID: detachPath,
+                sessions: store.sessions)
+            terminalScreens.configure(
+                cli: ProcessDetachCLI(
+                    executable: URL(fileURLWithPath: detachPath)),
+                configurationID: detachPath,
+                sessions: store.sessions)
             // The store outlives this window; rewire it to the active CLI and
             // keep notifications fed from the same event source. The
             // transition detector baselines on its first successful snapshot,
             // so historical sessions never fire as fresh notifications.
-            store.onSnapshot = { [weak notifications, weak shortcuts] sessions in
-                shortcuts?.reconcile(sessions)
+            store.onSnapshot = { [weak notifications] sessions in
                 await notifications?.observe(sessions)
             }
             await store.configure(cli: ProcessDetachCLI(
                 executable: URL(fileURLWithPath: detachPath)))
             await installation.bootstrap()
+            // An upgrade can replace an older CLI that did not support this
+            // stream after the first snapshot. Restart only if it exited.
+            store.startObserving()
+            initialSetupComplete = true
         }
         .task(id: notificationsEnabled) {
             guard AppSettings.uiE2E == nil else { return }
@@ -115,7 +141,7 @@ struct RootView: View {
         }
 // quality-coverage:end ui-e2e-instrumentation
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
+            guard phase == .active, initialSetupComplete else { return }
             Task {
                 guard AppSettings.uiE2E == nil else { return }
                 await store.resynchronize()
@@ -132,6 +158,11 @@ struct RootView: View {
             navigation.requestedSessionID = nil
         }
         .onChange(of: store.sessions, initial: true) { _, sessions in
+            // A cached presentation snapshot is already present on the first
+            // body pass. Warm passive screens and logs while typed truth
+            // refreshes; both caches remain bounded and leave no live process.
+            sessionLogSnapshots.schedulePrefetch(for: sessions)
+            terminalScreens.schedulePrefetch(for: sessions)
             shortcuts.reconcile(sessions)
         }
         .onReceive(shortcuts.$assignments) { assignments in
@@ -151,5 +182,154 @@ struct RootView: View {
 // quality-coverage:end ui-e2e-instrumentation
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detach-dashboard")
+    }
+}
+
+/// Keeps only the last passive terminal or log frame inside the new detail's
+/// log surface until that target confirms its first drawable frame. The new
+/// metadata and actions determine layout immediately, with no hidden PTY.
+@MainActor
+struct SessionDetailSwitcher: View {
+    let session: Session
+    let store: SessionStore
+    let detachPath: String
+    let sessionLogSnapshots: SessionLogSnapshotCache
+    let terminalScreens: SessionTerminalScreenCache
+
+    @State private var transition: SessionDetailTransitionState
+    @State private var deadlineTask: Task<Void, Never>?
+
+    init(
+        session: Session,
+        store: SessionStore,
+        detachPath: String,
+        sessionLogSnapshots: SessionLogSnapshotCache,
+        terminalScreens: SessionTerminalScreenCache
+    ) {
+        self.session = session
+        self.store = store
+        self.detachPath = detachPath
+        self.sessionLogSnapshots = sessionLogSnapshots
+        self.terminalScreens = terminalScreens
+        _transition = State(initialValue: SessionDetailTransitionState(
+            presented: session))
+    }
+
+    var body: some View {
+        SessionDetailView(
+            session: transition.presented,
+            store: store,
+            detachPath: detachPath,
+            terminalScreens: terminalScreens,
+            cachedLog: cachedLog(for: transition.presented),
+            retainedFrame: transition.outgoing.flatMap {
+                transitionFrame(outgoing: $0)
+            },
+            onPresentationReady: {
+                completeTransition(
+                    sessionID: transition.presented.id,
+                    generation: transition.generation)
+            })
+        .onChange(of: session) { _, updated in
+            guard let generation = transition.present(updated) else { return }
+            scheduleDeadline(
+                sessionID: updated.id,
+                generation: generation)
+        }
+        .onDisappear {
+            deadlineTask?.cancel()
+            deadlineTask = nil
+        }
+    }
+
+    private func cachedLog(for layer: Session) -> LogPoller? {
+        guard SessionLogSnapshotCache.shouldCache(layer) else { return nil }
+        return sessionLogSnapshots.poller(for: layer)
+    }
+
+    private func retainedFrame(for layer: Session) -> SessionDetailRetainedFrame? {
+        if SessionLogSnapshotCache.shouldCache(layer) {
+            let attributed = sessionLogSnapshots.poller(for: layer).attributed
+            return attributed.length > 0 ? .text(attributed) : nil
+        }
+        return nil
+    }
+
+    private func transitionFrame(
+        outgoing: Session
+    ) -> SessionDetailRetainedFrame? {
+        let target = transition.presented
+        // A non-live target already has its final NSTextView presentation.
+        // A live target prefers a real SwiftTerm capture. If it has never been
+        // shown, the outgoing live capture still has identical terminal
+        // typography, colors, and edges while the target fallback mounts.
+        if SessionLogSnapshotCache.shouldCache(target) {
+            return retainedFrame(for: target) ?? retainedFrame(for: outgoing)
+        }
+        // A live target owns the same visible SwiftTerm across live switches,
+        // or installs a passive SwiftTerm text screen inside a new PTY host.
+        // Neither path needs a separate SwiftUI raster/text cover.
+        return nil
+    }
+
+    private func completeTransition(sessionID: String, generation: UInt64) {
+        guard sessionID == transition.presented.id,
+              generation == transition.generation,
+              transition.outgoing != nil else { return }
+        // Draw the installed target hierarchy behind the retained passive
+        // frame before state removes it. This keeps the handoff atomic at the
+        // AppKit display boundary, not only in SwiftUI's logical tree.
+        NSApp.mainWindow?.contentView?.layoutSubtreeIfNeeded()
+        NSApp.mainWindow?.displayIfNeeded()
+        _ = transition.complete(
+            sessionID: sessionID,
+            generation: generation)
+        deadlineTask?.cancel()
+        deadlineTask = nil
+    }
+
+    private func scheduleDeadline(sessionID: String, generation: UInt64) {
+        deadlineTask?.cancel()
+        deadlineTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            _ = transition.complete(
+                sessionID: sessionID,
+                generation: generation)
+            deadlineTask = nil
+        }
+    }
+}
+
+struct SessionDetailTransitionState: Equatable {
+    private(set) var presented: Session
+    private(set) var outgoing: Session?
+    private(set) var generation: UInt64 = 0
+
+    mutating func present(_ session: Session) -> UInt64? {
+        guard session.id != presented.id else {
+            presented = session
+            return nil
+        }
+        if outgoing == nil { outgoing = presented }
+        presented = session
+        generation &+= 1
+        return generation
+    }
+
+    @discardableResult
+    mutating func complete(
+        sessionID: String,
+        generation: UInt64
+    ) -> Bool {
+        guard sessionID == presented.id,
+              generation == self.generation,
+              outgoing != nil else { return false }
+        outgoing = nil
+        return true
     }
 }

@@ -70,6 +70,45 @@ final class DetachCLITests: XCTestCase {
         XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), helper.path)
     }
 
+    func testInheritedGUIEnvironmentRemovesDetachRuntimeOverrides() throws {
+        let environment = ProcessDetachCLI.runtimeEnvironment([
+            "HOME": "/private/tmp/detach-cli-home",
+            "PATH": "/usr/bin:/bin",
+            "DETACH_STATE_BIN": "/old/detach-state",
+            "DETACH_POWER_BIN": "/old/detach-power",
+            "DETACH_TMUX_BIN": "/old/tmux",
+            "DETACH_CODEX_BIN": "/old/codex",
+            "DETACH_STATE_ROOT": "/old/state",
+            "DETACH_UI_E2E_ROOT": "/private/tmp/detach-ui-e2e.fixture",
+            "UNRELATED_SETTING": "kept",
+        ], allowsDetachOverrides: false)
+
+        XCTAssertNil(environment["DETACH_STATE_BIN"])
+        XCTAssertNil(environment["DETACH_POWER_BIN"])
+        XCTAssertNil(environment["DETACH_TMUX_BIN"])
+        XCTAssertNil(environment["DETACH_CODEX_BIN"])
+        XCTAssertNil(environment["DETACH_STATE_ROOT"])
+        XCTAssertEqual(
+            environment["DETACH_UI_E2E_ROOT"],
+            "/private/tmp/detach-ui-e2e.fixture")
+        XCTAssertEqual(environment["UNRELATED_SETTING"], "kept")
+    }
+
+    func testExplicitEnvironmentPreservesDetachTestOverrides() async throws {
+        let cli = ProcessDetachCLI(
+            executable: try fixture(#"printf '%s' "$DETACH_STATE_BIN""#),
+            environment: [
+                "HOME": "/private/tmp/detach-cli-home",
+                "PATH": "/usr/bin:/bin",
+                "DETACH_STATE_BIN": "/fixture/detach-state",
+            ])
+
+        let result = try await cli.run(arguments: [], timeout: 5)
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "/fixture/detach-state")
+    }
+
     func testFindsProviderInstalledByNVMFromGUIEnvironment() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("detach-cli-nvm-home-\(UUID().uuidString)")
@@ -125,12 +164,12 @@ final class DetachCLITests: XCTestCase {
         printf '%s\n' "$!" >"$1"
         trap '' TERM
         while :; do sleep 1; done
-        """), terminationGrace: 0.2)
+        """), terminationGrace: 0.1)
         let start = Date()
         let result = try await cli.run(
-            arguments: [descendantPID.path], timeout: 3)
+            arguments: [descendantPID.path], timeout: 0.5)
         XCTAssertTrue(result.timedOut)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 6)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
         let pid = try XCTUnwrap(Int32(
             String(contentsOf: descendantPID, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)))

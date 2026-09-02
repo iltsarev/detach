@@ -10,6 +10,10 @@ final class SessionEventsTests: XCTestCase {
             "/private/tmp/codex/sessions",
             "/private/tmp/claude/projects",
         ])
+    private let managedTranscriptPaths: Set<String> = [
+        "/private/tmp/codex/sessions/2026/managed.jsonl",
+        "/private/tmp/claude/projects/p/managed.jsonl",
+    ]
 
     func testEventJSONRequiresSchemaOne() throws {
         let encoded = try JSONEncoder().encode(SessionEvent(event: .changed))
@@ -42,19 +46,22 @@ final class SessionEventsTests: XCTestCase {
         ]))
     }
 
-    func testClassifierIgnoresNoiseAndRecognizesLifecycleAndTranscripts() {
+    func testClassifierIgnoresNoiseAndRecognizesLifecycleAndManagedTranscripts() {
         XCTAssertEqual(classify(paths: ["/private/tmp/detach-state/heartbeat"]), .ignored)
         XCTAssertEqual(
             classify(paths: ["/private/tmp/detach-state/session-change"]),
             .lifecycle)
         XCTAssertEqual(
-            classify(paths: ["/private/tmp/codex/sessions/2026/turn.jsonl"]),
+            classify(paths: ["/private/tmp/codex/sessions/2026/managed.jsonl"]),
             .transcript)
         XCTAssertEqual(
-            classify(paths: ["/private/tmp/claude/projects/p/turn.jsonl"]),
+            classify(paths: ["/private/tmp/claude/projects/p/managed.jsonl"]),
             .transcript)
         XCTAssertEqual(
             classify(paths: ["/private/tmp/claude/projects/p/turn.txt"]),
+            .ignored)
+        XCTAssertEqual(
+            classify(paths: ["/private/tmp/codex/sessions/2026/foreign.jsonl"]),
             .ignored)
     }
 
@@ -108,12 +115,86 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, 0o600)
     }
 
+    func testManagedTranscriptRegistryUsesOnlyUsableInRootMetadata() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "detach-session-registry-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stateRoot = root.appendingPathComponent("state", isDirectory: true)
+        let sessionsRoot = stateRoot
+            .appendingPathComponent("codex", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+        let sessionName = "detach-codex-managed"
+        let sessionRoot = sessionsRoot.appendingPathComponent(
+            sessionName, isDirectory: true)
+        let transcriptRoot = root.appendingPathComponent(
+            "provider/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sessionRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: transcriptRoot, withIntermediateDirectories: true)
+        let transcript = transcriptRoot.appendingPathComponent("managed.jsonl")
+        try Data().write(to: transcript)
+        let metadata = try SessionMetadataDocument.create(changes: [
+            .init(key: "schema", value: .integer(1)),
+            .init(key: "session_name", value: .string(sessionName)),
+            .init(key: "project_dir", value: .string("/private/tmp/project")),
+            .init(key: "transcript_path", value: .string(transcript.path)),
+        ])
+        try metadata.write(to: sessionRoot.appendingPathComponent("meta.json"))
+
+        let canonicalTranscriptRoot = SessionEventWatchConfiguration
+            .canonicalPath(transcriptRoot.path)
+        let canonicalTranscript = SessionEventWatchConfiguration
+            .canonicalPath(transcript.path)
+        let snapshots = try DetachStateCommand.metadataSnapshots(
+            at: sessionsRoot.path)
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertNotNil(snapshots.first?.1)
+        XCTAssertEqual(
+            URL(fileURLWithPath: canonicalTranscript)
+                .deletingLastPathComponent().path,
+            canonicalTranscriptRoot)
+        XCTAssertEqual(
+            DetachStateCommand.managedTranscriptPaths(
+                atStateRoot: stateRoot.path,
+                allowedRoots: [canonicalTranscriptRoot]),
+            [canonicalTranscript])
+        XCTAssertTrue(DetachStateCommand.managedTranscriptPaths(
+            atStateRoot: stateRoot.path,
+            allowedRoots: [root.appendingPathComponent("other").path]
+        ).isEmpty)
+    }
+
+    func testParentMonitorObservesProcessExit() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        defer {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+
+        let exited = expectation(description: "parent exit")
+        let monitor = SessionEventParentMonitor(
+            processID: process.processIdentifier,
+            queue: DispatchQueue(label: "session-event-parent-test"),
+            onExit: { exited.fulfill() })
+        monitor.start()
+        process.terminate()
+
+        wait(for: [exited], timeout: 1)
+        withExtendedLifetime(monitor) {}
+    }
+
     private func classify(
         paths: [String],
         flags: [UInt32] = [0]
     ) -> SessionFileEventClassification {
         SessionFileEventClassifier.classify(
             SessionFileEventBatch(paths: paths, flags: flags),
-            configuration: configuration)
+            configuration: configuration,
+            managedTranscriptPaths: managedTranscriptPaths)
     }
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// One immutable read of the background monitor's heartbeat file. Every UI
@@ -50,6 +51,18 @@ public struct PowerHeartbeatSnapshot: Equatable, Sendable {
 
     public func age(relativeTo now: Date) -> TimeInterval? {
         checkedAt.map { now.timeIntervalSince($0) }
+    }
+
+    /// True when a replacement changes only the watchdog clock. The app must
+    /// retain the newest timestamp for truthful diagnostics, but that routine
+    /// liveness write does not change any state a view presents.
+    public func hasSamePresentedState(as other: Self) -> Bool {
+        statusURL == other.statusURL
+            && state == other.state
+            && powerState == other.powerState
+            && thermalState == other.thermalState
+            && thermalSafetyActive == other.thermalSafetyActive
+            && isFresh == other.isFresh
     }
 }
 
@@ -147,5 +160,168 @@ public struct PowerHeartbeatReader: Sendable {
         if let date = formatter.date(from: raw) { return date }
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: raw)
+    }
+}
+
+/// Watches the watchdog's atomically replaced heartbeat without periodic
+/// reads. A one-shot deadline only wakes when the current heartbeat would
+/// become stale; each new write replaces that deadline.
+public final class PowerHeartbeatMonitor: @unchecked Sendable {
+    public typealias Handler = @Sendable (PowerHeartbeatSnapshot) -> Void
+
+    private let reader: PowerHeartbeatReader
+    private let handler: Handler
+    private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    private var directorySource: (any DispatchSourceFileSystemObject)?
+    private var expirationSource: (any DispatchSourceTimer)?
+    private var watchedDirectory: URL?
+    private var lastSnapshot: PowerHeartbeatSnapshot?
+    private var started = false
+
+    public init(
+        reader: PowerHeartbeatReader,
+        queue: DispatchQueue = DispatchQueue(
+            label: "dev.tsarev.detach.power-heartbeat"),
+        handler: @escaping Handler
+    ) {
+        self.reader = reader
+        self.handler = handler
+        self.queue = queue
+        queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    public func start() {
+        synchronized {
+            guard !started else { return }
+            started = true
+            refresh(force: true)
+            armClosestDirectory()
+        }
+    }
+
+    public func stop() {
+        synchronized {
+            guard started else { return }
+            started = false
+            directorySource?.cancel()
+            directorySource = nil
+            watchedDirectory = nil
+            expirationSource?.cancel()
+            expirationSource = nil
+        }
+        if DispatchQueue.getSpecific(key: queueKey) == nil {
+            queue.sync {}
+        }
+    }
+
+    deinit {
+        stop()
+    }
+
+    static func expirationDelay(
+        for snapshot: PowerHeartbeatSnapshot,
+        now: Date = Date()
+    ) -> TimeInterval? {
+        guard snapshot.isFresh, let checkedAt = snapshot.checkedAt else {
+            return nil
+        }
+        return max(
+            0.05,
+            PowerHeartbeatReader.maximumAge
+                - now.timeIntervalSince(checkedAt)
+                + 0.05)
+    }
+
+    private func synchronized(_ operation: () -> Void) {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            operation()
+        } else {
+            queue.sync(execute: operation)
+        }
+    }
+
+    private func refresh(force: Bool = false) {
+        guard started else { return }
+        let snapshot = reader.read()
+        scheduleExpiration(for: snapshot)
+        guard force || snapshot != lastSnapshot else { return }
+        lastSnapshot = snapshot
+        handler(snapshot)
+    }
+
+    private func scheduleExpiration(for snapshot: PowerHeartbeatSnapshot) {
+        expirationSource?.cancel()
+        expirationSource = nil
+        guard let delay = Self.expirationDelay(for: snapshot) else { return }
+        let source = DispatchSource.makeTimerSource(queue: queue)
+        source.schedule(
+            deadline: .now() + delay,
+            leeway: .milliseconds(250))
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, self.expirationSource === source else { return }
+            self.expirationSource = nil
+            self.refresh()
+        }
+        expirationSource = source
+        source.resume()
+    }
+
+    private func armClosestDirectory() {
+        guard started,
+              let directory = closestExistingDirectory(
+                to: reader.statusURL.deletingLastPathComponent())
+        else { return }
+        guard watchedDirectory != directory || directorySource == nil else {
+            return
+        }
+
+        directorySource?.cancel()
+        directorySource = nil
+        watchedDirectory = nil
+        let descriptor = Darwin.open(
+            directory.path,
+            O_EVTONLY | O_CLOEXEC)
+        guard descriptor >= 0 else { return }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .rename, .revoke, .attrib, .extend],
+            queue: queue)
+        // Refresh once registration is live. This closes the gap between the
+        // earlier read and vnode readiness, including each move from an
+        // existing ancestor to a newly created power directory.
+        source.setRegistrationHandler { [weak self, weak source] in
+            guard let self, self.directorySource === source else { return }
+            self.refresh()
+            self.armClosestDirectory()
+        }
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, self.directorySource === source else { return }
+            self.refresh()
+            self.armClosestDirectory()
+        }
+        source.setCancelHandler {
+            Darwin.close(descriptor)
+        }
+        watchedDirectory = directory
+        directorySource = source
+        source.resume()
+    }
+
+    private func closestExistingDirectory(to target: URL) -> URL? {
+        var candidate = target.standardizedFileURL
+        while true {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(
+                atPath: candidate.path,
+                isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                return candidate
+            }
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { return nil }
+            candidate = parent
+        }
     }
 }

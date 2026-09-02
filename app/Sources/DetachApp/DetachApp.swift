@@ -262,7 +262,14 @@ struct DetachApp: App {
         defaults: AppSettings.defaults)
     @State private var sessionStore = SessionStore(
         cli: ProcessDetachCLI(executable: URL(
-            fileURLWithPath: AppSettings.initialDetachPath)))
+            fileURLWithPath: AppSettings.initialDetachPath)),
+        snapshotCache: UserDefaultsSessionSnapshotCache(
+            defaults: AppSettings.defaults))
+    @State private var sessionLogSnapshots = SessionLogSnapshotCache(
+        cli: ProcessDetachCLI(executable: URL(
+            fileURLWithPath: AppSettings.initialDetachPath)),
+        configurationID: AppSettings.initialDetachPath)
+    @State private var terminalScreens = SessionTerminalScreenCache()
     @State private var storageStore = StorageStore(
         cli: ProcessDetachCLI(executable: URL(
             fileURLWithPath: AppSettings.initialDetachPath)))
@@ -279,6 +286,8 @@ struct DetachApp: App {
                 ? AppSettings.defaultDetachPath : detachPath
             RootView(detachPath: activeDetachPath,
                      installation: installation, store: sessionStore,
+                     sessionLogSnapshots: sessionLogSnapshots,
+                     terminalScreens: terminalScreens,
                      navigation: mainNavigation,
                      shortcuts: sessionShortcuts,
                      notifications: notifications,

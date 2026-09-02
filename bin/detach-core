@@ -170,7 +170,7 @@ usage() {
     'Usage:' \
     "  $PROGRAM [start] [--name NAME] [--detach] [--] [$PROVIDER_ARGS_LABEL...]" \
     "  $PROGRAM resume [--name NAME] [--detach] SESSION_ID [$PROVIDER_ARGS_LABEL...]" \
-    "  $PROGRAM attach [NAME]" \
+    "  $PROGRAM attach [--terminal-features sync] [NAME]" \
     "  $PROGRAM list [--json]" \
     "  $PROGRAM config tmux-style [detach|inherit]" \
     "  $PROGRAM config tmux-mouse [on|off]" \
@@ -361,7 +361,7 @@ ensure_owned_state_directory() {
         die "cannot create $label: $path"
     }
   fi
-  owner_uid="$(/usr/bin/id -u)" || die "could not determine the current user"
+  owner_uid="$UID"
   [ -d "$path" ] && [ ! -L "$path" ] && \
     [ "$(/usr/bin/stat -f '%u' "$path" 2>/dev/null || true)" = "$owner_uid" ] || \
       die "$label is not a user-owned directory: $path"
@@ -684,6 +684,11 @@ reset_meta_snapshot() {
   META_WORKER_HEARTBEAT_EPOCH=""
   META_LAST_CHECKPOINT_EPOCH=""
   META_HEALTH_SCHEMA=""
+  TRANSCRIPT_MODEL=""
+  TRANSCRIPT_CTX_USED=""
+  TRANSCRIPT_CTX_WINDOW=""
+  TRANSCRIPT_AGENT_TURN_STATE=""
+  TRANSCRIPT_AGENT_TURN_ID=""
 }
 
 load_meta_snapshot_path() {
@@ -781,6 +786,166 @@ tmux_session_running() {
 
 tmux_option() {
   "${TMUX_CMD[@]}" show-options -qv -t "=$1:" "$2" 2>/dev/null || true
+}
+
+# Capture all read-only health fields from one tmux format expansion. This is
+# both faster and more internally consistent than separate has-session,
+# show-options, and display-message processes. A stored pane that is not the
+# active pane gets one exact follow-up read and must still belong to the same
+# session.
+tmux_health_snapshot() {
+  local session="$1"
+  local record=""
+  local detach_marker=""
+  local stored_provider=""
+  local stored_pane=""
+  local current_pane=""
+  local pane_dead=""
+  local pane_pid=""
+  local marker=""
+  local extra=""
+  local pane_session=""
+
+  TMUX_HEALTH_STATE="missing"
+  TMUX_HEALTH_RUN_TOKEN=""
+  TMUX_HEALTH_HEARTBEAT_EPOCH=""
+  TMUX_HEALTH_PANE_PID=""
+
+  if [ "${LIST_TMUX_HEALTH_READY:-0}" = "1" ]; then
+    tmux_health_snapshot_from_list "$session"
+    return
+  fi
+
+  record="$("${TMUX_CMD[@]}" display-message -p -t "=$session:" \
+    '#{@detach}|#{@detach_provider}|#{@detach_run_token}|#{@detach_heartbeat_epoch}|#{@detach_pane_id}|#{pane_id}|#{pane_dead}|#{pane_pid}|END' \
+    2>/dev/null || true)"
+  [ -n "$record" ] || return 0
+  IFS='|' read -r detach_marker stored_provider TMUX_HEALTH_RUN_TOKEN \
+    TMUX_HEALTH_HEARTBEAT_EPOCH stored_pane current_pane pane_dead pane_pid \
+    marker extra <<<"$record"
+  if [ "$marker" != "END" ] || [ -n "$extra" ] || \
+     [ "$detach_marker" != "1" ] || [ "$stored_provider" != "$PROVIDER" ]; then
+    TMUX_HEALTH_STATE="foreign"
+    return 0
+  fi
+  case "$TMUX_HEALTH_RUN_TOKEN" in *'|'*) TMUX_HEALTH_STATE="foreign"; return 0 ;; esac
+  case "$TMUX_HEALTH_HEARTBEAT_EPOCH" in ''|*[!0-9]*) TMUX_HEALTH_HEARTBEAT_EPOCH="" ;; esac
+  case "$current_pane" in
+    %*) case "${current_pane#%}" in ''|*[!0-9]*) TMUX_HEALTH_STATE="foreign"; return 0 ;; esac ;;
+    *) TMUX_HEALTH_STATE="foreign"; return 0 ;;
+  esac
+  if [ -z "$stored_pane" ]; then
+    stored_pane="$current_pane"
+  else
+    case "$stored_pane" in
+      %*) case "${stored_pane#%}" in ''|*[!0-9]*) TMUX_HEALTH_STATE="foreign"; return 0 ;; esac ;;
+      *) TMUX_HEALTH_STATE="foreign"; return 0 ;;
+    esac
+  fi
+  if [ "$stored_pane" != "$current_pane" ]; then
+    record="$("${TMUX_CMD[@]}" display-message -p -t "$stored_pane" \
+      '#{session_name}|#{pane_id}|#{pane_dead}|#{pane_pid}|END' \
+      2>/dev/null || true)"
+    IFS='|' read -r pane_session current_pane pane_dead pane_pid marker extra \
+      <<<"$record"
+    if [ "$pane_session" != "$session" ] || [ "$current_pane" != "$stored_pane" ] || \
+       [ "$marker" != "END" ] || [ -n "$extra" ]; then
+      TMUX_HEALTH_STATE="dead"
+      return 0
+    fi
+  fi
+  case "$pane_dead" in 0) TMUX_HEALTH_STATE="live" ;; *) TMUX_HEALTH_STATE="dead" ;; esac
+  case "$pane_pid" in ''|*[!0-9]*) TMUX_HEALTH_PANE_PID="" ;; *) TMUX_HEALTH_PANE_PID="$pane_pid" ;; esac
+}
+
+# A read-only list needs one internally consistent tmux generation, not one
+# client process per saved session. Mutations never set this cache and keep
+# their exact target revalidation immediately before every signal or change.
+prepare_list_tmux_health_snapshot() {
+  local format
+
+  format='#{session_name}|#{@detach}|#{@detach_provider}|#{@detach_run_token}|#{@detach_heartbeat_epoch}|#{@detach_pane_id}|#{pane_id}|#{pane_dead}|#{pane_pid}|#{window_active}|#{pane_active}|END'
+  LIST_TMUX_HEALTH_ROWS="$(
+    "${TMUX_CMD[@]}" list-panes -a -F "$format" 2>/dev/null || true
+  )"
+  LIST_TMUX_HEALTH_READY=1
+}
+
+tmux_health_snapshot_from_list() {
+  local session="$1"
+  local row_session detach_marker stored_provider run_token heartbeat_epoch
+  local stored_pane pane pane_dead pane_pid window_active pane_active marker extra
+  local found=0
+  local options_loaded=0
+  local expected_stored_pane=""
+  local selected_pane=""
+  local selected_dead=""
+  local selected_pid=""
+  local fallback_pane=""
+  local fallback_dead=""
+  local fallback_pid=""
+
+  while IFS='|' read -r row_session detach_marker stored_provider run_token \
+      heartbeat_epoch stored_pane pane pane_dead pane_pid window_active \
+      pane_active marker extra; do
+    [ "$row_session" = "$session" ] || continue
+    found=1
+    if [ "$marker" != "END" ] || [ -n "$extra" ] || \
+       [ "$detach_marker" != "1" ] || [ "$stored_provider" != "$PROVIDER" ]; then
+      TMUX_HEALTH_STATE="foreign"
+      return 0
+    fi
+    case "$run_token" in *'|'*) TMUX_HEALTH_STATE="foreign"; return 0 ;; esac
+    case "$heartbeat_epoch" in ''|*[!0-9]*) heartbeat_epoch="" ;; esac
+    case "$pane" in
+      %*) case "${pane#%}" in ''|*[!0-9]*) TMUX_HEALTH_STATE="foreign"; return 0 ;; esac ;;
+      *) TMUX_HEALTH_STATE="foreign"; return 0 ;;
+    esac
+    if [ -n "$stored_pane" ]; then
+      case "$stored_pane" in
+        %*) case "${stored_pane#%}" in ''|*[!0-9]*) TMUX_HEALTH_STATE="foreign"; return 0 ;; esac ;;
+        *) TMUX_HEALTH_STATE="foreign"; return 0 ;;
+      esac
+    fi
+    if [ "$options_loaded" -eq 0 ]; then
+      options_loaded=1
+      expected_stored_pane="$stored_pane"
+      TMUX_HEALTH_RUN_TOKEN="$run_token"
+      TMUX_HEALTH_HEARTBEAT_EPOCH="$heartbeat_epoch"
+    elif [ "$stored_pane" != "$expected_stored_pane" ] || \
+         [ "$run_token" != "$TMUX_HEALTH_RUN_TOKEN" ]; then
+      TMUX_HEALTH_STATE="foreign"
+      return 0
+    fi
+    if [ -z "$fallback_pane" ]; then
+      fallback_pane="$pane"
+      fallback_dead="$pane_dead"
+      fallback_pid="$pane_pid"
+    fi
+    if { [ -n "$expected_stored_pane" ] && [ "$pane" = "$expected_stored_pane" ]; } || \
+       { [ -z "$expected_stored_pane" ] && [ "$window_active" = "1" ] && \
+         [ "$pane_active" = "1" ]; }; then
+      selected_pane="$pane"
+      selected_dead="$pane_dead"
+      selected_pid="$pane_pid"
+    fi
+  done <<<"${LIST_TMUX_HEALTH_ROWS:-}"
+
+  [ "$found" -eq 1 ] || return 0
+  if [ -z "$selected_pane" ] && [ -z "$expected_stored_pane" ]; then
+    selected_pane="$fallback_pane"
+    selected_dead="$fallback_dead"
+    selected_pid="$fallback_pid"
+  fi
+  if [ -z "$selected_pane" ]; then
+    TMUX_HEALTH_STATE="dead"
+    return 0
+  fi
+  case "$selected_dead" in 0) TMUX_HEALTH_STATE="live" ;; *) TMUX_HEALTH_STATE="dead" ;; esac
+  case "$selected_pid" in
+    ''|*[!0-9]*) TMUX_HEALTH_PANE_PID="" ;;
+    *) TMUX_HEALTH_PANE_PID="$selected_pid" ;;
+  esac
 }
 
 SESSION_COLOR_PALETTE=(
@@ -1546,7 +1711,15 @@ config_tmux_extended_keys() {
 
 attach_session() {
   local session="$1"
+  local terminal_features="${2:-}"
   local current_socket target_socket
+  local -a attach_tmux=("${TMUX_CMD[@]}")
+
+  case "$terminal_features" in
+    '') ;;
+    sync) attach_tmux+=( -T sync ) ;;
+    *) die "unsupported terminal features: $terminal_features" ;;
+  esac
 
   tmux_has_session "$session" || die "tmux session '$session' is not running"
   tmux_is_managed "$session" || die "refusing to attach to unmanaged tmux session '$session'"
@@ -1559,16 +1732,67 @@ attach_session() {
     target_socket="$("${TMUX_CMD[@]}" display-message -p -t "=$session:" '#{socket_path}' 2>/dev/null)" || \
       die "could not identify the detach tmux server"
     if [ -n "$current_socket" ] && [ "$current_socket" = "$target_socket" ]; then
-      exec "${TMUX_CMD[@]}" switch-client -t "=$session"
+      exec "${attach_tmux[@]}" switch-client -t "=$session"
     fi
     # tmux cannot switch a client across servers. Unset the outer server
     # identity so tmux deliberately opens a nested client for Detach's private
     # server instead of failing after the managed session has already started.
     exec "$ENV_BIN" -u TMUX -u TMUX_PANE \
-      "${TMUX_CMD[@]}" attach-session -t "=$session"
+      "${attach_tmux[@]}" attach-session -t "=$session"
   else
-    exec "${TMUX_CMD[@]}" attach-session -t "=$session"
+    exec "${attach_tmux[@]}" attach-session -t "=$session"
   fi
+}
+
+switch_attached_client() {
+  local client_pid="$1"
+  local source_session="$2"
+  local target_session="$3"
+  local session_name
+  local format row_pid client_name client_session client_uid marker extra
+  local matched_name=""
+  local matches=0
+
+  validate_runtime_config
+  require_common_dependencies
+  ensure_state_dirs
+  case "$client_pid" in ''|*[!0-9]*) die "client PID must be a positive integer" ;; esac
+  [ "$client_pid" -gt 1 ] || die "client PID must be greater than one"
+  for session_name in "$source_session" "$target_session"; do
+    case "$session_name" in
+      ''|*$'\n'*|*$'\r'*|*$'\t'*) die "client session name is invalid" ;;
+    esac
+  done
+
+  tmux_has_session "$source_session" || \
+    die "source tmux session '$source_session' is not running"
+  tmux_is_any_managed "$source_session" || \
+    die "refusing to switch a client from unmanaged tmux session '$source_session'"
+  tmux_has_session "$target_session" || \
+    die "target tmux session '$target_session' is not running"
+  tmux_is_managed "$target_session" || \
+    die "refusing to switch a client to unmanaged tmux session '$target_session'"
+  tmux_session_running "$target_session" || \
+    die "target tmux session '$target_session' has no live pane"
+
+  format=$'#{client_pid}\t#{client_name}\t#{client_session}\t#{client_uid}\tEND'
+  while IFS=$'\t' read -r row_pid client_name client_session client_uid marker extra; do
+    [ "$row_pid" = "$client_pid" ] || continue
+    matches=$((matches + 1))
+    [ "$marker" = END ] && [ -z "$extra" ] || \
+      die "tmux returned an invalid client record"
+    [ "$client_uid" = "$UID" ] || \
+      die "refusing to switch a foreign-owned tmux client"
+    [ "$client_session" = "$source_session" ] || \
+      die "tmux client $client_pid is not attached to '$source_session'"
+    matched_name="$client_name"
+  done < <("${TMUX_CMD[@]}" list-clients -F "$format" 2>/dev/null || true)
+
+  [ "$matches" -eq 1 ] && [ -n "$matched_name" ] || \
+    die "could not identify one exact tmux client for PID $client_pid"
+  [ "$source_session" != "$target_session" ] || return 0
+  "${TMUX_CMD[@]}" switch-client -c "$matched_name" -t "=$target_session" || \
+    die "could not switch tmux client $client_pid to '$target_session'"
 }
 
 state_update_meta() {
@@ -1641,6 +1865,7 @@ write_initial_meta() {
       "$dir/checkpoint/meta.json" \
       "$dir/checkpoint/rollout.jsonl" \
       "$dir/checkpoint/transcript.jsonl" \
+      "$dir/checkpoint/.detach-jsonl-validation.json" \
       "$dir/checkpoint/claude-session.tar" \
       "$dir/checkpoint/codex-state.sqlite" \
       "$dir/checkpoint/pane.txt" \
@@ -2253,6 +2478,14 @@ valid_jsonl() {
     "$STATE_BIN" jsonl validate codex "$path" "$expected_id" >/dev/null 2>&1
 }
 
+valid_jsonl_cached() {
+  local path="$1"
+  local expected_id="$2"
+
+  [ -s "$path" ] && \
+    "$STATE_BIN" jsonl validate-cached codex "$path" "$expected_id" >/dev/null 2>&1
+}
+
 restore_matching_rollout_checkpoint() {
   local session="$1"
   local id="$2"
@@ -2667,7 +2900,7 @@ checkpoint_rollout() {
 
   for attempt in 1 2 3; do
     cp -p "$rollout" "$tmp" 2>/dev/null || true
-    if valid_jsonl "$tmp" "$expected_id"; then
+    if valid_jsonl_cached "$tmp" "$expected_id"; then
       mv -f "$tmp" "$checkpoint_dir/rollout.jsonl"
       return 0
     fi
@@ -2803,25 +3036,43 @@ checkpoint_database() {
   local db
   local checkpoint_dir
   local tmp
+  local tmp_shm
+  local tmp_wal
+  local stale_sidecar
 
   [ "$PROVIDER" = "codex" ] || return 0
   db="$(codex_state_db)"
   [ -n "$db" ] && [ -f "$db" ] || return 1
   checkpoint_dir="$(session_dir "$session")/checkpoint"
+  for stale_sidecar in \
+    "$checkpoint_dir"/codex-state.sqlite.tmp.*-shm \
+    "$checkpoint_dir"/codex-state.sqlite.tmp.*-wal; do
+    [ -f "$stale_sidecar" ] && [ ! -L "$stale_sidecar" ] || continue
+    rm -f -- "$stale_sidecar"
+  done
   tmp="$checkpoint_dir/codex-state.sqlite.tmp.$$"
-  rm -f "$tmp"
+  tmp_shm="$tmp-shm"
+  tmp_wal="$tmp-wal"
+  rm -f "$tmp" "$tmp_shm" "$tmp_wal"
 
   "$SQLITE_BIN" -cmd '.timeout 5000' "$db" ".backup \"$tmp\"" >/dev/null 2>&1 || {
-    rm -f "$tmp"
+    rm -f "$tmp" "$tmp_shm" "$tmp_wal"
     checkpoint_log "$session" "Codex SQLite backup failed"
     return 1
   }
   [ "$($SQLITE_BIN "$tmp" 'PRAGMA quick_check;' 2>/dev/null)" = "ok" ] || {
-    rm -f "$tmp"
+    rm -f "$tmp" "$tmp_shm" "$tmp_wal"
     checkpoint_log "$session" "Codex SQLite backup failed quick_check"
     return 1
   }
-  mv -f "$tmp" "$checkpoint_dir/codex-state.sqlite"
+  # Opening a WAL-mode backup for quick_check creates empty, PID-scoped
+  # companions. They are not part of the validated snapshot and must not
+  # accumulate at every checkpoint.
+  rm -f "$tmp_shm" "$tmp_wal"
+  mv -f "$tmp" "$checkpoint_dir/codex-state.sqlite" || {
+    rm -f "$tmp" "$tmp_shm" "$tmp_wal"
+    return 1
+  }
 }
 
 checkpoint_pane() {
@@ -3973,7 +4224,7 @@ process_is_owned_alive() {
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pid" -gt 1 ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  owner_uid="$(/usr/bin/id -u)" || return 1
+  owner_uid="$UID"
   process_uid="$(/bin/ps -o uid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
   [ "$process_uid" = "$owner_uid" ]
 }
@@ -4044,7 +4295,7 @@ checkpoint_is_recoverable() {
       valid_claude_transcript "$dir/checkpoint/transcript.jsonl" "$id"
   elif [ "$PROVIDER" = "codex" ] && \
        safe_codex_rollout_path "$transcript_path"; then
-    valid_jsonl "$dir/checkpoint/rollout.jsonl" "$id"
+    valid_jsonl_cached "$dir/checkpoint/rollout.jsonl" "$id"
   else
     return 1
   fi
@@ -4107,15 +4358,11 @@ session_health_envelope() {
     [ -n "$id" ] && [ "$id" != "-" ] && agent_session_known=true
   fi
 
-  if tmux_has_session "$session"; then
-    if ! tmux_is_managed "$session"; then
-      tmux_state="foreign"
-    elif tmux_session_running "$session"; then
-      tmux_state="live"
-    else
-      tmux_state="dead"
-    fi
-  fi
+  tmux_health_snapshot "$session"
+  tmux_state="$TMUX_HEALTH_STATE"
+  tmux_run_token="$TMUX_HEALTH_RUN_TOKEN"
+  tmux_heartbeat_epoch="$TMUX_HEALTH_HEARTBEAT_EPOCH"
+  pane_pid="$TMUX_HEALTH_PANE_PID"
 
   # Full provider checkpoint validation can be expensive. It affects the
   # transition only after an active runtime disappears, never a healthy live
@@ -4128,7 +4375,6 @@ session_health_envelope() {
   esac
 
   if [ "$tmux_state" = "live" ] || [ "$tmux_state" = "dead" ]; then
-    tmux_run_token="$(tmux_option "$session" '@detach_run_token')"
     if [ -z "$meta_run_token" ] || [ -z "$tmux_run_token" ]; then
       token_state="missing"
     elif [ "$meta_run_token" = "$tmux_run_token" ]; then
@@ -4138,39 +4384,42 @@ session_health_envelope() {
     fi
   fi
 
-  case "$worker_pid" in
-    ''|*[!0-9]*) worker_state="unknown" ;;
-    *)
-      if process_is_owned_alive "$worker_pid"; then
-        worker_state="alive"
-      else
-        worker_state="dead"
-      fi
-      ;;
-  esac
-  case "$provider_pid" in
-    ''|*[!0-9]*) provider_state="unknown" ;;
-    *)
-      if ! process_is_owned_alive "$provider_pid"; then
-        provider_state="dead"
-      elif [ "$worker_state" = "alive" ] && \
-           process_is_descendant "$provider_pid" "$worker_pid"; then
-        provider_state="alive"
-      else
-        provider_state="mismatch"
-      fi
-      ;;
-  esac
+  # The batched list helper reads only the recorded PIDs with proc_pidinfo.
+  # State-changing and single-session paths keep the established shell checks.
+  if [ "$output_mode" != "request" ]; then
+    case "$worker_pid" in
+      ''|*[!0-9]*) worker_state="unknown" ;;
+      *)
+        if process_is_owned_alive "$worker_pid"; then
+          worker_state="alive"
+        else
+          worker_state="dead"
+        fi
+        ;;
+    esac
+    case "$provider_pid" in
+      ''|*[!0-9]*) provider_state="unknown" ;;
+      *)
+        process_is_owned_alive "$provider_pid" || provider_state="dead"
+        if [ "$provider_state" = "dead" ]; then
+          :
+        elif [ "$worker_state" = "alive" ] && \
+             process_is_descendant "$provider_pid" "$worker_pid"; then
+          provider_state="alive"
+        else
+          provider_state="mismatch"
+        fi
+        ;;
+    esac
+  fi
 
   if [ "$tmux_state" = "live" ]; then
-    pane_pid="$("${TMUX_CMD[@]}" display-message -p \
-      -t "$(tmux_pane_id "$session")" '#{pane_pid}' 2>/dev/null || true)"
-    if [ "$worker_state" = "alive" ] && [ "$pane_pid" != "$worker_pid" ]; then
+    if [ "$output_mode" != "request" ] && \
+       [ "$worker_state" = "alive" ] && [ "$pane_pid" != "$worker_pid" ]; then
       worker_state="mismatch"
       provider_state="mismatch"
     fi
     if [ "$token_state" = "match" ]; then
-      tmux_heartbeat_epoch="$(tmux_option "$session" '@detach_heartbeat_epoch')"
       case "$tmux_heartbeat_epoch" in
         ''|*[!0-9]*) ;;
         *)
@@ -4184,7 +4433,8 @@ session_health_envelope() {
     fi
   fi
 
-  now="$(date '+%s')"
+  now="${LIST_HEALTH_NOW:-}"
+  case "$now" in ''|*[!0-9]*) now="$(date '+%s')" ;; esac
   checkpoint_threshold=$((CHECKPOINT_INTERVAL * 2 + 60))
   heartbeat_freshness="$(freshness_for_epoch \
     "$heartbeat_epoch" "$HEALTH_HEARTBEAT_STALE" "$now")"
@@ -4204,6 +4454,14 @@ session_health_envelope() {
     --checkpoint-recoverable "$checkpoint_recoverable" \
     --agent-session-known "$agent_session_known"
   )
+  if [ "$output_mode" = "request" ]; then
+    health_args+=(
+      --inspect-processes true
+      --worker-pid "${worker_pid:--}"
+      --provider-pid "${provider_pid:--}"
+      --pane-pid "${pane_pid:--}"
+    )
+  fi
   case "$output_mode" in
     session)
       "$STATE_BIN" health session "${health_args[@]}" -- "$@"
@@ -4287,7 +4545,7 @@ prepare_list_json_args() {
 }
 
 list_meta_snapshots() {
-  "$STATE_BIN" meta snapshots "$SESSIONS_ROOT"
+  "$STATE_BIN" meta snapshots "$SESSIONS_ROOT" --with-transcript-summary
 }
 
 list_session_records() {
@@ -4314,19 +4572,28 @@ list_session_records() {
   local worker_pid
   local provider_pid
   local worker_heartbeat_at
+  local LIST_HEALTH_NOW
 
   ensure_state_dirs
+  prepare_list_tmux_health_snapshot
+  LIST_HEALTH_NOW="$(date '+%s')"
   if [ "$json_mode" = "1" ] && [ -x "$POWER_BIN" ]; then
-    power_status="$("$POWER_BIN" status --json 2>/dev/null || true)"
-    if [ -n "$power_status" ]; then
-      reported_power_state="$(printf '%s' "$power_status" | \
-        "$STATE_BIN" meta get /dev/stdin state 2>/dev/null || true)"
-      case "$reported_power_state" in
-        allowed|transitioning|protected|low_battery|temperature|unavailable|unknown)
-          power_state="$reported_power_state"
-          ;;
-      esac
-    fi
+    reported_power_state="${DETACH_LIST_POWER_STATE:-}"
+    case "$reported_power_state" in
+      allowed|transitioning|protected|low_battery|temperature|unavailable|unknown) ;;
+      *)
+        power_status="$("$POWER_BIN" status --json --quick 2>/dev/null || true)"
+        if [ -n "$power_status" ]; then
+          reported_power_state="$(printf '%s' "$power_status" | \
+            "$STATE_BIN" meta get /dev/stdin state 2>/dev/null || true)"
+        fi
+        ;;
+    esac
+    case "$reported_power_state" in
+      allowed|transitioning|protected|low_battery|temperature|unavailable|unknown)
+        power_state="$reported_power_state"
+        ;;
+    esac
   fi
   if [ "$json_mode" != "1" ]; then
     if [ "${DETACH_LIST_HEADER:-1}" != "0" ]; then
@@ -4358,7 +4625,12 @@ list_session_records() {
       IFS= read -r -d '' META_RUN_TOKEN && \
       IFS= read -r -d '' META_WORKER_HEARTBEAT_EPOCH && \
       IFS= read -r -d '' META_LAST_CHECKPOINT_EPOCH && \
-      IFS= read -r -d '' META_HEALTH_SCHEMA || \
+      IFS= read -r -d '' META_HEALTH_SCHEMA && \
+      IFS= read -r -d '' TRANSCRIPT_MODEL && \
+      IFS= read -r -d '' TRANSCRIPT_CTX_USED && \
+      IFS= read -r -d '' TRANSCRIPT_CTX_WINDOW && \
+      IFS= read -r -d '' TRANSCRIPT_AGENT_TURN_STATE && \
+      IFS= read -r -d '' TRANSCRIPT_AGENT_TURN_ID || \
         die "could not decode metadata snapshot for '$session'"
     if [ "$metadata_valid" != true ]; then
       cwd="?"
@@ -4415,7 +4687,11 @@ list_session_records() {
     if [ -z "$session_color" ] && [ -n "$cwd" ] && [ "$cwd" != "?" ]; then
       session_color="$(session_color_for "$PROVIDER" "$cwd")" || session_color=''
     fi
-    transcript_model_context "$META_TRANSCRIPT_PATH"
+    case "$TRANSCRIPT_AGENT_TURN_STATE" in
+      working|waiting|interrupted) ;;
+      *) TRANSCRIPT_AGENT_TURN_STATE=""; TRANSCRIPT_AGENT_TURN_ID="" ;;
+    esac
+    [ -n "$TRANSCRIPT_AGENT_TURN_ID" ] || TRANSCRIPT_AGENT_TURN_STATE=""
     if [ "$json_mode" = "1" ]; then
       prepare_list_json_args \
         "$session" "$status" "$id" "$checkpoint" "$cwd" "$created" \
@@ -4631,7 +4907,7 @@ delete_locked() {
   local owner_uid
 
   dir="$(session_dir "$session")"
-  owner_uid="$(/usr/bin/id -u)" || die "could not determine the current user"
+  owner_uid="$UID"
   [ -d "$STATE_ROOT" ] && [ ! -L "$STATE_ROOT" ] && \
     [ "$(/usr/bin/stat -f '%u' "$STATE_ROOT" 2>/dev/null || true)" = "$owner_uid" ] || \
     die "refusing unsafe provider state root: $STATE_ROOT"
@@ -4810,6 +5086,7 @@ main() {
   local list_json=0
   local force=0
   local ansi=0
+  local terminal_features=""
   local default_base
 
   validate_runtime_config
@@ -4908,6 +5185,17 @@ main() {
         ansi=1
         shift
         ;;
+      --terminal-features)
+        [ "$action" = "attach" ] || die "unexpected option for $action: $1"
+        [ "$#" -ge 2 ] || die "$1 requires a value"
+        terminal_features="$2"
+        shift 2
+        ;;
+      --terminal-features=*)
+        [ "$action" = "attach" ] || die "unexpected option for $action: $1"
+        terminal_features="${1#*=}"
+        shift
+        ;;
     esac
     if [ "$#" -gt 0 ]; then
       positional_name="$1"
@@ -4951,7 +5239,7 @@ main() {
         "$resume_id" "$display_name" "$@"
       ;;
     attach)
-      attach_session "$session"
+      attach_session "$session" "$terminal_features"
       ;;
     status)
       show_status "$session"
@@ -5040,6 +5328,11 @@ case "${1:-}" in
     shift
     [ "$#" -eq 1 ] || exit 1
     new_default_session_name "$1"
+    ;;
+  __switch_client)
+    shift
+    [ "$#" -eq 3 ] || exit 1
+    switch_attached_client "$@"
     ;;
   __start_tmux_session_locked)
     shift

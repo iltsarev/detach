@@ -2,16 +2,102 @@ import SwiftUI
 import AppKit
 import DetachKit
 
+enum SessionDetailLogRefresh {
+    static func taskID(
+        session: Session,
+        showsEmbeddedTerminal: Bool,
+        lastUpdated: Date?
+    ) -> String {
+        if showsEmbeddedTerminal || !session.isLive {
+            return "\(session.id)-\(showsEmbeddedTerminal)"
+        }
+        let revision = lastUpdated?.timeIntervalSinceReferenceDate ?? 0
+        return "\(session.id)-logs-\(revision)"
+    }
+}
+
+enum SessionDetailRetainedFrame {
+    case text(NSAttributedString)
+}
+
+/// Keeps one visible terminal host while selection moves between live sessions.
+private struct LiveSessionTerminalPanel: View {
+    let detachPath: String
+    let session: Session
+    let fontPointSize: CGFloat
+    let screenCache: SessionTerminalScreenCache
+    let onTerminated: (Int32?) -> Void
+    let onSwitchFailed: (String) -> Void
+    var onPresentationReady: () -> Void = {}
+
+    @State private var frameReady = false
+    @State private var didReportPresentationReady = false
+
+    var body: some View {
+        ZStack {
+            SessionAttachTerminalView(
+                detachPath: detachPath,
+                session: session,
+                fontPointSize: fontPointSize,
+                screenCache: screenCache,
+                onTerminated: onTerminated,
+                onFirstVisibleFrame: {
+                    frameReady = true
+                    reportPresentationReady()
+                },
+                onSwitchFailed: onSwitchFailed)
+                .frame(maxHeight: .infinity)
+                .accessibilityLabel(L10n.string("Live session terminal"))
+
+            if !frameReady, hasRetainedContent {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onAppear {
+                        // SessionAttachTerminalView installed the passive
+                        // SwiftTerm text frame synchronously in makeNSView.
+                        reportPresentationReady()
+                    }
+            }
+        }
+        .onChange(of: session.id) { _, _ in
+            didReportPresentationReady = false
+            // The existing terminal stays drawable while tmux switches it.
+            // Complete the SwiftUI selection without waiting for a new PTY.
+            DispatchQueue.main.async { reportPresentationReady() }
+        }
+    }
+
+    private func reportPresentationReady() {
+        guard !didReportPresentationReady else { return }
+        didReportPresentationReady = true
+        // Defer transition completion until AppKit installs the target hierarchy.
+        DispatchQueue.main.async { onPresentationReady() }
+    }
+
+    private var hasRetainedContent: Bool {
+        screenCache.screen(for: session) != nil
+    }
+}
+
 struct SessionDetailView: View {
     let session: Session
     let store: SessionStore
     let detachPath: String
+    let terminalScreens: SessionTerminalScreenCache
+    /// Supplied before the first body pass so a warm non-live log cannot flash
+    /// an empty placeholder while `.task` starts its background refresh.
+    let cachedLog: LogPoller?
+    /// Passive text from the previous selection. It covers a cold target log
+    /// surface, so the new header and actions determine layout at once.
+    var retainedFrame: SessionDetailRetainedFrame? = nil
+    var onPresentationReady: () -> Void = {}
     @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
     private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
     @Environment(\.appFontPointSize) private var fontPointSize
 
     @State private var logPoller: LogPoller?
+    @State private var logPollerSessionID: String?
     @State private var actionError: String?
     @State private var terminalFailure: TerminalLaunchFailure?
     @State private var isLaunchingTerminal = false
@@ -24,34 +110,42 @@ struct SessionDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerCard
-            logView
+            logView.layoutPriority(1)
             actionBar
         }
         .padding(16)
         .onChange(of: session.id) { _, _ in
             interactionGeneration = UUID()
+            logPoller = nil
+            logPollerSessionID = nil
+            actionError = nil
+            terminalFailure = nil
+            isLaunchingTerminal = false
+            confirmDelete = false
             attachClientActive = true
             attachRequested = false
             preparingAction = nil
         }
-        .task(id: "\(session.id)-\(showsEmbeddedTerminal)") {
+        .task(id: logTaskID) {
             guard !showsEmbeddedTerminal else {
                 logPoller = nil
+                logPollerSessionID = nil
                 return
             }
-            let poller = LogPoller(
-                cli: ProcessDetachCLI(executable: URL(fileURLWithPath: detachPath)),
-                provider: session.provider, sessionName: session.sessionName)
-            logPoller = poller
-            await poller.fetchOnce()
-            while !Task.isCancelled && session.isLive {
-                do {
-                    try await Task.sleep(nanoseconds: 2_000_000_000)
-                } catch {
-                    return
-                }
-                await poller.fetchOnce()
+            let poller = cachedLog
+                ?? (logPollerSessionID == session.id ? logPoller : nil)
+                ?? LogPoller(
+                    cli: ProcessDetachCLI(executable: URL(fileURLWithPath: detachPath)),
+                    provider: session.provider,
+                    sessionName: session.sessionName)
+            if cachedLog == nil, logPoller !== poller {
+                logPoller = poller
+                logPollerSessionID = session.id
             }
+            // The cache follows typed lifecycle revisions. An unchanged
+            // non-live tail is immutable, so revisiting it needs no process.
+            if cachedLog?.hasLoaded == true { return }
+            await poller.fetchOnce()
         }
         .alert(L10n.string("Something went wrong"), isPresented: .init(
             get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
@@ -135,38 +229,7 @@ struct SessionDetailView: View {
                 }
                 Spacer()
             }
-            if let reason = session.healthReasonLabel {
-                // No `fixedSize(horizontal: false, vertical: true)` here: on
-                // macOS 26 that modifier inflates the split view's ideal
-                // height and the whole window content slides under the
-                // toolbar. Plain wrapping lays out identically.
-                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .appFont(.caption)
-                    .foregroundStyle(.orange)
-            }
-            FlowLayout(spacing: 6) {
-                if let projectDir = session.projectDir {
-                    metaChip(icon: "folder", abbreviatePath(projectDir), mono: true,
-                             help: projectDir)
-                }
-                if let uuid = session.agentSessionId {
-                    SessionUUIDChip(uuid: uuid)
-                }
-                if let created = session.createdAt {
-                    metaChip(L10n.format(
-                        "created %@", created.formatted(.relative(presentation: .named))))
-                }
-                if let checkpoint = session.lastCheckpointAt {
-                    metaChip(L10n.format(
-                        "checkpoint %@", checkpoint.formatted(.relative(presentation: .named))))
-                }
-                if let exit = session.exitStatus {
-                    metaChip(L10n.format("exit %d", exit))
-                }
-                if showsEmbeddedTerminal {
-                    embeddedTerminalPowerChip
-                }
-            }
+            metadataRail
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -218,6 +281,54 @@ struct SessionDetailView: View {
         (path as NSString).abbreviatingWithTildeInPath
     }
 
+    /// Metadata never wraps. A wrap would change the terminal frame when the
+    /// selection changes. The rail keeps every value available by scrolling.
+    private var metadataRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if let reason = session.healthReasonLabel {
+                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                        .appFont(.caption)
+                        .lineLimit(1)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(.orange.opacity(0.12)))
+                        .help(reason)
+                }
+                if let projectDir = session.projectDir {
+                    metaChip(icon: "folder", abbreviatePath(projectDir), mono: true,
+                             help: projectDir)
+                }
+                if let uuid = session.agentSessionId {
+                    SessionUUIDChip(uuid: uuid)
+                }
+                if let created = session.createdAt {
+                    metaChip(L10n.format(
+                        "created %@", created.formatted(.relative(presentation: .named))))
+                }
+                if let checkpoint = session.lastCheckpointAt {
+                    metaChip(L10n.format(
+                        "checkpoint %@", checkpoint.formatted(.relative(presentation: .named))))
+                }
+                if let exit = session.exitStatus {
+                    metaChip(L10n.format("exit %d", exit))
+                }
+                if showsEmbeddedTerminal {
+                    embeddedTerminalPowerChip
+                }
+                // Some legacy rows have no metadata. Keep the rail at the
+                // same font-scaled height without adding visible content.
+                Text("M")
+                    .appFont(.caption)
+                    .padding(.vertical, 3)
+                    .hidden()
+                    .frame(width: 0)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
     // MARK: - Log
 
     private static let placeholderAttributes: [NSAttributedString.Key: Any] = [
@@ -226,12 +337,14 @@ struct SessionDetailView: View {
     ]
 
     private var logContent: NSAttributedString {
-        if let error = logPoller?.errorText {
+        let sessionPoller = logPollerSessionID == session.id ? logPoller : nil
+        let visiblePoller = cachedLog ?? sessionPoller
+        if let error = visiblePoller?.errorText {
             var attributes = Self.placeholderAttributes
             attributes[.foregroundColor] = NSColor.systemOrange
             return NSAttributedString(string: "⚠︎ \(error)", attributes: attributes)
         }
-        if let attributed = logPoller?.attributed, attributed.length > 0 {
+        if let attributed = visiblePoller?.attributed, attributed.length > 0 {
             return attributed
         }
         return NSAttributedString(string: "…", attributes: Self.placeholderAttributes)
@@ -245,29 +358,74 @@ struct SessionDetailView: View {
                     clientActive: attachClientActive))
     }
 
+    private var logTaskID: String {
+        SessionDetailLogRefresh.taskID(
+            session: session,
+            showsEmbeddedTerminal: showsEmbeddedTerminal,
+            lastUpdated: store.lastUpdated)
+    }
+
     private var logView: some View {
-        VStack(spacing: 0) {
-            if showsEmbeddedTerminal {
-                let generation = interactionGeneration
-                SessionAttachTerminalView(
-                    detachPath: detachPath,
-                    session: session,
-                    fontPointSize: fontPointSize,
-                    onTerminated: { _ in
-                        handleTerminalExit(generation: generation)
-                    })
-                    .id("\(session.sessionName)-\(generation.uuidString)")
-                    .frame(maxHeight: .infinity)
-                    .accessibilityLabel(L10n.string("Live session terminal"))
-            } else {
-                LogTextView(text: logContent)
-                    .frame(maxHeight: .infinity)
+        ZStack {
+            VStack(spacing: 0) {
+                if showsEmbeddedTerminal {
+                    let generation = interactionGeneration
+                    LiveSessionTerminalPanel(
+                        detachPath: detachPath,
+                        session: session,
+                        fontPointSize: fontPointSize,
+                        screenCache: terminalScreens,
+                        onTerminated: { _ in
+                            handleTerminalExit(generation: generation)
+                        },
+                        onSwitchFailed: { message in
+                            guard interactionGeneration == generation else { return }
+                            actionError = message
+                            attachClientActive = false
+                        },
+                        onPresentationReady: onPresentationReady)
+                        // One target creates one panel and one PTY host. A late
+                        // callback belongs to the removed panel and cannot reveal
+                        // a later attach attempt for the same session.
+                } else {
+                    LogTextView(text: logContent)
+                        .frame(maxHeight: .infinity)
+                        .onAppear {
+                            // makeNSView applies and lays out cached text before
+                            // it returns. Keep the passive outgoing frame for one
+                            // main turn so the handoff reaches AppKit's display
+                            // boundary before that frame leaves.
+                            DispatchQueue.main.async { onPresentationReady() }
+                        }
+                }
+                if !showsEmbeddedTerminal {
+                    sessionColorStrip
+                }
             }
-            if !showsEmbeddedTerminal {
-                sessionColorStrip
+
+            if let retainedFrame {
+                Group {
+                    switch retainedFrame {
+                    case let .text(text):
+                        LogTextView(text: text)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .accessibilityIdentifier("session-preview-transition-frame")
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+        .background {
+            if AppSettings.uiE2E != nil {
+                uiE2EGeometryProbe(identifier: "session-detail-log-surface")
+            }
+        }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
     }
 
     private var embeddedTerminalPowerChip: some View {
@@ -361,10 +519,13 @@ struct SessionDetailView: View {
             }
             if session.effectiveStatus == .collision {
                 Label(L10n.string("The name is used by another tmux session"), systemImage: "exclamationmark.triangle")
-                    .appFont(.caption).foregroundStyle(.orange)
+                    .appFont(.caption)
+                    .lineLimit(1)
+                    .foregroundStyle(.orange)
             }
             Spacer()
         }
+        .frame(minHeight: 28)
     }
 
     private var selectedTerminalDisplayName: String {
@@ -544,13 +705,16 @@ struct SessionDetailView: View {
 
     @MainActor
     private func openInTerminal(_ command: String) {
+        let generation = interactionGeneration
         Task {
             guard !isLaunchingTerminal else { return }
             isLaunchingTerminal = true
             defer { isLaunchingTerminal = false }
-            if let failure = await TerminalLauncher.open(
+            let failure = await TerminalLauncher.open(
                 command: command,
-                terminalBundleIdentifier: terminalBundleIdentifier) {
+                terminalBundleIdentifier: terminalBundleIdentifier)
+            guard interactionGeneration == generation else { return }
+            if let failure {
                 terminalFailure = failure
             }
         }
@@ -567,8 +731,14 @@ struct SessionDetailView: View {
         }
 #endif
 // quality-coverage:end ui-e2e-instrumentation
+        let generation = interactionGeneration
+        let selectedSessionID = session.id
+        let selectedSession = session
         Task {
-            if let message = await store.perform(action, on: session) {
+            let message = await store.perform(action, on: selectedSession)
+            guard interactionGeneration == generation,
+                  session.id == selectedSessionID else { return }
+            if let message {
                 actionError = message
             }
         }
@@ -599,8 +769,8 @@ protocol SessionUUIDPasteboardWriting: AnyObject {
 
 extension NSPasteboard: SessionUUIDPasteboardWriting {}
 
-/// The whole chip is the control. A nested icon-only button inside
-/// `FlowLayout` often misses clicks on macOS.
+/// The whole metadata chip is the control. A nested icon-only button can miss
+/// clicks while its horizontal rail scrolls on macOS.
 struct SessionUUIDChip: View {
     let uuid: String
     @State private var copied = false
@@ -702,58 +872,6 @@ enum SessionActionPresentation {
         case .stop, .delete:
             preconditionFailure("A non-terminal action has no terminal title")
         }
-    }
-}
-
-/// Wraps subviews onto new lines when they don't fit, like tag chips.
-struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(
-        proposal: ProposedViewSize,
-        subviews: Subviews,
-        cache: inout ()
-    ) -> CGSize {
-        arrangement(
-            width: proposal.width ?? .infinity,
-            subviews: subviews).size
-    }
-
-    func placeSubviews(
-        in bounds: CGRect,
-        proposal: ProposedViewSize,
-        subviews: Subviews,
-        cache: inout ()
-    ) {
-        let frames = arrangement(width: bounds.width, subviews: subviews).frames
-        for (frame, subview) in zip(frames, subviews) {
-            subview.place(
-                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
-                proposal: ProposedViewSize(frame.size))
-        }
-    }
-
-    private func arrangement(
-        width: CGFloat,
-        subviews: Subviews
-    ) -> (frames: [CGRect], size: CGSize) {
-        var frames: [CGRect] = []
-        var origin = CGPoint.zero
-        var rowHeight: CGFloat = 0
-        var maxWidth: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if origin.x > 0, origin.x + size.width > width {
-                origin.x = 0
-                origin.y += rowHeight + spacing
-                rowHeight = 0
-            }
-            frames.append(CGRect(origin: origin, size: size))
-            origin.x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-            maxWidth = max(maxWidth, origin.x - spacing)
-        }
-        return (frames, CGSize(width: maxWidth, height: origin.y + rowHeight))
     }
 }
 

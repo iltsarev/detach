@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum TmuxHealthState: String, Codable, Sendable {
@@ -24,6 +25,112 @@ public enum FreshnessState: String, Codable, Sendable {
     case fresh
     case stale
     case missing
+}
+
+struct SessionProcessHealth: Equatable, Sendable {
+    var worker: ProcessHealthState
+    var provider: ProcessHealthState
+}
+
+struct SessionProcessIdentity: Equatable, Sendable {
+    var parentPID: pid_t
+    var userID: uid_t
+}
+
+/// Reads only the process identities named by one health record. The result is
+/// presentation evidence. Runtime mutations repeat their established live
+/// ownership and tmux-token checks immediately before they act.
+enum SessionProcessHealthInspector {
+    typealias Lookup = (pid_t) -> SessionProcessIdentity?
+
+    static func inspect(
+        tmuxState: TmuxHealthState,
+        workerPID rawWorkerPID: String,
+        providerPID rawProviderPID: String,
+        panePID rawPanePID: String,
+        userID: uid_t = geteuid(),
+        lookup: Lookup = liveIdentity
+    ) -> SessionProcessHealth {
+        let workerPID = validPID(rawWorkerPID)
+        let providerPID = validPID(rawProviderPID)
+        let panePID = validPID(rawPanePID)
+        var identities: [pid_t: SessionProcessIdentity?] = [:]
+        func identity(_ pid: pid_t) -> SessionProcessIdentity? {
+            if let cached = identities[pid] { return cached }
+            let value = lookup(pid)
+            identities[pid] = .some(value)
+            return value
+        }
+
+        var worker: ProcessHealthState
+        if let workerPID {
+            worker = identity(workerPID)?.userID == userID ? .alive : .dead
+        } else {
+            worker = .unknown
+        }
+
+        var provider: ProcessHealthState
+        if let providerPID {
+            if identity(providerPID)?.userID != userID {
+                provider = .dead
+            } else if let workerPID,
+                      worker == .alive,
+                      isDescendant(
+                          providerPID,
+                          of: workerPID,
+                          identity: identity) {
+                provider = .alive
+            } else {
+                provider = .mismatch
+            }
+        } else {
+            provider = .unknown
+        }
+
+        if tmuxState == .live,
+           worker == .alive,
+           panePID != workerPID {
+            worker = .mismatch
+            provider = .mismatch
+        }
+        return SessionProcessHealth(worker: worker, provider: provider)
+    }
+
+    private static func validPID(_ raw: String) -> pid_t? {
+        guard let value = Int64(raw),
+              value > 1,
+              value <= Int64(Int32.max) else { return nil }
+        return pid_t(value)
+    }
+
+    private static func isDescendant(
+        _ child: pid_t,
+        of ancestor: pid_t,
+        identity: (pid_t) -> SessionProcessIdentity?
+    ) -> Bool {
+        var current = child
+        for _ in 0..<64 {
+            if current == ancestor { return true }
+            guard let parent = identity(current)?.parentPID,
+                  parent > 1 else { return false }
+            current = parent
+        }
+        return false
+    }
+
+    private static func liveIdentity(_ pid: pid_t) -> SessionProcessIdentity? {
+        var information = proc_bsdinfo()
+        let expected = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(
+            pid,
+            PROC_PIDTBSDINFO,
+            0,
+            &information,
+            expected) == expected else { return nil }
+        return SessionProcessIdentity(
+            parentPID: pid_t(information.pbi_ppid),
+            userID: uid_t(information.pbi_uid))
+    }
 }
 
 public enum SessionHealthReason: String, Codable, Sendable {

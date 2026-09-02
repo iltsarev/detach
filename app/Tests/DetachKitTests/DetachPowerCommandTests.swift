@@ -298,7 +298,15 @@ final class DetachPowerCommandTests: XCTestCase {
         thermalWatcher: any PowerThermalStateWatching = FakeThermalWatcher(),
         thermalNow: @escaping @Sendable () -> Date = { Date() },
         thermalCooldown: TimeInterval = PowerThermalSafetyLatch.defaultCooldown,
-        activityWatcher: any PowerRunActivityWatching = FakeActivityWatcher()
+        activityWatcher: any PowerRunActivityWatching = FakeActivityWatcher(),
+        quickStatusReader: @escaping @Sendable () -> PowerHeartbeatSnapshot = {
+            PowerHeartbeatSnapshot(
+                statusURL: URL(fileURLWithPath: "/tmp/watchdog-status.json"),
+                state: "ok",
+                powerState: .protected,
+                checkedAt: Date(),
+                isFresh: true)
+        }
     ) -> (
         DetachPowerCommand,
         EventLog,
@@ -321,7 +329,8 @@ final class DetachPowerCommandTests: XCTestCase {
                 activityWatcher: activityWatcher,
                 thermalWatcher: thermalWatcher,
                 thermalNow: thermalNow,
-                thermalCooldown: thermalCooldown),
+                thermalCooldown: thermalCooldown,
+                quickStatusReader: quickStatusReader),
             events,
             assertion,
             helper,
@@ -360,6 +369,48 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(events.values, ["helper.status"])
         XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testQuickStatusUsesFreshTypedHeartbeatWithoutHelperXPC() throws {
+        let (command, events, _, _, child, _) = fixture()
+
+        let result = try command.execute(arguments: [
+            "status", "--json", "--quick",
+        ])
+
+        guard case let .statusJSON(data) = result else {
+            return XCTFail("expected status JSON")
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object.count, 2)
+        XCTAssertEqual(object["schema"] as? Int, 1)
+        XCTAssertEqual(object["state"] as? String, "protected")
+        XCTAssertTrue(events.values.isEmpty)
+        XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testQuickStatusFailsSafeForAnUnhealthyHeartbeat() throws {
+        let (command, events, _, _, _, _) = fixture(quickStatusReader: {
+            PowerHeartbeatSnapshot(
+                statusURL: URL(fileURLWithPath: "/tmp/watchdog-status.json"),
+                state: "status_failed",
+                powerState: .protected,
+                checkedAt: Date(),
+                isFresh: true)
+        })
+
+        let result = try command.execute(arguments: [
+            "status", "--json", "--quick",
+        ])
+
+        guard case let .statusJSON(data) = result else {
+            return XCTFail("expected status JSON")
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["state"] as? String, "unknown")
+        XCTAssertTrue(events.values.isEmpty)
     }
 
     func testResultAndErrorContractsHaveStableExitCodesAndDescriptions() {
@@ -1167,7 +1218,7 @@ final class DetachPowerCommandTests: XCTestCase {
 
     func testStatusHelperAndReleaseParserFailuresAreSpecific() {
         let cases: [([String], String)] = [
-            (["status"], "usage: detach-power status --json"),
+            (["status"], "usage: detach-power status --json [--quick]"),
             (["helper", "unknown"],
              "usage: detach-power helper prepare-unregistration|cancel-unregistration"),
             (["release", "--session"],

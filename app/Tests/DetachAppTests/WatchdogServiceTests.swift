@@ -10,6 +10,9 @@ final class WatchdogServiceTests: XCTestCase {
             WatchdogServiceError.bundledDefinitionMissing.errorDescription,
             "The bundled watchdog definition is missing or incomplete.")
         XCTAssertEqual(
+            WatchdogServiceError.releaseSignatureRequired.errorDescription,
+            "Only a signed Detach release can update the background monitor.")
+        XCTAssertEqual(
             WatchdogServiceError.registrationDidNotComplete.errorDescription,
             "macOS did not finish registering the watchdog.")
         XCTAssertEqual(
@@ -34,6 +37,39 @@ final class WatchdogServiceTests: XCTestCase {
 
         XCTAssertEqual(backend.registerCalls, 0)
         XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testAdHocBuildCannotMutateSharedWatchdogRegistration() async {
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)])
+        let fixture = makeFixture(
+            backend: backend,
+            serviceMutationAllowed: { false })
+        defer { fixture.cleanup() }
+
+        do {
+            try await fixture.service.reconcileAfterAppUpdate()
+            XCTFail("Expected release-signature admission failure")
+        } catch {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Only a signed Detach release can update the background monitor.")
+        }
+        do {
+            try await fixture.service.disable()
+            XCTFail("Expected release-signature admission failure")
+        } catch {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Only a signed Detach release can update the background monitor.")
+        }
+
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertNil(fixture.handoffStore.transaction)
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
     func testEnableFailsAfterBoundedUnconfirmedRegistrationRetries() async {
@@ -142,7 +178,9 @@ final class WatchdogServiceTests: XCTestCase {
         let backend = FakeWatchdogBackend(
             status: .enabled,
             registrations: [])
-        let fixture = makeFixture(backend: backend)
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .busy })
         defer { fixture.cleanup() }
         fixture.defaults.set(
             "digest-current", forKey: "powerWatchdogDefinitionDigest")
@@ -151,6 +189,46 @@ final class WatchdogServiceTests: XCTestCase {
 
         XCTAssertEqual(backend.unregisterCalls, 0)
         XCTAssertEqual(backend.registerCalls, 0)
+    }
+
+    func testMatchingEnabledRegistrationWithoutLiveProcessReregisters() async throws {
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)])
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .released },
+            legacyWatchdogIsRunning: { false })
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-current", forKey: "powerWatchdogDefinitionDigest")
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertNil(fixture.handoffStore.transaction)
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerWatchdogDefinitionReconcilePending"))
+    }
+
+    func testMatchingLegacyRegistrationWithLiveProcessNoOps() async throws {
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [])
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .missing },
+            legacyWatchdogIsRunning: { true })
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-current", forKey: "powerWatchdogDefinitionDigest")
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertNil(fixture.handoffStore.transaction)
     }
 
     func testChangedDefinitionRetriesTransientRegisterFailure() async throws {
@@ -592,6 +670,7 @@ final class WatchdogServiceTests: XCTestCase {
         lifetimeBarrierStatus: @escaping () throws
             -> WatchdogLifetimeBarrierStatus = { .released },
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
+        serviceMutationAllowed: @escaping () -> Bool = { true },
         digestProvider: @escaping () -> String? = { "digest-current" },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> Fixture {
@@ -603,6 +682,7 @@ final class WatchdogServiceTests: XCTestCase {
             handoffStore: handoffStore,
             lifetimeBarrierStatus: lifetimeBarrierStatus,
             legacyWatchdogIsRunning: legacyWatchdogIsRunning,
+            serviceMutationAllowed: serviceMutationAllowed,
             digestProvider: digestProvider,
             sleep: sleep)
         return Fixture(
@@ -619,6 +699,7 @@ final class WatchdogServiceTests: XCTestCase {
         lifetimeBarrierStatus: @escaping () throws
             -> WatchdogLifetimeBarrierStatus = { .released },
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
+        serviceMutationAllowed: @escaping () -> Bool = { true },
         digestProvider: @escaping () -> String? = { "digest-current" },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> WatchdogService {
@@ -629,6 +710,7 @@ final class WatchdogServiceTests: XCTestCase {
             digestProvider: digestProvider,
             lifetimeBarrierStatus: lifetimeBarrierStatus,
             legacyWatchdogIsRunning: legacyWatchdogIsRunning,
+            serviceMutationAllowed: serviceMutationAllowed,
             sleep: sleep)
     }
 

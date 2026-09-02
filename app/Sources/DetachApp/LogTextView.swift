@@ -9,7 +9,18 @@ struct LogTextView: NSViewRepresentable {
     let text: NSAttributedString
 
     func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = Self.makeScrollView()
+        Self.apply(
+            text: text,
+            pointSize: fontPointSize,
+            to: scrollView,
+            coordinator: context.coordinator)
+        return scrollView
+    }
+
+    static func makeScrollView() -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
+        scrollView.setAccessibilityIdentifier("session-preview-log")
         let textView = scrollView.documentView as! NSTextView
         textView.isEditable = false
         textView.isSelectable = true
@@ -37,15 +48,28 @@ struct LogTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        Self.apply(
+            text: text,
+            pointSize: fontPointSize,
+            to: scrollView,
+            coordinator: context.coordinator)
+    }
+
+    static func apply(
+        text: NSAttributedString,
+        pointSize: CGFloat,
+        to scrollView: NSScrollView,
+        coordinator: Coordinator
+    ) {
         guard let textView = scrollView.documentView as? NSTextView,
               let storage = textView.textStorage,
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
         // Identity check keeps resize frames free of O(n) text work.
-        guard context.coordinator.lastText !== text
-                || context.coordinator.lastFontPointSize != fontPointSize else { return }
-        context.coordinator.lastText = text
-        context.coordinator.lastFontPointSize = fontPointSize
+        guard coordinator.lastText !== text
+                || coordinator.lastFontPointSize != pointSize else { return }
+        coordinator.lastText = text
+        coordinator.lastFontPointSize = pointSize
 
         // Terminal semantics: pinned to the bottom → follow the tail;
         // scrolled up → keep the current offset (both axes).
@@ -54,7 +78,7 @@ struct LogTextView: NSViewRepresentable {
         let oldHeight = textView.frame.height
         let wasAtBottom = oldHeight <= visible.height + 1 || visible.maxY >= oldHeight - 5
 
-        storage.setAttributedString(Self.resizedText(text, to: fontPointSize))
+        storage.setAttributedString(Self.resizedText(text, to: pointSize))
         // Force layout so the new document height is real before we scroll.
         layoutManager.ensureLayout(for: container)
         textView.sizeToFit()

@@ -205,6 +205,7 @@ final class DetachStateCommandTests: XCTestCase {
             ["meta", "patch"],
             ["meta", "matches", "only-path"],
             ["jsonl", "first", "only-path"],
+            ["jsonl", "validate-cached", "codex", "only-path"],
         ] {
             XCTAssertThrowsError(try DetachStateCommand.run(arguments: arguments)) { error in
                 XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
@@ -529,6 +530,50 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testMetaSnapshotsCanBatchBoundedTranscriptSummaries() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "summary-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-summary", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent(
+            "summary-rollout.jsonl")
+        try Data("""
+        {"payload":{"model":"gpt-batched"}}
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-batched"}}
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-summary",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        let output = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let values = output.split(
+            separator: 0, omittingEmptySubsequences: false)
+            .dropLast()
+            .map { String(decoding: $0, as: UTF8.self) }
+
+        XCTAssertEqual(values.count, 24 + 2)
+        XCTAssertEqual(values[0], "detach-codex-summary")
+        XCTAssertEqual(values[1], "true")
+        XCTAssertEqual(Array(values[19..<24]), [
+            "gpt-batched", "", "", "working", "turn-batched",
+        ])
+        XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
+
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--unknown",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+    }
+
     func testMetaCreateWritesTypedObjectAndRefusesAnExistingFile() throws {
         let file = temporaryDirectory.appendingPathComponent("created-meta.json")
 
@@ -695,6 +740,57 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testCachedJSONLValidationFollowsTheExactFileIdentity() throws {
+        let checkpoint = temporaryDirectory.appendingPathComponent(
+            "checkpoint", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: checkpoint, withIntermediateDirectories: true)
+        let transcript = checkpoint.appendingPathComponent("rollout.jsonl")
+        try Data(#"{"payload":{"id":"session-1"}}"#.utf8).write(to: transcript)
+
+        XCTAssertNoThrow(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate-cached", "codex", transcript.path, "session-1",
+        ]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: checkpoint
+            .appendingPathComponent(".detach-jsonl-validation.json").path))
+        XCTAssertNoThrow(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate-cached", "codex",
+            checkpoint.path + "//rollout.jsonl", "session-1",
+        ]))
+
+        try Data(#"{"payload":{"id":"session-2"}}"#.utf8).write(
+            to: transcript, options: .atomic)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate-cached", "codex", transcript.path, "session-1",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidTranscript)
+        }
+
+        try Data(#"{"payload":{"id":"session-1"}}"#.utf8).write(
+            to: transcript, options: .atomic)
+        XCTAssertNoThrow(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate-cached", "codex", transcript.path, "session-1",
+        ]))
+    }
+
+    func testCachedJSONLValidationRejectsTranscriptSymlinks() throws {
+        let checkpoint = temporaryDirectory.appendingPathComponent(
+            "symlink-checkpoint", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: checkpoint, withIntermediateDirectories: true)
+        let target = checkpoint.appendingPathComponent("target.jsonl")
+        let transcript = checkpoint.appendingPathComponent("rollout.jsonl")
+        try Data(#"{"payload":{"id":"session-1"}}"#.utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            at: transcript, withDestinationURL: target)
+
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate-cached", "codex", transcript.path, "session-1",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidTranscript)
+        }
+    }
+
     func testJSONLSummaryUsesStableSnakeCaseJSON() throws {
         let file = temporaryDirectory.appendingPathComponent("rollout.jsonl")
         try Data("""
@@ -819,6 +915,57 @@ final class DetachStateCommandTests: XCTestCase {
             from: output[output.index(after: newline)...])
         XCTAssertEqual(assessment.effectiveStatus, .running)
         XCTAssertEqual(assessment.reason, .healthy)
+    }
+
+    func testHealthEvaluateCanInspectOnlyTheRecordedLiveProcess() throws {
+        let pid = String(ProcessInfo.processInfo.processIdentifier)
+        let output = try DetachStateCommand.run(arguments: [
+            "health", "evaluate",
+            "--metadata-valid", "true",
+            "--runtime-identity-expected", "true",
+            "--meta-status", "running",
+            "--tmux", "live",
+            "--run-token", "match",
+            "--worker", "unknown",
+            "--provider-process", "unknown",
+            "--heartbeat", "fresh",
+            "--checkpoint", "fresh",
+            "--checkpoint-recoverable", "true",
+            "--agent-session-known", "true",
+            "--inspect-processes", "true",
+            "--worker-pid", pid,
+            "--provider-pid", pid,
+            "--pane-pid", pid,
+        ])
+        let assessment = try JSONDecoder().decode(
+            SessionHealthAssessment.self,
+            from: output)
+
+        XCTAssertEqual(assessment.effectiveStatus, .running)
+        XCTAssertEqual(assessment.reason, .healthy)
+    }
+
+    func testHealthEvaluateRequiresACompleteProcessInspectionRecord() {
+        let incomplete = [
+            "health", "evaluate",
+            "--metadata-valid", "true",
+            "--runtime-identity-expected", "true",
+            "--meta-status", "running",
+            "--tmux", "live",
+            "--run-token", "match",
+            "--worker", "unknown",
+            "--provider-process", "unknown",
+            "--heartbeat", "fresh",
+            "--checkpoint", "fresh",
+            "--checkpoint-recoverable", "true",
+            "--agent-session-known", "true",
+            "--inspect-processes", "true",
+            "--worker-pid", "2",
+        ]
+
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: incomplete)) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
     }
 
     func testHealthSessionEmitsTypedPublicJSONAndHidesCollisionIdentity() throws {

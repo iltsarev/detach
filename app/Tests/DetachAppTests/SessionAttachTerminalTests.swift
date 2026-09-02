@@ -1,6 +1,5 @@
 import AppKit
 import Darwin
-import MetalKit
 import SwiftUI
 import XCTest
 import SwiftTerm
@@ -11,6 +10,72 @@ private final class SilentDetachCLI: DetachCLIRunning, @unchecked Sendable {
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         CLIResult(exitCode: 0, stdout: "", stderr: "", timedOut: false)
     }
+}
+
+private actor TerminalScreenPrefetchCLI: DetachCLIRunning {
+    private(set) var calls: [[String]] = []
+    private var activeCalls = 0
+    private var peakActiveCalls = 0
+
+    func run(arguments: [String], timeout: TimeInterval) async throws
+        -> CLIResult
+    {
+        calls.append(arguments)
+        activeCalls += 1
+        peakActiveCalls = max(peakActiveCalls, activeCalls)
+        defer { activeCalls -= 1 }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        return CLIResult(
+            exitCode: 0,
+            stdout: "\u{001B}[32mprefetched screen\u{001B}[0m\n",
+            stderr: "",
+            timedOut: false)
+    }
+
+    func recordedCalls() -> [[String]] { calls }
+    func peakConcurrency() -> Int { peakActiveCalls }
+}
+
+private actor SuspendedTerminalScreenCLI: DetachCLIRunning {
+    private var calls = 0
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func run(arguments: [String], timeout: TimeInterval) async throws
+        -> CLIResult
+    {
+        calls += 1
+        await withCheckedContinuation { continuations.append($0) }
+        return CLIResult(
+            exitCode: 0,
+            stdout: "retained screen",
+            stderr: "",
+            timedOut: false)
+    }
+
+    func callCount() -> Int { calls }
+
+    func releaseAll() {
+        let pending = continuations
+        continuations = []
+        for continuation in pending { continuation.resume() }
+    }
+}
+
+private actor RecordingSessionSwitchCLI: DetachCLIRunning {
+    private var calls: [[String]] = []
+
+    func run(arguments: [String], timeout: TimeInterval) async throws
+        -> CLIResult
+    {
+        calls.append(arguments)
+        return CLIResult(
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            timedOut: false)
+    }
+
+    func recordedCalls() -> [[String]] { calls }
 }
 
 private final class RecordingTerminalView: LocalProcessTerminalView {
@@ -48,7 +113,7 @@ final class SessionAttachTerminalTests: XCTestCase {
         #!/bin/sh
         printf '%s\\n' "$*" > '\(record.path)'
         case "$*" in
-          "codex attach detach-codex-proj-abcd1234")
+          "codex attach --terminal-features sync detach-codex-proj-abcd1234")
             exec /bin/cat
             ;;
         esac
@@ -80,7 +145,7 @@ final class SessionAttachTerminalTests: XCTestCase {
         try waitUntil {
             (try? String(contentsOf: record, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-                == "codex attach detach-codex-proj-abcd1234"
+                == "codex attach --terminal-features sync detach-codex-proj-abcd1234"
         }
         XCTAssertGreaterThan(terminal.process.shellPid, 0)
         XCTAssertTrue(terminal.process.running)
@@ -115,7 +180,7 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertEqual(
             try String(contentsOf: record, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-            "codex attach detach-codex-proj-abcd1234")
+            "codex attach --terminal-features sync detach-codex-proj-abcd1234")
     }
 
     func testTerminationEscalatesWhenTheClientIgnoresTerm() throws {
@@ -201,12 +266,14 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertEqual(seen, 9)
     }
 
+    @MainActor
     func testCoordinatorOwnsThePublicAttachInvocation() throws {
         let session = try XCTUnwrap(Self.session())
         let view = SessionAttachTerminalView(
             detachPath: "/tmp/detach",
             session: session,
             fontPointSize: 14,
+            screenCache: SessionTerminalScreenCache(),
             baseEnvironment: [
                 "PATH": "/bin",
                 "HOME": "/tmp",
@@ -216,7 +283,10 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertEqual(coordinator.controller.invocation.executable, "/tmp/detach")
         XCTAssertEqual(
             coordinator.controller.invocation.arguments,
-            ["codex", "attach", "detach-codex-proj-abcd1234"])
+            [
+                "codex", "attach", "--terminal-features", "sync",
+                "detach-codex-proj-abcd1234",
+            ])
         XCTAssertFalse(
             coordinator.controller.invocation.environment.contains {
                 $0.hasPrefix("TMUX=")
@@ -224,12 +294,147 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testLiveSessionSwitchKeepsTheExistingPTYAndUsesExactClientPID() async throws {
+        let source = try XCTUnwrap(Self.session(
+            name: "detach-codex-source"))
+        let target = try XCTUnwrap(Self.session(
+            name: "detach-codex-target"))
+        var invocation = Self.invocation()
+        invocation.executable = "/bin/sleep"
+        invocation.arguments = ["5"]
+        invocation.environment = ["PATH=/bin:/usr/bin"]
+        let controller = SessionAttachController(invocation: invocation)
+        let terminal = LocalProcessTerminalView(frame: NSRect(
+            x: 0, y: 0, width: 320, height: 180))
+        controller.configure(terminal, fontPointSize: 14)
+        controller.start()
+        let clientPID = terminal.process.shellPid
+        XCTAssertGreaterThan(clientPID, 1)
+        let cli = RecordingSessionSwitchCLI()
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: controller,
+            session: source,
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in },
+            switchCLI: cli)
+
+        coordinator.requestSession(target, in: terminal)
+        await waitUntilAsync {
+            await cli.recordedCalls().count == 1
+                && coordinator.session.id == target.id
+        }
+
+        XCTAssertTrue(terminal.process.running)
+        XCTAssertEqual(terminal.process.shellPid, clientPID)
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(
+            calls,
+            [SessionClientSwitchInvocation.arguments(
+                clientPID: clientPID,
+                from: source,
+                to: target)])
+        coordinator.cancelSwitch()
+        controller.terminateClient()
+    }
+
+    @MainActor
     func testStoppedSessionDetailUsesTheLogFallback() throws {
         let session = try XCTUnwrap(Self.session(status: "stopped"))
+        let cache = SessionLogSnapshotCache(
+            cli: SilentDetachCLI(), configurationID: "/tmp/detach")
         _ = SessionDetailView(
             session: session,
             store: SessionStore(cli: SilentDetachCLI()),
-            detachPath: "/tmp/detach").body
+            detachPath: "/tmp/detach",
+            terminalScreens: SessionTerminalScreenCache(),
+            cachedLog: cache.poller(for: session)).body
+    }
+
+    func testDetachedLiveLogRefreshUsesSessionEventsInsteadOfATimer() throws {
+        let live = try XCTUnwrap(Self.session(status: "running"))
+        let finished = try XCTUnwrap(Self.session(status: "stopped"))
+        let first = Date(timeIntervalSinceReferenceDate: 10)
+        let second = Date(timeIntervalSinceReferenceDate: 11)
+
+        XCTAssertNotEqual(
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: false,
+                lastUpdated: first),
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: false,
+                lastUpdated: second))
+        XCTAssertEqual(
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: true,
+                lastUpdated: first),
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: true,
+                lastUpdated: second))
+        XCTAssertEqual(
+            SessionDetailLogRefresh.taskID(
+                session: finished,
+                showsEmbeddedTerminal: false,
+                lastUpdated: first),
+            SessionDetailLogRefresh.taskID(
+                session: finished,
+                showsEmbeddedTerminal: false,
+                lastUpdated: second))
+    }
+
+    func testDetailTransitionKeepsOutgoingFrameUntilTargetIsReady() throws {
+        let first = try XCTUnwrap(Self.session(name: "detach-codex-first"))
+        let second = try XCTUnwrap(Self.session(name: "detach-codex-second"))
+        var transition = SessionDetailTransitionState(presented: first)
+
+        let generation = try XCTUnwrap(transition.present(second))
+
+        XCTAssertEqual(transition.presented.id, second.id)
+        XCTAssertEqual(transition.outgoing?.id, first.id)
+        XCTAssertFalse(transition.complete(
+            sessionID: first.id,
+            generation: generation))
+        XCTAssertTrue(transition.complete(
+            sessionID: second.id,
+            generation: generation))
+        XCTAssertNil(transition.outgoing)
+    }
+
+    func testRapidDetailTransitionKeepsLastCompositedFrameAndRejectsLateReady() throws {
+        let first = try XCTUnwrap(Self.session(name: "detach-codex-first"))
+        let second = try XCTUnwrap(Self.session(name: "detach-codex-second"))
+        let third = try XCTUnwrap(Self.session(name: "detach-codex-third"))
+        var transition = SessionDetailTransitionState(presented: first)
+
+        let secondGeneration = try XCTUnwrap(transition.present(second))
+        let thirdGeneration = try XCTUnwrap(transition.present(third))
+
+        XCTAssertEqual(transition.presented.id, third.id)
+        XCTAssertEqual(transition.outgoing?.id, first.id)
+        XCTAssertFalse(transition.complete(
+            sessionID: second.id,
+            generation: secondGeneration))
+        XCTAssertEqual(transition.outgoing?.id, first.id)
+        XCTAssertTrue(transition.complete(
+            sessionID: third.id,
+            generation: thirdGeneration))
+        XCTAssertNil(transition.outgoing)
+    }
+
+    func testDetailRevisionUpdatesWithoutStartingAVisualTransition() throws {
+        let first = try XCTUnwrap(Self.session(name: "detach-codex-same"))
+        var updated = first
+        updated.displayName = "Updated title"
+        var transition = SessionDetailTransitionState(presented: first)
+
+        XCTAssertNil(transition.present(updated))
+
+        XCTAssertEqual(transition.presented.displayName, "Updated title")
+        XCTAssertNil(transition.outgoing)
+        XCTAssertEqual(transition.generation, 0)
     }
 
     @MainActor
@@ -239,7 +444,179 @@ final class SessionAttachTerminalTests: XCTestCase {
         _ = SessionDetailView(
             session: session,
             store: SessionStore(cli: SilentDetachCLI()),
-            detachPath: "/tmp/detach").body
+            detachPath: "/tmp/detach",
+            terminalScreens: SessionTerminalScreenCache(),
+                cachedLog: nil).body
+    }
+
+    @MainActor
+    func testTerminalScreenCacheBoundsAndRestoresRecentText() throws {
+        let cache = SessionTerminalScreenCache()
+        for index in 0...SessionTerminalScreenCache.capacity {
+            let session = try XCTUnwrap(Self.session(
+                name: "detach-codex-project-\(index)"))
+            cache.store(
+                Data("screen \(index)\nnext".utf8),
+                for: session)
+        }
+
+        XCTAssertNil(cache.screen(for: try XCTUnwrap(Self.session(
+            name: "detach-codex-project-0"))))
+        XCTAssertEqual(
+            cache.screen(for: try XCTUnwrap(Self.session(
+                name: "detach-codex-project-9"))),
+            Data("screen 9\r\nnext".utf8))
+    }
+
+    @MainActor
+    func testTerminalScreenCacheKeepsOnlyTheVisibleTail() {
+        let source = (0...SessionTerminalScreenCache.lineLimit)
+            .map(String.init)
+            .joined(separator: "\n")
+        let normalized = SessionTerminalScreenCache.normalized(Data(source.utf8))
+        let text = normalized.flatMap { String(data: $0, encoding: .utf8) }
+
+        XCTAssertNotNil(text)
+        XCTAssertFalse(text?.hasPrefix("0\r\n") == true)
+        XCTAssertTrue(text?.hasPrefix("1\r\n") == true)
+        XCTAssertTrue(text?.hasSuffix(String(SessionTerminalScreenCache.lineLimit)) == true)
+        XCTAssertNil(SessionTerminalScreenCache.normalized(Data("\n  \n".utf8)))
+    }
+
+    @MainActor
+    func testCoordinatorCapturesTerminalTextBeforeDismantle() throws {
+        let session = try XCTUnwrap(Self.session())
+        let cache = SessionTerminalScreenCache()
+        let terminal = LocalProcessTerminalView(frame: .zero)
+        terminal.feed(text: "visible screen")
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: session,
+            screenCache: cache,
+            onTerminated: { _ in })
+
+        coordinator.captureScreen(from: terminal)
+
+        let screen = try XCTUnwrap(cache.screen(for: session))
+        XCTAssertTrue(String(decoding: screen, as: UTF8.self)
+            .contains("visible screen"))
+    }
+
+    @MainActor
+    func testFirstVisibleFrameIsCapturedBeforeReadinessIsReported() throws {
+        let session = try XCTUnwrap(Self.session())
+        let cache = SessionTerminalScreenCache()
+        let terminal = LocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        terminal.feed(text: "first visible frame")
+        var reportedScreen: Data?
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: session,
+            screenCache: cache,
+            onTerminated: { _ in },
+            onFirstVisibleFrame: {
+                reportedScreen = cache.screen(for: session)
+            })
+
+        coordinator.reportFirstVisibleFrame(from: terminal)
+
+        let screen = try XCTUnwrap(reportedScreen)
+        XCTAssertTrue(String(decoding: screen, as: UTF8.self)
+            .contains("first visible frame"))
+    }
+
+    @MainActor
+    func testTerminalScreenPrefetchWarmsOnlyLiveAttachableSessions() async throws {
+        let live = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-live"))
+        let stopped = try XCTUnwrap(Self.session(
+            status: "stopped", name: "detach-codex-stopped"))
+        let cli = TerminalScreenPrefetchCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: cli, configurationID: "/tmp/detach")
+
+        await cache.prefetch([live, stopped])
+        await cache.prefetch([live, stopped])
+
+        let screen = try XCTUnwrap(cache.screen(for: live))
+        XCTAssertTrue(String(decoding: screen, as: UTF8.self)
+            .contains("prefetched screen"))
+        XCTAssertNil(cache.screen(for: stopped))
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(calls, [[
+            "codex", "logs", "--ansi", "detach-codex-live",
+        ]])
+    }
+
+    @MainActor
+    func testConfigureWarmsLiveSessionsAlreadyPresentAtStartup() async throws {
+        let live = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-startup-live"))
+        let cli = TerminalScreenPrefetchCLI()
+        let cache = SessionTerminalScreenCache()
+
+        cache.schedulePrefetch(for: [live])
+        for _ in 0..<20 { await Task.yield() }
+        let callsBeforeConfiguration = await cli.recordedCalls()
+        XCTAssertTrue(callsBeforeConfiguration.isEmpty)
+
+        cache.configure(
+            cli: cli,
+            configurationID: "/tmp/detach",
+            sessions: [live])
+        await waitUntilAsync { cache.screen(for: live) != nil }
+
+        XCTAssertNotNil(cache.screen(for: live))
+        let callsAfterConfiguration = await cli.recordedCalls()
+        XCTAssertEqual(callsAfterConfiguration, [[
+            "codex", "logs", "--ansi", "detach-codex-startup-live",
+        ]])
+    }
+
+    @MainActor
+    func testTerminalScreenPrefetchBoundsConcurrentProcesses() async throws {
+        let sessions = try (0..<SessionTerminalScreenCache.capacity).map {
+            try XCTUnwrap(Self.session(
+                status: "running", name: "detach-codex-live-\($0)"))
+        }
+        let cli = TerminalScreenPrefetchCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: cli, configurationID: "/tmp/detach")
+
+        await cache.prefetch(sessions)
+
+        let peak = await cli.peakConcurrency()
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(peak, SessionTerminalScreenCache.maximumConcurrentPrefetches)
+        XCTAssertEqual(calls.count, sessions.count)
+        for session in sessions {
+            XCTAssertNotNil(cache.screen(for: session))
+        }
+    }
+
+    @MainActor
+    func testCancelledScreenPrefetchCannotClearAReplacementTask() async throws {
+        let session = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-generation"))
+        let oldCLI = SuspendedTerminalScreenCLI()
+        let newCLI = SuspendedTerminalScreenCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: oldCLI, configurationID: "old")
+        cache.schedulePrefetch(for: [session])
+        await waitUntilAsync { await oldCLI.callCount() == 1 }
+
+        cache.configure(cli: newCLI, configurationID: "new")
+        cache.schedulePrefetch(for: [session])
+        await waitUntilAsync { await newCLI.callCount() == 1 }
+        await oldCLI.releaseAll()
+        for _ in 0..<20 { await Task.yield() }
+
+        cache.schedulePrefetch(for: [session])
+        for _ in 0..<20 { await Task.yield() }
+        let replacementCallCount = await newCLI.callCount()
+        XCTAssertEqual(replacementCallCount, 1)
+        await newCLI.releaseAll()
     }
 
     func testTerminalFontMatchesTheAppSize() {
@@ -308,17 +685,6 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === terminal)
     }
 
-    func testRealtimeRendererRequiresPausedOnDemandMetal() {
-        let view = MTKView(frame: .zero)
-        view.isPaused = true
-        view.enableSetNeedsDisplay = true
-        view.autoResizeDrawable = false
-        XCTAssertTrue(SessionAttachRendering.isPausedOnDemand(view))
-
-        view.isPaused = false
-        XCTAssertFalse(SessionAttachRendering.isPausedOnDemand(view))
-    }
-
     func testRealtimeRendererUsesSteadyCursorVariants() {
         let mappings: [(CursorStyle, String)] = [
             (.blinkBlock, CursorStyle.steadyBlock.tagName),
@@ -335,24 +701,55 @@ final class SessionAttachTerminalTests: XCTestCase {
         }
     }
 
-    func testRealtimeRendererFailureKeepsTheFallbackAvailable() {
-        enum Failure: Error { case unavailable }
-        XCTAssertFalse(SessionAttachRendering.enableOnDemandMetal {
-            throw Failure.unavailable
-        })
-        XCTAssertTrue(SessionAttachRendering.enableOnDemandMetal {})
+    @MainActor
+    func testRealtimeRendererUsesEventDrivenCoreGraphics() {
+        let terminal = SessionAttachLocalProcessTerminalView(frame: .zero)
+
+        terminal.configureRealtimeRendererIfNeeded()
+        terminal.cursorStyleChanged(
+            source: terminal.terminal,
+            newStyle: .blinkUnderline)
+
+        XCTAssertFalse(terminal.isUsingMetalRenderer)
+        XCTAssertEqual(
+            terminal.terminal.options.cursorStyle.tagName,
+            CursorStyle.steadyUnderline.tagName)
+        XCTAssertTrue(
+            SessionAttachRendering.hasEnergyEfficientRenderer(in: terminal))
     }
 
     @MainActor
-    func testRealtimeRendererKeepsTheCoreGraphicsTerminalInteractive() {
-        let terminal = SessionAttachLocalProcessTerminalView(frame: .zero)
+    func testRetainedScreenSurvivesAttachClearUntilAFrameIsReady() throws {
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let retained = Data("retained session output".utf8)
+        terminal.feed(byteArray: Array(retained)[...])
+        terminal.retainScreen(
+            retained,
+            fontPointSize: 13)
+        var visibleFrameCount = 0
+        terminal.onFirstVisibleFrame = { visibleFrameCount += 1 }
+
+        XCTAssertTrue(terminal.isRetainingScreen)
+        terminal.dataReceived(slice: Array("\u{001B}[2J\u{001B}[H".utf8)[...])
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
 
         XCTAssertFalse(
-            SessionAttachRendering.hasEnergyEfficientMetalRenderer(in: terminal))
-        terminal.cursorStyleChanged(
-            source: terminal.terminal,
-            newStyle: .steadyBlock)
-        XCTAssertFalse(terminal.isUsingMetalRenderer)
+            SessionAttachLocalProcessTerminalView.hasVisibleContent(
+                in: terminal.terminal))
+        XCTAssertTrue(terminal.isRetainingScreen)
+        XCTAssertEqual(visibleFrameCount, 0)
+
+        terminal.dataReceived(slice: Array("attached session output".utf8)[...])
+        try waitUntil(timeout: 0.5) { !terminal.isRetainingScreen }
+        XCTAssertTrue(
+            SessionAttachLocalProcessTerminalView.hasVisibleContent(
+                in: terminal.terminal))
+        XCTAssertEqual(visibleFrameCount, 1)
+
+        terminal.dataReceived(slice: Array("more output".utf8)[...])
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
+        XCTAssertEqual(visibleFrameCount, 1)
     }
 
     func testDroppedPathNeverInsertsAControlCharacter() {
@@ -509,8 +906,11 @@ final class SessionAttachTerminalTests: XCTestCase {
     @MainActor
     func testScopedKeyboardRouting() throws {
         let terminal = LocalProcessTerminalView(frame: .zero)
+        let session = try XCTUnwrap(Self.session())
         let coordinator = SessionAttachTerminalView.Coordinator(
             controller: SessionAttachController(invocation: Self.invocation()),
+            session: session,
+            screenCache: SessionTerminalScreenCache(),
             onTerminated: { _ in })
 
         let controlV = try XCTUnwrap(NSEvent.keyEvent(
@@ -580,9 +980,24 @@ final class SessionAttachTerminalTests: XCTestCase {
         throw Timeout()
     }
 
-    private static func session(status: String = "running") -> Session? {
+    @MainActor
+    private func waitUntilAsync(
+        attempts: Int = 200,
+        _ predicate: @escaping () async -> Bool
+    ) async {
+        for _ in 0..<attempts {
+            if await predicate() { return }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("asynchronous condition did not become true")
+    }
+
+    private static func session(
+        status: String = "running",
+        name: String = "detach-codex-proj-abcd1234"
+    ) -> Session? {
         SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"detach-codex-proj-abcd1234","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
         """).sessions.first
     }
 

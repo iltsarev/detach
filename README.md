@@ -145,15 +145,33 @@ Start, Resume, and Recover run inside Detach and do not require an outer
 terminal. The selected external terminal remains available as a fallback for
 Attach, Resume, and Recover.
 
-The live terminal processes PTY input and output as events. Its on-demand GPU
-renderer repaints only when content changes. A steady cursor avoids an idle
-redraw timer. If Metal is unavailable, Detach keeps the CoreGraphics renderer.
+The live terminal processes PTY input and output as events. Its stable
+CoreGraphics renderer repaints only when content changes. A steady cursor
+avoids an idle redraw timer. Switching between live sessions keeps the same
+terminal and PTY. tmux synchronized output replaces the complete frame at once.
+
+Detach preloads the last text screen for up to nine live sessions in a small
+bounded burst. A cold attachment can show that text until its first frame. It
+does not keep hidden PTYs alive or use raster snapshots during live switching.
+
+Detach preloads recent non-live session logs in a bounded startup burst. This
+includes finished and recoverable sessions. Switching to a cached result shows
+its content immediately. Reopening unchanged content starts no new process.
+
+The dashboard also keeps a small private copy of the last valid session list.
+It can paint that list on the first app frame while Detach reads current state.
+Cached rows cannot Stop, Resume, Recover, or Delete a session. Those controls
+return only after the current typed state proves that they are safe.
 
 The dashboard also updates from events. Detach coalesces a provider transcript
 burst into one update at the start and one after output becomes quiet. Each
 event reads a complete typed session list. A dropped event or app activation
 causes a full resync. There is no Refresh interval setting and no periodic
 session-list process while state is idle.
+
+Power status is event-driven too. An atomic watchdog report wakes the app
+immediately. One deadline marks a silent report stale. The menu bar, Settings,
+and notifications do not poll the same file on repeating timers.
 
 <details>
 <summary><strong>How a new in-app session starts</strong></summary>

@@ -156,14 +156,24 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
     ) {
         self.executable = executable
         self.environment = Self.runtimeEnvironment(
-            environment ?? ProcessInfo.processInfo.environment)
+            environment ?? ProcessInfo.processInfo.environment,
+            allowsDetachOverrides: environment != nil)
         self.processRunner = processRunner
         self.terminationGrace = terminationGrace
         self.outputDrainGrace = outputDrainGrace
     }
 
-    static func runtimeEnvironment(_ base: [String: String]) -> [String: String] {
+    static func runtimeEnvironment(
+        _ base: [String: String],
+        allowsDetachOverrides: Bool = true
+    ) -> [String: String] {
         var environment = base
+        if !allowsDetachOverrides {
+            for key in environment.keys where key.hasPrefix("DETACH_")
+                    && !key.hasPrefix("DETACH_UI_E2E_") {
+                environment.removeValue(forKey: key)
+            }
+        }
         var paths = (base["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
             .split(separator: ":", omittingEmptySubsequences: true)
             .map(String.init)

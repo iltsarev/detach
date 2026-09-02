@@ -152,7 +152,7 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
             transcriptRoots: canonicalTranscriptRoots)
     }
 
-    private static func canonicalPath(_ path: String) -> String {
+    static func canonicalPath(_ path: String) -> String {
         var url = URL(fileURLWithPath: path).standardizedFileURL
         var missingComponents: [String] = []
         while url.path != "/", !FileManager.default.fileExists(atPath: url.path) {
@@ -195,7 +195,8 @@ public enum SessionFileEventClassifier {
 
     public static func classify(
         _ batch: SessionFileEventBatch,
-        configuration: SessionEventWatchConfiguration
+        configuration: SessionEventWatchConfiguration,
+        managedTranscriptPaths: Set<String>
     ) -> SessionFileEventClassification {
         if batch.flags.contains(where: { $0 & resyncFlags != 0 }) {
             return .resync
@@ -203,12 +204,8 @@ public enum SessionFileEventClassifier {
         if batch.paths.contains(configuration.signalPath) {
             return .lifecycle
         }
-        for path in batch.paths where path.hasSuffix(".jsonl") {
-            if configuration.transcriptRoots.contains(where: {
-                path == $0 || path.hasPrefix($0 + "/")
-            }) {
-                return .transcript
-            }
+        for path in batch.paths where managedTranscriptPaths.contains(path) {
+            return .transcript
         }
         return .ignored
     }
@@ -271,6 +268,34 @@ private func sessionFSEventsCallback(
     watcher.receive(SessionFileEventBatch(paths: paths, flags: flags))
 }
 
+/// Ends a long-lived watcher when the process that launched it exits. Task
+/// cancellation remains the normal path. This process source closes the gap
+/// during application termination, when Swift concurrency teardown is not
+/// guaranteed to run before AppKit exits.
+final class SessionEventParentMonitor: @unchecked Sendable {
+    private let source: DispatchSourceProcess
+
+    init(
+        processID: pid_t,
+        queue: DispatchQueue,
+        onExit: @escaping @Sendable () -> Void
+    ) {
+        source = DispatchSource.makeProcessSource(
+            identifier: processID,
+            eventMask: .exit,
+            queue: queue)
+        source.setEventHandler(handler: onExit)
+    }
+
+    func start() {
+        source.resume()
+    }
+
+    deinit {
+        source.cancel()
+    }
+}
+
 /// Long-lived native event source used by `detach watch --json`.
 public final class SessionFileEventWatcher: @unchecked Sendable {
     private let configuration: SessionEventWatchConfiguration
@@ -278,8 +303,11 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     private let queue: DispatchQueue
     private let output: FileHandle
     private var stream: FSEventStreamRef?
+    private var parentMonitor: SessionEventParentMonitor?
     private var coalescer = SessionEventCoalescer()
     private var trailingWorkItem: DispatchWorkItem?
+    private var managedTranscriptPaths: Set<String> = []
+    private var activeWatchedPaths: [String] = []
 
     public init(
         configuration: SessionEventWatchConfiguration,
@@ -297,20 +325,40 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     public static func run(arguments: [String]) throws -> Never {
         let watcher = SessionFileEventWatcher(
             configuration: try .parse(arguments: arguments))
-        try watcher.start()
+        try watcher.start(parentProcessID: Darwin.getppid())
         return withExtendedLifetime(watcher) {
             dispatchMain()
         }
     }
 
-    public func start() throws {
+    public func start(parentProcessID: pid_t? = nil) throws {
+        refreshManagedTranscriptPaths()
+        let paths = availableWatchedPaths()
+        guard paths.contains(configuration.stateRoot) else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        stream = try makeStream(paths: paths)
+        activeWatchedPaths = paths
+        if let parentProcessID, parentProcessID > 1 {
+            let monitor = SessionEventParentMonitor(
+                processID: parentProcessID,
+                queue: queue,
+                onExit: { Darwin._exit(EXIT_SUCCESS) })
+            parentMonitor = monitor
+            monitor.start()
+        }
+        // The callback also runs on this serial queue. Keep complete JSON
+        // records ordered even when an event arrives during startup.
+        queue.sync { emit(.ready) }
+    }
+
+    private func makeStream(paths: [String]) throws -> FSEventStreamRef {
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),
             retain: nil,
             release: nil,
             copyDescription: nil)
-        let paths = watchedPaths() as CFArray
         let createFlags = FSEventStreamCreateFlags(
             kFSEventStreamCreateFlagUseCFTypes
                 | kFSEventStreamCreateFlagFileEvents
@@ -319,29 +367,59 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
             nil,
             sessionFSEventsCallback,
             &context,
-            paths,
+            paths as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.05,
             createFlags) else {
             throw DetachStateCommandError.invalidArguments
         }
-        self.stream = stream
         FSEventStreamSetDispatchQueue(stream, queue)
         guard FSEventStreamStart(stream) else {
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
-            self.stream = nil
             throw DetachStateCommandError.invalidArguments
         }
-        // The callback also runs on this serial queue. Keep complete JSON
-        // records ordered even when an event arrives during startup.
-        queue.sync { emit(.ready) }
+        return stream
     }
 
     func receive(_ batch: SessionFileEventBatch) {
-        apply(coalescer.consume(SessionFileEventClassifier.classify(
+        let classification = SessionFileEventClassifier.classify(
             batch,
-            configuration: configuration)))
+            configuration: configuration,
+            managedTranscriptPaths: managedTranscriptPaths)
+        if classification == .lifecycle || classification == .resync {
+            refreshManagedTranscriptPaths()
+            scheduleStreamRootRefreshIfNeeded()
+        }
+        apply(coalescer.consume(classification))
+    }
+
+    private func refreshManagedTranscriptPaths() {
+        managedTranscriptPaths = DetachStateCommand.managedTranscriptPaths(
+            atStateRoot: configuration.stateRoot,
+            allowedRoots: configuration.transcriptRoots)
+    }
+
+    private func scheduleStreamRootRefreshIfNeeded() {
+        let paths = availableWatchedPaths()
+        guard paths.contains(configuration.stateRoot),
+              paths != activeWatchedPaths else { return }
+        queue.async { [weak self] in
+            self?.replaceStreamIfPossible(paths: paths)
+        }
+    }
+
+    private func replaceStreamIfPossible(paths: [String]) {
+        guard paths != activeWatchedPaths,
+              let replacement = try? makeStream(paths: paths) else { return }
+        let previous = stream
+        stream = replacement
+        activeWatchedPaths = paths
+        if let previous {
+            FSEventStreamStop(previous)
+            FSEventStreamInvalidate(previous)
+            FSEventStreamRelease(previous)
+        }
     }
 
     private func apply(_ action: SessionEventCoalescer.Action) {
@@ -376,18 +454,14 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
         output.write(Data([0x0A]))
     }
 
-    private func watchedPaths() -> [String] {
-        var paths = [nearestExistingRoot(configuration.stateRoot)]
-        paths.append(contentsOf: configuration.transcriptRoots.map(nearestExistingRoot))
-        return Array(Set(paths)).sorted()
-    }
-
-    private func nearestExistingRoot(_ path: String) -> String {
-        var url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+    private func availableWatchedPaths() -> [String] {
         let manager = FileManager.default
-        while url.path != "/", !manager.fileExists(atPath: url.path) {
-            url.deleteLastPathComponent()
+        let candidates = [configuration.stateRoot] + configuration.transcriptRoots
+        let paths = candidates.filter { path in
+            var isDirectory: ObjCBool = false
+            return manager.fileExists(atPath: path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
         }
-        return url.path
+        return Array(Set(paths)).sorted()
     }
 }

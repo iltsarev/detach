@@ -86,6 +86,10 @@ final class PowerHelperServiceTests: XCTestCase {
                 "The bundled power helper definition is missing or incomplete."
             ),
             (
+                .releaseSignatureRequired,
+                "Only a signed Detach release can update the power helper."
+            ),
+            (
                 .registrationDidNotComplete,
                 "macOS did not finish registering the power helper."
             ),
@@ -121,6 +125,30 @@ final class PowerHelperServiceTests: XCTestCase {
 
         XCTAssertEqual(backend.registerCalls, 0)
         XCTAssertEqual(backend.unregisterCalls, 0)
+    }
+
+    func testAdHocBuildCannotMutateSharedPowerHelperRegistration() async {
+        let backend = FakePowerHelperBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)])
+        let fixture = makeFixture(
+            backend: backend,
+            serviceMutationAllowed: { false })
+        defer { fixture.cleanup() }
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.reconcileAfterAppUpdate()
+        }
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.disable()
+        }
+
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 0)
+        XCTAssertNil(fixture.handoffStore.transaction)
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerHelperDefinitionReconcilePending"))
     }
 
     func testEnableFailsAfterBoundedUnconfirmedRegistrationRetries() async {
@@ -754,7 +782,7 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertNil(fixture.handoffStore.transaction)
     }
 
-    func testPrepareRequiresHeldLifetimeBarrierBeforeUnregisterSubmit() async {
+    func testReleasedLifetimeBarrierSkipsUnreachableHelperPreparation() async throws {
         let backend = FakePowerHelperBackend(
             status: .enabled,
             registrations: [.success(.enabled)])
@@ -765,14 +793,13 @@ final class PowerHelperServiceTests: XCTestCase {
         fixture.defaults.set(
             "digest-previous", forKey: "powerHelperDefinitionDigest")
 
-        await XCTAssertThrowsErrorAsync {
-            try await fixture.service.reconcileAfterAppUpdate()
-        }
+        try await fixture.service.reconcileAfterAppUpdate()
 
-        XCTAssertEqual(fixture.lifecycle.prepareCalls, 1)
-        XCTAssertEqual(backend.unregisterCalls, 0)
-        XCTAssertEqual(fixture.lifecycle.cancelCalls, 0)
-        XCTAssertEqual(fixture.handoffStore.transaction?.phase, .preparing)
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 1)
+        XCTAssertNil(fixture.handoffStore.transaction)
     }
 
     func testSubmittedPhaseIsDurableBeforeBackendUnregisterCall() async throws {
@@ -1216,7 +1243,7 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertNil(fixture.handoffStore.transaction)
     }
 
-    func testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister() async throws {
+    func testMatchingEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister() async throws {
         let backend = FakePowerHelperBackend(
             status: .enabled,
             registrations: [.success(.enabled)])
@@ -1226,7 +1253,7 @@ final class PowerHelperServiceTests: XCTestCase {
             systemHandoffLockProvider: { nil })
         defer { fixture.cleanup() }
         fixture.defaults.set(
-            "digest-previous", forKey: "powerHelperDefinitionDigest")
+            "digest-current", forKey: "powerHelperDefinitionDigest")
 
         _ = try await fixture.service.reconcileAfterAppUpdate()
 
@@ -1234,6 +1261,26 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertEqual(backend.unregisterCalls, 1)
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertEqual(fixture.lifecycle.cancelCalls, 1)
+        XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testMatchingEnabledRegistrationWithBusyLifetimeBarrierNoOps() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .enabled,
+            registrations: [])
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .busy })
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-current", forKey: "powerHelperDefinitionDigest")
+
+        _ = try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 0)
         XCTAssertNil(fixture.handoffStore.transaction)
     }
 
@@ -1270,6 +1317,7 @@ final class PowerHelperServiceTests: XCTestCase {
                 MemoryPowerHelperHandoffLock()
             },
         currentProcessIsActiveConsoleUser: @escaping () -> Bool = { true },
+        serviceMutationAllowed: @escaping () -> Bool = { true },
         digestProvider: @escaping () -> String? = { "digest-current" },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> PowerHelperFixture {
@@ -1288,6 +1336,7 @@ final class PowerHelperServiceTests: XCTestCase {
             systemHandoffLockProvider: systemHandoffLockProvider,
             currentProcessIsActiveConsoleUser:
                 currentProcessIsActiveConsoleUser,
+            serviceMutationAllowed: serviceMutationAllowed,
             sleep: sleep)
         return PowerHelperFixture(
             service: service, lifecycle: lifecycle,

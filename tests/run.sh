@@ -329,10 +329,12 @@ FAKE_POWER_BIN="$TMP_ROOT/fake-detach-power"
 FAKE_ENV_BIN="$TMP_ROOT/fake-env"
 export FAKE_ENV_ARGS_FILE="$TMP_ROOT/env-args.txt"
 export FAKE_POWER_ARGS_FILE="$TMP_ROOT/power-args.txt"
+export FAKE_POWER_STATUS_FILE="$TMP_ROOT/power-status.txt"
 export FAKE_POWER_RELEASES_FILE="$TMP_ROOT/power-releases.txt"
 printf '%s\n' \
   '#!/bin/bash' \
   'if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then' \
+  '  printf '\''%s\n'\'' "$*" >>"$FAKE_POWER_STATUS_FILE"' \
   '  printf '\''{"schema":1,"state":"%s","helper_reachable":true}\n'\'' "${FAKE_POWER_STATE:-protected}"' \
   '  exit 0' \
   'fi' \
@@ -427,6 +429,71 @@ if codex_part_selected preflight; then
   bash -n "$ROOT/bin/detach-core"
   [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
 
+  : >"$FAKE_POWER_STATUS_FILE"
+  "$DETACH" list --json >/dev/null
+  [ "$(wc -l <"$FAKE_POWER_STATUS_FILE" | tr -d '[:space:]')" = 1 ]
+  grep -Fx 'status --json --quick' "$FAKE_POWER_STATUS_FILE" >/dev/null
+
+  # The public JSON list overlaps independent provider reads but must publish
+  # complete records in Codex-then-Claude order and remove its private files.
+  public_list_tmp="$TMP_ROOT/public-list-tmp"
+  public_codex_root="$TMP_ROOT/public-list-codex"
+  public_claude_root="$TMP_ROOT/public-list-claude"
+  public_list_state_wrapper="$TMP_ROOT/public-list-state"
+  public_list_started="$TMP_ROOT/public-list-started"
+  mkdir -p \
+    "$public_list_tmp" \
+    "$public_codex_root/sessions/detach-codex-public-order" \
+    "$public_claude_root/sessions/detach-claude-public-order"
+  "$STATE_HELPER" meta create \
+    "$public_codex_root/sessions/detach-codex-public-order/meta.json" \
+    --integer schema 1 \
+    --string session_name detach-codex-public-order \
+    --string project_dir "$ROOT" \
+    --string status stopped
+  "$STATE_HELPER" meta create \
+    "$public_claude_root/sessions/detach-claude-public-order/meta.json" \
+    --integer schema 1 \
+    --string session_name detach-claude-public-order \
+    --string project_dir "$ROOT" \
+    --string status stopped
+  printf '%s\n' \
+    '#!/bin/bash' \
+    'set -u' \
+    'if [ "${1:-} ${2:-}" = "meta snapshots" ]; then' \
+    '  printf "started\n" >>"$DETACH_PARALLEL_LIST_STARTED"' \
+    '  attempts=0' \
+    '  while [ "$attempts" -lt 200 ]; do' \
+    '    [ "$(wc -l <"$DETACH_PARALLEL_LIST_STARTED" | tr -d "[:space:]")" -ge 2 ] && break' \
+    '    sleep 0.01' \
+    '    attempts=$((attempts + 1))' \
+    '  done' \
+    '  [ "$attempts" -lt 200 ] || exit 91' \
+    'fi' \
+    'exec "$DETACH_PARALLEL_LIST_STATE_HELPER" "$@"' \
+    >"$public_list_state_wrapper"
+  chmod 0755 "$public_list_state_wrapper"
+  public_list_output="$(
+    TMPDIR="$public_list_tmp" \
+    DETACH_CODEX_STATE_ROOT="$public_codex_root" \
+    DETACH_CLAUDE_STATE_ROOT="$public_claude_root" \
+    DETACH_STATE_BIN="$public_list_state_wrapper" \
+    DETACH_PARALLEL_LIST_STARTED="$public_list_started" \
+    DETACH_PARALLEL_LIST_STATE_HELPER="$STATE_HELPER" \
+    DETACH_POWER_BIN=/usr/bin/false \
+      "$DETACH" list --json
+  )"
+  [ "$(wc -l <"$public_list_started" | tr -d '[:space:]')" = 2 ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin provider)" = codex ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '2p' | \
+    "$STATE_HELPER" meta get /dev/stdin provider)" = claude ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
+  [ -z "$(find "$public_list_tmp" -mindepth 1 -print -quit)" ]
+
   # The app's long-lived source must be the public CLI, backed by one native
   # process. Prove lifecycle and transcript writes produce leading/trailing
   # typed hints on a normal user-data volume (FSEvents excludes some temporary
@@ -441,10 +508,18 @@ if codex_part_selected preflight; then
       rm -rf "$event_root"
     }
     trap cleanup_event_probe EXIT
+    event_session="detach-codex-event"
+    event_managed_transcript="$event_root/codex/sessions/managed.jsonl"
     mkdir -p \
-      "$event_root/state" \
-      "$event_root/codex/sessions" \
-      "$event_root/claude/projects"
+      "$event_root/state/codex/sessions/$event_session" \
+      "$event_root/codex/sessions"
+    touch "$event_managed_transcript"
+    "$STATE_HELPER" meta create \
+      "$event_root/state/codex/sessions/$event_session/meta.json" \
+      --integer schema 1 \
+      --string session_name "$event_session" \
+      --string project_dir "$event_root/project" \
+      --string transcript_path "$event_managed_transcript"
     DETACH_STATE_ROOT="$event_root/state" \
     CODEX_HOME="$event_root/codex" \
     CLAUDE_CONFIG_DIR="$event_root/claude" \
@@ -453,7 +528,10 @@ if codex_part_selected preflight; then
     wait_for_file_text "$event_output" '"event":"ready"'
     "$STATE_HELPER" events publish "$event_root/state/session-change"
     wait_for_file_text "$event_output" '"event":"changed"'
-    touch "$event_root/codex/sessions/turn.jsonl"
+    touch "$event_root/codex/sessions/unmanaged.jsonl"
+    sleep 0.3
+    [ "$(grep -c '"event":"changed"' "$event_output")" -eq 1 ]
+    touch "$event_managed_transcript"
     event_attempts=0
     while [ "$event_attempts" -lt 80 ] && \
           [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 3 ]; do
@@ -461,6 +539,35 @@ if codex_part_selected preflight; then
       sleep 0.05
     done
     [ "$(grep -c '"event":"changed"' "$event_output")" -ge 3 ]
+
+    claude_event_session="detach-claude-event"
+    claude_event_transcript="$event_root/claude/projects/managed.jsonl"
+    mkdir -p \
+      "$event_root/state/claude/sessions/$claude_event_session" \
+      "$event_root/claude/projects"
+    touch "$claude_event_transcript"
+    "$STATE_HELPER" meta create \
+      "$event_root/state/claude/sessions/$claude_event_session/meta.json" \
+      --integer schema 1 \
+      --string session_name "$claude_event_session" \
+      --string project_dir "$event_root/project" \
+      --string transcript_path "$claude_event_transcript"
+    "$STATE_HELPER" events publish "$event_root/state/session-change"
+    event_attempts=0
+    while [ "$event_attempts" -lt 80 ] && \
+          [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 4 ]; do
+      event_attempts=$((event_attempts + 1))
+      sleep 0.05
+    done
+    sleep 0.1
+    touch "$claude_event_transcript"
+    event_attempts=0
+    while [ "$event_attempts" -lt 80 ] && \
+          [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 6 ]; do
+      event_attempts=$((event_attempts + 1))
+      sleep 0.05
+    done
+    [ "$(grep -c '"event":"changed"' "$event_output")" -ge 6 ]
   )
 
   heartbeat_source="$(sed -n \
@@ -699,7 +806,11 @@ bootstrap_codex_checkpoint() {
     sleep 0.1
   done
   [ -s "$checkpoint/rollout.jsonl" ]
+  [ -s "$checkpoint/.detach-jsonl-validation.json" ]
   [ -s "$checkpoint/codex-state.sqlite" ]
+  ! find "$checkpoint" -maxdepth 1 \
+    \( -name 'codex-state.sqlite.tmp.*-shm' -o \
+       -name 'codex-state.sqlite.tmp.*-wal' \) -print -quit | grep -q .
   expected_id="$("$STATE_HELPER" meta get "$meta" codex_session_id)"
   [ -n "$expected_id" ]
   run_codex stop integration
@@ -938,11 +1049,16 @@ tmux -L "$OUTER_SOCKET" send-keys -l -t "$outer_pane" -- \
 tmux -L "$OUTER_SOCKET" send-keys -t "$outer_pane" C-m
 attempts=0
 while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
-    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 50 ]; do
+    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 100 ]; do
   attempts=$((attempts + 1))
   sleep 0.1
 done
-tmux -L "$SOCKET" list-clients -F '#{client_session}' | grep -Fx "$SESSION" >/dev/null
+if ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
+    grep -Fx "$SESSION" >/dev/null; then
+  printf 'nested attach client did not appear within 10 seconds\n' >&2
+  tmux -L "$SOCKET" list-clients -F '#{client_pid} #{client_session}' >&2 || true
+  exit 1
+fi
 tmux -L "$OUTER_SOCKET" send-keys -t "$outer_pane" C-b d
 attempts=0
 while [ ! -f "$nested_returned" ] && [ "$attempts" -lt 50 ]; do
@@ -960,21 +1076,63 @@ tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
 # public CLI on a real PTY, terminate that client, and prove the managed
 # session, worker, and provider survive.
 TERM=xterm-256color /usr/bin/script -q /dev/null \
-  "$DETACH" codex attach integration >/dev/null 2>&1 &
+  "$DETACH" codex attach --terminal-features sync integration >/dev/null 2>&1 &
 attach_client_wrapper=$!
 attempts=0
 while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
-    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 50 ]; do
+    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 100 ]; do
   attempts=$((attempts + 1))
   sleep 0.1
 done
-tmux -L "$SOCKET" list-clients -F '#{client_session}' | grep -Fx "$SESSION" >/dev/null
+if ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
+    grep -Fx "$SESSION" >/dev/null; then
+  printf 'PTY attach client did not appear within 10 seconds\n' >&2
+  tmux -L "$SOCKET" list-clients -F '#{client_pid} #{client_session}' >&2 || true
+  exit 1
+fi
 attach_client_pid="$(tmux -L "$SOCKET" list-clients \
   -F '#{client_pid} #{client_session}' | \
   awk -v session="$SESSION" '$2 == session { print $1 }')"
 case "$attach_client_pid" in
   ''|*[!0-9]*) printf 'attach client PID is missing\n' >&2; exit 1 ;;
 esac
+client_features="$(tmux -L "$SOCKET" list-clients \
+  -F '#{client_pid}|#{client_termfeatures}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')"
+case ",$client_features," in *,sync,*) ;; *)
+  printf 'in-app attach client did not advertise synchronized output: %s\n' \
+    "$client_features" >&2
+  exit 1
+  ;;
+esac
+
+# The app keeps this exact visible client and asks the public runtime to move
+# it between live managed sessions. PID and expected source bind the request;
+# a stale source or PID cannot affect another client.
+switch_target="detach-codex-client-switch-target"
+switch_target_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s "$switch_target" '/bin/sleep 30')"
+tmux -L "$SOCKET" set-option -q -t "=$switch_target:" @detach 1
+tmux -L "$SOCKET" set-option -q -t "=$switch_target:" @detach_provider codex
+tmux -L "$SOCKET" set-option -q -t "=$switch_target:" \
+  @detach_pane_id "$switch_target_pane"
+if "$DETACH" client switch --pid "$attach_client_pid" \
+    --from detach-codex-wrong-source --to "$switch_target" \
+    --provider codex >/dev/null 2>&1; then
+  printf 'client switch accepted a stale source session\n' >&2
+  exit 1
+fi
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
+"$DETACH" client switch --pid "$attach_client_pid" \
+  --from "$SESSION" --to "$switch_target" --provider codex
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$switch_target" ]
+"$DETACH" client switch --pid "$attach_client_pid" \
+  --from "$switch_target" --to "$SESSION" --provider codex
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
+tmux -L "$SOCKET" kill-session -t "=$switch_target"
 kill -TERM "$attach_client_pid"
 attempts=0
 while tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
@@ -1168,6 +1326,7 @@ wait_for_file_text "$FAKE_CODEX_ARGS_FILE" 'start a new thread'
 [ "$(grep -Fxc -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ "$(grep -Fxc -- 'never' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ ! -e "$checkpoint/rollout.jsonl" ]
+[ ! -e "$checkpoint/.detach-jsonl-validation.json" ]
 [ ! -e "$checkpoint/meta.json" ]
 fresh_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
 if run_codex --name integration --detach -- 'must not replace a running task'; then
@@ -1611,6 +1770,7 @@ while { [ ! -s "$worker_crash_checkpoint" ] || \
   sleep 0.1
 done
 [ -s "$worker_crash_checkpoint" ]
+[ -s "$(dirname "$worker_crash_checkpoint")/.detach-jsonl-validation.json" ]
 worker_crash_pane="$(tmux -L "$SOCKET" show-options -qv \
   -t "=$worker_crash_session:" @detach_pane_id)"
 worker_crash_pid="$("$STATE_HELPER" meta get "$worker_crash_meta" worker_pid)"
@@ -1827,6 +1987,9 @@ list_scale_root="$TMP_ROOT/list-scale-state"
 list_scale_output="$TMP_ROOT/list-scale.jsonl"
 list_scale_invocations="$TMP_ROOT/list-scale-invocations.txt"
 list_scale_wrapper="$TMP_ROOT/list-scale-detach-state"
+list_scale_tmux_invocations="$TMP_ROOT/list-scale-tmux-invocations.txt"
+list_scale_tmux_wrapper="$TMP_ROOT/list-scale-tmux"
+list_scale_live_sessions=()
 mkdir -p "$list_scale_root/sessions"
 list_scale_index=1
 while [ "$list_scale_index" -le 25 ]; do
@@ -1838,6 +2001,12 @@ while [ "$list_scale_index" -le 25 ]; do
     --string session_name "$list_scale_session" \
     --string project_dir "$ROOT" \
     --string status stopped
+  if [ "$list_scale_index" -le 3 ]; then
+    tmux -L "$SOCKET" new-session -d -s "$list_scale_session" /bin/sleep 30
+    tmux -L "$SOCKET" set-option -q -t "=$list_scale_session:" @detach 1
+    tmux -L "$SOCKET" set-option -q -t "=$list_scale_session:" @detach_provider codex
+    list_scale_live_sessions+=( "$list_scale_session" )
+  fi
   list_scale_index=$((list_scale_index + 1))
 done
 printf '%s\n' \
@@ -1845,19 +2014,33 @@ printf '%s\n' \
   'printf x\\n >>"$DETACH_LIST_SCALE_INVOCATIONS"' \
   'exec "$DETACH_LIST_SCALE_STATE_HELPER" "$@"' >"$list_scale_wrapper"
 chmod 0755 "$list_scale_wrapper"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'printf x\\n >>"$DETACH_LIST_SCALE_TMUX_INVOCATIONS"' \
+  'exec "$DETACH_LIST_SCALE_TMUX_HELPER" "$@"' >"$list_scale_tmux_wrapper"
+chmod 0755 "$list_scale_tmux_wrapper"
 SECONDS=0
 DETACH_CODEX_STATE_ROOT="$list_scale_root" \
 DETACH_STATE_BIN="$list_scale_wrapper" \
 DETACH_LIST_SCALE_STATE_HELPER="$STATE_HELPER" \
 DETACH_LIST_SCALE_INVOCATIONS="$list_scale_invocations" \
 DETACH_POWER_BIN=/usr/bin/false \
-DETACH_TMUX_BIN=/usr/bin/false \
-DETACH_TMUX_SOCKET_PATH="$TMUX_SOCKET_ROOT/list-scale.sock" \
+DETACH_TMUX_BIN="$list_scale_tmux_wrapper" \
+DETACH_LIST_SCALE_TMUX_HELPER="$TMUX_TEST_BIN" \
+DETACH_LIST_SCALE_TMUX_INVOCATIONS="$list_scale_tmux_invocations" \
+DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
   "$SCRIPT" codex list --json >"$list_scale_output"
 list_scale_elapsed="$SECONDS"
+for list_scale_session in "${list_scale_live_sessions[@]}"; do
+  tmux -L "$SOCKET" kill-session -t "=$list_scale_session"
+done
 [ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
 [ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ] || {
   printf 'list restored per-field state helper fan-out\n' >&2
+  exit 1
+}
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 1 ] || {
+  printf 'list did not use one batched tmux snapshot\n' >&2
   exit 1
 }
 [ "$list_scale_elapsed" -lt 5 ] || {

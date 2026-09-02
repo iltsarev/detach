@@ -60,6 +60,7 @@ private final class SystemWatchdogRegistrationBackend: WatchdogRegistrationBacke
 
 enum WatchdogServiceError: LocalizedError {
     case bundledDefinitionMissing
+    case releaseSignatureRequired
     case registrationDidNotComplete
     case unregistrationBarrierDidNotComplete
 
@@ -67,6 +68,9 @@ enum WatchdogServiceError: LocalizedError {
         switch self {
         case .bundledDefinitionMissing:
             L10n.string("The bundled watchdog definition is missing or incomplete.")
+        case .releaseSignatureRequired:
+            L10n.string(
+                "Only a signed Detach release can update the background monitor.")
         case .registrationDidNotComplete:
             L10n.string("macOS did not finish registering the watchdog.")
         case .unregistrationBarrierDidNotComplete:
@@ -85,6 +89,7 @@ final class WatchdogService {
     private let digestProvider: () -> String?
     private let lifetimeBarrierStatus: () throws -> WatchdogLifetimeBarrierStatus
     private let legacyWatchdogIsRunning: () throws -> Bool
+    private let serviceMutationAllowed: () -> Bool
     private let sleep: (UInt64) async throws -> Void
     private var operationInFlight = false
 
@@ -102,6 +107,9 @@ final class WatchdogService {
         digestProvider = Self.bundleDefinitionDigest
         lifetimeBarrierStatus = { try WatchdogLifetimeBarrier().status() }
         legacyWatchdogIsRunning = Self.bundledWatchdogProcessIsRunning
+        serviceMutationAllowed = {
+            ServiceManagementMutationAdmission.currentBundleIsReleaseSigned
+        }
         sleep = { try await Task.sleep(nanoseconds: $0) }
     }
 
@@ -113,6 +121,7 @@ final class WatchdogService {
         lifetimeBarrierStatus: @escaping () throws
             -> WatchdogLifetimeBarrierStatus = { .released },
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
+        serviceMutationAllowed: @escaping () -> Bool = { true },
         sleep: @escaping (UInt64) async throws -> Void = {
             try await Task.sleep(nanoseconds: $0)
         }
@@ -123,12 +132,14 @@ final class WatchdogService {
         self.digestProvider = digestProvider
         self.lifetimeBarrierStatus = lifetimeBarrierStatus
         self.legacyWatchdogIsRunning = legacyWatchdogIsRunning
+        self.serviceMutationAllowed = serviceMutationAllowed
         self.sleep = sleep
     }
 
     var status: WatchdogStatus { backend.status }
 
     func reconcileAfterAppUpdate(forceReplacement: Bool = false) async throws {
+        try requireReleaseSignature()
         guard let digest = digestProvider() else {
             throw WatchdogServiceError.bundledDefinitionMissing
         }
@@ -142,6 +153,7 @@ final class WatchdogService {
     }
 
     func disable() async throws {
+        try requireReleaseSignature()
         try await performExclusiveOperation {
             try await drive(to: nil, forceReplacement: false)
         }
@@ -263,8 +275,21 @@ final class WatchdogService {
         let previous = defaults.string(forKey: digestKey)
         let pending = defaults.bool(forKey: pendingDigestKey)
         let definitionChanged = previous != digest
+        let currentStatus = status
+        let enabledRegistrationNeedsRepair: Bool
+        if currentStatus == .enabled,
+           try lifetimeBarrierStatus() != .busy {
+            // A matching digest identifies the bundled bytes, not the BTM
+            // parent UUID that launchd resolves. Keep a pre-lock legacy
+            // watchdog if its exact executable is still alive. Otherwise an
+            // enabled record without a lifetime holder is a stale job.
+            enabledRegistrationNeedsRepair = try !legacyWatchdogIsRunning()
+        } else {
+            enabledRegistrationNeedsRepair = false
+        }
         if !forceReplacement, !definitionChanged, !pending,
-           status == .enabled || status == .requiresApproval {
+           !enabledRegistrationNeedsRepair,
+           currentStatus == .enabled || currentStatus == .requiresApproval {
             return nil
         }
 
@@ -272,10 +297,12 @@ final class WatchdogService {
         // unregister submission. Replaying from `unregisterSubmitted` is the
         // only safe migration even when status already says notRegistered.
         let priorRegistrationMayNeedRemoval = forceReplacement
+            || enabledRegistrationNeedsRepair
             || pending
             || (previous != nil && definitionChanged)
             || (definitionChanged
-                && (status == .enabled || status == .requiresApproval))
+                && (currentStatus == .enabled
+                    || currentStatus == .requiresApproval))
         let transaction = WatchdogHandoffTransaction(
             phase: priorRegistrationMayNeedRemoval
                 ? .unregisterSubmitted : .registering,
@@ -382,6 +409,12 @@ final class WatchdogService {
     private func rememberDefinition(_ digest: String) {
         defaults.set(digest, forKey: digestKey)
         defaults.set(false, forKey: pendingDigestKey)
+    }
+
+    private func requireReleaseSignature() throws {
+        guard serviceMutationAllowed() else {
+            throw WatchdogServiceError.releaseSignatureRequired
+        }
     }
 
     private static func bundledWatchdogProcessIsRunning() throws -> Bool {

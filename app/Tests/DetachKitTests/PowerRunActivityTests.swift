@@ -247,13 +247,13 @@ final class PowerRunActivityTests: XCTestCase {
                 try activityHandle.write(contentsOf: Data("waiting\n".utf8))
                 try activityHandle.synchronize()
                 try activityHandle.close()
-                Thread.sleep(forTimeInterval: 0.5)
+                Thread.sleep(forTimeInterval: 0.1)
 
                 // Queue a transcript event against the current watch, then
                 // refresh the handoff so the re-watch accepts the transcript.
                 try overwriteTranscript()
                 try writeHandoff()
-                Thread.sleep(forTimeInterval: 0.5)
+                Thread.sleep(forTimeInterval: 0.1)
 
                 // Release the queue: the re-watch installs a new transcript
                 // watch, then the stale event from the cancelled watch runs.
