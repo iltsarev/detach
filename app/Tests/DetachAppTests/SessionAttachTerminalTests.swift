@@ -764,6 +764,28 @@ final class SessionAttachTerminalTests: XCTestCase {
         await newCLI.releaseAll()
     }
 
+    @MainActor
+    func testEmptySnapshotClearsQueuedScreenPrefetch() async throws {
+        let first = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-first-queued"))
+        let removed = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-removed-queued"))
+        let cli = SuspendedTerminalScreenCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: cli, configurationID: "/tmp/detach")
+        cache.schedulePrefetch(for: [first])
+        await waitUntilAsync { await cli.callCount() == 1 }
+
+        cache.schedulePrefetch(for: [removed])
+        cache.schedulePrefetch(for: [])
+        await cli.releaseAll()
+        for _ in 0..<100 { await Task.yield() }
+
+        let callCount = await cli.callCount()
+        if callCount > 1 { await cli.releaseAll() }
+        XCTAssertEqual(callCount, 1)
+    }
+
     func testTerminalFontMatchesTheAppSize() {
         XCTAssertEqual(SessionAttachController.terminalFont(pointSize: 17).pointSize, 17)
         XCTAssertTrue(SessionAttachController.terminalFont(pointSize: 14).isFixedPitch)

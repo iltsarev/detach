@@ -60,11 +60,11 @@ token, PID ownership, metadata, and checkpoint freshness. Stale data cannot
 make a proven live provider hung. A runtime without managed tmux blocks
 mutations until its exact processes exit.
 
-The JSON list reads both providers concurrently, Codex before Claude.
-Each captures one all-pane tmux snapshot and one clock sample. `proc_pidinfo`
-reads only recorded worker/provider PIDs and 64 parents. An empty tmux expansion
-is missing; a present wrong identity is a collision. Mutations repeat ownership,
-pane, run-token, and process-group checks.
+`list --json` reads Codex and Claude concurrently, then emits that order. Each
+uses one all-pane tmux snapshot and clock sample. `proc_pidinfo` reads recorded
+PIDs and 64 parents. Empty tmux output is missing; wrong identity is collision.
+Mutations recheck ownership, pane, run token, and process group. List jobs
+`exec` cores; cleanup signals the PIDs.
 
 Typed state caches Codex checkpoint assessment in a receipt bound to provider,
 session ID, and file identity. A change forces a full scan. Restore ignores the

@@ -44,6 +44,7 @@ final class SessionNotificationService: ObservableObject {
     private var configurationGeneration: UInt64 = 0
     private var authorizationStatusGeneration: UInt64 = 0
     private var authorizationRequestTask: Task<Bool, Error>?
+    private var backgroundDeliveryTask: Task<Void, Never>?
     private var thermalSafetyWasActive = false
 
     init(identifierProvider: @escaping () -> String = { UUID().uuidString }) {
@@ -163,6 +164,14 @@ final class SessionNotificationService: ObservableObject {
         await enqueue(transitions.map(payload(for:)))
     }
 
+    /// Accepts the ordered store snapshot without waiting for Notification
+    /// Center. The detector advances on the main actor before this returns;
+    /// one delivery task drains the queue independently of session events.
+    func observeFromSessionStore(_ sessions: [Session]) {
+        let transitions = detector.observe(sessions)
+        enqueueWithoutWaiting(transitions.map(payload(for:)))
+    }
+
     /// The thermal latch, not just the effective power label, drives this
     /// warning so a borrowed external disablesleep setting cannot hide it.
     func observePower(_ snapshot: PowerHeartbeatSnapshot) async {
@@ -189,6 +198,31 @@ final class SessionNotificationService: ObservableObject {
             pendingPayloads.append(contentsOf: payloads)
         case .denied:
             clearPendingPayloads()
+        }
+    }
+
+    private func enqueueWithoutWaiting(
+        _ payloads: [SessionNotificationPayload]
+    ) {
+        guard isEnabled else { return }
+
+        switch authorizationStatus {
+        case .authorized:
+            pendingPayloads.append(contentsOf: payloads)
+            scheduleBackgroundDelivery()
+        case .unknown, .notDetermined:
+            pendingPayloads.append(contentsOf: payloads)
+        case .denied:
+            clearPendingPayloads()
+        }
+    }
+
+    private func scheduleBackgroundDelivery() {
+        guard backgroundDeliveryTask == nil else { return }
+        backgroundDeliveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.deliverPendingPayloads()
+            self.backgroundDeliveryTask = nil
         }
     }
 

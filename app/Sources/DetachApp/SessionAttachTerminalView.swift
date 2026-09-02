@@ -89,7 +89,10 @@ final class SessionTerminalScreenCache {
     func schedulePrefetch(for sessions: [Session]) {
         dropScreensOfReplacedRuns(sessions)
         let targets = prefetchTargets(in: sessions, limit: Self.capacity)
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else {
+            pendingPrefetch = []
+            return
+        }
         pendingPrefetch = targets
         guard prefetchTask == nil else { return }
         let generation = prefetchGeneration

@@ -118,7 +118,7 @@ struct RootView: View {
             // transition detector baselines on its first successful snapshot,
             // so historical sessions never fire as fresh notifications.
             store.onSnapshot = { [weak notifications] sessions in
-                await notifications?.observe(sessions)
+                notifications?.observeFromSessionStore(sessions)
             }
             await store.configure(cli: ProcessDetachCLI(
                 executable: URL(fileURLWithPath: detachPath)))

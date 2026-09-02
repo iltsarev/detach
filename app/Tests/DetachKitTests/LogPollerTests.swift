@@ -230,6 +230,30 @@ final class LogPollerTests: XCTestCase {
         XCTAssertEqual(changedCallCount, 2)
     }
 
+    func testSnapshotCacheInvalidatesChangedRevisionOnDirectLookup() async {
+        let initial = makeSession(
+            name: "direct", status: "completed",
+            checkpoint: "2026-09-01T10:00:00Z")
+        let changed = makeSession(
+            name: "direct", status: "completed",
+            checkpoint: "2026-09-01T10:01:00Z")
+        let cli = ConcurrentLogCLI()
+        let cache = SessionLogSnapshotCache(
+            cli: cli, configurationID: "/tmp/detach")
+
+        await cache.prefetch([initial])
+        let stalePoller = cache.poller(for: initial)
+        XCTAssertTrue(stalePoller.hasLoaded)
+
+        // SwiftUI can render the changed session before RootView's onChange
+        // schedules another prefetch. A direct lookup must still reject the
+        // poller that belongs to the previous typed revision.
+        let changedPoller = cache.poller(for: changed)
+
+        XCTAssertFalse(stalePoller === changedPoller)
+        XCTAssertFalse(changedPoller.hasLoaded)
+    }
+
     func testSnapshotCacheDropsPassiveTailWhileSessionIsLive() async {
         let finished = makeSession(name: "again", status: "completed")
         let live = makeSession(name: "again", status: "running")

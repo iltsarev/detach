@@ -54,7 +54,10 @@ public final class SessionStore {
     /// a transition detector can advance its baseline. The store is the single
     /// app-level session source; notifications and the menu bar consume these
     /// snapshots instead of running their own subprocess loops.
-    @ObservationIgnored public var onSnapshot: (@MainActor ([Session]) async -> Void)?
+    /// Runs synchronously after publication. Consumers may update ordered
+    /// detector state here, but must schedule external I/O independently so
+    /// one system service cannot stop the native event stream.
+    @ObservationIgnored public var onSnapshot: (@MainActor ([Session]) -> Void)?
 
     private var cli: DetachCLIRunning
     @ObservationIgnored private let snapshotCache: (any SessionSnapshotCaching)?
@@ -125,9 +128,6 @@ public final class SessionStore {
     /// second full list on every cold start.
     public func configure(cli: DetachCLIRunning) async {
         stopObserving()
-        // Invalidate a list request from the previous executable before the
-        // new watcher readiness wait suspends this reconfiguration.
-        refreshGeneration &+= 1
         self.cli = cli
         hasFreshSnapshot = false
         let generation = beginObserving(refreshOnFirstEvent: false)
@@ -206,6 +206,15 @@ public final class SessionStore {
     public func stopObserving() {
         let stoppedGeneration = eventGeneration
         eventGeneration &+= 1
+        // Invalidate in-flight snapshots and every delayed refresh owned by
+        // this observation lifetime. A stopped store must launch no later CLI
+        // work until an explicit refresh or a new watcher starts it again.
+        refreshGeneration &+= 1
+        refreshRetryTask?.cancel()
+        refreshRetryTask = nil
+        refreshRetryAttempt = 0
+        transientConfirmationTask?.cancel()
+        transientConfirmationTask = nil
         eventReadinessTimeoutTask?.cancel()
         eventReadinessTimeoutTask = nil
         eventReadinessTimedOutGeneration = nil
@@ -355,10 +364,10 @@ public final class SessionStore {
             hasFreshSnapshot = true
             state = .ok
             if changed { snapshotCache?.store(snapshot) }
-            // Schedule before the observer suspends this request: a newer
-            // snapshot may publish meanwhile and must own the confirmation.
+            // Schedule before the synchronous observer advances its detector:
+            // a later refresh must own any replacement confirmation.
             scheduleTransientConfirmation(for: snapshot)
-            if let onSnapshot { await onSnapshot(sessions) }
+            if let onSnapshot { onSnapshot(sessions) }
             return snapshot
         } catch {
             if generation == refreshGeneration {

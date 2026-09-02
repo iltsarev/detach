@@ -838,6 +838,46 @@ final class SessionStoreTests: XCTestCase {
         store.stopObserving()
     }
 
+    func testChangedEventPublishesAnswerReadyToWorkingTransition() async {
+        let waiting = line.replacingOccurrences(
+            of: #""finished_at":null"#,
+            with: #""finished_at":null,"agent_turn_state":"waiting","agent_turn_id":"turn-1""#)
+        let working = line.replacingOccurrences(
+            of: #""finished_at":null"#,
+            with: #""finished_at":null,"agent_turn_state":"working","agent_turn_id":"turn-2""#)
+        let cli = EventCLI(output: waiting)
+        let store = SessionStore(cli: cli)
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+
+        cli.emit(.ready)
+        await cli.waitForCallCount(1)
+        let answerReady = expectation(description: "answer ready snapshot")
+        store.onSnapshot = { sessions in
+            if sessions.first?.agentTurnState == .waiting {
+                answerReady.fulfill()
+            }
+        }
+        if store.sessions.first?.agentTurnState == .waiting {
+            answerReady.fulfill()
+        }
+        await fulfillment(of: [answerReady], timeout: 1)
+
+        cli.setOutput(working)
+        let resumed = expectation(description: "working snapshot")
+        store.onSnapshot = { sessions in
+            if sessions.first?.agentTurnState == .working {
+                resumed.fulfill()
+            }
+        }
+        cli.emit(.changed)
+        await fulfillment(of: [resumed], timeout: 1)
+
+        XCTAssertFalse(store.sessions[0].isWaitingForUser)
+        XCTAssertEqual(store.sessions[0].section, .active)
+        store.stopObserving()
+    }
+
     func testSnapshotObserverReceivesEverySuccessfulPoll() async {
         // Keep the historical regression ID. Native events now request these
         // typed snapshots instead of a periodic poll.
@@ -1035,6 +1075,27 @@ final class SessionStoreTests: XCTestCase {
 
         let restartCalls = await restart.calls()
         XCTAssertEqual(restartCalls, 0)
+    }
+
+    func testStoppingObserverCancelsPendingSnapshotRetry() async {
+        let cli = EventCLI(output: "invalid")
+        let retry = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in await retry.sleep() })
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+        cli.emit(.ready)
+        await cli.waitForCallCount(1)
+        await retry.waitForCallCount(1)
+
+        store.stopObserving()
+        await retry.resumeSleepers()
+        for _ in 0..<100 { await Task.yield() }
+
+        XCTAssertEqual(cli.currentCallCount, 1)
     }
 
     func testFailedTypedSnapshotIsRetriedWithBackoff() async {

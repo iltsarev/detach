@@ -494,6 +494,56 @@ if codex_part_selected preflight; then
     "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
   [ -z "$(find "$public_list_tmp" -mindepth 1 -print -quit)" ]
 
+  # A caller can terminate the public frontend by PID (for example during app
+  # cancellation). Its cleanup must terminate the two exact provider jobs, not
+  # only the background shell functions that launched them.
+  cancel_list_payload="$TMP_ROOT/cancel-list-payload"
+  cancel_list_pids="$TMP_ROOT/cancel-list-pids"
+  mkdir -p "$cancel_list_payload"
+  : >"$cancel_list_pids"
+  install -m 0755 "$ROOT/bin/detach" "$cancel_list_payload/detach"
+  printf '%s\n' \
+    '#!/bin/bash' \
+    '[ "${DETACH_CORE_ENTRYPOINT:-}" = 1 ] || exit 2' \
+    'printf '\''%s\n'\'' "$$" >>"$DETACH_CANCEL_LIST_PIDS"' \
+    'trap '\''exit 0'\'' HUP INT TERM' \
+    'while :; do sleep 0.05; done' \
+    >"$cancel_list_payload/detach-core"
+  chmod 0755 "$cancel_list_payload/detach-core"
+  DETACH_CANCEL_LIST_PIDS="$cancel_list_pids" \
+  DETACH_POWER_BIN=/usr/bin/false \
+    "$cancel_list_payload/detach" list --json >/dev/null 2>&1 &
+  cancel_list_frontend_pid=$!
+  attempts=0
+  while [ "$(wc -l <"$cancel_list_pids" 2>/dev/null || printf 0)" -lt 2 ] && \
+        [ "$attempts" -lt 100 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.01
+  done
+  [ "$attempts" -lt 100 ]
+  kill -TERM "$cancel_list_frontend_pid"
+  wait "$cancel_list_frontend_pid" 2>/dev/null || true
+  cancel_list_survivors=""
+  attempts=0
+  while [ "$attempts" -lt 100 ]; do
+    cancel_list_survivors=""
+    while IFS= read -r cancel_list_pid; do
+      kill -0 "$cancel_list_pid" 2>/dev/null && \
+        cancel_list_survivors="$cancel_list_survivors $cancel_list_pid"
+    done <"$cancel_list_pids"
+    [ -n "$cancel_list_survivors" ] || break
+    attempts=$((attempts + 1))
+    sleep 0.01
+  done
+  if [ -n "$cancel_list_survivors" ]; then
+    for cancel_list_pid in $cancel_list_survivors; do
+      kill -KILL "$cancel_list_pid" 2>/dev/null || true
+    done
+    printf 'public list cancellation left provider jobs alive:%s\n' \
+      "$cancel_list_survivors" >&2
+    exit 1
+  fi
+
   # The app's long-lived source must be the public CLI, backed by one native
   # process. Prove lifecycle and transcript writes produce leading/trailing
   # typed hints on a normal user-data volume (FSEvents excludes some temporary

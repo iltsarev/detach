@@ -466,10 +466,10 @@ list_all() {
     claude_output="$temporary_root/claude.jsonl"
     LIST_CODEX_OUTPUT="$codex_output"
     LIST_CLAUDE_OUTPUT="$claude_output"
-    DETACH_LIST_HEADER=1 run_provider codex list --json >"$codex_output" &
+    DETACH_LIST_HEADER=1 exec_provider codex list --json >"$codex_output" &
     codex_pid=$!
     LIST_CODEX_PID="$codex_pid"
-    DETACH_LIST_HEADER=0 run_provider claude list --json >"$claude_output" &
+    DETACH_LIST_HEADER=0 exec_provider claude list --json >"$claude_output" &
     claude_pid=$!
     LIST_CLAUDE_PID="$claude_pid"
     wait "$codex_pid" || codex_status=$?

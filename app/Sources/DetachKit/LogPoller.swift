@@ -135,10 +135,12 @@ public final class SessionLogSnapshotCache {
 
     public func poller(for session: Session) -> LogPoller {
         let key = Key(provider: session.provider, sessionName: session.sessionName)
-        if let poller = pollers[key] {
+        let currentRevision = revision(for: session)
+        if let poller = pollers[key], revisions[key] == currentRevision {
             touch(key)
             return poller
         }
+        remove(key)
         let poller = LogPoller(
             cli: cli,
             provider: session.provider,
@@ -147,7 +149,7 @@ public final class SessionLogSnapshotCache {
         // Bind the entry to the typed revision it was created for, so a
         // tail the detail view loads directly is still invalidated when the
         // session's lifecycle, or a replacement run under its name, changes.
-        revisions[key] = revision(for: session)
+        revisions[key] = currentRevision
         touch(key)
         trimToCapacity()
         return poller

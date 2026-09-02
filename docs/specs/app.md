@@ -61,9 +61,8 @@ one `detach watch --json` source supply them. A schema-1 hint, activation, or
 `resync` triggers `list --json`; only the newest hint waits. No list timer runs.
 A dead or never-ready watcher restarts with 2–60 s backoff; a failed list
 retries alike. Cold start waits 1 s for `ready`; a late `ready` repeats its
-snapshot.
-UI never calls `pmset` or root XPC. Closing the
-last window keeps the app, event source, and icon.
+snapshot. UI never calls `pmset` or root XPC. The app and event source survive
+its last window.
 ⌘Q and Quit end the app while sessions, checkpoints, and protection continue.
 Settings → General owns both menu bar toggles. Settings → System keeps the only
 Mac Power status and approval controls. Settings follows the hosting screen;
@@ -177,9 +176,9 @@ ready sessions. Numbers appear in rows and stay stable across both sections.
 When a session leaves them, the earliest waiting session gets its number;
 extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
-Notifications are opt-in. Snapshots deduplicate transitions. A typed Stop
-intent is never a failure; a 350 ms recheck confirms other `interrupted` or
-`hung` rows.
+Notifications are opt-in and deduplicated. Stop intent is not failure;
+`interrupted` and `hung` get one 350 ms recheck. Detection is ordered. Delivery
+cannot block session events.
 
 Sparkle 2 and SwiftTerm 1.19.0 are pinned. The exact SwiftTerm shader bundle is
 shipped and verified. Sparkle keeps its symlink layout and is signed inside-out.
