@@ -3,6 +3,17 @@ import AppKit
 import DetachKit
 
 @MainActor
+enum AppRuntimeActivationSequence {
+    static func run(
+        activatePayload: () async -> Void,
+        activateSessionSource: () async -> Void
+    ) async {
+        await activatePayload()
+        await activateSessionSource()
+    }
+}
+
+@MainActor
 struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openSettings) private var openSettings
@@ -103,16 +114,6 @@ struct RootView: View {
                 await notifications?.observePower(snapshot)
             }
             installation.startPowerObservation()
-            sessionLogSnapshots.configure(
-                cli: ProcessDetachCLI(
-                    executable: URL(fileURLWithPath: detachPath)),
-                configurationID: detachPath,
-                sessions: store.sessions)
-            terminalScreens.configure(
-                cli: ProcessDetachCLI(
-                    executable: URL(fileURLWithPath: detachPath)),
-                configurationID: detachPath,
-                sessions: store.sessions)
             // The store outlives this window; rewire it to the active CLI and
             // keep notifications fed from the same event source. The
             // transition detector baselines on its first successful snapshot,
@@ -120,12 +121,25 @@ struct RootView: View {
             store.onSnapshot = { [weak notifications] sessions in
                 notifications?.observeFromSessionStore(sessions)
             }
-            await store.configure(cli: ProcessDetachCLI(
-                executable: URL(fileURLWithPath: detachPath)))
-            await installation.bootstrap()
-            // An upgrade can replace an older CLI that did not support this
-            // stream after the first snapshot. Restart only if it exited.
-            store.startObserving()
+            // Activate the immutable payload before starting any long-lived
+            // source. Otherwise an upgrade leaves the app's watcher on the
+            // previous payload until the whole app is restarted.
+            await AppRuntimeActivationSequence.run(
+                activatePayload: { await installation.bootstrap() },
+                activateSessionSource: {
+                    sessionLogSnapshots.configure(
+                        cli: ProcessDetachCLI(
+                            executable: URL(fileURLWithPath: detachPath)),
+                        configurationID: detachPath,
+                        sessions: store.sessions)
+                    terminalScreens.configure(
+                        cli: ProcessDetachCLI(
+                            executable: URL(fileURLWithPath: detachPath)),
+                        configurationID: detachPath,
+                        sessions: store.sessions)
+                    await store.configure(cli: ProcessDetachCLI(
+                        executable: URL(fileURLWithPath: detachPath)))
+                })
             initialSetupComplete = true
         }
         .task(id: notificationsEnabled) {

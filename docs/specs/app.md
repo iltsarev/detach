@@ -61,9 +61,8 @@ one `detach watch --json` source supply them. A schema-1 hint, activation, or
 `resync` triggers `list --json`; only the newest hint waits. No list timer runs.
 A dead or never-ready watcher restarts with 2–60 s backoff; a failed list
 retries alike. Cold start waits 1 s for `ready`; a late `ready` repeats its
-snapshot. UI never calls `pmset` or root XPC. The app and event source survive
-its last window.
-⌘Q and Quit end the app while sessions, checkpoints, and protection continue.
+snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
+checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
 Settings → General owns both menu bar toggles. Settings → System keeps the only
 Mac Power status and approval controls. Settings follows the hosting screen;
 System scrolls. Temperature safety has its own warning shape and the
@@ -177,8 +176,8 @@ When a session leaves them, the earliest waiting session gets its number;
 extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
 Notifications are opt-in and deduplicated. Stop intent is not failure;
-`interrupted` and `hung` get one 350 ms recheck. Detection is ordered. Delivery
-cannot block session events.
+`interrupted` and `hung` get one 350 ms recheck. Ordered detection never waits
+for delivery.
 
 Sparkle 2 and SwiftTerm 1.19.0 are pinned. The exact SwiftTerm shader bundle is
 shipped and verified. Sparkle keeps its symlink layout and is signed inside-out.
@@ -187,8 +186,9 @@ Only ad-hoc builds disable library validation.
 32-byte Ed25519 public key.
 A generated or published appcast must contain exactly one arm64 hardware
 requirement, so Intel clients never see the update.
-A Sparkle update replaces only the app; bootstrap atomically activates its new
-immutable CLI payload without rewriting live-session binaries. Sparkle errors
+A Sparkle update replaces the app. Bootstrap activates the new
+immutable CLI payload before the watcher and first fresh list start. It does
+not rewrite live-session binaries. Sparkle errors
 for a disk image or App Translocation say to move Detach to
 `/Applications`. Temporary-directory and download errors say to check the
 network and free disk space, then retry. Archive, signature,
