@@ -313,7 +313,6 @@ public enum SessionHealthEvaluator {
         // until the worker and tmux pane have finished.
         if evidence.stopRequested,
            evidence.runtimeIdentityExpected,
-           isActive(evidence.metaStatus),
            evidence.workerState == .alive,
            evidence.providerState == .dead {
             return assessment(

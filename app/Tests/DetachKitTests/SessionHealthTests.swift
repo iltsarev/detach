@@ -240,6 +240,25 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertFalse(result.cleanupEligible)
     }
 
+    func testStopIntentKeepsActionsClosedAfterTerminalMetadata() {
+        for status in [
+            EffectiveStatus.interrupted,
+            .stopped,
+            .completed,
+        ] {
+            let result = evaluate(
+                status: status,
+                provider: .dead,
+                stopRequested: true)
+
+            XCTAssertEqual(result.effectiveStatus, .interrupted)
+            XCTAssertEqual(result.reason, .finished)
+            XCTAssertTrue(result.actions.isEmpty)
+            XCTAssertTrue(result.ownershipProven)
+            XCTAssertFalse(result.cleanupEligible)
+        }
+    }
+
     func testStopIntentNeverMasksUnprovenRuntimeIdentity() {
         XCTAssertEqual(evaluate(stopRequested: true).effectiveStatus, .running)
         XCTAssertEqual(

@@ -150,8 +150,8 @@ silently, records and publishes status, and retains the pane for logs;
 owned pane and dead provider is finished, not hung.
 
 Stop binds intent and each signal or removal to the exact run token. A failed
-intent write leaves the runtime untouched. During Stop, a live owned worker
-with a gone provider is interrupted, not hung, and grants no action or cleanup.
+intent write leaves the runtime untouched. During Stop, a live worker with no
+provider stays interrupted with no action or cleanup after terminal metadata.
 Delete removes a retained tmux session without a state directory and never
 reports success over leftover state.
 
