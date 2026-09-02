@@ -37,8 +37,15 @@ enum SessionEventSignal {
         guard path.hasPrefix("/"), !path.utf8.contains(0) else {
             throw DetachStateCommandError.unsafeEventSignal
         }
+        // The runtime builds this path from environment roots that may carry
+        // a trailing slash or `//`. Standardize instead of rejecting, so a
+        // cosmetic path difference cannot silently disable every hint.
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard url.path == path, !url.lastPathComponent.isEmpty else {
+        guard url.path.hasPrefix("/"),
+              url.path != "/",
+              !url.lastPathComponent.isEmpty,
+              url.lastPathComponent != ".",
+              url.lastPathComponent != ".." else {
             throw DetachStateCommandError.unsafeEventSignal
         }
         let parent = url.deletingLastPathComponent()
@@ -96,21 +103,37 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
     public let stateRoot: String
     public let signalPath: String
     public let transcriptRoots: [String]
+    /// Provider session directories whose metadata names managed transcripts.
+    /// The runtime may relocate one provider root, so these are explicit.
+    public let sessionsRoots: [String]
 
     public init(
         stateRoot: String,
         signalPath: String,
-        transcriptRoots: [String]
+        transcriptRoots: [String],
+        sessionsRoots: [String]? = nil
     ) {
         self.stateRoot = stateRoot
         self.signalPath = signalPath
         self.transcriptRoots = transcriptRoots
+        self.sessionsRoots = sessionsRoots
+            ?? Self.defaultSessionsRoots(stateRoot: stateRoot)
+    }
+
+    public static func defaultSessionsRoots(stateRoot: String) -> [String] {
+        Provider.allCases.map { provider in
+            URL(fileURLWithPath: stateRoot, isDirectory: true)
+                .appendingPathComponent(provider.rawValue, isDirectory: true)
+                .appendingPathComponent("sessions", isDirectory: true)
+                .standardizedFileURL.path
+        }
     }
 
     public static func parse(arguments: [String]) throws -> Self {
         var stateRoot: String?
         var signalPath: String?
         var transcriptRoots: [String] = []
+        var sessionsRoots: [String] = []
         var sawJSON = false
         var index = 0
         while index < arguments.count {
@@ -127,6 +150,9 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
             case "--transcript-root" where index + 1 < arguments.count:
                 transcriptRoots.append(arguments[index + 1])
                 index += 2
+            case "--sessions-root" where index + 1 < arguments.count:
+                sessionsRoots.append(arguments[index + 1])
+                index += 2
             default:
                 throw DetachStateCommandError.invalidArguments
             }
@@ -137,7 +163,8 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
               !transcriptRoots.isEmpty,
               rawStateRoot.hasPrefix("/"),
               rawSignalPath.hasPrefix("/"),
-              transcriptRoots.allSatisfy({ $0.hasPrefix("/") }) else {
+              transcriptRoots.allSatisfy({ $0.hasPrefix("/") }),
+              sessionsRoots.allSatisfy({ $0.hasPrefix("/") }) else {
             throw DetachStateCommandError.invalidArguments
         }
         let canonicalStateRoot = canonicalPath(rawStateRoot)
@@ -149,7 +176,9 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
         return Self(
             stateRoot: canonicalStateRoot,
             signalPath: canonicalSignalPath,
-            transcriptRoots: canonicalTranscriptRoots)
+            transcriptRoots: canonicalTranscriptRoots,
+            sessionsRoots: sessionsRoots.isEmpty
+                ? nil : sessionsRoots.map(canonicalPath))
     }
 
     static func canonicalPath(_ path: String) -> String {
@@ -331,6 +360,17 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
         }
     }
 
+    /// The FSEvents context holds an unretained pointer to this watcher. Stop
+    /// the stream before the pointer can dangle for a late callback.
+    deinit {
+        trailingWorkItem?.cancel()
+        if let stream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
+    }
+
     public func start(parentProcessID: pid_t? = nil) throws {
         refreshManagedTranscriptPaths()
         let paths = availableWatchedPaths()
@@ -396,7 +436,7 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
 
     private func refreshManagedTranscriptPaths() {
         managedTranscriptPaths = DetachStateCommand.managedTranscriptPaths(
-            atStateRoot: configuration.stateRoot,
+            sessionsRoots: configuration.sessionsRoots,
             allowedRoots: configuration.transcriptRoots)
     }
 

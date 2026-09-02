@@ -1097,7 +1097,9 @@ struct SettingsView: View {
     }
 
     var macPowerPresentation: MacPowerSettingsPresentation {
-        let counts = MacPowerActiveSessions.counts(in: sessionStore.sessions)
+        // A cached cold-start row is presentation only and carries no power claim.
+        let counts = MacPowerActiveSessions.counts(
+            in: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [])
         return MacPowerSettingsPresentation(
             state: installation.powerProtectionState,
             helperStatus: installation.powerHelperStatus,
@@ -1122,10 +1124,15 @@ struct SettingsView: View {
                 Text(L10n.string(macPowerPresentation.stateLocalizationKey))
                     .appFont(.headline, weight: .semibold)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(macPowerDetailLine)
-                    .appFont(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // The heartbeat age is a clock reading. Redraw it each second
+                // while this pane is visible instead of waking the app-level
+                // monitor for it.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(macPowerDetailLine(now: context.date))
+                        .appFont(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -1145,9 +1152,9 @@ struct SettingsView: View {
         }
     }
 
-    private var macPowerDetailLine: String {
+    private func macPowerDetailLine(now: Date) -> String {
         var parts = [macPowerReasonText]
-        if let age = macPowerHeartbeatAgeText { parts.append(age) }
+        if let age = macPowerHeartbeatAgeText(now: now) { parts.append(age) }
         return parts.joined(separator: " · ")
     }
 
@@ -1155,10 +1162,10 @@ struct SettingsView: View {
         macPowerPresentation.reason.localizedText
     }
 
-    private var macPowerHeartbeatAgeText: String? {
+    private func macPowerHeartbeatAgeText(now: Date) -> String? {
         let snapshot = installation.watchdogHeartbeat
         guard snapshot.healthy,
-              let age = snapshot.age(relativeTo: Date()), age >= 0 else {
+              let age = snapshot.age(relativeTo: now), age >= 0 else {
             return nil
         }
         return powerCheckedAgeText(seconds: Int(age))

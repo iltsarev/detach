@@ -466,6 +466,7 @@ detach reconcile --dry-run --json
 | `detach <provider> attach [name]` | Attach to a live managed session. |
 | `detach list [--json]` | List Codex and Claude sessions together. JSON mode emits JSONL. |
 | `detach watch --json` | Stream typed `ready`, `changed`, and `resync` hints for session consumers. Read `list --json` after each hint. |
+| `detach client switch --pid PID --from SESSION --to SESSION --provider PROVIDER` | Retarget one attached tmux client that you own to another live managed session. The app uses it for in-place switching. |
 | `detach resume <uuid>` | Detect the provider and project, then continue the conversation. An owned Claude session without a transcript restarts with the same UUID. |
 | `detach <provider> status [name]` | Show runtime, checkpoint, and power state. |
 | `detach <provider> logs [--ansi] [name]` | Read retained output without attaching. |

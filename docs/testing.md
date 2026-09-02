@@ -180,6 +180,10 @@
   verify a local app. A normal build must contain only an `arm64` slice for the
   app, watchdog, tmux, state helper, power client, root helper, and embedded
   Sparkle executables. Intel Macs are not supported.
+- `DETACH_SIGNED_APP_FIXTURE=/path/to/Detach.app swift test --filter
+  ServiceManagementMutationAdmission` — runs the real Security framework check
+  of the release-signing gate against a signed bundle. Without the variable the
+  test skips, so run it before a release that changes code signing.
 - `DETACH_ALLOW_REAL_POWER_TEST=1 tests/power-smoke.sh` — deliberately changes
   real system power state through an installed, signed, approved app. Never run
   it as routine verification. Before a release, run it only on supervised

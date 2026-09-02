@@ -70,6 +70,27 @@ final class SessionSnapshotCacheTests: XCTestCase {
         XCTAssertTrue(cache.load().isEmpty)
     }
 
+    func testCacheWritesOnlyWhenThePresentationChanges() {
+        let key = UserDefaultsSessionSnapshotCache.defaultKey
+        var source = session(name: "one")
+        cache.store([source])
+        XCTAssertNotNil(defaults.data(forKey: key))
+
+        // Volatile runtime fields change on nearly every snapshot and are not
+        // part of the stored presentation, so they must not rewrite defaults.
+        defaults.removeObject(forKey: key)
+        source.workerHeartbeatAt = Date(timeIntervalSince1970: 200)
+        source.heartbeatFresh = true
+        source.powerProtectionState = .protected
+        cache.store([source])
+        XCTAssertNil(defaults.data(forKey: key))
+
+        source.effectiveStatus = .stopped
+        cache.store([source])
+        XCTAssertNotNil(defaults.data(forKey: key))
+        XCTAssertEqual(cache.load().first?.effectiveStatus, .stopped)
+    }
+
     func testCacheRejectsMoreThanTheBoundedSessionCount() {
         let sessions = (0...UserDefaultsSessionSnapshotCache.maximumSessionCount).map {
             session(name: "session-\($0)")

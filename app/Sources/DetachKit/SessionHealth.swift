@@ -303,6 +303,23 @@ public enum SessionHealthEvaluator {
             break
         }
 
+        // The worker publishes its final status and only then exits, so a
+        // terminal metadata record with a live owned pane and a gone provider
+        // is a run that is finishing, not a hung one. The pane dies moments
+        // later. Reporting `hung` here would move a finished session into
+        // Problems until an unrelated event repaired it.
+        if evidence.runtimeIdentityExpected,
+           !isActive(evidence.metaStatus),
+           evidence.workerState == .alive,
+           evidence.providerState == .dead {
+            var result = finishedAssessment(evidence, reason: .finished)
+            result.ownershipProven = true
+            // The pane is still alive for a moment. Typed cleanup waits for
+            // the next snapshot, which sees the dead pane.
+            result.cleanupEligible = false
+            return result
+        }
+
         if !evidence.runtimeIdentityExpected {
             let reason: SessionHealthReason = evidence.checkpointFreshness == .stale
                 ? .checkpointStale : .heartbeatMissing

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 public struct SessionDeletionFailure: Equatable, Sendable {
     public var sessionName: String
@@ -57,20 +58,39 @@ public final class SessionStore {
 
     private var cli: DetachCLIRunning
     @ObservationIgnored private let snapshotCache: (any SessionSnapshotCaching)?
-    private var eventTask: Task<Void, Never>?
-    private var eventReadyGeneration: UInt64?
-    private var eventReadyWaiters:
+    @ObservationIgnored private var eventTask: Task<Void, Never>?
+    @ObservationIgnored private var eventReadyGeneration: UInt64?
+    @ObservationIgnored private var eventReadyWaiters:
         [UInt64: [CheckedContinuation<Void, Never>]] = [:]
-    private var eventReadinessTimeoutTask: Task<Void, Never>?
-    private var interruptedConfirmationTask: Task<Void, Never>?
-    private var confirmedInterruptedSessionIDs: Set<String> = []
-    private var eventGeneration: UInt64 = 0
-    private var refreshGeneration: UInt64 = 0
-    private var sessionWaiters: [UUID: SessionWaiter] = [:]
+    @ObservationIgnored private var eventReadinessTimeoutTask: Task<Void, Never>?
+    /// Set when the short readiness wait elapsed before `ready`. The first
+    /// event of that generation then takes the snapshot the wait skipped.
+    @ObservationIgnored private var eventReadinessTimedOutGeneration: UInt64?
+    @ObservationIgnored private var eventRestartTask: Task<Void, Never>?
+    @ObservationIgnored private var eventRestartAttempt = 0
+    @ObservationIgnored private var refreshRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var refreshRetryAttempt = 0
+    @ObservationIgnored private var transientConfirmationTask: Task<Void, Never>?
+    @ObservationIgnored private var confirmedTransientSessionIDs: Set<String> = []
+    @ObservationIgnored private var eventGeneration: UInt64 = 0
+    @ObservationIgnored private var refreshGeneration: UInt64 = 0
+    @ObservationIgnored private var sessionWaiters: [UUID: SessionWaiter] = [:]
     @ObservationIgnored private let confirmationSleep:
         @Sendable (UInt64) async throws -> Void
     @ObservationIgnored private let eventReadinessSleep:
         @Sendable (UInt64) async throws -> Void
+    @ObservationIgnored private let restartSleep:
+        @Sendable (UInt64) async throws -> Void
+    @ObservationIgnored private let logger = Logger(
+        subsystem: "dev.tsarev.detach", category: "session-events")
+
+    /// The cold-start wait for `ready` before the first typed snapshot.
+    static let readinessWaitNanoseconds: UInt64 = 1_000_000_000
+    /// A watcher that never reports `ready` is replaced after this bound.
+    static let readinessAbandonNanoseconds: UInt64 = 30_000_000_000
+    /// Restart and retry delays double from this value up to the cap.
+    static let restartBaseDelayNanoseconds: UInt64 = 2_000_000_000
+    static let restartMaximumDelayNanoseconds: UInt64 = 60_000_000_000
 
     public init(
         cli: DetachCLIRunning,
@@ -81,6 +101,7 @@ public final class SessionStore {
         self.sessions = snapshotCache?.load() ?? []
         self.confirmationSleep = { try await Task.sleep(nanoseconds: $0) }
         self.eventReadinessSleep = { try await Task.sleep(nanoseconds: $0) }
+        self.restartSleep = { try await Task.sleep(nanoseconds: $0) }
     }
 
     init(
@@ -89,6 +110,9 @@ public final class SessionStore {
         confirmationSleep: @escaping @Sendable (UInt64) async throws -> Void,
         eventReadinessSleep: @escaping @Sendable (UInt64) async throws -> Void = {
             try await Task.sleep(nanoseconds: $0)
+        },
+        restartSleep: @escaping @Sendable (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
         }
     ) {
         self.cli = cli
@@ -96,6 +120,7 @@ public final class SessionStore {
         self.sessions = snapshotCache?.load() ?? []
         self.confirmationSleep = confirmationSleep
         self.eventReadinessSleep = eventReadinessSleep
+        self.restartSleep = restartSleep
     }
 
     /// Swaps the CLI (for example after the installed payload activates),
@@ -128,16 +153,28 @@ public final class SessionStore {
     @discardableResult
     private func beginObserving(refreshOnFirstEvent: Bool) -> UInt64 {
         guard eventTask == nil else { return eventGeneration }
+        eventRestartTask?.cancel()
+        eventRestartTask = nil
         eventGeneration &+= 1
         let generation = eventGeneration
         let cli = self.cli
         eventTask = Task { [weak self] in
             var receivedFirstEvent = false
+            var streamFailure: (any Error)?
             defer {
                 if let self {
                     self.markObservationReady(generation: generation)
                     if generation == self.eventGeneration {
                         self.eventTask = nil
+                        self.eventReadinessTimedOutGeneration = nil
+                        // The stream ended while still wanted: the watcher
+                        // exited, printed an invalid line, or an old CLI
+                        // lacks `watch`. Keep the last typed snapshot and
+                        // reinstall the source with bounded backoff, so the
+                        // menu bar and notifications recover without a window.
+                        self.logger.error(
+                            "session event stream ended: \(String(describing: streamFailure), privacy: .public)")
+                        self.scheduleObservationRestart()
                     }
                 }
             }
@@ -148,17 +185,22 @@ public final class SessionStore {
                           generation == self.eventGeneration else { return }
                     if !receivedFirstEvent {
                         receivedFirstEvent = true
+                        let waitElapsed =
+                            self.eventReadinessTimedOutGeneration == generation
+                        self.eventReadinessTimedOutGeneration = nil
+                        self.eventRestartAttempt = 0
                         self.markObservationReady(generation: generation)
-                        if !refreshOnFirstEvent { continue }
+                        // A cold start refreshes right after `ready` itself.
+                        // If the wait elapsed first, that snapshot raced the
+                        // watcher installation and must be repeated now.
+                        if !refreshOnFirstEvent, !waitElapsed { continue }
                     }
                     await self.refresh()
                 }
             } catch is CancellationError {
                 return
             } catch {
-                // A full refresh on app activation restarts a failed stream.
-                // Keep the last typed snapshot instead of replacing it with
-                // an event-transport diagnostic.
+                streamFailure = error
             }
         }
         scheduleObservationReadinessTimeout(generation: generation)
@@ -170,13 +212,17 @@ public final class SessionStore {
         eventGeneration &+= 1
         eventReadinessTimeoutTask?.cancel()
         eventReadinessTimeoutTask = nil
+        eventReadinessTimedOutGeneration = nil
+        eventRestartTask?.cancel()
+        eventRestartTask = nil
+        eventRestartAttempt = 0
         eventTask?.cancel()
         eventTask = nil
         markObservationReady(generation: stoppedGeneration)
     }
 
-    /// Repairs missed or failed event delivery without introducing a timer.
-    /// App activation is a natural resynchronization boundary.
+    /// Repairs missed or failed event delivery at a natural boundary such as
+    /// app activation. A pending backoff restart is replaced immediately.
     public func resynchronize() async {
         if eventTask == nil {
             let generation = beginObserving(refreshOnFirstEvent: false)
@@ -185,6 +231,29 @@ public final class SessionStore {
         }
         await refresh()
         if eventTask == nil { startObserving() }
+    }
+
+    private static func backoffDelay(attempt: Int) -> UInt64 {
+        let shift = min(attempt, 5)
+        let scaled = restartBaseDelayNanoseconds << UInt64(shift)
+        return min(scaled, restartMaximumDelayNanoseconds)
+    }
+
+    private func scheduleObservationRestart() {
+        eventRestartTask?.cancel()
+        let delay = Self.backoffDelay(attempt: eventRestartAttempt)
+        eventRestartAttempt += 1
+        let sleep = restartSleep
+        eventRestartTask = Task { [weak self] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.eventTask == nil else { return }
+            self.eventRestartTask = nil
+            self.startObserving()
+        }
     }
 
     private func waitUntilObservationIsReady(generation: UInt64) async {
@@ -208,22 +277,38 @@ public final class SessionStore {
         for waiter in waiters { waiter.resume() }
     }
 
+    /// Two bounds guard a watcher that has not reported `ready`. The short
+    /// wait releases cold start so a slow but healthy watcher never delays the
+    /// first snapshot; the watcher itself keeps running and refreshes on its
+    /// first event. The long bound replaces a watcher that never becomes ready.
     private func scheduleObservationReadinessTimeout(generation: UInt64) {
         eventReadinessTimeoutTask?.cancel()
         let sleep = eventReadinessSleep
         eventReadinessTimeoutTask = Task { [weak self] in
             do {
-                try await sleep(1_000_000_000)
+                try await sleep(Self.readinessWaitNanoseconds)
             } catch {
                 return
             }
             guard let self,
                   generation == self.eventGeneration,
                   self.eventReadyGeneration != generation else { return }
-            let stalledTask = self.eventTask
-            self.eventTask = nil
-            stalledTask?.cancel()
-            self.markObservationReady(generation: generation)
+            self.eventReadinessTimedOutGeneration = generation
+            let waiters = self.eventReadyWaiters.removeValue(forKey: generation) ?? []
+            for waiter in waiters { waiter.resume() }
+
+            do {
+                try await sleep(
+                    Self.readinessAbandonNanoseconds - Self.readinessWaitNanoseconds)
+            } catch {
+                return
+            }
+            guard generation == self.eventGeneration,
+                  self.eventReadyGeneration != generation else { return }
+            // Cancelling the stalled task runs its exit path, which schedules
+            // the bounded restart for this still-current generation.
+            self.logger.error("session event watcher never became ready; restarting")
+            self.eventTask?.cancel()
         }
     }
 
@@ -240,6 +325,7 @@ public final class SessionStore {
                 if generation == refreshGeneration {
                     state = .error(result.timedOut ? L10n.string("detach list timed out")
                                    : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+                    scheduleRefreshRetry(generation: generation)
                 }
                 return []
             }
@@ -247,6 +333,7 @@ public final class SessionStore {
             if parsed.hadInvalidLines {
                 if generation == refreshGeneration {
                     state = .incompatible // spec: never update the list from bad data
+                    scheduleRefreshRetry(generation: generation)
                 }
                 return []
             }
@@ -257,6 +344,9 @@ public final class SessionStore {
             // overlap while their subprocesses are suspended. Only the latest
             // request may publish state or notify transition consumers.
             guard generation == refreshGeneration else { return snapshot }
+            refreshRetryTask?.cancel()
+            refreshRetryTask = nil
+            refreshRetryAttempt = 0
             let changed = sessions != snapshot
             if changed { sessions = snapshot }
             resolveSessionWaiters(from: snapshot)
@@ -264,12 +354,38 @@ public final class SessionStore {
             hasFreshSnapshot = true
             state = .ok
             if changed { snapshotCache?.store(snapshot) }
+            // Schedule before the observer suspends this request: a newer
+            // snapshot may publish meanwhile and must own the confirmation.
+            scheduleTransientConfirmation(for: snapshot)
             if let onSnapshot { await onSnapshot(sessions) }
-            scheduleInterruptedConfirmation(for: snapshot)
             return snapshot
         } catch {
-            if generation == refreshGeneration { state = .cliMissing }
+            if generation == refreshGeneration {
+                state = .cliMissing
+                scheduleRefreshRetry(generation: generation)
+            }
             return []
+        }
+    }
+
+    /// One lifecycle hint arrives per transition. When the typed list that
+    /// follows it fails, nothing else would repeat the request, so retry with
+    /// bounded backoff until a newer refresh supersedes this one.
+    private func scheduleRefreshRetry(generation: UInt64) {
+        refreshRetryTask?.cancel()
+        let delay = Self.backoffDelay(attempt: refreshRetryAttempt)
+        refreshRetryAttempt += 1
+        let sleep = restartSleep
+        refreshRetryTask = Task { [weak self] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled,
+                  generation == self.refreshGeneration else { return }
+            self.refreshRetryTask = nil
+            await self.refresh()
         }
     }
 
@@ -341,30 +457,39 @@ public final class SessionStore {
         return candidates.count == 1 ? candidates[0].id : nil
     }
 
-    private func scheduleInterruptedConfirmation(for snapshot: [Session]) {
-        let interruptedIDs = Set(snapshot.lazy
-            .filter { $0.effectiveStatus == .interrupted }
+    /// `interrupted` and `hung` can be one-frame transients: a worker that is
+    /// still writing its final status, or a provider that exited moments
+    /// before its worker. The runtime publishes no further hint for the pane
+    /// death that resolves them, so one bounded follow-up snapshot confirms
+    /// each transition exactly once.
+    private static func isTransient(_ status: EffectiveStatus) -> Bool {
+        status == .interrupted || status == .hung
+    }
+
+    private func scheduleTransientConfirmation(for snapshot: [Session]) {
+        let transientIDs = Set(snapshot.lazy
+            .filter { Self.isTransient($0.effectiveStatus) }
             .map(\.id))
-        confirmedInterruptedSessionIDs.formIntersection(interruptedIDs)
-        guard !interruptedIDs.isEmpty else {
-            interruptedConfirmationTask?.cancel()
-            interruptedConfirmationTask = nil
+        confirmedTransientSessionIDs.formIntersection(transientIDs)
+        guard !transientIDs.isEmpty else {
+            transientConfirmationTask?.cancel()
+            transientConfirmationTask = nil
             return
         }
-        let unconfirmedIDs = interruptedIDs.subtracting(
-            confirmedInterruptedSessionIDs)
+        let unconfirmedIDs = transientIDs.subtracting(
+            confirmedTransientSessionIDs)
         guard !unconfirmedIDs.isEmpty else { return }
 
-        interruptedConfirmationTask?.cancel()
-        interruptedConfirmationTask = Task { [weak self] in
+        transientConfirmationTask?.cancel()
+        transientConfirmationTask = Task { [weak self] in
             do {
                 try await self?.confirmationSleep(350_000_000)
             } catch {
                 return
             }
             guard !Task.isCancelled, let self else { return }
-            self.confirmedInterruptedSessionIDs.formUnion(unconfirmedIDs)
-            self.interruptedConfirmationTask = nil
+            self.confirmedTransientSessionIDs.formUnion(unconfirmedIDs)
+            self.transientConfirmationTask = nil
             await self.refresh()
         }
     }

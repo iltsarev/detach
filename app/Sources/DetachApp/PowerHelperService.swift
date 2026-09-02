@@ -345,7 +345,7 @@ final class PowerHelperService {
     {
         var transaction = try loadOrMigrateTransaction(desired: desired)
         if transaction == nil {
-            transaction = try bootstrapTransaction(for: desired)
+            transaction = try await bootstrapTransaction(for: desired)
             if transaction == nil { return .complete }
         }
 
@@ -517,9 +517,14 @@ final class PowerHelperService {
         throw PowerHelperServiceError.registrationDidNotComplete
     }
 
+    /// An enabled helper record without a lifetime holder can be a helper
+    /// that launchd has not finished spawning at login. Re-read once after
+    /// this grace before treating a matching definition as a stale job.
+    static let staleRegistrationGraceNanoseconds: UInt64 = 3_000_000_000
+
     private func bootstrapTransaction(
         for desired: DesiredGoal
-    ) throws -> PowerHelperHandoffTransaction? {
+    ) async throws -> PowerHelperHandoffTransaction? {
         let bootSession = try currentBootSession()
         switch desired {
         case let .install(digest):
@@ -528,7 +533,11 @@ final class PowerHelperService {
                 || defaults.bool(forKey: pendingDigestKey)
             switch status {
             case .enabled:
-                let lifetimeStatus = try lifetimeBarrierStatus()
+                var lifetimeStatus = try lifetimeBarrierStatus()
+                if !definitionNeedsReconcile, lifetimeStatus != .busy {
+                    try await sleep(Self.staleRegistrationGraceNanoseconds)
+                    lifetimeStatus = try lifetimeBarrierStatus()
+                }
                 if !definitionNeedsReconcile, lifetimeStatus == .busy {
                     return nil
                 }

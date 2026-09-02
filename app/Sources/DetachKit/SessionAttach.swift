@@ -44,7 +44,10 @@ public struct SessionAttachInvocation: Equatable, Sendable {
         from base: [String: String],
         termName: String = termName
     ) -> [String] {
-        var env = ProcessDetachCLI.runtimeEnvironment(base)
+        // The attach client must see the same runtime roots as every other
+        // child, so inherited `DETACH_*` overrides are removed here as well.
+        var env = ProcessDetachCLI.runtimeEnvironment(
+            base, allowsDetachOverrides: false)
         env.removeValue(forKey: "TMUX")
         env.removeValue(forKey: "TMUX_PANE")
         env["TERM"] = termName

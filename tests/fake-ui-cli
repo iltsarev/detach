@@ -202,7 +202,10 @@ if [ "$#" -eq 5 ] && { [ "$1" = codex ] || [ "$1" = claude ]; } \
   control_loop &
   control_pid=$!
   stty raw -echo
-  /usr/bin/tee -a "$ROOT/fake/control-v.bin"
+  # The real attach client exits 0 when the PTY closes. Falling through to the
+  # unexpected-invocation exit would look like a crashed client to the app.
+  /usr/bin/tee -a "$ROOT/fake/control-v.bin" || true
+  exit 0
 fi
 
 if [ "$#" -eq 3 ] && [ "$1" = codex ] && [ "$2" = attach ] \

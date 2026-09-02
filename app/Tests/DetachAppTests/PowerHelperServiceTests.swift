@@ -1243,6 +1243,30 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertNil(fixture.handoffStore.transaction)
     }
 
+    func testMatchingEnabledRegistrationWaitsForItsLifetimeHolderBeforeRepair() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .enabled,
+            registrations: [])
+        var barrierStates: [PowerHelperLifetimeBarrierStatus] = [.missing, .busy]
+        var delays: [UInt64] = []
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { barrierStates.removeFirst() },
+            sleep: { delays.append($0) })
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-current", forKey: "powerHelperDefinitionDigest")
+
+        _ = try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(delays, [PowerHelperService.staleRegistrationGraceNanoseconds])
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 0)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertNil(fixture.handoffStore.transaction)
+        XCTAssertTrue(barrierStates.isEmpty)
+    }
+
     func testMatchingEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister() async throws {
         let backend = FakePowerHelperBackend(
             status: .enabled,

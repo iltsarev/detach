@@ -10,14 +10,32 @@ import DetachKit
 final class SessionTerminalScreenCache {
     nonisolated static let capacity = 9
     nonisolated static let lineLimit = 500
-    nonisolated static let maximumConcurrentPrefetches = 3
+    nonisolated static let maximumConcurrentPrefetches = 2
 
     private struct Key: Hashable {
         let provider: Provider
         let sessionName: String
     }
 
+    /// The typed turn identity a warm-up last read for a session. A blank or
+    /// failed read is not repeated until that identity changes, so a session
+    /// with an empty pane cannot spawn one process per snapshot.
+    private struct Revision: Equatable {
+        let status: EffectiveStatus
+        let turnState: AgentTurnState?
+        let turnID: String?
+        let checkpoint: Date?
+        /// A new run may reuse an explicit name; its creation time and, once
+        /// bound, its provider identity differ.
+        let created: Date?
+        let agentSessionID: String?
+    }
+
     private var screens: [Key: Data] = [:]
+    private var attempted: [Key: Revision] = [:]
+    /// The run a stored screen belongs to. A later run with the same name
+    /// must not inherit it.
+    private var screenRuns: [Key: Date?] = [:]
     private var recency: [Key] = []
     private var cli: (any DetachCLIRunning)?
     private var configurationID = ""
@@ -39,6 +57,8 @@ final class SessionTerminalScreenCache {
         prefetchTask = nil
         pendingPrefetch = []
         screens = [:]
+        attempted = [:]
+        screenRuns = [:]
         recency = []
         self.cli = cli
         self.configurationID = configurationID
@@ -51,8 +71,8 @@ final class SessionTerminalScreenCache {
     /// Warms recent live screens once from retained output. The work is a
     /// bounded event-triggered burst; it keeps no process after completion.
     func schedulePrefetch(for sessions: [Session]) {
+        dropScreensOfReplacedRuns(sessions)
         let targets = prefetchTargets(in: sessions, limit: Self.capacity)
-            .filter { screens[key(for: $0)] == nil }
         guard !targets.isEmpty else { return }
         pendingPrefetch = targets
         guard prefetchTask == nil else { return }
@@ -65,19 +85,23 @@ final class SessionTerminalScreenCache {
     /// Deterministic entry point for focused tests.
     func prefetch(_ sessions: [Session], limit: Int = capacity) async {
         guard let cli else { return }
-        let targets = prefetchTargets(in: sessions, limit: limit).filter {
-            screens[key(for: $0)] == nil
-        }
+        dropScreensOfReplacedRuns(sessions)
+        let targets = prefetchTargets(in: sessions, limit: limit)
         guard !targets.isEmpty else { return }
+        let marks = targets.map { (key(for: $0), revision(for: $0)) }
 
         await withTaskGroup(of: (Session, Data?).self) { group in
             var nextIndex = 0
             func enqueueNext() {
                 guard nextIndex < targets.count else { return }
                 let session = targets[nextIndex]
+                let (key, revision) = marks[nextIndex]
                 nextIndex += 1
-                group.addTask {
+                group.addTask { [weak self] in
+                    // Mark the attempt only once the read is really starting,
+                    // so a cancelled warm-up leaves unstarted sessions eligible.
                     guard !Task.isCancelled else { return (session, nil) }
+                    await self?.recordAttempt(key: key, revision: revision)
                     do {
                         let result = try await cli.run(
                             arguments: [
@@ -126,6 +150,7 @@ final class SessionTerminalScreenCache {
             return
         }
         screens[key] = screen
+        screenRuns[key] = session.createdAt
         touch(key)
         trimToCapacity()
     }
@@ -134,6 +159,20 @@ final class SessionTerminalScreenCache {
         while recency.count > Self.capacity {
             let removed = recency.removeFirst()
             screens.removeValue(forKey: removed)
+            screenRuns.removeValue(forKey: removed)
+        }
+    }
+
+    /// A stored screen or attempt belongs to one run. When typed state shows
+    /// a different run under the same name, forget both.
+    private func dropScreensOfReplacedRuns(_ sessions: [Session]) {
+        for session in sessions {
+            let key = key(for: session)
+            if let storedRun = screenRuns[key], storedRun != session.createdAt {
+                screens.removeValue(forKey: key)
+                screenRuns.removeValue(forKey: key)
+                recency.removeAll { $0 == key }
+            }
         }
     }
 
@@ -165,7 +204,26 @@ final class SessionTerminalScreenCache {
         guard limit > 0 else { return [] }
         return Array(sessions.lazy
             .filter { SessionAttachInvocation.isEligible($0) }
+            .filter { session in
+                let key = self.key(for: session)
+                return self.screens[key] == nil
+                    && self.attempted[key] != self.revision(for: session)
+            }
             .prefix(limit))
+    }
+
+    private func revision(for session: Session) -> Revision {
+        Revision(
+            status: session.effectiveStatus,
+            turnState: session.agentTurnState,
+            turnID: session.agentTurnID,
+            checkpoint: session.lastCheckpointAt,
+            created: session.createdAt,
+            agentSessionID: session.agentSessionId)
+    }
+
+    private func recordAttempt(key: Key, revision: Revision) {
+        attempted[key] = revision
     }
 
     private func drainPendingPrefetch(generation: UInt64) async {

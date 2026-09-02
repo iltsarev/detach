@@ -255,8 +255,11 @@ public final class PowerHeartbeatMonitor: @unchecked Sendable {
         expirationSource = nil
         guard let delay = Self.expirationDelay(for: snapshot) else { return }
         let source = DispatchSource.makeTimerSource(queue: queue)
+        // The heartbeat age is wall-clock time. A monotonic deadline would
+        // pause with the Mac asleep and present an hour-old document as fresh
+        // for minutes after wake.
         source.schedule(
-            deadline: .now() + delay,
+            wallDeadline: .now() + delay,
             leeway: .milliseconds(250))
         source.setEventHandler { [weak self, weak source] in
             guard let self, self.expirationSource === source else { return }
@@ -267,22 +270,28 @@ public final class PowerHeartbeatMonitor: @unchecked Sendable {
         source.resume()
     }
 
-    private func armClosestDirectory() {
+    /// `force` re-opens the descriptor even for an unchanged path: after a
+    /// delete or rename the old vnode may belong to a directory that was
+    /// removed and recreated, and it would never report the new writes.
+    private func armClosestDirectory(force: Bool = false) {
         guard started,
               let directory = closestExistingDirectory(
                 to: reader.statusURL.deletingLastPathComponent())
         else { return }
-        guard watchedDirectory != directory || directorySource == nil else {
+        guard force || watchedDirectory != directory || directorySource == nil else {
             return
         }
 
-        directorySource?.cancel()
-        directorySource = nil
-        watchedDirectory = nil
+        // Open the replacement before releasing the current source. If the
+        // hierarchy changed between the existence check and this open, the
+        // old source keeps reporting and the next event retries.
         let descriptor = Darwin.open(
             directory.path,
             O_EVTONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return }
+        directorySource?.cancel()
+        directorySource = nil
+        watchedDirectory = nil
 
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
@@ -297,9 +306,10 @@ public final class PowerHeartbeatMonitor: @unchecked Sendable {
             self.armClosestDirectory()
         }
         source.setEventHandler { [weak self, weak source] in
-            guard let self, self.directorySource === source else { return }
+            guard let self, let source, self.directorySource === source else { return }
+            let replaced = !source.data.isDisjoint(with: [.delete, .rename, .revoke])
             self.refresh()
-            self.armClosestDirectory()
+            self.armClosestDirectory(force: replaced)
         }
         source.setCancelHandler {
             Darwin.close(descriptor)

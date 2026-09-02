@@ -12,9 +12,11 @@ struct MenuBarLabel: View {
     let showsSessionCount: Bool
 
     var body: some View {
+        // Cached rows paint the sidebar on cold start, but a power or activity
+        // claim needs typed fresh state.
         let presentation = MenuBarPresentation(
             heartbeat: installation.watchdogHeartbeat,
-            sessions: sessionStore.sessions,
+            sessions: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [],
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
@@ -74,7 +76,7 @@ struct MenuBarMenu: View {
     private var presentation: MenuBarPresentation {
         MenuBarPresentation(
             heartbeat: installation.watchdogHeartbeat,
-            sessions: sessionStore.sessions,
+            sessions: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [],
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,

@@ -520,7 +520,11 @@ if codex_part_selected preflight; then
       --string session_name "$event_session" \
       --string project_dir "$event_root/project" \
       --string transcript_path "$event_managed_transcript"
+    # The watcher reads managed metadata from the explicit provider state
+    # roots, so a relocated provider root must be named like the runtime does.
     DETACH_STATE_ROOT="$event_root/state" \
+    DETACH_CODEX_STATE_ROOT="$event_root/state/codex" \
+    DETACH_CLAUDE_STATE_ROOT="$event_root/state/claude" \
     CODEX_HOME="$event_root/codex" \
     CLAUDE_CONFIG_DIR="$event_root/claude" \
       "$SCRIPT" watch --json >"$event_output" &
@@ -585,6 +589,36 @@ if codex_part_selected preflight; then
     "$ROOT/bin/detach-core")"
   printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
     grep -F 'publish_session_event' >/dev/null
+  printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
+    grep -F 'install_session_event_hook' >/dev/null
+  # The pane-died hook string crosses tmux quoting and `sh -c`. Paths with
+  # spaces are common; characters either layer could reinterpret are refused.
+  hook_source="$(sed -n \
+    '/^session_event_hook_command() {/,/^}/p' \
+    "$ROOT/bin/detach-core")"
+  hook_command="$(
+    STATE_BIN='/Volumes/User Data/libexec/detach-state'
+    SESSION_EVENT_FILE='/Volumes/User Data/state/session-change'
+    eval "$hook_source"
+    session_event_hook_command
+  )"
+  [ "$hook_command" = "run-shell -b \"'/Volumes/User Data/libexec/detach-state' events publish '/Volumes/User Data/state/session-change' >/dev/null 2>&1 || true\"" ]
+  if (
+    STATE_BIN='/tmp/$HOME/detach-state'
+    SESSION_EVENT_FILE='/tmp/state/session-change'
+    eval "$hook_source"
+    session_event_hook_command >/dev/null
+  ); then
+    printf 'hook command accepted an unsafe path\n' >&2
+    exit 1
+  fi
+  # The cleanup checkpoint must not wake the app while the provider is gone
+  # and the worker is still alive; the status write that follows publishes.
+  worker_cleanup_source="$(sed -n \
+    '/^  worker_cleanup() {/,/^  trap worker_cleanup EXIT/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$worker_cleanup_source" | \
+    grep -F 'DETACH_SUPPRESS_SESSION_EVENT=1 checkpoint_once' >/dev/null
   delete_source="$(sed -n \
     '/^delete_locked() {/,/^restore_rollout_if_needed() {/p' \
     "$ROOT/bin/detach-core")"
@@ -1364,7 +1398,18 @@ grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$expected_id" ]
 completed_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
+# The worker published its final status before it exited. The retained pane
+# dying afterwards writes no state, so a tmux hook must publish one more hint
+# or the app could only learn about the dead pane from window activation.
+status_hint="$(cat "$DETACH_STATE_ROOT/session-change")"
 wait_for_pane_dead "$pane_id"
+hint_attempts=0
+while [ "$hint_attempts" -lt 100 ] && \
+      [ "$(cat "$DETACH_STATE_ROOT/session-change")" = "$status_hint" ]; do
+  hint_attempts=$((hint_attempts + 1))
+  sleep 0.05
+done
+[ "$(cat "$DETACH_STATE_ROOT/session-change")" != "$status_hint" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "completed" ]
 completed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
 [ "$completed_style" != "$failed_style" ]

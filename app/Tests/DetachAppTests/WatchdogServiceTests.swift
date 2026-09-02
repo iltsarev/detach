@@ -212,6 +212,32 @@ final class WatchdogServiceTests: XCTestCase {
             forKey: "powerWatchdogDefinitionReconcilePending"))
     }
 
+    func testEnabledRegistrationWaitsForItsLifetimeHolderBeforeRepair() async throws {
+        // Login starts the app and the watchdog together. A record whose lock
+        // is not yet held is only stale if it stays unheld after the grace.
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [])
+        var barrierStates: [WatchdogLifetimeBarrierStatus] = [.missing, .busy]
+        var delays: [UInt64] = []
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { barrierStates.removeFirst() },
+            legacyWatchdogIsRunning: { false },
+            sleep: { delays.append($0) })
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-current", forKey: "powerWatchdogDefinitionDigest")
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(delays, [WatchdogService.staleRegistrationGraceNanoseconds])
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertNil(fixture.handoffStore.transaction)
+        XCTAssertTrue(barrierStates.isEmpty)
+    }
+
     func testMatchingLegacyRegistrationWithLiveProcessNoOps() async throws {
         let backend = FakeWatchdogBackend(
             status: .enabled,

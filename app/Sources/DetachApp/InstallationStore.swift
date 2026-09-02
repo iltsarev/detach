@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import DetachKit
 
 enum InstallationContextOperation: Equatable, Sendable {
@@ -106,6 +107,9 @@ final class InstallationStore {
     @ObservationIgnored private var contextOperationWaiters:
         [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var heartbeatMonitor: PowerHeartbeatMonitor?
+    @ObservationIgnored private var lastPowerSnapshotSequence: UInt64 = 0
+    @ObservationIgnored private let powerSnapshotSequence =
+        OSAllocatedUnfairLock<UInt64>(initialState: 0)
     @ObservationIgnored var onPowerSnapshot:
         (@MainActor (PowerHeartbeatSnapshot) async -> Void)?
 
@@ -193,15 +197,34 @@ final class InstallationStore {
     var isBusy: Bool { phase == .syncing || contextOperationRunning }
 
     func refreshPowerProtectionState() {
-        publishPowerSnapshot(heartbeatReader.read())
+        // Reserve the number before reading. A monitor delivery numbered
+        // later then read the document no earlier than this read did, so the
+        // higher number is never the older document.
+        let sequence = nextPowerSnapshotSequence()
+        publishPowerSnapshot(heartbeatReader.read(), sequence: sequence)
+    }
+
+    private func nextPowerSnapshotSequence() -> UInt64 {
+        powerSnapshotSequence.withLock { state -> UInt64 in
+            state += 1
+            return state
+        }
     }
 
     func startPowerObservation() {
         guard heartbeatMonitor == nil else { return }
+        // The monitor delivers on a serial queue, but each hop to the main
+        // actor is an unordered task. Number the snapshots so a stale one can
+        // never land after a newer one.
+        let sequence = powerSnapshotSequence
         let monitor = PowerHeartbeatMonitor(reader: heartbeatReader) {
             [weak self] snapshot in
+            let number = sequence.withLock { state -> UInt64 in
+                state += 1
+                return state
+            }
             Task { @MainActor [weak self] in
-                self?.publishPowerSnapshot(snapshot)
+                self?.publishPowerSnapshot(snapshot, sequence: number)
             }
         }
         heartbeatMonitor = monitor
@@ -214,18 +237,23 @@ final class InstallationStore {
         }
     }
 
-    private func publishPowerSnapshot(_ snapshot: PowerHeartbeatSnapshot) {
+    private func publishPowerSnapshot(
+        _ snapshot: PowerHeartbeatSnapshot,
+        sequence: UInt64? = nil
+    ) {
+        if let sequence {
+            guard sequence > lastPowerSnapshotSequence else { return }
+            lastPowerSnapshotSequence = sequence
+        }
         let previous = watchdogHeartbeatStorage
         let presentedStateChanged = !snapshot.hasSamePresentedState(as: previous)
-        if presentedStateChanged {
+        if snapshot != previous {
+            // Views present `checked_at` as an age, so a timestamp-only write
+            // must redraw them too. Only the semantic change below fans out
+            // to notifications.
             withMutation(keyPath: \.watchdogHeartbeat) {
                 watchdogHeartbeatStorage = snapshot
             }
-        } else {
-            // Keep checked_at current without waking every view that reads the
-            // heartbeat. The vnode monitor still reschedules its stale
-            // deadline from every document.
-            watchdogHeartbeatStorage = snapshot
         }
         if snapshot.effectivePowerState != powerProtectionState {
             powerProtectionState = snapshot.effectivePowerState

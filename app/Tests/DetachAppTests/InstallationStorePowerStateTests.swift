@@ -488,8 +488,8 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(store.powerProtectionState, .protected)
     }
 
-    func testTimestampOnlyHeartbeatRefreshDoesNotInvalidatePresentedState()
-        throws
+    func testTimestampOnlyHeartbeatRefreshRedrawsAgeWithoutNotifying()
+        async throws
     {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -500,11 +500,12 @@ final class InstallationStorePowerStateTests: XCTestCase {
             detachPath: "/tmp/detach-test",
             powerStateRoot: root)
         let initialCheckedAt = try XCTUnwrap(store.watchdogHeartbeat.checkedAt)
+        var forwardedSnapshots = 0
+        store.onPowerSnapshot = { _ in forwardedSnapshots += 1 }
 
         nonisolated(unsafe) var observationInvalidated = false
         withObservationTracking {
             _ = store.watchdogHeartbeat
-            _ = store.powerProtectionState
         } onChange: {
             observationInvalidated = true
         }
@@ -513,12 +514,16 @@ final class InstallationStorePowerStateTests: XCTestCase {
             #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
             to: root)
         store.refreshPowerProtectionState()
+        for _ in 0..<10 { await Task.yield() }
 
-        XCTAssertFalse(observationInvalidated)
+        // Views present `checked_at` as an age, so the routine write redraws
+        // them. It changes no semantic state and forwards nothing.
+        XCTAssertTrue(observationInvalidated)
         XCTAssertGreaterThan(
             try XCTUnwrap(store.watchdogHeartbeat.checkedAt),
             initialCheckedAt)
         XCTAssertEqual(store.powerProtectionState, .allowed)
+        XCTAssertEqual(forwardedSnapshots, 0)
     }
 
     func testPowerObservationPublishesAtomicChangesWithoutPolling() async throws {
@@ -545,6 +550,36 @@ final class InstallationStorePowerStateTests: XCTestCase {
 
         XCTAssertEqual(store.powerProtectionState, .protected)
         XCTAssertEqual(delivered?.effectivePowerState, .protected)
+    }
+
+    func testPowerObservationFollowsARecreatedStateDirectory() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+        store.startPowerObservation()
+        XCTAssertEqual(store.powerProtectionState, .allowed)
+
+        // A repair removes and recreates the directory. The old vnode belongs
+        // to the unlinked directory and would never report the new writes.
+        try FileManager.default.removeItem(at: root)
+        for _ in 0..<100 where store.powerProtectionState == .allowed {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
+            to: root)
+        for _ in 0..<200 where store.powerProtectionState != .protected {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(store.powerProtectionState, .protected)
     }
 
     func testCompletedOnboardingColdLaunchStartsOnDashboard() {

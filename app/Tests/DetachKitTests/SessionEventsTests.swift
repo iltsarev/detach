@@ -33,6 +33,23 @@ final class SessionEventsTests: XCTestCase {
                 "--transcript-root", "/tmp/claude/projects",
             ])
         XCTAssertEqual(parsed, configuration)
+        XCTAssertEqual(parsed.sessionsRoots, [
+            "/private/tmp/detach-state/codex/sessions",
+            "/private/tmp/detach-state/claude/sessions",
+        ])
+        // A relocated provider state root names its own sessions directory.
+        let relocated = try SessionEventWatchConfiguration.parse(arguments: [
+            "--json",
+            "--state-root", "/tmp/detach-state",
+            "--signal", "/tmp/detach-state/session-change",
+            "--sessions-root", "/tmp/elsewhere/codex/sessions",
+            "--sessions-root", "/tmp/detach-state/claude/sessions",
+            "--transcript-root", "/tmp/codex/sessions",
+        ])
+        XCTAssertEqual(relocated.sessionsRoots, [
+            "/private/tmp/elsewhere/codex/sessions",
+            "/private/tmp/detach-state/claude/sessions",
+        ])
         XCTAssertThrowsError(try SessionEventWatchConfiguration.parse(arguments: [
             "--state-root", "/tmp/detach-state",
             "--signal", "/tmp/detach-state/session-change",
@@ -113,6 +130,17 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertNotEqual(first, second)
         let attributes = try FileManager.default.attributesOfItem(atPath: signal.path)
         XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, 0o600)
+
+        // Environment roots with a trailing slash produce `//`. The publisher
+        // must standardize that path rather than silently disable every hint.
+        _ = try DetachStateCommand.run(arguments: [
+            "events", "publish", root.path + "//session-change",
+        ])
+        let third = try Data(contentsOf: signal)
+        XCTAssertNotEqual(second, third)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "events", "publish", "relative/session-change",
+        ]))
     }
 
     func testManagedTranscriptRegistryUsesOnlyUsableInRootMetadata() throws {

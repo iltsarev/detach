@@ -59,11 +59,13 @@ registered until the old lifetime lock is released or an exact absent-job
 callback provides the required completion barrier.
 
 An enabled registration with a matching bundled-definition digest is not
-enough to prove liveness. At startup, a missing or released lifetime lock also
-forces the durable replacement flow. This repairs a stale Background Task
-Management parent UUID after an app bundle is replaced with the same version.
-For a legacy watchdog without a lifetime lock, the exact bundled executable
-may prove that the old registration is still live.
+enough to prove liveness. At startup, a missing or released lifetime lock that
+stays unheld after a three-second grace also forces the durable replacement
+flow. The grace covers login, when the app and the service start together.
+This repairs a stale Background Task Management parent UUID after an app
+bundle is replaced with the same version. For a legacy watchdog without a
+lifetime lock, the exact bundled executable may prove that the old
+registration is still live.
 
 Before it creates the listener or changes power state, the helper must pass a
 strict check of its own signature with Security network access enabled. This

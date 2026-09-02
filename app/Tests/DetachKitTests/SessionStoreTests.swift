@@ -144,6 +144,18 @@ private final class EventCLI: DetachCLIRunning, @unchecked Sendable {
         continuation?.yield(SessionEvent(event: kind))
     }
 
+    /// Ends the current stream like a watcher exit. A later subscription
+    /// installs a fresh continuation, so `waitUntilSubscribed` waits again.
+    func end(throwing error: (any Error)?) {
+        let continuation: AsyncThrowingStream<SessionEvent, Error>.Continuation? =
+            lock.withLock {
+                let current = self.continuation
+                self.continuation = nil
+                return current
+            }
+        continuation?.finish(throwing: error)
+    }
+
     func setOutput(_ output: String) {
         lock.withLock { self.output = output }
     }
@@ -800,6 +812,123 @@ final class SessionStoreTests: XCTestCase {
 
         XCTAssertEqual(snapshotCount, 2)
         XCTAssertEqual(confirmationCalls, 1)
+    }
+
+    func testHungConfirmationRefreshRunsOnlyOncePerTransition() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"hung""#))
+        let probe = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in await probe.sleep() })
+        let confirmed = expectation(description: "confirmation snapshot")
+        var snapshotCount = 0
+        store.onSnapshot = { _ in
+            snapshotCount += 1
+            if snapshotCount == 2 { confirmed.fulfill() }
+        }
+
+        await store.refresh()
+        await probe.waitForCallCount(1)
+        await probe.resumeSleepers()
+        await fulfillment(of: [confirmed], timeout: 1)
+        await Task.yield()
+        let confirmationCalls = await probe.calls()
+
+        XCTAssertEqual(snapshotCount, 2)
+        XCTAssertEqual(confirmationCalls, 1)
+    }
+
+    func testEndedEventStreamRestartsAfterBoundedBackoff() async {
+        let cli = EventCLI(output: line)
+        let restart = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            restartSleep: { _ in await restart.sleep() })
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+        cli.emit(.ready)
+        await cli.waitForCallCount(1)
+
+        cli.end(throwing: DetachCLIStreamError.exited(1))
+        await restart.waitForCallCount(1)
+        await restart.resumeSleepers()
+        await cli.waitUntilSubscribed()
+        cli.emit(.ready)
+        await cli.waitForCallCount(2)
+
+        XCTAssertEqual(cli.currentCallCount, 2)
+        XCTAssertEqual(store.state, .ok)
+        store.stopObserving()
+    }
+
+    func testStoppedObserverNeverRestarts() async {
+        let cli = EventCLI(output: line)
+        let restart = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            restartSleep: { _ in await restart.sleep() })
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+        store.stopObserving()
+        cli.end(throwing: nil)
+        for _ in 0..<20 { await Task.yield() }
+
+        let restartCalls = await restart.calls()
+        XCTAssertEqual(restartCalls, 0)
+    }
+
+    func testFailedTypedSnapshotIsRetriedWithBackoff() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = .success(CLIResult(
+            exitCode: 1, stdout: "", stderr: "busy", timedOut: false))
+        let retry = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            restartSleep: { _ in await retry.sleep() })
+
+        await store.refresh()
+        XCTAssertEqual(store.state, .error("busy"))
+        cli.responses["list --json"] = ok(line)
+        await retry.waitForCallCount(1)
+        await retry.resumeSleepers()
+        for _ in 0..<200 where store.state != .ok {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        XCTAssertEqual(store.state, .ok)
+        XCTAssertEqual(store.sessions.count, 1)
+        XCTAssertEqual(cli.calls.count, 2)
+    }
+
+    func testSlowWatcherSurvivesTheReadinessWaitAndRefreshesOnItsFirstEvent() async {
+        let cli = EventCLI(output: line)
+        let readiness = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: FakeCLI(),
+            confirmationSleep: { _ in },
+            eventReadinessSleep: { _ in await readiness.sleep() })
+        let configuration = Task { @MainActor in
+            await store.configure(cli: cli)
+        }
+        await cli.waitUntilSubscribed()
+        await readiness.waitForCallCount(1)
+        await readiness.resumeSleepers()
+        await configuration.value
+        XCTAssertEqual(cli.currentCallCount, 1)
+
+        // The watcher was slow, not broken. Its late `ready` repeats the
+        // snapshot that raced the installation instead of being discarded.
+        cli.emit(.ready)
+        await cli.waitForCallCount(2)
+
+        XCTAssertEqual(cli.currentCallCount, 2)
+        store.stopObserving()
     }
 
     func testSnapshotObserverIsNotCalledForFailedSnapshots() async {

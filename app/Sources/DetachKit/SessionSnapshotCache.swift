@@ -22,6 +22,9 @@ public final class UserDefaultsSessionSnapshotCache: SessionSnapshotCaching {
 
     private let defaults: UserDefaults
     private let key: String
+    /// The presentation form last written or loaded. Volatile fields change on
+    /// nearly every snapshot; only a presentation difference is worth a write.
+    private var lastStored: [Session]?
 
     public init(
         defaults: UserDefaults = .standard,
@@ -42,18 +45,24 @@ public final class UserDefaultsSessionSnapshotCache: SessionSnapshotCaching {
               document.sessions.allSatisfy({ $0.schema == 1 }),
               Set(document.sessions.map(\.id)).count == document.sessions.count
         else { return [] }
-        return document.sessions.map(Self.presentationOnly)
+        let sessions = document.sessions.map(Self.presentationOnly)
+        lastStored = sessions
+        return sessions
     }
 
     public func store(_ sessions: [Session]) {
         guard sessions.count <= Self.maximumSessionCount,
               sessions.allSatisfy({ $0.schema == 1 }),
               Set(sessions.map(\.id)).count == sessions.count else { return }
+        let presentation = sessions.map(Self.presentationOnly)
+        guard presentation != lastStored else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(Document(schema: 1, sessions: sessions)),
+        guard let data = try? encoder.encode(
+                Document(schema: 1, sessions: presentation)),
               data.count <= Self.maximumByteCount else { return }
         defaults.set(data, forKey: key)
+        lastStored = presentation
     }
 
     private static func presentationOnly(_ source: Session) -> Session {

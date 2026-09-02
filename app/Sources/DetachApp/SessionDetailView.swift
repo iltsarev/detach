@@ -3,16 +3,24 @@ import AppKit
 import DetachKit
 
 enum SessionDetailLogRefresh {
+    /// A visible live session without its embedded terminal follows pane
+    /// output, which produces no file event. Keep that one surface on a
+    /// bounded cadence while it is on screen; every other surface is
+    /// event-driven and immutable.
+    static let liveFallbackIntervalNanoseconds: UInt64 = 2_000_000_000
+
     static func taskID(
         session: Session,
         showsEmbeddedTerminal: Bool,
-        lastUpdated: Date?
+        cachedLogIdentity: ObjectIdentifier?
     ) -> String {
         if showsEmbeddedTerminal || !session.isLive {
-            return "\(session.id)-\(showsEmbeddedTerminal)"
+            // A replaced cache entry (typed revision changed or evicted) must
+            // restart the load; the session id alone would not change.
+            let identity = cachedLogIdentity.map { "\($0.hashValue)" } ?? "local"
+            return "\(session.id)-\(showsEmbeddedTerminal)-\(identity)"
         }
-        let revision = lastUpdated?.timeIntervalSinceReferenceDate ?? 0
-        return "\(session.id)-logs-\(revision)"
+        return "\(session.id)-logs"
     }
 }
 
@@ -146,6 +154,19 @@ struct SessionDetailView: View {
             // non-live tail is immutable, so revisiting it needs no process.
             if cachedLog?.hasLoaded == true { return }
             await poller.fetchOnce()
+            guard session.isLive else { return }
+            // Pane output of a disconnected live session has no event source.
+            // Follow it only while this surface is visible; selection changes
+            // and the embedded terminal cancel this task.
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(
+                        nanoseconds: SessionDetailLogRefresh.liveFallbackIntervalNanoseconds)
+                } catch {
+                    return
+                }
+                await poller.fetchOnce()
+            }
         }
         .alert(L10n.string("Something went wrong"), isPresented: .init(
             get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
@@ -362,7 +383,7 @@ struct SessionDetailView: View {
         SessionDetailLogRefresh.taskID(
             session: session,
             showsEmbeddedTerminal: showsEmbeddedTerminal,
-            lastUpdated: store.lastUpdated)
+            cachedLogIdentity: cachedLog.map(ObjectIdentifier.init))
     }
 
     private var logView: some View {

@@ -42,12 +42,11 @@ to hold the complete frame until the target redraw.
 Critical mutations self-reinvoke core under `lockf`. Start, Resume, Stop,
 Recover, and Delete serialize through a per-session lock before narrower
 install, project, and checkpoint locks. Keep this order and the lock around the
-whole child. The install lock covers readiness; its timeout exceeds the worst
-hold.
+whole child. The install lock covers readiness and outlasts the worst hold.
 
 ### Typed state boundary
 
-`detach-state` is the JSON boundary. Do not edit JSON in shell. It owns typed
+`detach-state` is the JSON boundary. Never edit JSON in shell. It owns typed
 metadata, JSONL, health, reconcile, storage, emit, and event operations.
 `meta snapshots` enumerates one owned sessions root through anchored directory
 descriptors. It rejects unsafe directories and opens only owned regular files
@@ -77,53 +76,51 @@ receipt, validates a temporary copy, then replaces the live file.
 State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
 conversations. Public operations reject symlinked or foreign-owned mutable
-roots before traversal. Codex's integrity-checked SQLite backup is never
-restored automatically.
+roots before traversal. The checked Codex SQLite backup is never restored
+automatically.
 
 Bulk cleanup selects only fully scanned `stopped` or `orphaned` sessions.
 Before deletion, the app re-reads and matches the displayed status and byte
 counts. The provider command waits up to 30 seconds for the checkpoint lock,
 then rechecks managed tmux liveness and ownership, rejecting symlinked or
-foreign-owned state/session directories. A partial failure keeps each failed
-session and reports it explicitly.
+foreign-owned state/session directories. A partial failure keeps and reports
+each failed session.
 
 ### Session change events
 
 `watch --json` execs the state helper and exits with its parent or cancellation.
 Lossy hints require `list --json`. FSEvents accepts only exact transcripts from
-usable metadata. Bursts yield leading and 150 ms trailing hints. Drops or root
-changes yield `resync`. Lifecycle signals refresh roots; heartbeats do not.
-Missing provider roots are omitted. Activation repairs loss.
+usable metadata in each provider `sessions` root. Bursts yield leading and
+150 ms trailing hints. Drops or root changes yield `resync`. Lifecycle signals
+refresh roots; heartbeats do not. Missing provider roots are omitted. The signal
+path is standardized. Activation repairs loss.
 
 ### Session lifecycle and tmux
 
 `start` takes one cross-provider project lock, creates a safe identifier, sets
 window `remain-on-exit` off and the provider pane on, then launches `__worker`.
-Splits close on exit; provider logs and status remain. Without
+Splits close on exit; logs and status remain. Without
 `--name`, the identifier is
 `detach-<provider>-<project-slug>-<project-hash>` for the first history;
 successors use a monotonic `-r<12-hex>` suffix and persist the unsuffixed
 `default_session_base`. An explicit human-readable
 name is 1–100 UTF-8 bytes of printable text. Legacy-safe names retain the exact
 `detach-<provider>-<name>` identifier; all other names derive a deterministic
-ASCII slug plus a 12-hex content hash. A full
-`detach-<provider>-<safe-name>` stays reserved as an explicit internal
-identifier for backward compatibility; user input never becomes a tmux name or
-state path unless it already satisfies that legacy-safe grammar.
+ASCII slug plus a 12-hex content hash. A full `detach-<provider>-<safe-name>`
+stays reserved as an internal identifier; user input never becomes a tmux name
+or state path unless it satisfies that legacy-safe grammar.
 
 The optional display name is persisted separately, emitted through typed state,
-preserved across resume/recovery, and accepted by later lifecycle commands,
-which resolve it deterministically to the same internal identifier. The
-shared tmux daemon is anchored in persistent install state, not the first
-project directory, and is addressed only through the private
+preserved across resume/recovery, and resolved deterministically by later
+lifecycle commands. The shared tmux daemon is anchored in install state, not
+the first project directory, and is addressed only through the private
 `$DETACH_INSTALL_STATE_ROOT/tmux/tmux.sock`, never ambient `TMUX_TMPDIR`.
-Install migration checks the older default socket and the historical
-`-L dev.tsarev.detach` socket before switching payloads. Each worker starts
+Install migration checks the older default and historical
+`-L dev.tsarev.detach` sockets before switching payloads. Each worker starts
 from stable install state, then enters the canonical project beneath its
 cleanup trap.
 
-Tmux environment arguments stay in memory; provider credentials are never
-session scratch data.
+Tmux environment arguments stay in memory; credentials are never scratch data.
 
 Default starts form a provider/project history series. A fresh start refuses a
 live member or second writer; otherwise it allocates a successor without
@@ -150,8 +147,10 @@ HUP/INT/TERM forward to the provider while the wrapper stays alive to release
 its lease and assertion; explicit `detach stop` also releases idempotently by
 session/run token. The provider must inherit the
 wrapper's tmux foreground process group; a separate group makes interactive
-Codex or Claude stop on terminal I/O. On provider exit, the worker records
-status, attempts a final checkpoint, and leaves the pane retained for logs.
+Codex or Claude stop on terminal I/O. On provider exit the worker checkpoints
+silently, records and publishes status, and leaves the pane retained for logs;
+a tmux `pane-died` hook publishes once more. A terminal record with a live
+owned pane and dead provider is finished, not hung.
 
 Stop revalidates the managed run, pane, owned PID, and process group before
 each TERM or KILL. Delete removes a retained tmux session even
@@ -159,14 +158,14 @@ without a state directory and never reports success over leftover state.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user
-session. They do not promise survival across logout or reboot; an explicit
-kill of tmux/provider ends the live run. Recovery checkpoints remain available.
+session. They do not promise survival across logout or reboot; killing
+tmux or the provider ends the live run. Recovery checkpoints remain.
 Provider test parts use private roots; the parent orders and requires all.
 Small hosts use three Codex and two Claude parts.
 
 Detach status options use session-local `@detach*` keys and never touch a
-foreign server. The strip shows identity, power, and time. Sessions set
-`Detach · <project basename>` as the title. Finished sessions fade; failures
+foreign server. The strip shows identity, power, and time. The title is
+`Detach · <project basename>`. Finished sessions fade; failures
 use red outside the eight identity hues. Allocation scans both providers under
 the Start/Resume/Recover install lock. History keeps identity but reserves no
 hue. Unknown is conservative. Keep a unique hue; otherwise use the stable

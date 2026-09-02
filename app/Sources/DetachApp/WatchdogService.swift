@@ -188,7 +188,7 @@ final class WatchdogService {
     ) async throws {
         var transaction: WatchdogHandoffTransaction?
         if let targetDigest {
-            transaction = try transactionForInstall(
+            transaction = try await transactionForInstall(
                 targetDigest,
                 forceReplacement: forceReplacement)
         } else {
@@ -248,10 +248,16 @@ final class WatchdogService {
         throw WatchdogServiceError.registrationDidNotComplete
     }
 
+    /// Login starts the app and the BTM watchdog concurrently. An enabled
+    /// record whose lifetime lock is not yet held can simply be a watchdog
+    /// that has not finished spawning; re-read once after this grace before
+    /// treating it as a stale job.
+    static let staleRegistrationGraceNanoseconds: UInt64 = 3_000_000_000
+
     private func transactionForInstall(
         _ digest: String,
         forceReplacement: Bool
-    ) throws -> WatchdogHandoffTransaction? {
+    ) async throws -> WatchdogHandoffTransaction? {
         if var transaction = try handoffStore.load() {
             if transaction.targetDigest != digest {
                 switch transaction.phase {
@@ -276,16 +282,22 @@ final class WatchdogService {
         let pending = defaults.bool(forKey: pendingDigestKey)
         let definitionChanged = previous != digest
         let currentStatus = status
-        let enabledRegistrationNeedsRepair: Bool
-        if currentStatus == .enabled,
-           try lifetimeBarrierStatus() != .busy {
+        var enabledRegistrationNeedsRepair = false
+        // A changed or pending definition replaces the registration anyway;
+        // only an otherwise matching record needs this liveness inference.
+        if !forceReplacement, !definitionChanged, !pending,
+           currentStatus == .enabled,
+           try lifetimeBarrierStatus() != .busy,
+           try !legacyWatchdogIsRunning() {
             // A matching digest identifies the bundled bytes, not the BTM
             // parent UUID that launchd resolves. Keep a pre-lock legacy
             // watchdog if its exact executable is still alive. Otherwise an
-            // enabled record without a lifetime holder is a stale job.
-            enabledRegistrationNeedsRepair = try !legacyWatchdogIsRunning()
-        } else {
-            enabledRegistrationNeedsRepair = false
+            // enabled record without a lifetime holder is a stale job, unless
+            // the holder simply has not started yet.
+            try await sleep(Self.staleRegistrationGraceNanoseconds)
+            enabledRegistrationNeedsRepair =
+                try lifetimeBarrierStatus() != .busy
+                && !legacyWatchdogIsRunning()
         }
         if !forceReplacement, !definitionChanged, !pending,
            !enabledRegistrationNeedsRepair,

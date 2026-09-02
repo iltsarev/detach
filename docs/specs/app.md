@@ -25,12 +25,11 @@ update held by active leases keep the dashboard. Settings shows errors; new
 starts still require both power layers. Only an invalid app location or runtime
 payload mismatch restores setup guidance. Provider installation uses the
 official command in the user's terminal through the private `.command`
-mechanism. It reports only that the CLI is not detected because it has no
-outcome channel. When helper/plist bytes change after an
+mechanism. Without an outcome channel it reports only that the CLI is not
+detected. When helper/plist bytes change after an
 app update, unregister, await completion, then use the bounded retry for the
 transient SMAppService Code=1 race. Do not replace a helper with active leases:
-defer the update. Report a normal reconciliation outcome and retry on the next
-activation.
+defer the update. Report a normal outcome; retry on the next activation.
 
 Each readiness build puts one `detach-app-build:<UUID>` in its executable and
 signed marker. UI smoke uses a stripped private copy below
@@ -38,7 +37,7 @@ signed marker. UI smoke uses a stripped private copy below
 unsafe identity, build mismatch, or payload fails closed.
 
 Smoke restores focus and the pointer, then sends ordered AppKit events to
-visible controls. It covers all main surfaces, focus, session actions, and
+controls. It covers all main surfaces, focus, session actions, and
 onboarding. Stop disconnects first. Stages have deadlines. Coverage isolates
 the normal bundle, instrumented copy, tests, binary, and profiles. The driver
 detects clipped controls before an action.
@@ -60,6 +59,9 @@ Protected counts working sessions. Allowed names all-waiting or an unprotected
 working session and never claims no sessions. One typed heartbeat source and
 one `detach watch --json` source supply them. A schema-1 hint, activation, or
 `resync` triggers `list --json`; only the newest hint waits. No list timer runs.
+A dead or never-ready watcher restarts with 2–60 s backoff; a failed list
+retries alike. Cold start waits 1 s for `ready`; a late `ready` repeats its
+snapshot.
 UI never calls `pmset` or root XPC. Closing the
 last window keeps the app, event source, and icon.
 ⌘Q and Quit end the app while sessions, checkpoints, and protection continue.
@@ -84,9 +86,8 @@ NVM/mise Node directories by semantic version.
 Helper replacement is a durable fail-closed transaction. One versioned journal
 records the phase, goal, target digest, boot UUID, and lifetime-barrier contract.
 Each transition uses atomic rename and file/directory fsync before its side
-effect. A per-user `flock` protects the journal. In addition, the root helper
-creates a stable root-owned `0644` inode
-under `/var/run`; every app user opens it read-only and holds one exclusive
+effect. A per-user `flock` protects the journal. The root helper also creates a
+stable root-owned `0644` inode under `/var/run`; every app user opens it read-only and holds one exclusive
 kernel `flock` across the complete asynchronous SMAppService transaction. This
 is the machine-wide single-writer barrier across Fast User Switching, and the
 kernel releases it if the app crashes. Only the current non-root console user's
@@ -115,10 +116,10 @@ Settings → System owns the only **Mac Power** status and approval block. Helpe
 Ready requires a doctor live XPC check. Registration alone is Needs attention.
 During doctor or reconciliation, show Checking, not failure. Power
 requires a healthy watchdog heartbeat no older than three minutes; otherwise it
-is `unknown`. A vnode source reads atomic changes at once. One deadline marks
-silence stale. A timestamp-only write moves that deadline and updates diagnostic
-freshness without invalidating the UI. Settings open and activation resync. No
-UI heartbeat timer runs.
+is `unknown`. A vnode source reads atomic changes at once; one wall-clock
+deadline marks silence stale. A timestamp-only write moves it and redraws the
+age silently. Settings open and activation resync. No app-level
+heartbeat timer runs.
 
 The watchdog heartbeat carries the effective power state and typed raw
 thermal state/latch. With notifications enabled, the app emits one
@@ -139,8 +140,7 @@ A first-run setup card stays mounted during retry. App Start uses `--detach`,
 keeps sheet errors, and selects the new session. Start, Resume, and Recover open
 `detach <provider> attach --terminal-features sync <session>` in one visible
 PTY. Live-to-live selection keeps it and asks the public CLI to switch its exact
-tmux client. Closing the view ends the client. The event watcher has a
-one-second bound. Failure loads one typed snapshot and retries in background.
+tmux client. Closing the view ends the client.
 
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide
@@ -148,23 +148,24 @@ native copy, paste, and find. `Ctrl-V` reaches provider image paste. A Finder
 drop sends shell-safe paths without reading files. Live views move Mac Power to
 metadata. An exited client offers Reconnect.
 
-Cold startup reads at most 128 rows and 1 MiB from the last complete typed
-session snapshot in private preferences. These presentation rows grant no
-health action, ownership proof, PID, cleanup permission, or power claim. The
-first valid typed list replaces them and restores actions. A failed refresh
-keeps them visible but not authoritative. Only changed valid data updates the
-cache.
+Cold start reads at most 128 rows and 1 MiB of the last typed snapshot from
+private preferences. These rows grant no health action, ownership proof, PID,
+cleanup right, or power claim; the menu bar and Mac Power count none
+until the first fresh list restores actions. A failed refresh keeps
+them visible, not authoritative. Only a changed presentation is stored.
 
-A timer-free cache preloads 12 non-live logs with at most six reads. Lifecycle
-changes invalidate it. Live or deleted sessions cannot reuse a passive tail.
-A nine-entry cache warms three live text screens at once, 500 lines each. Both
+A timer-free cache preloads 12 non-live logs, three at once, into free entries
+only; a failed read waits for a new typed revision. Lifecycle changes
+invalidate it. Live or deleted sessions cannot reuse a passive tail. A
+nine-entry cache warms two live 500-line text screens at once; a blank one
+waits for a turn change. A detached live log rereads every 2 s. Both
 caches retain no PTY. Cancellation cannot alter a replacement. A cold attach
 can show one passive SwiftTerm text screen. Live switching uses no raster or
 replacement PTY. tmux holds the complete frame until a synchronized redraw.
 Metadata stays in one scrolling row. Selection keeps header, terminal, and
 action geometry. A cold passive screen leaves within one second.
-New session accepts an optional printable UTF-8 name of at most 100 bytes
-and rejects invalid input. Launch runs in Detach. Advanced holds the prompt
+New session accepts an optional printable UTF-8 name up to 100 bytes and
+rejects invalid input. Launch runs in Detach. Advanced holds the prompt
 below a fixed top. Titles use `display_name`, then the project or internal name.
 Command-N opens New session. Its chooser starts at the default project or the
 selection's parent. Command-T starts the chosen provider in a private 0700
@@ -176,8 +177,8 @@ ready sessions. Numbers appear in rows and stay stable across both sections.
 When a session leaves them, the earliest waiting session gets its number;
 extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
-Notifications are opt-in. Snapshots deduplicate transitions. A delayed
-snapshot distinguishes `interrupted` from Stop.
+Notifications are opt-in. Snapshots deduplicate transitions. One 350 ms
+recheck confirms `interrupted` or `hung`.
 
 Sparkle 2 and SwiftTerm 1.19.0 are pinned. The exact SwiftTerm shader bundle is
 shipped and verified. Sparkle keeps its symlink layout and is signed inside-out.
@@ -188,9 +189,9 @@ A generated or published appcast must contain exactly one arm64 hardware
 requirement so Intel clients are never offered the update.
 A Sparkle update replaces only the app; bootstrap atomically activates its new
 immutable CLI payload without rewriting live-session binaries. Sparkle errors
-for a disk image or App Translocation tell the user to move Detach to
-`/Applications`. Temporary-directory and download errors tell the user to
-check the network and free disk space, then retry. Archive, signature,
+for a disk image or App Translocation say to move Detach to
+`/Applications`. Temporary-directory and download errors say to check the
+network and free disk space, then retry. Archive, signature,
 validation, and installation errors provide the manual DMG path and the
 Settings > System Repair path, and state that the active CLI did not
 change. If replacement completes but CLI or helper sync fails, the prior CLI

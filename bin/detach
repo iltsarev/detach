@@ -503,6 +503,8 @@ watch_all() {
   exec "$STATE_BIN" events watch --json \
     --state-root "$STATE_ROOT" \
     --signal "$STATE_ROOT/session-change" \
+    --sessions-root "$CODEX_STATE_ROOT/sessions" \
+    --sessions-root "$CLAUDE_STATE_ROOT/sessions" \
     --transcript-root "$CODEX_PROVIDER_ROOT/sessions" \
     --transcript-root "$CLAUDE_PROVIDER_ROOT/projects"
 }

@@ -685,10 +685,13 @@ public enum DetachStateCommand {
         } else {
             return empty
         }
-        guard let tail = try? tail(
+        // The removed shell path required a regular file before it read the
+        // transcript. A FIFO or device here would block the whole list, so
+        // open without blocking and check the opened descriptor itself.
+        guard transcriptPath.hasPrefix("/"),
+              let tail = try? regularFileTail(
                 atPath: transcriptPath,
-                maximumByteCount: 262_144,
-                standardInput: nil) else { return empty }
+                maximumByteCount: 262_144) else { return empty }
         let summary = TranscriptDocument.summary(ofTail: tail, provider: provider)
         return [
             summary.model ?? "",
@@ -837,16 +840,22 @@ public enum DetachStateCommand {
         atStateRoot stateRoot: String,
         allowedRoots: [String]
     ) -> Set<String> {
+        managedTranscriptPaths(
+            sessionsRoots: SessionEventWatchConfiguration
+                .defaultSessionsRoots(stateRoot: stateRoot),
+            allowedRoots: allowedRoots)
+    }
+
+    static func managedTranscriptPaths(
+        sessionsRoots: [String],
+        allowedRoots: [String]
+    ) -> Set<String> {
         guard let transcriptIndex = metadataSnapshotFields.firstIndex(where: {
             $0.0 == "transcript_path"
         }) else { return [] }
 
         var result: Set<String> = []
-        for provider in [Provider.codex.rawValue, Provider.claude.rawValue] {
-            let sessionsRoot = URL(fileURLWithPath: stateRoot, isDirectory: true)
-                .appendingPathComponent(provider, isDirectory: true)
-                .appendingPathComponent("sessions", isDirectory: true)
-                .standardizedFileURL.path
+        for sessionsRoot in sessionsRoots {
             guard let snapshots = try? metadataSnapshots(at: sessionsRoot) else {
                 continue
             }
@@ -1442,6 +1451,25 @@ public enum DetachStateCommand {
 
         try data.write(to: temporaryURL, options: .withoutOverwriting)
         try FileManager.default.linkItem(at: temporaryURL, to: url)
+    }
+
+    /// Reads the tail of one regular file without a path race. The
+    /// non-blocking open cannot stall on a FIFO or device, and the check runs
+    /// on the descriptor that is read, not on a name that may be replaced.
+    private static func regularFileTail(
+        atPath path: String,
+        maximumByteCount: UInt64
+    ) throws -> Data? {
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              isRegularFile(metadata),
+              metadata.st_size > 0 else { return nil }
+        let size = UInt64(metadata.st_size)
+        try handle.seek(toOffset: size > maximumByteCount ? size - maximumByteCount : 0)
+        return try handle.readToEnd() ?? Data()
     }
 
     private static func tail(

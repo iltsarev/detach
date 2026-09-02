@@ -274,6 +274,13 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
                 do {
                     try Task.checkCancellation()
                     try process.run()
+                    // A cancellation that landed between the check above and
+                    // launch would otherwise leave this watcher running with
+                    // no owner until its first line.
+                    if Task.isCancelled {
+                        process.terminate()
+                        throw CancellationError()
+                    }
                     for try await line in output.fileHandleForReading.bytes.lines {
                         try Task.checkCancellation()
                         guard let event = SessionEventParser.parse(line) else {

@@ -1826,8 +1826,45 @@ state_update_meta_for_run_without_event() {
 
 publish_session_event() {
   # This token is a lossy wake-up hint, not durable state. A missed hint is
-  # repaired by the watch resync and app activation snapshots.
+  # repaired by the watch resync and app activation snapshots. The worker
+  # cleanup suppresses the hint of its final checkpoint because its status
+  # write publishes one moment later.
+  [ "${DETACH_SUPPRESS_SESSION_EVENT:-0}" != "1" ] || return 0
   "$STATE_BIN" events publish "$SESSION_EVENT_FILE" >/dev/null 2>&1 || true
+}
+
+# tmux runs this hook when the retained provider pane dies. Nothing else
+# writes state at that moment, so without it the app could only learn about
+# the dead pane from an unrelated event or from window activation. The hook
+# command is a tmux double-quoted string that reaches `sh -c`; both paths are
+# single-quoted for sh and limited to characters that neither tmux format
+# expansion (`#`) nor either quoting layer can reinterpret. Spaces are common
+# in home directories and are allowed.
+session_event_hook_command() {
+  local path
+  for path in "$STATE_BIN" "$SESSION_EVENT_FILE"; do
+    case "$path" in
+      /*) ;;
+      *) return 1 ;;
+    esac
+    case "$path" in
+      *[!A-Za-z0-9_./@+:,~%=' '-]*) return 1 ;;
+    esac
+  done
+  printf "run-shell -b \"'%s' events publish '%s' >/dev/null 2>&1 || true\"" \
+    "$STATE_BIN" "$SESSION_EVENT_FILE"
+}
+
+install_session_event_hook() {
+  local session="$1"
+  local command
+
+  if ! command="$(session_event_hook_command)"; then
+    error "warning: state paths contain characters the tmux hook cannot carry; the app learns about a finished pane on activation"
+    return 0
+  fi
+  "${TMUX_CMD[@]}" set-hook -t "=$session:" pane-died "$command" 2>/dev/null || \
+    error "warning: could not install the tmux pane-died hook for this session"
 }
 
 state_update_meta_for_run() {
@@ -3587,7 +3624,10 @@ worker_main() {
       kill "$power_monitor_pid" 2>/dev/null || true
       wait "$power_monitor_pid" 2>/dev/null || true
     fi
-    checkpoint_once "$session" "$run_token" || true
+    # The final status write below publishes the lifecycle hint. A separate
+    # hint from this checkpoint would wake the app while the provider is
+    # already gone and this worker is still alive, which reads as hung.
+    DETACH_SUPPRESS_SESSION_EVENT=1 checkpoint_once "$session" "$run_token" || true
     rm -f "$provider_pid_file" "$power_activity_file" \
       "$power_activity_source_file"
 
@@ -3851,6 +3891,7 @@ start_tmux_session() {
   # splits inherit the window-level off value and disappear normally on exit.
   "${TMUX_CMD[@]}" set-option -q -w -t "$pane_id" remain-on-exit off
   "${TMUX_CMD[@]}" set-option -q -p -t "$pane_id" remain-on-exit on
+  install_session_event_hook "$session"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" history-limit "$HISTORY_LIMIT"
   tmux_configure_server || \
     error "warning: could not configure Detach server input options for this session"

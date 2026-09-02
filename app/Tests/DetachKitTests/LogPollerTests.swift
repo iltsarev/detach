@@ -248,6 +248,104 @@ final class LogPollerTests: XCTestCase {
         await newCLI.releaseAll()
     }
 
+    func testFailedLogReadIsNotRepeatedForTheSameTypedRevision() async {
+        let session = makeSession(name: "missing", status: "completed")
+        let cli = ConcurrentLogCLI(responses: [
+            "codex logs --ansi missing": CLIResult(
+                exitCode: 1, stdout: "", stderr: "no logs found", timedOut: false),
+        ])
+        let cache = SessionLogSnapshotCache(
+            cli: cli, configurationID: "/tmp/detach")
+
+        await cache.prefetch([session])
+        await cache.prefetch([session])
+        let repeatedCallCount = await cli.recordedCalls().count
+        XCTAssertEqual(repeatedCallCount, 1)
+        XCTAssertFalse(cache.poller(for: session).hasLoaded)
+
+        let changed = makeSession(
+            name: "missing", status: "completed",
+            checkpoint: "2026-09-01T10:01:00Z")
+        await cache.prefetch([changed])
+        let changedCallCount = await cli.recordedCalls().count
+        XCTAssertEqual(changedCallCount, 2)
+    }
+
+    func testCancelledWarmUpLeavesUnstartedReadsEligible() async {
+        let cli = SuspendedLogCLI()
+        let cache = SessionLogSnapshotCache(cli: cli, configurationID: "/tmp/detach")
+        let sessions = (0..<SessionLogSnapshotCache.capacity).map {
+            makeSession(name: "cold-\($0)", status: "completed")
+        }
+
+        let warmUp = Task { await cache.prefetch(sessions) }
+        await waitUntil {
+            await cli.callCount() == SessionLogSnapshotCache.maximumConcurrentPrefetches
+        }
+        warmUp.cancel()
+        await cli.releaseAll()
+        await warmUp.value
+
+        // Only the reads that started are recorded. The rest still need a
+        // read and must not be skipped as if they had been attempted. The CLI
+        // suspends every read, so release each bounded batch as it starts.
+        let second = Task { await cache.prefetch(sessions) }
+        var released = SessionLogSnapshotCache.maximumConcurrentPrefetches
+        while released < sessions.count {
+            let target = min(
+                released + SessionLogSnapshotCache.maximumConcurrentPrefetches,
+                sessions.count)
+            await waitUntil { await cli.callCount() == target }
+            await cli.releaseAll()
+            released = target
+        }
+        await second.value
+        let total = await cli.callCount()
+        XCTAssertEqual(total, sessions.count)
+    }
+
+    func testDirectlyLoadedTailIsInvalidatedByAReplacementRun() async {
+        let cli = ConcurrentLogCLI()
+        let cache = SessionLogSnapshotCache(cli: cli, configurationID: "/tmp/detach")
+        let original = makeSession(
+            name: "reused", status: "completed", created: "2026-09-01T10:00:00Z")
+        let direct = cache.poller(for: original)
+        await direct.fetchOnce()
+        XCTAssertTrue(direct.hasLoaded)
+
+        // The detail view loaded this tail itself. A new run under the same
+        // explicit name must not show it.
+        let replacement = makeSession(
+            name: "reused", status: "completed", created: "2026-09-02T10:00:00Z")
+        await cache.prefetch([replacement])
+
+        XCTAssertFalse(direct === cache.poller(for: replacement))
+        let calls = await cli.recordedCalls().count
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testPrefetchFillsFreeSlotsAndNeverEvictsASelectedEntry() async {
+        let cli = ConcurrentLogCLI()
+        let cache = SessionLogSnapshotCache(
+            cli: cli, configurationID: "/tmp/detach")
+        let selected = makeSession(name: "selected", status: "completed")
+        let selectedPoller = cache.poller(for: selected)
+        await selectedPoller.fetchOnce()
+        let others = (0..<(SessionLogSnapshotCache.capacity + 4)).map {
+            makeSession(name: "other-\($0)", status: "completed")
+        }
+
+        // One direct read for the selection plus one read per free slot.
+        await cache.prefetch(others + [selected])
+        XCTAssertTrue(selectedPoller === cache.poller(for: selected))
+        let firstCallCount = await cli.recordedCalls().count
+        XCTAssertEqual(firstCallCount, SessionLogSnapshotCache.capacity)
+
+        await cache.prefetch(others + [selected])
+        let secondCallCount = await cli.recordedCalls().count
+        XCTAssertEqual(secondCallCount, SessionLogSnapshotCache.capacity)
+    }
+
     func testSnapshotCacheEvictsTheLeastRecentEntry() {
         let cache = SessionLogSnapshotCache(
             cli: FakeCLI(), configurationID: "/tmp/detach")
@@ -265,13 +363,15 @@ final class LogPollerTests: XCTestCase {
     private func makeSession(
         name: String,
         status: String,
-        checkpoint: String? = nil
+        checkpoint: String? = nil,
+        created: String? = nil
     ) -> Session {
         let checkpointField = checkpoint.map {
             ",\"last_checkpoint_at\":\"\($0)\""
         } ?? ""
+        let createdField = created.map { ",\"created_at\":\"\($0)\"" } ?? ""
         return SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"\(name)","name":"\(name)","effective_status":"\(status)"\(checkpointField)}
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"\(name)","effective_status":"\(status)"\(checkpointField)\(createdField)}
         """).sessions[0]
     }
 

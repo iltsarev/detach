@@ -125,6 +125,44 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertFalse(result.ownershipProven)
     }
 
+    func testFinishingWorkerWithTerminalMetadataIsNotHung() {
+        // After Ctrl+C the worker writes `interrupted`, publishes the hint,
+        // and only then exits. The list that follows sees a live owned pane
+        // with a dead provider; that is a finished run, not a hung one.
+        for status in [EffectiveStatus.interrupted, .completed, .failed, .stopped] {
+            let result = evaluate(status: status, provider: .dead)
+
+            XCTAssertEqual(result.effectiveStatus, status, "\(status)")
+            XCTAssertEqual(result.reason, .finished)
+            XCTAssertTrue(result.ownershipProven)
+            XCTAssertFalse(result.actions.contains(.attach))
+            XCTAssertEqual(result.reconcileAction, .none)
+        }
+        // An active record with a dead provider still needs the hung signal.
+        XCTAssertEqual(evaluate(status: .running, provider: .dead).effectiveStatus, .hung)
+        // Only a live worker proves a finishing run; a lost or mismatched
+        // worker with a live pane keeps the established hung verdict and
+        // grants no cleanup on that pane.
+        XCTAssertEqual(
+            evaluate(status: .stopped, worker: .dead, provider: .dead).effectiveStatus, .hung)
+        XCTAssertEqual(
+            evaluate(status: .stopped, worker: .mismatch, provider: .dead).effectiveStatus,
+            .hung)
+        XCTAssertFalse(evaluate(status: .stopped, provider: .dead).cleanupEligible)
+        // A provider that is merely unproven keeps the established rules.
+        XCTAssertEqual(
+            evaluate(status: .interrupted, provider: .mismatch).effectiveStatus, .hung)
+        // Legacy metadata without runtime identity keeps its own branch.
+        XCTAssertEqual(
+            evaluate(
+                runtimeIdentityExpected: false,
+                status: .stopped,
+                worker: .unknown,
+                provider: .unknown,
+                heartbeat: .missing).effectiveStatus,
+            .running)
+    }
+
     func testWorkerCrashNeverRecoversWhileAnUnprovenProviderPIDIsStillAlive() {
         let result = evaluate(
             tmux: .dead,

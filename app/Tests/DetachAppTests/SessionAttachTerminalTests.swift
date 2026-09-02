@@ -36,6 +36,19 @@ private actor TerminalScreenPrefetchCLI: DetachCLIRunning {
     func peakConcurrency() -> Int { peakActiveCalls }
 }
 
+private actor BlankTerminalScreenCLI: DetachCLIRunning {
+    private(set) var calls: [[String]] = []
+
+    func run(arguments: [String], timeout: TimeInterval) async throws
+        -> CLIResult
+    {
+        calls.append(arguments)
+        return CLIResult(exitCode: 0, stdout: "\n   \n", stderr: "", timedOut: false)
+    }
+
+    func recordedCalls() -> [[String]] { calls }
+}
+
 private actor SuspendedTerminalScreenCLI: DetachCLIRunning {
     private var calls = 0
     private var continuations: [CheckedContinuation<Void, Never>] = []
@@ -350,39 +363,53 @@ final class SessionAttachTerminalTests: XCTestCase {
             cachedLog: cache.poller(for: session)).body
     }
 
-    func testDetachedLiveLogRefreshUsesSessionEventsInsteadOfATimer() throws {
+    func testDetachedLiveLogRefreshKeysOnSessionAndCacheIdentity() throws {
         let live = try XCTUnwrap(Self.session(status: "running"))
         let finished = try XCTUnwrap(Self.session(status: "stopped"))
-        let first = Date(timeIntervalSinceReferenceDate: 10)
-        let second = Date(timeIntervalSinceReferenceDate: 11)
+        let firstPoller = NSObject()
+        let secondPoller = NSObject()
+        let first = ObjectIdentifier(firstPoller)
+        let second = ObjectIdentifier(secondPoller)
 
+        // A detached live surface keeps one bounded refresh task for the
+        // selection; unrelated snapshots must not restart it.
+        XCTAssertEqual(
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: false,
+                cachedLogIdentity: nil),
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: false,
+                cachedLogIdentity: nil))
+        XCTAssertEqual(
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: true,
+                cachedLogIdentity: nil),
+            SessionDetailLogRefresh.taskID(
+                session: live,
+                showsEmbeddedTerminal: true,
+                cachedLogIdentity: nil))
+        // A replaced cache entry for a finished session must reload it.
         XCTAssertNotEqual(
             SessionDetailLogRefresh.taskID(
-                session: live,
+                session: finished,
                 showsEmbeddedTerminal: false,
-                lastUpdated: first),
+                cachedLogIdentity: first),
             SessionDetailLogRefresh.taskID(
-                session: live,
+                session: finished,
                 showsEmbeddedTerminal: false,
-                lastUpdated: second))
-        XCTAssertEqual(
-            SessionDetailLogRefresh.taskID(
-                session: live,
-                showsEmbeddedTerminal: true,
-                lastUpdated: first),
-            SessionDetailLogRefresh.taskID(
-                session: live,
-                showsEmbeddedTerminal: true,
-                lastUpdated: second))
+                cachedLogIdentity: second))
         XCTAssertEqual(
             SessionDetailLogRefresh.taskID(
                 session: finished,
                 showsEmbeddedTerminal: false,
-                lastUpdated: first),
+                cachedLogIdentity: first),
             SessionDetailLogRefresh.taskID(
                 session: finished,
                 showsEmbeddedTerminal: false,
-                lastUpdated: second))
+                cachedLogIdentity: first))
     }
 
     func testDetailTransitionKeepsOutgoingFrameUntilTargetIsReady() throws {
@@ -572,6 +599,50 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertEqual(callsAfterConfiguration, [[
             "codex", "logs", "--ansi", "detach-codex-startup-live",
         ]])
+    }
+
+    @MainActor
+    func testBlankScreenIsNotRefetchedUntilTheTypedTurnChanges() async throws {
+        let starting = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-blank"))
+        let cli = BlankTerminalScreenCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: cli, configurationID: "/tmp/detach")
+
+        await cache.prefetch([starting])
+        await cache.prefetch([starting])
+        XCTAssertNil(cache.screen(for: starting))
+        let repeatedCalls = await cli.recordedCalls()
+        XCTAssertEqual(repeatedCalls.count, 1)
+
+        var working = starting
+        working.agentTurnState = .working
+        working.agentTurnID = "turn-1"
+        await cache.prefetch([working])
+        let changedCalls = await cli.recordedCalls()
+        XCTAssertEqual(changedCalls.count, 2)
+    }
+
+    @MainActor
+    func testNewRunUnderTheSameNameNeverInheritsAnOldScreen() async throws {
+        let first = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-reused",
+            createdAt: "2026-09-01T10:00:00Z"))
+        let cli = TerminalScreenPrefetchCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: cli, configurationID: "/tmp/detach")
+        await cache.prefetch([first])
+        XCTAssertNotNil(cache.screen(for: first))
+
+        // The same explicit name starts a fresh run with a new creation time.
+        let replacement = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-reused",
+            createdAt: "2026-09-02T10:00:00Z"))
+        cache.schedulePrefetch(for: [replacement])
+        XCTAssertNil(cache.screen(for: first))
+        await waitUntilAsync { cache.screen(for: replacement) != nil }
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(calls.count, 2)
     }
 
     @MainActor
@@ -994,10 +1065,12 @@ final class SessionAttachTerminalTests: XCTestCase {
 
     private static func session(
         status: String = "running",
-        name: String = "detach-codex-proj-abcd1234"
+        name: String = "detach-codex-proj-abcd1234",
+        createdAt: String? = nil
     ) -> Session? {
-        SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        let created = createdAt.map { "\"\($0)\"" } ?? "null"
+        return SessionListParser.parse("""
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":\(created),"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
         """).sessions.first
     }
 
