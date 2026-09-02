@@ -281,11 +281,13 @@ enum UIE2ETestDriver {
             try await waitUntil("recoverable log snapshot warm-up") {
                 sessionLogSnapshots.poller(for: recoverableSession).hasLoaded
             }
-            let recoverableSwitchStarted = ProcessInfo.processInfo.systemUptime
             _ = try await clickUntilElement(
                 recoverableRow,
                 name: "recoverable session row",
                 resultIdentifier: "session-detail-\(recoverableID)")
+            // Prove that selection uses the snapshot warmed above. A wall-clock
+            // bound here also measures the synthetic click, Accessibility, and
+            // runner scheduling, none of which can distinguish a cache miss.
             try await waitUntil("warm recoverable log without a reread", attempts: 5) {
                 guard let scrollView = find(identifier: "session-preview-log")
                         as? NSScrollView,
@@ -302,11 +304,6 @@ enum UIE2ETestDriver {
                     .count ?? 0
                 return logReads == 1 && textView.string.contains(
                     "UI fixture log for \(recoverableID)")
-            }
-            guard ProcessInfo.processInfo.systemUptime - recoverableSwitchStarted
-                    < 0.25 else {
-                throw Failure(
-                    message: "recoverable log cache missed instant switch budget")
             }
             checks.append("non-live-session-switch-uses-warm-cache")
             let recoverButton = try await element(
