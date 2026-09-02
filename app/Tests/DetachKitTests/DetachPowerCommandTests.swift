@@ -413,6 +413,25 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertTrue(events.values.isEmpty)
     }
 
+    func testDefaultQuickStatusReaderAlwaysReturnsTypedJSONWithoutHelperXPC() throws {
+        let events = EventLog()
+        let helper = FakeHelperClient(events: events)
+        let command = DetachPowerCommand(helperClient: helper)
+
+        let result = try command.execute(arguments: [
+            "status", "--json", "--quick",
+        ])
+
+        guard case let .statusJSON(data) = result else {
+            return XCTFail("expected status JSON")
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["schema"] as? Int, 1)
+        XCTAssertNotNil(object["state"] as? String)
+        XCTAssertTrue(events.values.isEmpty)
+    }
+
     func testResultAndErrorContractsHaveStableExitCodesAndDescriptions() {
         XCTAssertEqual(DetachPowerCommandResult.lifecycle.exitCode, 0)
         XCTAssertEqual(

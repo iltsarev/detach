@@ -193,11 +193,13 @@ private final class EventCLI: DetachCLIRunning, @unchecked Sendable {
 
 private actor ConfirmationSleepProbe {
     private var callCount = 0
+    private var requestedNanoseconds: [UInt64] = []
     private var callWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var sleepers: [CheckedContinuation<Void, Never>] = []
 
-    func sleep() async {
+    func sleep(nanoseconds: UInt64? = nil) async {
         callCount += 1
+        if let nanoseconds { requestedNanoseconds.append(nanoseconds) }
         let ready = callWaiters.filter { $0.0 <= callCount }
         callWaiters.removeAll { $0.0 <= callCount }
         ready.forEach { $0.1.resume() }
@@ -216,6 +218,46 @@ private actor ConfirmationSleepProbe {
     }
 
     func calls() -> Int { callCount }
+    func delays() -> [UInt64] { requestedNanoseconds }
+}
+
+private actor CancellableSleepProbe {
+    private let immediateCallCount: Int
+    private var callCount = 0
+    private var cancellationCount = 0
+    private var callWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var cancellationWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    init(immediateCallCount: Int = 0) {
+        self.immediateCallCount = immediateCallCount
+    }
+
+    func sleep(nanoseconds: UInt64) async throws {
+        callCount += 1
+        let ready = callWaiters.filter { $0.0 <= callCount }
+        callWaiters.removeAll { $0.0 <= callCount }
+        ready.forEach { $0.1.resume() }
+        if callCount <= immediateCallCount { return }
+        do {
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        } catch {
+            cancellationCount += 1
+            let cancelled = cancellationWaiters.filter { $0.0 <= cancellationCount }
+            cancellationWaiters.removeAll { $0.0 <= cancellationCount }
+            cancelled.forEach { $0.1.resume() }
+            throw error
+        }
+    }
+
+    func waitForCallCount(_ expected: Int) async {
+        if callCount >= expected { return }
+        await withCheckedContinuation { callWaiters.append((expected, $0)) }
+    }
+
+    func waitForCancellationCount(_ expected: Int) async {
+        if cancellationCount >= expected { return }
+        await withCheckedContinuation { cancellationWaiters.append((expected, $0)) }
+    }
 }
 
 @MainActor
@@ -815,7 +857,9 @@ final class SessionStoreTests: XCTestCase {
         let probe = ConfirmationSleepProbe()
         let store = SessionStore(
             cli: cli,
-            confirmationSleep: { _ in await probe.sleep() })
+            confirmationSleep: { _ in await probe.sleep() },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in })
         let confirmed = expectation(description: "confirmation snapshot")
         var snapshotCount = 0
         store.onSnapshot = { _ in
@@ -834,6 +878,25 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(confirmationCalls, 1)
     }
 
+    func testDefaultConfirmationDelayPublishesTheFollowUpSnapshot() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"interrupted""#))
+        let store = SessionStore(cli: cli)
+        let confirmed = expectation(description: "default confirmation snapshot")
+        var snapshotCount = 0
+        store.onSnapshot = { _ in
+            snapshotCount += 1
+            if snapshotCount == 2 { confirmed.fulfill() }
+        }
+
+        await store.refresh()
+        await fulfillment(of: [confirmed], timeout: 1)
+
+        XCTAssertEqual(snapshotCount, 2)
+    }
+
     func testHungConfirmationRefreshRunsOnlyOncePerTransition() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line.replacingOccurrences(
@@ -842,7 +905,9 @@ final class SessionStoreTests: XCTestCase {
         let probe = ConfirmationSleepProbe()
         let store = SessionStore(
             cli: cli,
-            confirmationSleep: { _ in await probe.sleep() })
+            confirmationSleep: { _ in await probe.sleep() },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in })
         let confirmed = expectation(description: "confirmation snapshot")
         var snapshotCount = 0
         store.onSnapshot = { _ in
@@ -867,6 +932,7 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(
             cli: cli,
             confirmationSleep: { _ in },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
             restartSleep: { _ in await restart.sleep() })
         store.startObserving()
         await cli.waitUntilSubscribed()
@@ -885,12 +951,76 @@ final class SessionStoreTests: XCTestCase {
         store.stopObserving()
     }
 
+    func testForegroundPollingUsesTheBoundedBaseInterval() async {
+        // Keep the historical regression ID. Foreground polling was replaced
+        // by a native stream; this now proves the replacement uses the same
+        // bounded base delay when its watcher exits.
+        let cli = EventCLI(output: line)
+        let restart = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { delay in
+                await restart.sleep(nanoseconds: delay)
+            })
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+
+        cli.end(throwing: DetachCLIStreamError.exited(1))
+        await restart.waitForCallCount(1)
+
+        let delays = await restart.delays()
+        XCTAssertEqual(delays, [SessionStore.restartBaseDelayNanoseconds])
+        store.stopObserving()
+        await restart.resumeSleepers()
+    }
+
+    func testCancellationErrorFromEventStreamStillUsesBoundedRestart() async {
+        let cli = EventCLI(output: line)
+        let restart = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in await restart.sleep() })
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+
+        cli.end(throwing: CancellationError())
+        await restart.waitForCallCount(1)
+
+        let restartCalls = await restart.calls()
+        XCTAssertEqual(restartCalls, 1)
+        store.stopObserving()
+        await restart.resumeSleepers()
+    }
+
+    func testStoppingObserverCancelsTheLongReadinessDeadline() async {
+        let cli = EventCLI(output: line)
+        let readiness = CancellableSleepProbe(immediateCallCount: 1)
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            eventReadinessSleep: { delay in
+                try await readiness.sleep(nanoseconds: delay)
+            },
+            restartSleep: { _ in })
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+        await readiness.waitForCallCount(2)
+
+        store.stopObserving()
+        await readiness.waitForCancellationCount(1)
+    }
+
     func testStoppedObserverNeverRestarts() async {
         let cli = EventCLI(output: line)
         let restart = ConfirmationSleepProbe()
         let store = SessionStore(
             cli: cli,
             confirmationSleep: { _ in },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
             restartSleep: { _ in await restart.sleep() })
         store.startObserving()
         await cli.waitUntilSubscribed()
@@ -910,6 +1040,7 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(
             cli: cli,
             confirmationSleep: { _ in },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
             restartSleep: { _ in await retry.sleep() })
 
         await store.refresh()
@@ -932,7 +1063,8 @@ final class SessionStoreTests: XCTestCase {
         let store = SessionStore(
             cli: FakeCLI(),
             confirmationSleep: { _ in },
-            eventReadinessSleep: { _ in await readiness.sleep() })
+            eventReadinessSleep: { _ in await readiness.sleep() },
+            restartSleep: { _ in })
         let configuration = Task { @MainActor in
             await store.configure(cli: cli)
         }
@@ -1003,16 +1135,122 @@ final class SessionStoreTests: XCTestCase {
 
     func testConfigureBoundsAWatcherThatNeverBecomesReady() async {
         let cli = EventCLI(output: line)
+        let readiness = CancellableSleepProbe(immediateCallCount: 1)
         let store = SessionStore(
             cli: FakeCLI(),
             confirmationSleep: { _ in },
-            eventReadinessSleep: { _ in })
+            eventReadinessSleep: { delay in
+                try await readiness.sleep(nanoseconds: delay)
+            },
+            restartSleep: { _ in })
 
         await store.configure(cli: cli)
 
         XCTAssertEqual(cli.currentCallCount, 1)
         XCTAssertEqual(store.sessions.count, 1)
         store.stopObserving()
+        await readiness.waitForCancellationCount(1)
+    }
+
+    func testResynchronizeInstallsTheWatcherBeforeTakingItsSnapshot() async {
+        let cli = EventCLI(output: line)
+        let store = SessionStore(cli: cli)
+        let resynchronization = Task { @MainActor in
+            await store.resynchronize()
+        }
+        await cli.waitUntilSubscribed()
+        XCTAssertEqual(cli.currentCallCount, 0)
+
+        cli.emit(.ready)
+        await resynchronization.value
+
+        XCTAssertEqual(cli.currentCallCount, 1)
+        XCTAssertEqual(store.sessions.count, 1)
+        store.stopObserving()
+    }
+
+    func testStoppedResynchronizeCannotPublishAfterItsGenerationChanges() async {
+        let cli = EventCLI(output: line)
+        let store = SessionStore(cli: cli)
+        let resynchronization = Task { @MainActor in
+            await store.resynchronize()
+        }
+        await cli.waitUntilSubscribed()
+
+        store.stopObserving()
+        await resynchronization.value
+
+        XCTAssertEqual(cli.currentCallCount, 0)
+        XCTAssertTrue(store.sessions.isEmpty)
+    }
+
+    func testWaitForSessionReturnsAnExistingUnambiguousMatch() async throws {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: cli)
+        await store.refresh()
+        let expected = try XCTUnwrap(store.sessions.first?.id)
+
+        let match = await store.waitForSession(
+            provider: .codex,
+            projectDirectory: URL(fileURLWithPath: "/tmp/p"),
+            excluding: [])
+
+        XCTAssertEqual(match, expected)
+    }
+
+    func testWaitForSessionCancellationReleasesAPendingWaiter() async {
+        let store = SessionStore(cli: FakeCLI())
+        let waiter = Task { @MainActor in
+            await store.waitForSession(
+                provider: .claude,
+                projectDirectory: URL(fileURLWithPath: "/tmp/missing"),
+                excluding: [])
+        }
+        await Task.yield()
+
+        waiter.cancel()
+
+        let result = await waiter.value
+        XCTAssertNil(result)
+    }
+
+    func testWaitForSessionHonorsCancellationBeforeRegistration() async {
+        let store = SessionStore(cli: FakeCLI())
+        let waiter = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await store.waitForSession(
+                provider: .claude,
+                projectDirectory: URL(fileURLWithPath: "/tmp/missing"),
+                excluding: [])
+        }
+
+        let result = await waiter.value
+        XCTAssertNil(result)
+    }
+
+    func testNewStableSnapshotCancelsTransientConfirmation() async {
+        let cli = FakeCLI()
+        let interrupted = line.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"interrupted""#)
+        cli.responses["list --json"] = ok(interrupted)
+        let confirmation = CancellableSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { delay in
+                try await confirmation.sleep(nanoseconds: delay)
+            },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in })
+        await store.refresh()
+        await confirmation.waitForCallCount(1)
+
+        cli.responses["list --json"] = ok(line)
+        await store.refresh()
+        await confirmation.waitForCancellationCount(1)
+
+        XCTAssertEqual(store.sessions.first?.effectiveStatus, .running)
     }
 
     func testOverlappingConfigureCannotPublishTheStoppedObserver() async {

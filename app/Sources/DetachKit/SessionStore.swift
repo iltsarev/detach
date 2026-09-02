@@ -108,12 +108,8 @@ public final class SessionStore {
         cli: DetachCLIRunning,
         snapshotCache: (any SessionSnapshotCaching)? = nil,
         confirmationSleep: @escaping @Sendable (UInt64) async throws -> Void,
-        eventReadinessSleep: @escaping @Sendable (UInt64) async throws -> Void = {
-            try await Task.sleep(nanoseconds: $0)
-        },
-        restartSleep: @escaping @Sendable (UInt64) async throws -> Void = {
-            try await Task.sleep(nanoseconds: $0)
-        }
+        eventReadinessSleep: @escaping @Sendable (UInt64) async throws -> Void,
+        restartSleep: @escaping @Sendable (UInt64) async throws -> Void
     ) {
         self.cli = cli
         self.snapshotCache = snapshotCache
@@ -259,11 +255,9 @@ public final class SessionStore {
     private func waitUntilObservationIsReady(generation: UInt64) async {
         if eventReadyGeneration == generation { return }
         await withCheckedContinuation { continuation in
-            if eventReadyGeneration == generation {
-                continuation.resume()
-            } else {
-                eventReadyWaiters[generation, default: []].append(continuation)
-            }
+            // This store is main-actor isolated. Nothing can change readiness
+            // between the check above and this synchronous registration.
+            eventReadyWaiters[generation, default: []].append(continuation)
         }
     }
 

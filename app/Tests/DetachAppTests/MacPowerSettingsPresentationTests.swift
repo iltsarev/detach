@@ -282,6 +282,49 @@ final class MacPowerActiveSessionTests: XCTestCase {
         XCTAssertEqual(powerCount, 1)
     }
 
+    func testHeartbeatRepeatsAfterTheSleepInterval() throws {
+        // Keep the historical regression ID. The pane sleep loop no longer
+        // exists; repeated updates now come from atomic heartbeat events.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let status = root.appendingPathComponent("watchdog-status.json")
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        try Data(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(timestamp)"}"#.utf8
+        ).write(to: status, options: .atomic)
+
+        let protected = expectation(description: "first heartbeat change")
+        let allowed = expectation(description: "second heartbeat change")
+        protected.assertForOverFulfill = false
+        allowed.assertForOverFulfill = false
+        let lock = NSLock()
+        nonisolated(unsafe) var sawProtected = false
+        let monitor = PowerHeartbeatMonitor(
+            reader: PowerHeartbeatReader(statusURL: status)
+        ) { snapshot in
+            if snapshot.effectivePowerState == .protected {
+                lock.withLock { sawProtected = true }
+                protected.fulfill()
+            } else if snapshot.effectivePowerState == .allowed,
+                      lock.withLock({ sawProtected }) {
+                allowed.fulfill()
+            }
+        }
+        monitor.start()
+        defer { monitor.stop() }
+
+        try Data(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(timestamp)"}"#.utf8
+        ).write(to: status, options: .atomic)
+        wait(for: [protected], timeout: 1)
+        try Data(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(timestamp)"}"#.utf8
+        ).write(to: status, options: .atomic)
+        wait(for: [allowed], timeout: 1)
+    }
+
     func testSettingsSystemPaneCountsAStartingSession() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
