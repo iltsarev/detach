@@ -78,10 +78,10 @@ and semantic color. Clicking the UUID chip copies the full UUID and shows
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
 
-Bounded CLI calls drain both outputs and use process-group TERM then KILL.
-They report truncation; typed consumers reject incomplete output and keep the
-last valid state. Pipe-only descendants cannot extend the deadline. The native
-event process uses `exec` and ends on cancellation. GUI PATH sorts
+Bounded CLI calls drain outputs on dedicated threads and use process-group
+TERM then KILL. Parallel calls cannot starve drains. Truncation makes typed
+consumers keep the last valid state. Pipe descendants cannot extend deadlines.
+The event process uses `exec` and ends on cancellation. GUI PATH sorts
 NVM/mise Node directories by semantic version.
 
 Helper replacement is a durable fail-closed transaction. One versioned journal

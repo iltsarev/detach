@@ -67,6 +67,33 @@ final class DetachCLITests: XCTestCase {
         XCTAssertEqual(result.stdout.count, 512 * 1024)
     }
 
+    func testConcurrentRunsDoNotStarveOutputDrains() async throws {
+        let cli = ProcessDetachCLI(executable: try fixture("printf ready"))
+
+        let results = try await withThrowingTaskGroup(
+            of: CLIResult.self,
+            returning: [CLIResult].self
+        ) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    try await cli.run(arguments: [], timeout: 2)
+                }
+            }
+            var results: [CLIResult] = []
+            for try await result in group { results.append(result) }
+            return results
+        }
+
+        XCTAssertEqual(results.count, 8)
+        XCTAssertTrue(results.allSatisfy {
+            $0.exitCode == 0
+                && $0.stdout == "ready"
+                && !$0.timedOut
+                && !$0.stdoutTruncated
+                && !$0.stderrTruncated
+        })
+    }
+
     func testAddsCommonExecutablePathsToSparseGUIEnvironment() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("detach-cli-home-\(UUID().uuidString)")

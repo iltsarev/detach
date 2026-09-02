@@ -74,7 +74,12 @@ private final class NonblockingPipeCapture: @unchecked Sendable {
 
     func start() {
         group.enter()
-        DispatchQueue.global(qos: .utility).async { [self] in
+        // The synchronous runner waits for both readers after reaping the
+        // child. Scheduling those readers on the same bounded global pool as
+        // several concurrent runners can starve every reader on a low-core
+        // host. A dedicated short-lived thread keeps pipe progress independent
+        // from Swift and libdispatch worker availability.
+        Thread.detachNewThread { [self] in
             defer {
                 _ = Darwin.close(descriptor)
                 group.leave()
