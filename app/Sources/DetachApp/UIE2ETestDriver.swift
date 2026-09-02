@@ -161,6 +161,7 @@ enum UIE2ETestDriver {
     static func runIfRequested(
         installation: InstallationStore,
         store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
         shortcuts: SessionShortcutRegistry
     ) async {
         guard let configuration = AppSettings.uiE2E, !started else { return }
@@ -176,6 +177,7 @@ enum UIE2ETestDriver {
                 configuration: configuration,
                 installation: installation,
                 store: store,
+                sessionLogSnapshots: sessionLogSnapshots,
                 shortcuts: shortcuts)
             trace("\(configuration.scenario) driver finished: \(report.passed)")
             try? write(report, to: configuration.result)
@@ -193,6 +195,7 @@ enum UIE2ETestDriver {
         configuration: UIE2EConfiguration,
         installation: InstallationStore,
         store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
         shortcuts: SessionShortcutRegistry
     ) async -> Report {
         cursorRestorePoint = CGEvent(source: nil)?.location
@@ -221,6 +224,7 @@ enum UIE2ETestDriver {
             return await runMainScenario(
                 configuration: configuration,
                 store: store,
+                sessionLogSnapshots: sessionLogSnapshots,
                 shortcuts: shortcuts)
         }
     }
@@ -228,6 +232,7 @@ enum UIE2ETestDriver {
     private static func runMainScenario(
         configuration: UIE2EConfiguration,
         store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
         shortcuts: SessionShortcutRegistry
     ) async -> Report {
         var checks: [String] = []
@@ -268,10 +273,13 @@ enum UIE2ETestDriver {
                 identifier: "session-row-\(recoverableID)")
             try requireSemanticControl(
                 recoverableRow, name: "recoverable session row")
+            guard let recoverableSession = store.sessions.first(where: {
+                $0.id == recoverableID
+            }) else {
+                throw Failure(message: "recoverable session is missing")
+            }
             try await waitUntil("recoverable log snapshot warm-up") {
-                FileManager.default.fileExists(atPath: configuration.root
-                    .appendingPathComponent(
-                        "fake/recoverable-log-ready").path)
+                sessionLogSnapshots.poller(for: recoverableSession).hasLoaded
             }
             let recoverableSwitchStarted = ProcessInfo.processInfo.systemUptime
             _ = try await clickUntilElement(

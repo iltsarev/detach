@@ -137,6 +137,7 @@ struct RootView: View {
             await UIE2ETestDriver.runIfRequested(
                 installation: installation,
                 store: store,
+                sessionLogSnapshots: sessionLogSnapshots,
                 shortcuts: shortcuts)
         }
 // quality-coverage:end ui-e2e-instrumentation
