@@ -1428,6 +1428,11 @@ printf '{damaged rollout\n' >"$expected_rollout"
 uppercase_id="$(printf '%s' "$expected_id" | tr '[:lower:]' '[:upper:]')"
 other_cwd="$TMP_ROOT/other-cwd"
 mkdir -p "$other_cwd"
+# Capture the event token before resume. On a fast host, the worker can record
+# `completed`, exit, and run the pane-died hook before the status poll below
+# returns. A baseline taken after that poll would wait for a nonexistent extra
+# event.
+status_hint="$(cat "$DETACH_STATE_ROOT/session-change")"
 (cd "$other_cwd" && "$DETACH" resume --name integration --detach "$uppercase_id")
 wait_for_tmux_option "$SESSION" @detach_status completed
 grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
@@ -1435,10 +1440,6 @@ grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 [ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$expected_id" ]
 completed_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
-# The worker published its final status before it exited. The retained pane
-# dying afterwards writes no state, so a tmux hook must publish one more hint
-# or the app could only learn about the dead pane from window activation.
-status_hint="$(cat "$DETACH_STATE_ROOT/session-change")"
 wait_for_pane_dead "$pane_id"
 hint_attempts=0
 while [ "$hint_attempts" -lt 100 ] && \
