@@ -802,6 +802,34 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertNil(fixture.handoffStore.transaction)
     }
 
+    func testPrepareRequiresHeldLifetimeBarrierBeforeUnregisterSubmit() async {
+        // Keep the historical regression ID. A helper can disappear after it
+        // acknowledges preparation; without its held lifetime barrier the
+        // durable transaction must not advance to unregister submission.
+        let backend = FakePowerHelperBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)])
+        var barrierStates: [PowerHelperLifetimeBarrierStatus] = [
+            .busy, .busy, .released,
+        ]
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { barrierStates.removeFirst() })
+        defer { fixture.cleanup() }
+        fixture.defaults.set(
+            "digest-previous", forKey: "powerHelperDefinitionDigest")
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.reconcileAfterAppUpdate()
+        }
+
+        XCTAssertEqual(fixture.lifecycle.prepareCalls, 1)
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 0)
+        XCTAssertEqual(fixture.handoffStore.transaction?.phase, .preparing)
+        XCTAssertTrue(barrierStates.isEmpty)
+    }
+
     func testSubmittedPhaseIsDurableBeforeBackendUnregisterCall() async throws {
         let backend = FakePowerHelperBackend(
             status: .enabled,
@@ -1267,7 +1295,7 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertTrue(barrierStates.isEmpty)
     }
 
-    func testMatchingEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister() async throws {
+    func testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister() async throws {
         let backend = FakePowerHelperBackend(
             status: .enabled,
             registrations: [.success(.enabled)])

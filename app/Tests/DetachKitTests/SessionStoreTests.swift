@@ -838,7 +838,9 @@ final class SessionStoreTests: XCTestCase {
         store.stopObserving()
     }
 
-    func testSnapshotObserverReceivesEverySuccessfulTypedSnapshot() async {
+    func testSnapshotObserverReceivesEverySuccessfulPoll() async {
+        // Keep the historical regression ID. Native events now request these
+        // typed snapshots instead of a periodic poll.
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line)
         let store = SessionStore(cli: cli)
@@ -1086,7 +1088,9 @@ final class SessionStoreTests: XCTestCase {
         store.stopObserving()
     }
 
-    func testSnapshotObserverIsNotCalledForFailedSnapshots() async {
+    func testSnapshotObserverIsNotCalledForFailedPolls() async {
+        // Keep the historical regression ID. The failure boundary applies to
+        // each typed snapshot requested by the native event stream.
         let cli = FakeCLI()
         let store = SessionStore(cli: cli)
         var snapshotCount = 0
