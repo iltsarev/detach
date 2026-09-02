@@ -177,6 +177,7 @@ public struct SessionHealthEvidence: Equatable, Sendable {
     public var checkpointFreshness: FreshnessState
     public var checkpointRecoverable: Bool
     public var agentSessionKnown: Bool
+    public var stopRequested: Bool
 
     public init(
         metadataValid: Bool,
@@ -189,7 +190,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         heartbeatFreshness: FreshnessState,
         checkpointFreshness: FreshnessState,
         checkpointRecoverable: Bool,
-        agentSessionKnown: Bool
+        agentSessionKnown: Bool,
+        stopRequested: Bool = false
     ) {
         self.metadataValid = metadataValid
         self.runtimeIdentityExpected = runtimeIdentityExpected
@@ -202,6 +204,7 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         self.checkpointFreshness = checkpointFreshness
         self.checkpointRecoverable = checkpointRecoverable
         self.agentSessionKnown = agentSessionKnown
+        self.stopRequested = stopRequested
     }
 }
 
@@ -301,6 +304,24 @@ public enum SessionHealthEvaluator {
                 evidence: evidence)
         case .match:
             break
+        }
+
+        // Stop records exact-run intent before signalling the process group.
+        // The provider can exit while its worker is still checkpointing and
+        // writing the final `stopped` metadata. That proven transition is an
+        // interruption in progress, not a lost provider. Keep actions closed
+        // until the worker and tmux pane have finished.
+        if evidence.stopRequested,
+           evidence.runtimeIdentityExpected,
+           isActive(evidence.metaStatus),
+           evidence.workerState == .alive,
+           evidence.providerState == .dead {
+            return assessment(
+                status: .interrupted,
+                reason: .finished,
+                actions: [],
+                ownershipProven: true,
+                evidence: evidence)
         }
 
         // The worker publishes its final status and only then exits, so a

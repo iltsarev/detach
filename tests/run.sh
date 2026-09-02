@@ -1803,6 +1803,51 @@ PATH="$shadow_bin:$PATH" run_codex stop "$shadow_name"
   "$DETACH_CODEX_STATE_ROOT/sessions/$shadow_session/meta.json" status)" = stopped ]
 run_codex delete --force "$shadow_name"
 
+# Freeze the worker after Start, then request Stop. The process-group TERM
+# removes the provider while the stopped worker cannot publish final metadata.
+# This holds the exact UI-visible transition long enough to assert that durable
+# Stop intent keeps it out of Problems without authorizing an early action.
+stop_transition_name=stop-transition
+stop_transition_session=detach-codex-stop-transition
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$stop_transition_name" --detach -- 'Stop transition health coverage'
+wait_for_tmux_option "$stop_transition_session" @detach_status running
+stop_transition_meta="$DETACH_CODEX_STATE_ROOT/sessions/$stop_transition_session/meta.json"
+stop_transition_worker="$("$STATE_HELPER" meta get "$stop_transition_meta" worker_pid)"
+kill -STOP "$stop_transition_worker"
+run_codex stop "$stop_transition_name" >"$TMP_ROOT/stop-transition.out" 2>&1 &
+stop_transition_pid=$!
+stop_transition_json=""
+attempts=0
+while [ "$attempts" -lt 80 ]; do
+  candidate_json="$(run_codex list --json | \
+    grep -F "\"session_name\":\"$stop_transition_session\"")"
+  candidate_reason="$(printf '%s' "$candidate_json" | \
+    "$STATE_HELPER" meta get /dev/stdin health_reason)"
+  case "$candidate_reason" in
+    finished|provider_process_lost)
+      stop_transition_json="$candidate_json"
+      break
+      ;;
+  esac
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+kill -CONT "$stop_transition_worker" 2>/dev/null || true
+wait "$stop_transition_pid"
+[ -n "$stop_transition_json" ]
+[ "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = interrupted ]
+[ "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
+[ "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin cleanup_eligible)" = false ]
+[ -n "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin stop_requested_at)" ]
+printf '%s' "$stop_transition_json" | grep -F '"health_actions":[]' >/dev/null
+[ "$("$STATE_HELPER" meta get "$stop_transition_meta" status)" = stopped ]
+run_codex delete --force "$stop_transition_name"
+
 # A start holds the install lock through its readiness wait (up to 35
 # seconds). Scale lockf deadlines by 10 for this check so the regression stays
 # discriminating without adding 35 seconds to every Codex test run.

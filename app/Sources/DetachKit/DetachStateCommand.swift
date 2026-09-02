@@ -329,7 +329,7 @@ public enum DetachStateCommand {
         let processInspection = Set([
             "--inspect-processes", "--worker-pid", "--provider-pid", "--pane-pid",
         ])
-        let allowed = required.union(processInspection)
+        let allowed = required.union(processInspection).union(["--stop-requested"])
         var values: [String: String] = [:]
         var index = 0
         while index < arguments.count {
@@ -362,6 +362,7 @@ public enum DetachStateCommand {
               let knownRaw = values["--agent-session-known"] else {
             throw DetachStateCommandError.invalidArguments
         }
+        let stopRequested = try values["--stop-requested"].map(boolean) ?? false
         if let inspectRaw = values["--inspect-processes"] {
             guard try boolean(inspectRaw),
                   processInspection.allSatisfy({ values[$0] != nil }),
@@ -391,7 +392,8 @@ public enum DetachStateCommand {
             heartbeatFreshness: heartbeat,
             checkpointFreshness: checkpoint,
             checkpointRecoverable: try boolean(recoverableRaw),
-            agentSessionKnown: try boolean(knownRaw)))
+            agentSessionKnown: try boolean(knownRaw),
+            stopRequested: stopRequested))
     }
 
     private static func maintenanceReconcile(

@@ -4387,11 +4387,13 @@ session_health_envelope() {
   local runtime_identity_expected=false
   local health_schema="${10:-}"
   local output_mode="${11:-assessment}"
+  local stop_requested_at="${12:-}"
+  local stop_requested=false
   local now
   local checkpoint_threshold
 
-  if [ "$#" -ge 11 ]; then
-    shift 11
+  if [ "$#" -ge 12 ]; then
+    shift 12
   else
     set --
   fi
@@ -4405,6 +4407,7 @@ session_health_envelope() {
   if [ "$metadata_valid" = "true" ]; then
     [ "$health_schema" = "1" ] && runtime_identity_expected=true
     [ -n "$id" ] && [ "$id" != "-" ] && agent_session_known=true
+    [ -z "$stop_requested_at" ] || stop_requested=true
   fi
 
   tmux_health_snapshot "$session"
@@ -4501,7 +4504,8 @@ session_health_envelope() {
     --heartbeat "$heartbeat_freshness" \
     --checkpoint "$checkpoint_freshness" \
     --checkpoint-recoverable "$checkpoint_recoverable" \
-    --agent-session-known "$agent_session_known"
+    --agent-session-known "$agent_session_known" \
+    --stop-requested "$stop_requested"
   )
   if [ "$output_mode" = "request" ]; then
     health_args+=(
@@ -4542,7 +4546,8 @@ refuse_runtime_without_managed_tmux() {
   health_output="$(session_health_envelope \
     "$session" true "$status" "$id" "$META_RUN_TOKEN" \
     "$META_WORKER_PID" "$META_PROVIDER_PID" "$META_WORKER_HEARTBEAT_EPOCH" \
-    "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA")" || \
+    "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" assessment \
+    "$META_STOP_REQUESTED_AT")" || \
     die "could not safely evaluate runtime ownership for '$session'"
   health_json="${health_output#*$'\n'}"
   [ "$health_json" != "$health_output" ] || \
@@ -4704,11 +4709,12 @@ list_session_records() {
           "" "" "" "" "" ""
         session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          request "${LIST_JSON_ARGS[@]}" || \
+          request "" "${LIST_JSON_ARGS[@]}" || \
           die "could not evaluate health for '$session'"
       else
         health_output="$(session_health_envelope \
-          "$session" false unknown "-" "" "" "" "" "" "")" || \
+          "$session" false unknown "-" "" "" "" "" "" "" \
+          assessment "")" || \
           die "could not evaluate health for '$session'"
       fi
       if [ "$json_mode" = "1" ]; then
@@ -4759,13 +4765,14 @@ list_session_records() {
         "$session" true "$status" "$id" "$META_RUN_TOKEN" \
         "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
         "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" \
-        request "${LIST_JSON_ARGS[@]}" || \
+        request "$META_STOP_REQUESTED_AT" "${LIST_JSON_ARGS[@]}" || \
         die "could not evaluate health for '$session'"
     else
       health_output="$(session_health_envelope \
         "$session" true "$status" "$id" "$META_RUN_TOKEN" \
         "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
-        "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA")" || \
+        "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" assessment \
+        "$META_STOP_REQUESTED_AT")" || \
         die "could not evaluate health for '$session'"
     fi
     if [ "$json_mode" = "1" ]; then

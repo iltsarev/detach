@@ -230,6 +230,32 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertTrue(result.ownershipProven)
     }
 
+    func testStopIntentKeepsFinishingWorkerOutOfProblems() {
+        let result = evaluate(provider: .dead, stopRequested: true)
+
+        XCTAssertEqual(result.effectiveStatus, .interrupted)
+        XCTAssertEqual(result.reason, .finished)
+        XCTAssertTrue(result.actions.isEmpty)
+        XCTAssertTrue(result.ownershipProven)
+        XCTAssertFalse(result.cleanupEligible)
+    }
+
+    func testStopIntentNeverMasksUnprovenRuntimeIdentity() {
+        XCTAssertEqual(evaluate(stopRequested: true).effectiveStatus, .running)
+        XCTAssertEqual(
+            evaluate(worker: .dead, provider: .dead, stopRequested: true).reason,
+            .workerProcessLost)
+        XCTAssertEqual(
+            evaluate(worker: .mismatch, provider: .dead, stopRequested: true).reason,
+            .workerPIDMismatch)
+        XCTAssertEqual(
+            evaluate(provider: .mismatch, stopRequested: true).reason,
+            .providerPIDNotDescendant)
+        XCTAssertEqual(
+            evaluate(token: .mismatch, provider: .dead, stopRequested: true).reason,
+            .runTokenMismatch)
+    }
+
     func testForeignProviderPIDIsNeverTreatedAsOwned() {
         let result = evaluate(provider: .mismatch)
 
@@ -438,7 +464,8 @@ final class SessionHealthTests: XCTestCase {
         heartbeat: FreshnessState = .fresh,
         checkpoint: FreshnessState = .fresh,
         recoverable: Bool = true,
-        agentSessionKnown: Bool = true
+        agentSessionKnown: Bool = true,
+        stopRequested: Bool = false
     ) -> SessionHealthAssessment {
         SessionHealthEvaluator.evaluate(SessionHealthEvidence(
             metadataValid: metadataValid,
@@ -451,6 +478,7 @@ final class SessionHealthTests: XCTestCase {
             heartbeatFreshness: heartbeat,
             checkpointFreshness: checkpoint,
             checkpointRecoverable: recoverable,
-            agentSessionKnown: agentSessionKnown))
+            agentSessionKnown: agentSessionKnown,
+            stopRequested: stopRequested))
     }
 }

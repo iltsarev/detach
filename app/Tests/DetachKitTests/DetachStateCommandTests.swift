@@ -952,6 +952,40 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(assessment.reason, .healthy)
     }
 
+    func testHealthEvaluateTreatsExactStopTransitionAsInterrupted() throws {
+        let arguments = [
+            "health", "evaluate",
+            "--metadata-valid", "true",
+            "--runtime-identity-expected", "true",
+            "--meta-status", "running",
+            "--tmux", "live",
+            "--run-token", "match",
+            "--worker", "alive",
+            "--provider-process", "dead",
+            "--heartbeat", "fresh",
+            "--checkpoint", "fresh",
+            "--checkpoint-recoverable", "true",
+            "--agent-session-known", "true",
+            "--stop-requested", "true",
+        ]
+        let output = try DetachStateCommand.run(arguments: arguments)
+        let assessment = try JSONDecoder().decode(
+            SessionHealthAssessment.self,
+            from: output)
+
+        XCTAssertEqual(assessment.effectiveStatus, .interrupted)
+        XCTAssertEqual(assessment.reason, .finished)
+        XCTAssertTrue(assessment.actions.isEmpty)
+        XCTAssertFalse(assessment.cleanupEligible)
+        var invalidArguments = arguments
+        invalidArguments[invalidArguments.count - 1] = "yes"
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: invalidArguments
+        )) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidBoolean("yes"))
+        }
+    }
+
     func testHealthEvaluateCanInspectOnlyTheRecordedLiveProcess() throws {
         let pid = String(ProcessInfo.processInfo.processIdentifier)
         let output = try DetachStateCommand.run(arguments: [

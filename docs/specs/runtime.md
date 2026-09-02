@@ -143,17 +143,18 @@ ready file before launching the provider, then atomically publish the exact
 spawned provider PID. The starter waits for both handshakes and one forced
 runtime heartbeat and never prints `Started` before they arrive.
 HUP/INT/TERM forward to the provider while the wrapper stays alive to release
-its lease and assertion; explicit `detach stop` also releases idempotently by
-session/run token. The provider must inherit the
+its lease and assertion; `detach stop` also releases by session/run token. The provider must inherit the
 wrapper's tmux foreground process group; a separate group makes interactive
 Codex or Claude stop on terminal I/O. On provider exit the worker checkpoints
-silently, records and publishes status, and leaves the pane retained for logs;
-a tmux `pane-died` hook publishes once more. A terminal record with a live
+silently, records and publishes status, and retains the pane for logs;
+`pane-died` publishes again. A terminal record with a live
 owned pane and dead provider is finished, not hung.
 
-Stop binds durable intent and each signal or removal to the exact run token. A
-failed intent write leaves the runtime untouched. Delete removes a retained tmux session even
-without a state directory and never reports success over leftover state.
+Stop binds intent and each signal or removal to the exact run token. A failed
+intent write leaves the runtime untouched. During Stop, a live owned worker
+with a gone provider is interrupted, not hung, and grants no action or cleanup.
+Delete removes a retained tmux session without a state directory and never
+reports success over leftover state.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user
