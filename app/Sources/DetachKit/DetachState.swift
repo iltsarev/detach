@@ -445,9 +445,10 @@ public enum TranscriptDocument {
     /// ignored because a byte tail commonly begins in the middle of a record.
     public static func summary(
         ofTail data: Data,
-        provider: Provider
+        provider: Provider,
+        startingFrom initial: TranscriptSummary = TranscriptSummary()
     ) -> TranscriptSummary {
-        var result = TranscriptSummary()
+        var result = initial
         var emitted = false
         _ = try? scanRecords(
             tolerateInvalid: true,

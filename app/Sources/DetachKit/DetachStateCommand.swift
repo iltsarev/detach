@@ -715,11 +715,12 @@ public enum DetachStateCommand {
         }
 
         let receiptName = ".transcript-summary-cache.json"
-        if let receiptData = readOwnedMetadataFile(
-                in: sessionDirectory, name: receiptName),
-           let receipt = try? JSONDecoder().decode(
-                TranscriptSummaryReceipt.self, from: receiptData),
-           let values = receipt.snapshotValues(
+        let cachedReceipt = readOwnedMetadataFile(
+            in: sessionDirectory, name: receiptName).flatMap {
+                try? JSONDecoder().decode(
+                    TranscriptSummaryReceipt.self, from: $0)
+            }
+        if let values = cachedReceipt?.snapshotValues(
                 provider: provider,
                 transcriptPath: transcriptPath,
                 identity: before) {
@@ -729,8 +730,14 @@ public enum DetachStateCommand {
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         let size = UInt64(beforeMetadata.st_size)
         let maximumByteCount: UInt64 = 262_144
-        guard (try? handle.seek(
-                toOffset: size > maximumByteCount ? size - maximumByteCount : 0)) != nil
+        let continuation = cachedReceipt?.continuation(
+            provider: provider,
+            transcriptPath: transcriptPath,
+            identity: before,
+            maximumByteCount: maximumByteCount)
+        let startOffset = continuation?.offset
+            ?? (size > maximumByteCount ? size - maximumByteCount : 0)
+        guard (try? handle.seek(toOffset: startOffset)) != nil
         else { return empty }
         var tail = Data()
         while tail.count < Int(maximumByteCount) {
@@ -749,7 +756,10 @@ public enum DetachStateCommand {
         guard fstat(descriptor, &afterMetadata) == 0,
               let after = TranscriptValidationIdentity(afterMetadata),
               before == after else { return empty }
-        let summary = TranscriptDocument.summary(ofTail: tail, provider: provider)
+        let summary = TranscriptDocument.summary(
+            ofTail: tail,
+            provider: provider,
+            startingFrom: continuation?.summary ?? TranscriptSummary())
         let values = [
             summary.model ?? "",
             summary.contextUsed.map(String.init) ?? "",
@@ -778,6 +788,8 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
+        private static let overlapByteCount: UInt64 = 64 * 1_024
+
         var schema: Int
         var provider: String
         var transcriptPath: String
@@ -808,6 +820,44 @@ public enum DetachStateCommand {
                 agentTurnState ?? "",
                 agentTurnID ?? "",
             ]
+        }
+
+        /// Continues a cached reduction only across a bounded append to the
+        /// same file. The overlap completes a record that may have been
+        /// partial at the previous identity. A larger unobserved gap falls
+        /// back to a cold tail so stale answer-ready state cannot survive an
+        /// unseen turn transition.
+        func continuation(
+            provider expectedProvider: Provider,
+            transcriptPath expectedPath: String,
+            identity expectedIdentity: TranscriptValidationIdentity,
+            maximumByteCount: UInt64
+        ) -> (offset: UInt64, summary: TranscriptSummary)? {
+            guard schema == 1,
+                  provider == expectedProvider.rawValue,
+                  transcriptPath == expectedPath,
+                  identity.device == expectedIdentity.device,
+                  identity.inode == expectedIdentity.inode,
+                  identity.size >= 0,
+                  expectedIdentity.size > identity.size,
+                  contextUsed.map({ $0 >= 0 }) ?? true,
+                  contextWindow.map({ $0 >= 0 }) ?? true,
+                  agentTurnState.map({ AgentTurnState(rawValue: $0) != nil }) ?? true
+            else { return nil }
+
+            let previousSize = UInt64(identity.size)
+            let currentSize = UInt64(expectedIdentity.size)
+            let overlap = min(previousSize, Self.overlapByteCount)
+            let offset = previousSize - overlap
+            guard currentSize - offset <= maximumByteCount else { return nil }
+            return (
+                offset,
+                TranscriptSummary(
+                    model: model,
+                    contextUsed: contextUsed,
+                    contextWindow: contextWindow,
+                    agentTurnState: agentTurnState.flatMap(AgentTurnState.init(rawValue:)),
+                    agentTurnID: agentTurnID))
         }
     }
 

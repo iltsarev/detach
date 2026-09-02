@@ -609,6 +609,108 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testMetaSnapshotsContinueTurnStateAfterStartLeavesBoundedTail() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "incremental-summary-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-incremental", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent(
+            "incremental-summary-rollout.jsonl")
+        try Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-long"}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-incremental",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        func turnFields() throws -> [String] {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(
+                separator: 0, omittingEmptySubsequences: false)
+                .dropLast()
+                .map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[24..<26])
+        }
+
+        XCTAssertEqual(try turnFields(), ["working", "turn-long"])
+        let irrelevant = Data(String(
+            repeating: "{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-long\"}}\n",
+            count: 2_200).utf8)
+        let handle = try FileHandle(forWritingTo: transcript)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: irrelevant)
+        XCTAssertEqual(try turnFields(), ["working", "turn-long"])
+        try handle.seekToEnd()
+        try handle.write(contentsOf: irrelevant)
+        XCTAssertGreaterThan(
+            try Data(contentsOf: transcript).count, 262_144)
+        XCTAssertEqual(try turnFields(), ["working", "turn-long"])
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("""
+        {"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-long"}}
+
+        """.utf8))
+        XCTAssertEqual(try turnFields(), ["waiting", "turn-long"])
+    }
+
+    func testMetaSnapshotsClearWaitingAfterOversizedUnobservedAppend() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "gapped-summary-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-gapped", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent(
+            "gapped-summary-rollout.jsonl")
+        try Data("""
+        {"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-old"}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-gapped",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        func turnFields() throws -> [String] {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(
+                separator: 0, omittingEmptySubsequences: false)
+                .dropLast()
+                .map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[24..<26])
+        }
+
+        XCTAssertEqual(try turnFields(), ["waiting", "turn-old"])
+        let handle = try FileHandle(forWritingTo: transcript)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-new"}}
+
+        """.utf8))
+        let irrelevant = Data(String(
+            repeating: "{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-new\"}}\n",
+            count: 4_000).utf8)
+        try handle.write(contentsOf: irrelevant)
+
+        XCTAssertEqual(try turnFields(), ["", ""])
+    }
+
     func testMetaCreateWritesTypedObjectAndRefusesAnExistingFile() throws {
         let file = temporaryDirectory.appendingPathComponent("created-meta.json")
 

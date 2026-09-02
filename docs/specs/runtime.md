@@ -87,13 +87,12 @@ each failed session.
 
 ### Session change events
 
-`watch --json` execs the state helper and exits with its parent or cancellation.
-Lossy hints require `list --json`. FSEvents accepts only metadata-named
-transcripts. Exact vnode sources cover 64 live transcripts, including old
+`watch --json` execs the helper and follows parent. Hints require
+`list --json`. FSEvents accepts only metadata-named transcripts. Exact vnode
+sources cover 64 live transcripts, including old
 runtimes. Bursts yield leading and 150 ms trailing hints. Drops or root changes
-yield `resync`. Lifecycle signals refresh roots; heartbeats do not. Missing
-provider roots are omitted. The publisher writes only `session-change` under
-the state root. Activation repairs loss.
+yield `resync`. Lifecycle signals refresh roots; heartbeats do not. The
+publisher writes `session-change` under state root. Activation repairs loss.
 
 ### Session lifecycle and tmux
 
@@ -191,8 +190,9 @@ state, opaque turn ID, PIDs, health, reconcile, freshness, ownership, cleanup,
 `stop_requested_at`, and a per-run opaque `lifecycle_id` distinct from the
 mutation token. Keep the emitter and Swift `Session` decoder in sync.
 `watch --json` emits only change hints and never replaces this snapshot.
-Provider lifecycle records, never terminal text, supply turn state
-and the private run-token activity file defined in `power.md`.
+Provider lifecycle records, never terminal text, supply turn state and the
+private activity file in `power.md`. Bounded append caching retains typed turns;
+an unseen oversized gap clears waiting to prevent stale Answer ready.
 Typed cleanup uses `cleanup_eligible`.
 
 ### Provider identity and checkpoints
