@@ -249,7 +249,7 @@ final class MacPowerActiveSessionTests: XCTestCase {
         XCTAssertEqual(counts.working, 1)
     }
 
-    func testInitialHeartbeatStartsBeforeStorageFinishesAndAwaitsCancel() async {
+    func testHeartbeatStartsBeforeStorageFinishesAndAwaitsCancel() async {
         var events: [String] = []
         var runFinished = false
         let storageGate = StorageRefreshGate()

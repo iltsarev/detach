@@ -801,7 +801,10 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(cli.calls, callsBeforeActions)
     }
 
-    func testNativeEventsRequestTypedSnapshotsWithoutAPeriodicLoop() async {
+    func testPollingStartsImmediatelySupportsIdleCadenceAndStopsCleanly() async {
+        // Keep the historical regression ID. Polling and idle cadence were
+        // replaced by a native stream; this proves its immediate ready/change
+        // snapshots and explicit stop boundary.
         let cli = EventCLI(output: line)
         let store = SessionStore(cli: cli)
         var snapshots: [[Session]] = []
