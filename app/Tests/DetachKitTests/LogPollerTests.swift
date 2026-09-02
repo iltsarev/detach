@@ -45,6 +45,23 @@ private actor SuspendedLogCLI: DetachCLIRunning {
     }
 }
 
+private actor CancellationSensitiveLogCLI: DetachCLIRunning {
+    private var calls = 0
+    private var released = false
+
+    func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
+        calls += 1
+        while !released {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return CLIResult(
+            exitCode: 0, stdout: "warm", stderr: "", timedOut: false)
+    }
+
+    func callCount() -> Int { calls }
+    func releaseAll() { released = true }
+}
+
 @MainActor
 final class LogPollerTests: XCTestCase {
     func testFetchTrimsToTailLimit() async {
@@ -266,6 +283,27 @@ final class LogPollerTests: XCTestCase {
         let replacementCallCount = await newCLI.callCount()
         XCTAssertEqual(replacementCallCount, 1)
         await newCLI.releaseAll()
+    }
+
+    func testRepeatedSnapshotDoesNotCancelActiveLogWarmUp() async {
+        let cli = CancellationSensitiveLogCLI()
+        let cache = SessionLogSnapshotCache(cli: cli, configurationID: "/tmp/detach")
+        let sessions = (0..<4).map {
+            makeSession(name: "burst-\($0)", status: "completed")
+        }
+
+        cache.schedulePrefetch(for: sessions)
+        await waitUntil {
+            await cli.callCount() == SessionLogSnapshotCache.maximumConcurrentPrefetches
+        }
+        cache.schedulePrefetch(for: sessions)
+        await cli.releaseAll()
+        await waitUntil {
+            sessions.allSatisfy { cache.poller(for: $0).hasLoaded }
+        }
+
+        let callCount = await cli.callCount()
+        XCTAssertEqual(callCount, sessions.count)
     }
 
     func testFailedLogReadIsNotRepeatedForTheSameTypedRevision() async {

@@ -275,6 +275,104 @@ public struct SessionEventCoalescer: Equatable, Sendable {
     }
 }
 
+/// Supplements the root FSEvents stream with exact live transcript vnode
+/// sources. Some long-running provider processes do not produce recursive
+/// FSEvents for an already-open rollout file, while vnode writes remain
+/// observable. The root stream still discovers new and replaced files.
+final class SessionTranscriptFileMonitor: @unchecked Sendable {
+    static let maximumSources = 64
+
+    private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    private let onChange: @Sendable () -> Void
+    private var targetPaths: Set<String> = []
+    private var sources: [String: any DispatchSourceFileSystemObject] = [:]
+
+    init(queue: DispatchQueue, onChange: @escaping @Sendable () -> Void) {
+        self.queue = queue
+        self.onChange = onChange
+        queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    func update(paths: Set<String>) {
+        synchronized {
+            targetPaths = Set(paths.sorted().prefix(Self.maximumSources))
+            for path in Array(sources.keys) where !targetPaths.contains(path) {
+                removeSource(for: path)
+            }
+            for path in targetPaths where sources[path] == nil {
+                armSource(for: path)
+            }
+        }
+        drainRegistrationHandlers()
+    }
+
+    func stop() {
+        synchronized {
+            targetPaths = []
+            for path in Array(sources.keys) { removeSource(for: path) }
+        }
+        drainRegistrationHandlers()
+    }
+
+    deinit {
+        stop()
+    }
+
+    private func synchronized(_ operation: () -> Void) {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            operation()
+        } else {
+            queue.sync(execute: operation)
+        }
+    }
+
+    private func drainRegistrationHandlers() {
+        if DispatchQueue.getSpecific(key: queueKey) == nil { queue.sync {} }
+    }
+
+    private func armSource(for path: String) {
+        guard path.hasPrefix("/"),
+              URL(fileURLWithPath: path).standardizedFileURL.path == path else {
+            return
+        }
+        let descriptor = Darwin.open(path, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return }
+        var information = stat()
+        guard Darwin.fstat(descriptor, &information) == 0,
+              information.st_mode & S_IFMT == S_IFREG,
+              information.st_uid == Darwin.geteuid() else {
+            Darwin.close(descriptor)
+            return
+        }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .extend, .delete, .rename, .revoke],
+            queue: queue)
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source, self.sources[path] === source else { return }
+            let replaced = !source.data.isDisjoint(with: [.delete, .rename, .revoke])
+            self.onChange()
+            guard replaced else { return }
+            self.removeSource(for: path)
+            self.queue.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+                guard let self,
+                      self.targetPaths.contains(path),
+                      self.sources[path] == nil else { return }
+                self.armSource(for: path)
+            }
+        }
+        source.setCancelHandler { Darwin.close(descriptor) }
+        sources[path] = source
+        source.resume()
+    }
+
+    private func removeSource(for path: String) {
+        sources.removeValue(forKey: path)?.cancel()
+    }
+}
+
 private func sessionFSEventsCallback(
     _: ConstFSEventStreamRef,
     info: UnsafeMutableRawPointer?,
@@ -333,6 +431,12 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     private var trailingWorkItem: DispatchWorkItem?
     private var managedTranscriptPaths: Set<String> = []
     private var activeWatchedPaths: [String] = []
+    private lazy var transcriptMonitor = SessionTranscriptFileMonitor(
+        queue: queue,
+        onChange: { [weak self] in
+            guard let self else { return }
+            self.apply(self.coalescer.consume(.transcript))
+        })
 
     public init(
         configuration: SessionEventWatchConfiguration,
@@ -365,6 +469,7 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     /// the stream before the pointer can dangle for a late callback.
     deinit {
         trailingWorkItem?.cancel()
+        transcriptMonitor.stop()
         if let stream {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)
@@ -436,9 +541,11 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     }
 
     private func refreshManagedTranscriptPaths() {
-        managedTranscriptPaths = DetachStateCommand.managedTranscriptPaths(
+        let registry = DetachStateCommand.managedTranscriptRegistry(
             sessionsRoots: configuration.sessionsRoots,
             allowedRoots: configuration.transcriptRoots)
+        managedTranscriptPaths = registry.all
+        transcriptMonitor.update(paths: registry.live)
     }
 
     private func scheduleStreamRootRefreshIfNeeded() {

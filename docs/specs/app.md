@@ -153,12 +153,12 @@ metadata. An exited client offers Reconnect.
 Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
 rows grant no action, ownership, PID, cleanup, or power claim until a fresh
 list arrives. A failed refresh keeps them visible but not authoritative. Only
-presentation changes are stored.
+presentation is stored.
 
-Timer-free caches preload 12 non-live logs, three at once, and nine live
-500-line screens, two at once. They retain no PTY. Empty or failed reads wait
-for a typed revision. The opaque lifecycle ID prevents a reused name from
-inheriting either cache; older rows use creation time and provider identity.
+Timer-free caches preload 12 non-live 500-line logs, three at once, and nine
+live screens, two at once. They retain no PTY. Empty and failed reads wait for
+a typed revision. Bursts keep active reads. The lifecycle ID blocks cache
+inheritance after name reuse; older rows use creation and provider identity.
 A detached live log rereads every 2 s. A cold attach can show one passive
 SwiftTerm screen. Live switching uses no raster or replacement PTY. tmux holds
 the frame until a synchronized redraw.

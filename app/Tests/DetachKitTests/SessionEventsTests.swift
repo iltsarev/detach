@@ -175,6 +175,7 @@ final class SessionEventsTests: XCTestCase {
             .init(key: "schema", value: .integer(1)),
             .init(key: "session_name", value: .string(sessionName)),
             .init(key: "project_dir", value: .string("/private/tmp/project")),
+            .init(key: "status", value: .string("running")),
             .init(key: "transcript_path", value: .string(transcript.path)),
         ])
         try metadata.write(to: sessionRoot.appendingPathComponent("meta.json"))
@@ -200,6 +201,38 @@ final class SessionEventsTests: XCTestCase {
             atStateRoot: stateRoot.path,
             allowedRoots: [root.appendingPathComponent("other").path]
         ).isEmpty)
+        let registry = DetachStateCommand.managedTranscriptRegistry(
+            sessionsRoots: [sessionsRoot.path],
+            allowedRoots: [canonicalTranscriptRoot])
+        XCTAssertEqual(registry.all, [canonicalTranscript])
+        XCTAssertEqual(registry.live, [canonicalTranscript])
+    }
+
+    func testLiveTranscriptVnodeSourceReportsAnAppend() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "detach-session-vnode-\(UUID().uuidString)",
+            isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("managed.jsonl")
+        try Data().write(to: transcript)
+
+        let changed = expectation(description: "live transcript append")
+        changed.assertForOverFulfill = false
+        let queue = DispatchQueue(label: "detach-session-vnode-test")
+        let monitor = SessionTranscriptFileMonitor(queue: queue) {
+            changed.fulfill()
+        }
+        monitor.update(paths: [transcript.path])
+
+        let handle = try FileHandle(forWritingTo: transcript)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("turn\n".utf8))
+        try handle.synchronize()
+
+        wait(for: [changed], timeout: 1)
+        monitor.stop()
     }
 
     func testParentMonitorObservesProcessExit() throws {

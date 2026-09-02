@@ -92,11 +92,6 @@ public final class SessionLogSnapshotCache {
         let agentSessionID: String?
     }
 
-    private struct ScheduledTarget: Equatable {
-        let key: Key
-        let revision: Revision
-    }
-
     private var cli: DetachCLIRunning
     private var configurationID: String
     private var pollers: [Key: LogPoller] = [:]
@@ -107,7 +102,7 @@ public final class SessionLogSnapshotCache {
     /// succeeded. A matching revision is never warmed again.
     private var attempted: [Key: Revision] = [:]
     private var recency: [Key] = []
-    private var scheduledTargets: [ScheduledTarget] = []
+    private var pendingPrefetch: [Session] = []
     private var prefetchTask: Task<Void, Never>?
     private var prefetchGeneration: UInt64 = 0
 
@@ -128,7 +123,7 @@ public final class SessionLogSnapshotCache {
         prefetchGeneration &+= 1
         prefetchTask?.cancel()
         prefetchTask = nil
-        scheduledTargets = []
+        pendingPrefetch = []
         pollers = [:]
         revisions = [:]
         attempted = [:]
@@ -163,26 +158,21 @@ public final class SessionLogSnapshotCache {
     }
 
     /// Starts one bounded warm-up without blocking snapshot publication.
-    /// Repeated snapshots with the same cold set do no work.
+    /// Snapshot bursts queue behind active reads instead of cancelling them.
     public func schedulePrefetch(for sessions: [Session]) {
         reconcile(sessions)
         let targets = prefetchTargets(in: sessions, limit: Self.prefetchLimit)
-        let identities = targets.map {
-            ScheduledTarget(key: key(for: $0), revision: revision(for: $0))
+        guard !targets.isEmpty else {
+            pendingPrefetch = []
+            return
         }
-        guard !identities.isEmpty, identities != scheduledTargets else { return }
-        prefetchTask?.cancel()
-        prefetchGeneration &+= 1
+        // Keep the complete snapshot: reconcile treats absent rows as deleted,
+        // so draining only the remaining cold subset would evict valid tails.
+        pendingPrefetch = sessions
+        guard prefetchTask == nil else { return }
         let generation = prefetchGeneration
-        scheduledTargets = identities
         prefetchTask = Task(priority: .utility) { @MainActor [weak self] in
-            guard let self else { return }
-            await self.prefetch(sessions, limit: Self.prefetchLimit)
-            if self.prefetchGeneration == generation,
-               self.scheduledTargets == identities {
-                self.scheduledTargets = []
-                self.prefetchTask = nil
-            }
+            await self?.drainPendingPrefetch(generation: generation)
         }
     }
 
@@ -226,6 +216,17 @@ public final class SessionLogSnapshotCache {
                 enqueueNext()
             }
         }
+    }
+
+    private func drainPendingPrefetch(generation: UInt64) async {
+        while generation == prefetchGeneration,
+              !pendingPrefetch.isEmpty,
+              !Task.isCancelled {
+            let targets = pendingPrefetch
+            pendingPrefetch = []
+            await prefetch(targets, limit: Self.prefetchLimit)
+        }
+        if generation == prefetchGeneration { prefetchTask = nil }
     }
 
     /// Selects sessions whose current typed revision has not been read. A

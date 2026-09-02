@@ -19,6 +19,11 @@ public enum DetachStateCommandError: Error, Equatable, Sendable {
     case unsafeEventSignal
 }
 
+struct ManagedTranscriptRegistry: Equatable, Sendable {
+    let all: Set<String>
+    let live: Set<String>
+}
+
 /// The command contract shared by the `detach-state` executable and unit
 /// tests. Successful commands return the exact bytes to write to stdout.
 public enum DetachStateCommand {
@@ -963,11 +968,26 @@ public enum DetachStateCommand {
         sessionsRoots: [String],
         allowedRoots: [String]
     ) -> Set<String> {
+        managedTranscriptRegistry(
+            sessionsRoots: sessionsRoots,
+            allowedRoots: allowedRoots).all
+    }
+
+    /// Live transcripts also receive an exact vnode source. This closes the
+    /// compatibility gap for an older runtime that cannot publish the newer
+    /// lifecycle hint itself.
+    static func managedTranscriptRegistry(
+        sessionsRoots: [String],
+        allowedRoots: [String]
+    ) -> ManagedTranscriptRegistry {
         guard let transcriptIndex = metadataSnapshotFields.firstIndex(where: {
             $0.0 == "transcript_path"
-        }) else { return [] }
+        }), let statusIndex = metadataSnapshotFields.firstIndex(where: {
+            $0.0 == "status"
+        }) else { return ManagedTranscriptRegistry(all: [], live: []) }
 
-        var result: Set<String> = []
+        var all: Set<String> = []
+        var live: Set<String> = []
         for sessionsRoot in sessionsRoots {
             guard let snapshots = try? metadataSnapshots(at: sessionsRoot) else {
                 continue
@@ -985,10 +1005,15 @@ public enum DetachStateCommand {
                 guard allowedRoots.contains(where: {
                     path == $0 || path.hasPrefix($0 + "/")
                 }) else { continue }
-                result.insert(path)
+                all.insert(path)
+                if values.indices.contains(statusIndex),
+                   case .string(let status)? = values[statusIndex],
+                   ["starting", "running", "recovering"].contains(status) {
+                    live.insert(path)
+                }
             }
         }
-        return result
+        return ManagedTranscriptRegistry(all: all, live: live)
     }
 
     private static func readOwnedMetadataFile(

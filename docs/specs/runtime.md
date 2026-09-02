@@ -88,12 +88,12 @@ each failed session.
 ### Session change events
 
 `watch --json` execs the state helper and exits with its parent or cancellation.
-Lossy hints require `list --json`. FSEvents accepts only exact transcripts from
-usable metadata in each provider `sessions` root. Bursts yield leading and
-150 ms trailing hints. Drops or root changes yield `resync`. Lifecycle signals
-refresh roots; heartbeats do not. Missing provider roots are omitted. The signal
-publisher accepts a state root and writes only its fixed `session-change`
-member. Activation repairs loss.
+Lossy hints require `list --json`. FSEvents accepts only metadata-named
+transcripts. Exact vnode sources cover 64 live transcripts, including old
+runtimes. Bursts yield leading and 150 ms trailing hints. Drops or root changes
+yield `resync`. Lifecycle signals refresh roots; heartbeats do not. Missing
+provider roots are omitted. The publisher writes only `session-change` under
+the state root. Activation repairs loss.
 
 ### Session lifecycle and tmux
 
