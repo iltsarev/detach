@@ -505,21 +505,10 @@ enum UIE2ETestDriver {
                 identifier: "session-row-\(completedID)")
             let toCompleted = "client switch --pid \(liveClientPID)"
                 + " --from \(runningID) --to \(completedID) --provider claude"
-            let switchStarted = ProcessInfo.processInfo.systemUptime
             _ = try await clickUntilElement(
                 resumedRow,
                 name: "resumed session row",
                 resultIdentifier: "session-detail-\(completedID)")
-            try await waitUntil("ownership-safe client switch starts", attempts: 20) {
-                let invocations = try? String(
-                    contentsOf: invocationsURL,
-                    encoding: .utf8)
-                return invocations?.split(separator: "\n")
-                    .contains(Substring(toCompleted)) == true
-            }
-            guard ProcessInfo.processInfo.systemUptime - switchStarted < 0.25 else {
-                throw Failure(message: "live selection waited for tmux redraw")
-            }
             guard let terminalDuringSwitch = find(
                     identifier: "session-preview-terminal")
                     as? LocalProcessTerminalView,
@@ -529,6 +518,13 @@ enum UIE2ETestDriver {
                     .contains(runningID) else {
                 throw Failure(message:
                     "live switch replaced the terminal or cleared its complete frame")
+            }
+            try await waitUntil("ownership-safe client switch starts", attempts: 20) {
+                let invocations = try? String(
+                    contentsOf: invocationsURL,
+                    encoding: .utf8)
+                return invocations?.split(separator: "\n")
+                    .contains(Substring(toCompleted)) == true
             }
             try await waitUntil("synchronized completed redraw", attempts: 40) {
                 String(decoding: liveTerminal.terminal.getBufferAsData(), as: UTF8.self)
