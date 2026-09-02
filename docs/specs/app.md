@@ -78,9 +78,10 @@ and semantic color. Clicking the UUID chip copies the full UUID and shows
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
 
-Bounded CLI calls use process groups, drain both outputs, and send TERM then
-KILL at the deadline. Pipe-only descendants cannot extend that deadline. The
-native event process uses `exec` and ends on cancellation. GUI PATH sorts
+Bounded CLI calls drain both outputs and use process-group TERM then KILL.
+They report truncation; typed consumers reject incomplete output and keep the
+last valid state. Pipe-only descendants cannot extend the deadline. The native
+event process uses `exec` and ends on cancellation. GUI PATH sorts
 NVM/mise Node directories by semantic version.
 
 Helper replacement is a durable fail-closed transaction. One versioned journal
@@ -119,7 +120,8 @@ requires a healthy watchdog heartbeat no older than three minutes; otherwise it
 is `unknown`. A vnode source reads atomic changes at once; one wall-clock
 deadline marks silence stale. A timestamp-only write moves it and redraws the
 age silently. Settings open and activation resync. No app-level
-heartbeat timer runs.
+heartbeat timer runs. The first monitor read and explicit refreshes share one
+sequence. A stale constructor snapshot cannot arrive after a newer document.
 
 The watchdog heartbeat carries the effective power state and typed raw
 thermal state/latch. With notifications enabled, the app emits one
@@ -148,20 +150,18 @@ native copy, paste, and find. `Ctrl-V` reaches provider image paste. A Finder
 drop sends shell-safe paths without reading files. Live views move Mac Power to
 metadata. An exited client offers Reconnect.
 
-Cold start reads at most 128 rows and 1 MiB of the last typed snapshot from
-private preferences. These rows grant no health action, ownership proof, PID,
-cleanup right, or power claim; the menu bar and Mac Power count none
-until the first fresh list restores actions. A failed refresh keeps
-them visible, not authoritative. Only a changed presentation is stored.
+Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
+rows grant no action, ownership, PID, cleanup, or power claim until a fresh
+list arrives. A failed refresh keeps them visible but not authoritative. Only
+presentation changes are stored.
 
-A timer-free cache preloads 12 non-live logs, three at once, into free entries
-only; a failed read waits for a new typed revision. Lifecycle changes
-invalidate it. Live or deleted sessions cannot reuse a passive tail. A
-nine-entry cache warms two live 500-line text screens at once; a blank one
-waits for a turn change. A detached live log rereads every 2 s. Both
-caches retain no PTY. Cancellation cannot alter a replacement. A cold attach
-can show one passive SwiftTerm text screen. Live switching uses no raster or
-replacement PTY. tmux holds the complete frame until a synchronized redraw.
+Timer-free caches preload 12 non-live logs, three at once, and nine live
+500-line screens, two at once. They retain no PTY. Empty or failed reads wait
+for a typed revision. The opaque lifecycle ID prevents a reused name from
+inheriting either cache; older rows use creation time and provider identity.
+A detached live log rereads every 2 s. A cold attach can show one passive
+SwiftTerm screen. Live switching uses no raster or replacement PTY. tmux holds
+the frame until a synchronized redraw.
 Metadata stays in one scrolling row. Selection keeps header, terminal, and
 action geometry. A cold passive screen leaves within one second.
 New session accepts an optional printable UTF-8 name up to 100 bytes and

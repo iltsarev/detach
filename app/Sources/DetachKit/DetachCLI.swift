@@ -99,12 +99,23 @@ public struct CLIResult: Equatable, Sendable {
     public var stdout: String
     public var stderr: String
     public var timedOut: Bool
+    public var stdoutTruncated: Bool
+    public var stderrTruncated: Bool
 
-    public init(exitCode: Int32, stdout: String, stderr: String, timedOut: Bool) {
+    public init(
+        exitCode: Int32,
+        stdout: String,
+        stderr: String,
+        timedOut: Bool,
+        stdoutTruncated: Bool = false,
+        stderrTruncated: Bool = false
+    ) {
         self.exitCode = exitCode
         self.stdout = stdout
         self.stderr = stderr
         self.timedOut = timedOut
+        self.stdoutTruncated = stdoutTruncated
+        self.stderrTruncated = stderrTruncated
     }
 }
 
@@ -146,13 +157,15 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
     private let processRunner: BoundedProcessRunner
     private let terminationGrace: TimeInterval
     private let outputDrainGrace: TimeInterval
+    private let maximumOutputBytes: Int
 
     public init(
         executable: URL,
         environment: [String: String]? = nil,
         processRunner: BoundedProcessRunner = BoundedProcessRunner(),
         terminationGrace: TimeInterval = 2,
-        outputDrainGrace: TimeInterval = 0.05
+        outputDrainGrace: TimeInterval = 0.05,
+        maximumOutputBytes: Int = 4 * 1_024 * 1_024
     ) {
         self.executable = executable
         self.environment = Self.runtimeEnvironment(
@@ -161,6 +174,7 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
         self.processRunner = processRunner
         self.terminationGrace = terminationGrace
         self.outputDrainGrace = outputDrainGrace
+        self.maximumOutputBytes = max(0, maximumOutputBytes)
     }
 
     static func runtimeEnvironment(
@@ -240,7 +254,8 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
             currentDirectoryURL: currentDirectoryURL,
             timeout: timeout,
             terminationGrace: terminationGrace,
-            outputDrainGrace: outputDrainGrace)
+            outputDrainGrace: outputDrainGrace,
+            maximumOutputBytes: maximumOutputBytes)
         let runner = processRunner
         let result = try await Task.detached {
             try runner.run(request)
@@ -249,7 +264,9 @@ public final class ProcessDetachCLI: DetachCLIRunning, Sendable {
             exitCode: result.exitCode,
             stdout: String(decoding: result.standardOutput, as: UTF8.self),
             stderr: String(decoding: result.standardError, as: UTF8.self),
-            timedOut: result.timedOut)
+            timedOut: result.timedOut,
+            stdoutTruncated: result.standardOutputTruncated,
+            stderrTruncated: result.standardErrorTruncated)
     }
 
     public func sessionEvents() -> AsyncThrowingStream<SessionEvent, Error> {

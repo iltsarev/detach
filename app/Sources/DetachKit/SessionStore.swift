@@ -329,6 +329,13 @@ public final class SessionStore {
                 }
                 return []
             }
+            guard !result.stdoutTruncated else {
+                if generation == refreshGeneration {
+                    state = .error(L10n.string("detach returned incomplete output"))
+                    scheduleRefreshRetry(generation: generation)
+                }
+                return []
+            }
             let parsed = SessionListParser.parse(result.stdout)
             if parsed.hadInvalidLines {
                 if generation == refreshGeneration {

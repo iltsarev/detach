@@ -336,6 +336,26 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(store.sessions.count, 1)
     }
 
+    func testTruncatedRefreshUsesExplicitDiagnosticAndPreservesData() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: cli)
+        await store.refresh()
+        cli.responses["list --json"] = .success(CLIResult(
+            exitCode: 0,
+            stdout: line,
+            stderr: "",
+            timedOut: false,
+            stdoutTruncated: true))
+
+        await store.refresh()
+
+        XCTAssertEqual(
+            store.state,
+            .error(L10n.string("detach returned incomplete output")))
+        XCTAssertEqual(store.sessions.count, 1)
+    }
+
     func testStopCallsCliAndRefreshes() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line)

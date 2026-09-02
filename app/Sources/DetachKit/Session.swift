@@ -124,6 +124,9 @@ public struct Session: Identifiable, Equatable, Sendable, Codable {
     public var workerHeartbeatAt: Date?
     public var heartbeatFresh: Bool?
     public var checkpointFresh: Bool?
+    /// Opaque identity for one Detach run. It is distinct from the private run
+    /// token and grants no lifecycle or power mutation authority.
+    public var lifecycleID: String?
     /// Set by `detach stop` before it signals the runtime. An `interrupted`
     /// record with this intent is a user-requested stop, not a crash.
     public var stopRequestedAt: Date?
@@ -158,6 +161,7 @@ public struct Session: Identifiable, Equatable, Sendable, Codable {
         case workerHeartbeatAt = "worker_heartbeat_at"
         case heartbeatFresh = "heartbeat_fresh"
         case checkpointFresh = "checkpoint_fresh"
+        case lifecycleID = "lifecycle_id"
         case stopRequestedAt = "stop_requested_at"
     }
 }

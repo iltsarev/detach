@@ -22,6 +22,7 @@
 
 /* DetachKit errors */
 "detach list timed out" = "Истекло время ожидания detach list";
+"detach returned incomplete output" = "detach вернул неполный вывод";
 "Internal error: %@ must run in Terminal" = "Внутренняя ошибка: команда %@ должна выполняться в Terminal";
 "Internal error: %@ is not an in-app start action" = "Внутренняя ошибка: %@ не запускается внутри приложения";
 "The session has no provider UUID to resume." = "У сессии нет UUID провайдера для продолжения.";

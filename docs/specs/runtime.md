@@ -2,10 +2,10 @@
 
 ## Installed distribution
 
-Detach.app installs an immutable payload under
-`~/.local/libexec/detach/versions/<semver>-<hash>/`. It switches
+Detach.app installs an immutable payload below
+`~/.local/libexec/detach/versions/<semver>-<hash>/` and switches
 `~/.local/bin/detach` atomically. Payload order is `detach`, `detach-core`,
-`detach-install`, `detach-state`, `detach-power`, then `tmux`.
+`detach-install`, `detach-state`, `detach-power`, and `tmux`.
 
 Install and Repair validate the payload before activation; failure keeps the
 active payload. A live or retained session defers replacement. One PATH entry
@@ -21,10 +21,8 @@ CLI LaunchAgent stays removed.
 
 ### Shell entry points
 
-- **`bin/detach`** is the only command on PATH. It resolves owned executables as
-  immutable siblings and selects `codex` or `claude`. It owns cross-provider
-  `list`, native `watch`, UUID-aware `resume`, storage and reconcile previews,
-  `power status`, config, doctor, repair, and uninstall.
+- **`bin/detach`** is the only PATH command. It resolves immutable sibling
+  executables, selects the provider, and owns cross-provider commands.
 - **`bin/detach-core`** owns the provider-neutral session lifecycle, inline
   provider adaptations, checkpoint/recovery policy, tmux status, and internal
   self-reinvocation commands. It rejects direct invocation unless the frontend
@@ -34,10 +32,9 @@ Tests inject paths through explicit `DETACH_*` environments. An app CLI strips
 them except in isolated UI tests. Production resolves tmux and state/power
 helpers only as immutable siblings. Providers resolve through `PATH`.
 
-`client switch` targets one exact attached client on the private tmux socket.
-It needs its PID, user ID, expected source, and a live managed target. A
-failed proof causes no mutation. Attach can declare synchronized-output support
-to hold the complete frame until the target redraw.
+`client switch` needs an exact attached-client PID, user ID, source, private
+socket, and live managed target. Failed proof causes no mutation. Attach can
+hold a synchronized frame until the target redraw.
 
 Critical mutations self-reinvoke core under `lockf`. Start, Resume, Stop,
 Recover, and Delete serialize through a per-session lock before narrower
@@ -72,6 +69,8 @@ pane, run-token, and process-group checks.
 Typed state caches Codex checkpoint assessment in a receipt bound to provider,
 session ID, and file identity. A change forces a full scan. Restore ignores the
 receipt, validates a temporary copy, then replaces the live file.
+List summaries use an atomic receipt bound to provider, path, device, inode,
+size, and nanosecond mtime. An unchanged identity skips the 256 KiB tail read.
 
 State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
@@ -93,18 +92,18 @@ Lossy hints require `list --json`. FSEvents accepts only exact transcripts from
 usable metadata in each provider `sessions` root. Bursts yield leading and
 150 ms trailing hints. Drops or root changes yield `resync`. Lifecycle signals
 refresh roots; heartbeats do not. Missing provider roots are omitted. The signal
-path is standardized. Activation repairs loss.
+publisher accepts a state root and writes only its fixed `session-change`
+member. Activation repairs loss.
 
 ### Session lifecycle and tmux
 
 `start` takes one cross-provider project lock, creates a safe identifier, sets
 window `remain-on-exit` off and the provider pane on, then launches `__worker`.
-Splits close on exit; logs and status remain. Without
-`--name`, the identifier is
-`detach-<provider>-<project-slug>-<project-hash>` for the first history;
+Splits close on exit; logs and status remain. Without `--name`, the first
+history is `detach-<provider>-<project-slug>-<project-hash>`;
 successors use a monotonic `-r<12-hex>` suffix and persist the unsuffixed
-`default_session_base`. An explicit human-readable
-name is 1–100 UTF-8 bytes of printable text. Legacy-safe names retain the exact
+`default_session_base`. An explicit name is 1–100 printable UTF-8 bytes.
+Legacy-safe names retain the exact
 `detach-<provider>-<name>` identifier; all other names derive a deterministic
 ASCII slug plus a 12-hex content hash. A full `detach-<provider>-<safe-name>`
 stays reserved as an internal identifier; user input never becomes a tmux name
@@ -152,8 +151,8 @@ silently, records and publishes status, and leaves the pane retained for logs;
 a tmux `pane-died` hook publishes once more. A terminal record with a live
 owned pane and dead provider is finished, not hung.
 
-Stop revalidates the managed run, pane, owned PID, and process group before
-each TERM or KILL. Delete removes a retained tmux session even
+Stop binds durable intent and each signal or removal to the exact run token. A
+failed intent write leaves the runtime untouched. Delete removes a retained tmux session even
 without a state directory and never reports success over leftover state.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
@@ -163,13 +162,13 @@ tmux or the provider ends the live run. Recovery checkpoints remain.
 Provider test parts use private roots; the parent orders and needs all.
 Small hosts use three Codex and two Claude parts.
 
-Detach status options use session-local `@detach*` keys and never touch a
-foreign server. The strip shows identity, power, and time. The title is
-`Detach · <project basename>`. Finished sessions fade; failures
-use red outside the eight identity hues. Allocation scans both providers under
-the Start/Resume/Recover install lock. History keeps identity but reserves no
-hue. Unknown is conservative. Keep a unique hue; otherwise use the stable
-provider/project preference and duplicate after all eight.
+Status uses session-local `@detach*` keys and never changes a foreign server.
+The strip shows identity, power, and time; the title is
+`Detach · <project basename>`. Finished sessions fade and failures use red.
+Hue allocation scans both providers under the Start/Resume/Recover install
+lock. It keeps
+a unique hue, then uses the stable provider/project choice after all eight.
+History reserves no hue; unknown is conservative.
 Style snapshots restore both sides and lengths; an old one preserves the
 user's `status-right`. Text is the primary power signal: `MAC AWAKE`,
 `MAC CAN SLEEP`, `LOW BATTERY`, `MAC CAN SLEEP: TEMPERATURE`,
@@ -188,7 +187,8 @@ the original copy tables immediately.
 
 `list --json` emits JSONL schema 1 with optional `display_name`, power and turn
 state, opaque turn ID, PIDs, health, reconcile, freshness, ownership, cleanup,
-and `stop_requested_at`, which Stop records before it signals. Keep the emitter and the Swift `Session` decoder in sync.
+`stop_requested_at`, and a per-run opaque `lifecycle_id` distinct from the
+mutation token. Keep the emitter and Swift `Session` decoder in sync.
 `watch --json` emits only change hints and never replaces this snapshot.
 Provider lifecycle records, never terminal text, supply turn state
 and the private run-token activity file defined in `power.md`.

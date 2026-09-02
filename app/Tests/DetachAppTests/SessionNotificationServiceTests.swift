@@ -475,6 +475,9 @@ final class SessionNotificationServiceTests: XCTestCase {
                 exitCode: 0, stdout: sessionLine(status: .running),
                 stderr: "", timedOut: true)),
             .success(CLIResult(
+                exitCode: 0, stdout: sessionLine(status: .failed),
+                stderr: "", timedOut: false, stdoutTruncated: true)),
+            .success(CLIResult(
                 exitCode: 0, stdout: sessionLine(status: .running),
                 stderr: "", timedOut: false)),
             .success(CLIResult(
@@ -484,7 +487,7 @@ final class SessionNotificationServiceTests: XCTestCase {
         let service = SessionNotificationService(center: center)
         await service.configure(enabled: true)
 
-        for _ in 0..<5 { await service.pollOnce(using: cli) }
+        for _ in 0..<6 { await service.pollOnce(using: cli) }
 
         XCTAssertEqual(center.delivered.count, 1)
         XCTAssertEqual(center.delivered.first?.title, "Session completed")

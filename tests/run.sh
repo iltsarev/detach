@@ -530,7 +530,7 @@ if codex_part_selected preflight; then
       "$SCRIPT" watch --json >"$event_output" &
     event_pid=$!
     wait_for_file_text "$event_output" '"event":"ready"'
-    "$STATE_HELPER" events publish "$event_root/state/session-change"
+    "$STATE_HELPER" events publish "$event_root/state"
     wait_for_file_text "$event_output" '"event":"changed"'
     touch "$event_root/codex/sessions/unmanaged.jsonl"
     sleep 0.3
@@ -556,7 +556,7 @@ if codex_part_selected preflight; then
       --string session_name "$claude_event_session" \
       --string project_dir "$event_root/project" \
       --string transcript_path "$claude_event_transcript"
-    "$STATE_HELPER" events publish "$event_root/state/session-change"
+    "$STATE_HELPER" events publish "$event_root/state"
     event_attempts=0
     while [ "$event_attempts" -lt 80 ] && \
           [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 4 ]; do
@@ -593,22 +593,19 @@ if codex_part_selected preflight; then
     grep -F 'install_session_event_hook' >/dev/null
   # The pane-died hook string crosses tmux quoting and `sh -c`. Paths with
   # spaces are common; characters either layer could reinterpret are refused.
-  hook_source="$(sed -n \
-    '/^session_event_hook_command() {/,/^}/p' \
-    "$ROOT/bin/detach-core")"
   hook_command="$(
-    STATE_BIN='/Volumes/User Data/libexec/detach-state'
-    SESSION_EVENT_FILE='/Volumes/User Data/state/session-change'
-    eval "$hook_source"
-    session_event_hook_command
+    DETACH_CORE_ENTRYPOINT=1 \
+    DETACH_PROVIDER=codex \
+    DETACH_STATE_BIN='/Volumes/User Data/libexec/detach-state' \
+    DETACH_STATE_ROOT='/Volumes/User Data/state' \
+      "$ROOT/bin/detach-core" __session_event_hook_command
   )"
-  [ "$hook_command" = "run-shell -b \"'/Volumes/User Data/libexec/detach-state' events publish '/Volumes/User Data/state/session-change' >/dev/null 2>&1 || true\"" ]
-  if (
-    STATE_BIN='/tmp/$HOME/detach-state'
-    SESSION_EVENT_FILE='/tmp/state/session-change'
-    eval "$hook_source"
-    session_event_hook_command >/dev/null
-  ); then
+  [ "$hook_command" = "run-shell -b \"'/Volumes/User Data/libexec/detach-state' events publish '/Volumes/User Data/state' >/dev/null 2>&1 || true\"" ]
+  if DETACH_CORE_ENTRYPOINT=1 \
+     DETACH_PROVIDER=codex \
+     DETACH_STATE_BIN='/tmp/$HOME/detach-state' \
+     DETACH_STATE_ROOT='/tmp/state' \
+       "$ROOT/bin/detach-core" __session_event_hook_command >/dev/null; then
     printf 'hook command accepted an unsafe path\n' >&2
     exit 1
   fi
@@ -885,6 +882,31 @@ TMUX_TMPDIR="$TMP_ROOT/unrelated-tmux-tmpdir" \
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach)" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_provider)" = "codex" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
+meta="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/meta.json"
+# Stop must persist intent for the exact run before its first signal. Inject a
+# state write failure and prove the live pane and metadata remain unchanged.
+stop_state_wrapper="$TMP_ROOT/stop-state-wrapper"
+stop_state_failure="$TMP_ROOT/stop-state-failure"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'if [ -f "$DETACH_STOP_STATE_FAILURE" ] && [ "${1:-}" = meta ] && [ "${2:-}" = patch ]; then' \
+  '  case " $* " in *" stop_requested_at "*) exit 91 ;; esac' \
+  'fi' \
+  'exec "$DETACH_STOP_STATE_DELEGATE" "$@"' \
+  >"$stop_state_wrapper"
+chmod 0755 "$stop_state_wrapper"
+: >"$stop_state_failure"
+if DETACH_STATE_BIN="$stop_state_wrapper" \
+   DETACH_STOP_STATE_FAILURE="$stop_state_failure" \
+   DETACH_STOP_STATE_DELEGATE="$STATE_HELPER" \
+   run_codex stop integration >/dev/null 2>&1; then
+  printf 'Stop unexpectedly signaled a run without durable intent\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" has-session -t "=$SESSION"
+[ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "0" ]
+[ -z "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
+rm "$stop_state_failure"
 # The creator CLI has already exited. The tmux server and worker must remain
 # alive without an attached client (the same lifecycle as closing Terminal or
 # Detach.app after starting a session).
@@ -1359,6 +1381,8 @@ fi
 
 # A fresh run with the same name must never inherit the previous run's UUID.
 [ -s "$checkpoint/rollout.jsonl" ]
+previous_lifecycle_id="$("$STATE_HELPER" meta get "$meta" lifecycle_id)"
+[ -n "$previous_lifecycle_id" ]
 export FAKE_CODEX_INIT_DELAY=5
 printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request", "never"]' >"$DETACH_CODEX_REQUIREMENTS_FILE"
 run_codex --name integration --detach -- 'start a new thread'
@@ -1370,6 +1394,10 @@ wait_for_file_text "$FAKE_CODEX_ARGS_FILE" 'start a new thread'
 [ ! -e "$checkpoint/.detach-jsonl-validation.json" ]
 [ ! -e "$checkpoint/meta.json" ]
 fresh_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
+fresh_lifecycle_id="$("$STATE_HELPER" meta get "$meta" lifecycle_id)"
+[ -n "$fresh_lifecycle_id" ]
+[ "$fresh_lifecycle_id" != "$previous_lifecycle_id" ]
+[ "$fresh_lifecycle_id" != "$fresh_run_token" ]
 if run_codex --name integration --detach -- 'must not replace a running task'; then
   printf 'new default start unexpectedly replaced a running task\n' >&2
   exit 1
@@ -1383,7 +1411,9 @@ fi
 fi
 
 if codex_part_selected resume; then
-if [ "$CODEX_TEST_PART" = resume ] || [ "$CODEX_TEST_PART" = resume-identity ]; then
+if [ "$CODEX_TEST_PART" = all ] || \
+   [ "$CODEX_TEST_PART" = resume ] || \
+   [ "$CODEX_TEST_PART" = resume-identity ]; then
   bootstrap_codex_checkpoint
 fi
 
@@ -1451,6 +1481,7 @@ json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = "running" ]
 [ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin project_dir)" ]
 [ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin created_at)" ]
+[ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin lifecycle_id)" ]
 [ -z "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin exit_status)" ]
 [[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin session_color)" =~ ^#[[:xdigit:]]{6}$ ]]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin power_protection_state)" = "protected" ]
@@ -2032,17 +2063,20 @@ rmdir "$DETACH_CODEX_STATE_ROOT/sessions/$default_session-r000000000001"
 rmdir "$DETACH_CODEX_STATE_ROOT/sessions/$default_session"
 
 # Listing saved histories must remain below the app's five-second deadline as
-# state grows. Count helper launches as a deterministic guard against restoring
-# the former per-field subprocess fan-out, and retain a real wall-clock ceiling
-# on the reference test machine.
+# state grows. The second read uses cached summaries for one 300 KiB transcript
+# per row. Count helper launches as a deterministic guard against restoring the
+# former per-field subprocess fan-out, and retain a wall-clock ceiling.
 list_scale_root="$TMP_ROOT/list-scale-state"
 list_scale_output="$TMP_ROOT/list-scale.jsonl"
 list_scale_invocations="$TMP_ROOT/list-scale-invocations.txt"
 list_scale_wrapper="$TMP_ROOT/list-scale-detach-state"
 list_scale_tmux_invocations="$TMP_ROOT/list-scale-tmux-invocations.txt"
 list_scale_tmux_wrapper="$TMP_ROOT/list-scale-tmux"
+list_scale_transcript="$TMP_ROOT/list-scale-transcript.jsonl"
 list_scale_live_sessions=()
 mkdir -p "$list_scale_root/sessions"
+dd if=/dev/zero of="$list_scale_transcript" bs=1024 count=300 >/dev/null 2>&1
+printf '\n%s\n' '{"payload":{"model":"gpt-scale"}}' >>"$list_scale_transcript"
 list_scale_index=1
 while [ "$list_scale_index" -le 25 ]; do
   list_scale_session="detach-codex-list-scale-$list_scale_index"
@@ -2052,7 +2086,8 @@ while [ "$list_scale_index" -le 25 ]; do
     --integer schema 1 \
     --string session_name "$list_scale_session" \
     --string project_dir "$ROOT" \
-    --string status stopped
+    --string status stopped \
+    --string transcript_path "$list_scale_transcript"
   if [ "$list_scale_index" -le 3 ]; then
     tmux -L "$SOCKET" new-session -d -s "$list_scale_session" /bin/sleep 30
     tmux -L "$SOCKET" set-option -q -t "=$list_scale_session:" @detach 1
@@ -2083,10 +2118,8 @@ DETACH_LIST_SCALE_TMUX_INVOCATIONS="$list_scale_tmux_invocations" \
 DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
   "$SCRIPT" codex list --json >"$list_scale_output"
 list_scale_elapsed="$SECONDS"
-for list_scale_session in "${list_scale_live_sessions[@]}"; do
-  tmux -L "$SOCKET" kill-session -t "=$list_scale_session"
-done
 [ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
+[ "$(grep -Fc '"model":"gpt-scale"' "$list_scale_output")" = 25 ]
 [ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ] || {
   printf 'list restored per-field state helper fan-out\n' >&2
   exit 1
@@ -2095,10 +2128,37 @@ done
   printf 'list did not use one batched tmux snapshot\n' >&2
   exit 1
 }
+[ "$(find "$list_scale_root/sessions" -name .transcript-summary-cache.json -type f | \
+  wc -l | tr -d '[:space:]')" = 25 ]
 [ "$list_scale_elapsed" -lt 5 ] || {
-  printf '25-session list exceeded the app deadline: %ss\n' "$list_scale_elapsed" >&2
+  printf 'cold 25-session list exceeded the app deadline: %ss\n' "$list_scale_elapsed" >&2
   exit 1
 }
+: >"$list_scale_invocations"
+: >"$list_scale_tmux_invocations"
+SECONDS=0
+DETACH_CODEX_STATE_ROOT="$list_scale_root" \
+DETACH_STATE_BIN="$list_scale_wrapper" \
+DETACH_LIST_SCALE_STATE_HELPER="$STATE_HELPER" \
+DETACH_LIST_SCALE_INVOCATIONS="$list_scale_invocations" \
+DETACH_POWER_BIN=/usr/bin/false \
+DETACH_TMUX_BIN="$list_scale_tmux_wrapper" \
+DETACH_LIST_SCALE_TMUX_HELPER="$TMUX_TEST_BIN" \
+DETACH_LIST_SCALE_TMUX_INVOCATIONS="$list_scale_tmux_invocations" \
+DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
+  "$SCRIPT" codex list --json >"$list_scale_output"
+list_scale_hot_elapsed="$SECONDS"
+[ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
+[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ]
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 1 ]
+[ "$list_scale_hot_elapsed" -lt 5 ] || {
+  printf 'cached 25-session list exceeded the app deadline: %ss\n' \
+    "$list_scale_hot_elapsed" >&2
+  exit 1
+}
+for list_scale_session in "${list_scale_live_sessions[@]}"; do
+  tmux -L "$SOCKET" kill-session -t "=$list_scale_session"
+done
 
 # Public read paths must reject state-root redirection before creating or
 # traversing sessions in an unrelated directory.

@@ -117,11 +117,11 @@ final class SessionEventsTests: XCTestCase {
         let signal = root.appendingPathComponent("session-change")
 
         _ = try DetachStateCommand.run(arguments: [
-            "events", "publish", signal.path,
+            "events", "publish", root.path,
         ])
         let first = try Data(contentsOf: signal)
         _ = try DetachStateCommand.run(arguments: [
-            "events", "publish", signal.path,
+            "events", "publish", root.path,
         ])
         let second = try Data(contentsOf: signal)
 
@@ -134,13 +134,21 @@ final class SessionEventsTests: XCTestCase {
         // Environment roots with a trailing slash produce `//`. The publisher
         // must standardize that path rather than silently disable every hint.
         _ = try DetachStateCommand.run(arguments: [
-            "events", "publish", root.path + "//session-change",
+            "events", "publish", root.path + "//",
         ])
         let third = try Data(contentsOf: signal)
         XCTAssertNotEqual(second, third)
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
-            "events", "publish", "relative/session-change",
+            "events", "publish", "relative/state",
         ]))
+
+        let unrelated = root.appendingPathComponent("unrelated")
+        let sentinel = Data("keep me".utf8)
+        try sentinel.write(to: unrelated)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "events", "publish", unrelated.path,
+        ]))
+        XCTAssertEqual(try Data(contentsOf: unrelated), sentinel)
     }
 
     func testManagedTranscriptRegistryUsesOnlyUsableInRootMetadata() throws {

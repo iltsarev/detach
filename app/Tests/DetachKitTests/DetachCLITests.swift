@@ -21,6 +21,21 @@ final class DetachCLITests: XCTestCase {
         XCTAssertEqual(result.stdout, "list\n--json\n")
         XCTAssertEqual(result.stderr, "err\n")
         XCTAssertFalse(result.timedOut)
+        XCTAssertFalse(result.stdoutTruncated)
+        XCTAssertFalse(result.stderrTruncated)
+    }
+
+    func testReportsEachTruncatedStream() async throws {
+        let cli = ProcessDetachCLI(
+            executable: try fixture("printf 123456789; printf abcdefghi >&2"),
+            maximumOutputBytes: 5)
+
+        let result = try await cli.run(arguments: [], timeout: 5)
+
+        XCTAssertEqual(result.stdout, "12345")
+        XCTAssertEqual(result.stderr, "abcde")
+        XCTAssertTrue(result.stdoutTruncated)
+        XCTAssertTrue(result.stderrTruncated)
     }
 
     func testUsesAnExplicitWorkingDirectory() async throws {
@@ -193,6 +208,7 @@ final class DetachCLITests: XCTestCase {
         XCTAssertFalse(result.timedOut)
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.stdout, "leader done\n")
+        XCTAssertTrue(result.stdoutTruncated)
         XCTAssertLessThan(Date().timeIntervalSince(start), 3)
         let pid = try XCTUnwrap(Int32(
             String(contentsOf: descendantPID, encoding: .utf8)

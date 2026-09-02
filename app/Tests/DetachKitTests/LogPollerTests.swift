@@ -70,6 +70,26 @@ final class LogPollerTests: XCTestCase {
         XCTAssertEqual(poller.errorText, "no logs found")
     }
 
+    func testTruncatedFetchDoesNotPublishPartialTail() async {
+        let cli = FakeCLI()
+        cli.responses["claude logs --ansi detach-claude-x-1"] = .success(CLIResult(
+            exitCode: 0,
+            stdout: "partial",
+            stderr: "",
+            timedOut: false,
+            stdoutTruncated: true))
+        let poller = LogPoller(
+            cli: cli, provider: .claude, sessionName: "detach-claude-x-1")
+
+        await poller.fetchOnce()
+
+        XCTAssertEqual(
+            poller.errorText,
+            L10n.string("detach returned incomplete output"))
+        XCTAssertEqual(poller.lines, [])
+        XCTAssertFalse(poller.hasLoaded)
+    }
+
     func testUnchangedSuccessfulTailClearsAnEarlierErrorWithoutReparsing() async {
         let cli = FakeCLI()
         let key = "codex logs --ansi detach-codex-x-1"
@@ -324,6 +344,26 @@ final class LogPollerTests: XCTestCase {
         XCTAssertEqual(calls, 2)
     }
 
+    func testLifecycleIDInvalidatesSameSecondPassiveTail() async {
+        let cli = ConcurrentLogCLI()
+        let cache = SessionLogSnapshotCache(cli: cli, configurationID: "/tmp/detach")
+        let created = "2026-09-02T10:00:00Z"
+        let original = makeSession(
+            name: "same-second", status: "completed", created: created,
+            lifecycleID: "first-run")
+        let direct = cache.poller(for: original)
+        await direct.fetchOnce()
+
+        let replacement = makeSession(
+            name: "same-second", status: "completed", created: created,
+            lifecycleID: "replacement-run")
+        await cache.prefetch([replacement])
+
+        XCTAssertFalse(direct === cache.poller(for: replacement))
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(calls.count, 2)
+    }
+
     func testPrefetchFillsFreeSlotsAndNeverEvictsASelectedEntry() async {
         let cli = ConcurrentLogCLI()
         let cache = SessionLogSnapshotCache(
@@ -364,14 +404,18 @@ final class LogPollerTests: XCTestCase {
         name: String,
         status: String,
         checkpoint: String? = nil,
-        created: String? = nil
+        created: String? = nil,
+        lifecycleID: String? = nil
     ) -> Session {
         let checkpointField = checkpoint.map {
             ",\"last_checkpoint_at\":\"\($0)\""
         } ?? ""
         let createdField = created.map { ",\"created_at\":\"\($0)\"" } ?? ""
+        let lifecycleField = lifecycleID.map {
+            ",\"lifecycle_id\":\"\($0)\""
+        } ?? ""
         return SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"\(name)","name":"\(name)","effective_status":"\(status)"\(checkpointField)\(createdField)}
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"\(name)","effective_status":"\(status)"\(checkpointField)\(createdField)\(lifecycleField)}
         """).sessions[0]
     }
 

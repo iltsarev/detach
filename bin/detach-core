@@ -681,6 +681,7 @@ reset_meta_snapshot() {
   META_SESSION_COLOR=""
   META_TRANSCRIPT_PATH=""
   META_RUN_TOKEN=""
+  META_LIFECYCLE_ID=""
   META_WORKER_HEARTBEAT_EPOCH=""
   META_LAST_CHECKPOINT_EPOCH=""
   META_HEALTH_SCHEMA=""
@@ -715,6 +716,7 @@ load_meta_snapshot_path() {
       session_color) META_SESSION_COLOR="$value" ;;
       transcript_path) META_TRANSCRIPT_PATH="$value" ;;
       run_token) META_RUN_TOKEN="$value" ;;
+      lifecycle_id) META_LIFECYCLE_ID="$value" ;;
       worker_heartbeat_epoch) META_WORKER_HEARTBEAT_EPOCH="$value" ;;
       last_checkpoint_epoch) META_LAST_CHECKPOINT_EPOCH="$value" ;;
       health_schema) META_HEALTH_SCHEMA="$value" ;;
@@ -1832,7 +1834,7 @@ publish_session_event() {
   # cleanup suppresses the hint of its final checkpoint because its status
   # write publishes one moment later.
   [ "${DETACH_SUPPRESS_SESSION_EVENT:-0}" != "1" ] || return 0
-  "$STATE_BIN" events publish "$SESSION_EVENT_FILE" >/dev/null 2>&1 || true
+  "$STATE_BIN" events publish "$STATE_BASE_ROOT" >/dev/null 2>&1 || true
 }
 
 # tmux runs this hook when the retained provider pane dies. Nothing else
@@ -1844,7 +1846,7 @@ publish_session_event() {
 # in home directories and are allowed.
 session_event_hook_command() {
   local path
-  for path in "$STATE_BIN" "$SESSION_EVENT_FILE"; do
+  for path in "$STATE_BIN" "$STATE_BASE_ROOT"; do
     case "$path" in
       /*) ;;
       *) return 1 ;;
@@ -1854,7 +1856,7 @@ session_event_hook_command() {
     esac
   done
   printf "run-shell -b \"'%s' events publish '%s' >/dev/null 2>&1 || true\"" \
-    "$STATE_BIN" "$SESSION_EVENT_FILE"
+    "$STATE_BIN" "$STATE_BASE_ROOT"
 }
 
 install_session_event_hook() {
@@ -1892,6 +1894,7 @@ write_initial_meta() {
   local tmp
   local agent_version
   local session_color
+  local lifecycle_id
   local create_args
   local default_base
 
@@ -1919,6 +1922,7 @@ write_initial_meta() {
   fi
   agent_version="$("$agent_bin" --version 2>/dev/null || printf 'unknown')"
   session_color="$(allocate_session_color "$PROVIDER" "$cwd" "$session")" || return 1
+  lifecycle_id="$(new_run_token)" || return 1
 
   create_args=(
     --integer schema 1
@@ -1928,6 +1932,7 @@ write_initial_meta() {
     --integer created_at_ms "$start_ms"
     --string status starting
     --string run_token "$run_token"
+    --string lifecycle_id "$lifecycle_id"
     --string provider "$PROVIDER"
     --string session_color "$session_color"
     --string agent_bin "$agent_bin"
@@ -4560,6 +4565,7 @@ prepare_list_json_args() {
   local worker_heartbeat_at="${18:-}"
   local display_name="${19:-}"
   local stop_requested_at="${20:-}"
+  local lifecycle_id="${21:-}"
   local session_args
 
   [[ "$session_color" =~ ^#[0-9A-Fa-f]{6}$ ]] || session_color=''
@@ -4573,6 +4579,7 @@ prepare_list_json_args() {
     --last-checkpoint-at "$checkpoint"
     --finished-at "$finished"
     --stop-requested-at "$stop_requested_at"
+    --lifecycle-id "$lifecycle_id"
     --model "$model"
     --agent-turn-state "$agent_turn_state"
     --agent-turn-id "$agent_turn_id"
@@ -4669,6 +4676,7 @@ list_session_records() {
       IFS= read -r -d '' META_SESSION_COLOR && \
       IFS= read -r -d '' META_TRANSCRIPT_PATH && \
       IFS= read -r -d '' META_RUN_TOKEN && \
+      IFS= read -r -d '' META_LIFECYCLE_ID && \
       IFS= read -r -d '' META_WORKER_HEARTBEAT_EPOCH && \
       IFS= read -r -d '' META_LAST_CHECKPOINT_EPOCH && \
       IFS= read -r -d '' META_HEALTH_SCHEMA && \
@@ -4693,7 +4701,7 @@ list_session_records() {
         prepare_list_json_args \
           "$session" "" "-" "-" "${cwd:-?}" "" "null" "" \
           "" "null" "null" "" "" "$session_color" "$power_state" \
-          "" "" "" "" ""
+          "" "" "" "" "" ""
         session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
           request "${LIST_JSON_ARGS[@]}" || \
@@ -4746,7 +4754,7 @@ list_session_records() {
         "$TRANSCRIPT_CTX_WINDOW" "$TRANSCRIPT_AGENT_TURN_STATE" \
         "$TRANSCRIPT_AGENT_TURN_ID" "$session_color" "$power_state" \
         "$worker_pid" "$provider_pid" "$worker_heartbeat_at" "$display_name" \
-        "$META_STOP_REQUESTED_AT"
+        "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_ID"
       session_health_envelope \
         "$session" true "$status" "$id" "$META_RUN_TOKEN" \
         "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
@@ -4866,26 +4874,33 @@ stop_session() {
   local pane_pid
   local pgid
   local run_token
+  local stop_requested_at
+  local stop_intent_recorded=0
+  local tmux_run_token_proven=0
 
   refuse_runtime_without_managed_tmux "$session"
   run_token=""
   if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || die "refusing to stop unmanaged tmux session '$session'"
     run_token="$(tmux_option "$session" '@detach_run_token')"
+    [ -z "$run_token" ] || tmux_run_token_proven=1
   fi
   [ -n "$run_token" ] || run_token="$(read_meta_field "$session" run_token 2>/dev/null || true)"
 
-  # Record the intent before the runtime is signalled. The worker then writes
-  # `interrupted` moments before `stopped` follows; consumers must never read
-  # that ordinary window as a crash. A fresh start clears the intent.
-  state_update_meta "$session" \
-    --string stop_requested_at "$(now_iso)" 2>/dev/null || true
-
   if tmux_has_session "$session"; then
-    tmux_is_managed "$session" || die "refusing to stop unmanaged tmux session '$session'"
     pane="$(tmux_pane_id "$session" 2>/dev/null || true)"
     pane_pid=""
     pgid=""
     if [ -n "$pane" ] && [ "$(tmux_pane_dead "$session")" = "0" ]; then
+      [ "$tmux_run_token_proven" -eq 1 ] || \
+        die "refusing to stop a live session without an exact run token"
+      # Record intent only for the exact managed run immediately before its
+      # first signal. A failed write aborts Stop; a fresh start clears intent.
+      stop_requested_at="$(now_iso)"
+      state_update_meta_for_run "$session" "$run_token" \
+        --string stop_requested_at "$stop_requested_at" || \
+          die "could not record Stop intent for the exact managed run"
+      stop_intent_recorded=1
       pane_pid="$("${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
       if [ -n "$pane_pid" ]; then
         pgid="$(/bin/ps -o pgid= -p "$pane_pid" 2>/dev/null | tr -d '[:space:]')"
@@ -4910,7 +4925,24 @@ stop_session() {
       fi
     fi
 
-    "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove tmux session '$session'"
+    tmux_is_managed "$session" || \
+      die "refusing to remove a replacement or unmanaged tmux session '$session'"
+    if [ -n "$run_token" ] && \
+       [ "$(tmux_option "$session" '@detach_run_token')" != "$run_token" ]; then
+      die "refusing to remove a replacement tmux run for '$session'"
+    fi
+    if ! "${TMUX_CMD[@]}" kill-session -t "=$session"; then
+      # If the exact run is still alive, this Stop did not take effect. Remove
+      # its intent so a later genuine crash remains observable.
+      if [ "$stop_intent_recorded" -eq 1 ] && \
+         tmux_has_session "$session" && \
+         [ "$(tmux_pane_dead "$session")" = "0" ]; then
+        state_update_meta_for_run "$session" "$run_token" \
+          --null stop_requested_at >/dev/null 2>&1 || \
+            error "warning: could not clear failed Stop intent"
+      fi
+      die "could not remove tmux session '$session'"
+    fi
   fi
   # A recorded descendant can briefly outlive the worker or tmux server. Do
   # not turn that unowned runtime into apparently stopped saved state.
@@ -4919,9 +4951,25 @@ stop_session() {
     "$POWER_BIN" release --session "$session" --run-token "$run_token" >/dev/null 2>&1 || \
       error "warning: could not immediately release Mac sleep protection; the safety lease will expire automatically"
   fi
-  state_update_meta "$session" \
-    --string status stopped --string stopped_at "$(now_iso)" || \
-      die "tmux was stopped, but session metadata could not be updated"
+  if [ -n "$run_token" ]; then
+    if [ "$stop_intent_recorded" -eq 1 ]; then
+      state_update_meta_for_run "$session" "$run_token" \
+        --string status stopped --string stopped_at "$(now_iso)" || \
+          die "tmux was stopped, but exact-run metadata could not be updated"
+    else
+      stop_requested_at="$(now_iso)"
+      state_update_meta_for_run "$session" "$run_token" \
+        --string stop_requested_at "$stop_requested_at" \
+        --string status stopped --string stopped_at "$(now_iso)" || \
+          die "tmux was stopped, but exact-run metadata could not be updated"
+    fi
+  else
+    stop_requested_at="$(now_iso)"
+    state_update_meta "$session" \
+      --string stop_requested_at "$stop_requested_at" \
+      --string status stopped --string stopped_at "$(now_iso)" || \
+        die "tmux was stopped, but session metadata could not be updated"
+  fi
   printf 'Stopped %s\n' "$session"
 }
 
@@ -5387,6 +5435,11 @@ case "${1:-}" in
     shift
     [ "$#" -eq 3 ] || exit 1
     switch_attached_client "$@"
+    ;;
+  __session_event_hook_command)
+    shift
+    [ "$#" -eq 0 ] || exit 1
+    session_event_hook_command
     ;;
   __start_tmux_session_locked)
     shift

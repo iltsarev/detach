@@ -127,7 +127,8 @@ persisted lease, restores a previous matching lease when applicable, and
 reconciles the owned setting before returning failure. This prevents a timed-out
 caller from activating protection later. The outer XPC timeout remains 30
 seconds so rollback can finish. Root `pmset` invocations have bounded output and
-a two-second timeout. The readable tmux power label refreshes every ten seconds
+a two-second timeout; truncation fails closed. The readable tmux power label
+refreshes every ten seconds
 while working and every 30 seconds while waiting, rather than spawning one root
 status request every two seconds per session.
 

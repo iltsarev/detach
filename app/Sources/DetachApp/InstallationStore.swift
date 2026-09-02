@@ -108,6 +108,7 @@ final class InstallationStore {
         [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var heartbeatMonitor: PowerHeartbeatMonitor?
     @ObservationIgnored private var lastPowerSnapshotSequence: UInt64 = 0
+    @ObservationIgnored private var powerObservationNeedsInitialDelivery = true
     @ObservationIgnored private let powerSnapshotSequence =
         OSAllocatedUnfairLock<UInt64>(initialState: 0)
     @ObservationIgnored var onPowerSnapshot:
@@ -224,26 +225,29 @@ final class InstallationStore {
                 return state
             }
             Task { @MainActor [weak self] in
-                self?.publishPowerSnapshot(snapshot, sequence: number)
+                self?.publishPowerSnapshot(
+                    snapshot,
+                    sequence: number,
+                    isObservationDelivery: true)
             }
         }
         heartbeatMonitor = monitor
         monitor.start()
-        if let onPowerSnapshot {
-            let snapshot = watchdogHeartbeat
-            Task { @MainActor in
-                await onPowerSnapshot(snapshot)
-            }
-        }
     }
 
     private func publishPowerSnapshot(
         _ snapshot: PowerHeartbeatSnapshot,
-        sequence: UInt64? = nil
+        sequence: UInt64? = nil,
+        isObservationDelivery: Bool = false
     ) {
         if let sequence {
             guard sequence > lastPowerSnapshotSequence else { return }
             lastPowerSnapshotSequence = sequence
+        }
+        let isInitialObservation = isObservationDelivery
+            && powerObservationNeedsInitialDelivery
+        if isInitialObservation {
+            powerObservationNeedsInitialDelivery = false
         }
         let previous = watchdogHeartbeatStorage
         let presentedStateChanged = !snapshot.hasSamePresentedState(as: previous)
@@ -258,7 +262,8 @@ final class InstallationStore {
         if snapshot.effectivePowerState != powerProtectionState {
             powerProtectionState = snapshot.effectivePowerState
         }
-        guard presentedStateChanged, let onPowerSnapshot else { return }
+        guard presentedStateChanged || isInitialObservation,
+              let onPowerSnapshot else { return }
         Task { @MainActor in
             await onPowerSnapshot(snapshot)
         }

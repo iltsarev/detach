@@ -552,6 +552,32 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(delivered?.effectivePowerState, .protected)
     }
 
+    func testPowerObservationNeverForwardsConstructorSnapshotAfterNewerDocument()
+        async throws
+    {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
+            to: root)
+        var delivered: [PowerProtectionState] = []
+        store.onPowerSnapshot = { delivered.append($0.effectivePowerState) }
+        store.startPowerObservation()
+        for _ in 0..<100 where delivered.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(delivered, [.protected])
+        XCTAssertEqual(store.powerProtectionState, .protected)
+    }
+
     func testPowerObservationFollowsARecreatedStateDirectory() async throws {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }

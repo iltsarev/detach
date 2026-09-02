@@ -48,6 +48,7 @@ final class DetachStateCommandTests: XCTestCase {
             "--agent-turn-id", "turn-1",
             "--session-color", "#1aB2c3",
             "--power-state", "protected",
+            "--lifecycle-id", "opaque-run-id",
         ])
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: output) as? [String: Any])
@@ -56,7 +57,7 @@ final class DetachStateCommandTests: XCTestCase {
             "schema", "provider", "session_name", "name", "display_name", "session_color",
             "effective_status", "meta_status", "agent_session_id", "project_dir",
             "created_at", "last_checkpoint_at", "exit_status", "finished_at",
-            "stop_requested_at", "model",
+            "stop_requested_at", "lifecycle_id", "model",
             "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
             "power_protection_state", "health_reason", "health_actions",
             "reconcile_action", "ownership_proven", "cleanup_eligible",
@@ -75,6 +76,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(object["agent_turn_state"] as? String, "waiting")
         XCTAssertEqual(object["power_protection_state"] as? String, "protected")
         XCTAssertEqual(object["session_color"] as? String, "#1aB2c3")
+        XCTAssertEqual(object["lifecycle_id"] as? String, "opaque-run-id")
     }
 
     func testEmitSessionEncodesAllAbsentOptionalFieldsAsNull() throws {
@@ -88,7 +90,7 @@ final class DetachStateCommandTests: XCTestCase {
         for key in [
             "display_name", "session_color", "meta_status", "agent_session_id", "project_dir",
             "created_at", "last_checkpoint_at", "exit_status", "finished_at",
-            "stop_requested_at", "model",
+            "stop_requested_at", "lifecycle_id", "model",
             "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
             "power_protection_state", "health_reason", "health_actions",
             "reconcile_action", "ownership_proven", "cleanup_eligible",
@@ -393,7 +395,7 @@ final class DetachStateCommandTests: XCTestCase {
         let values = output.split(separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        let recordSize = 20
+        let recordSize = 21
         XCTAssertEqual(values.count, recordSize * 3 + 2)
         XCTAssertEqual(values[0], "detach-claude-three")
         XCTAssertEqual(values[1], "true")
@@ -563,13 +565,42 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 25 + 2)
+        XCTAssertEqual(values.count, 26 + 2)
         XCTAssertEqual(values[0], "detach-codex-summary")
         XCTAssertEqual(values[1], "true")
-        XCTAssertEqual(Array(values[20..<25]), [
+        XCTAssertEqual(Array(values[21..<26]), [
             "gpt-batched", "", "", "working", "turn-batched",
         ])
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
+
+        let receipt = session.appendingPathComponent(
+            ".transcript-summary-cache.json")
+        var receiptObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
+                as? [String: Any])
+        receiptObject["model"] = "cached-proof"
+        try JSONSerialization.data(withJSONObject: receiptObject).write(to: receipt)
+        let cachedOutput = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let cachedValues = cachedOutput.split(
+            separator: 0, omittingEmptySubsequences: false)
+            .dropLast()
+            .map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(cachedValues[21], "cached-proof")
+
+        try Data("""
+        {"payload":{"model":"gpt-updated"}}
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-updated-longer"}}
+        """.utf8).write(to: transcript)
+        let changedOutput = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let changedValues = changedOutput.split(
+            separator: 0, omittingEmptySubsequences: false)
+            .dropLast()
+            .map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(changedValues[21], "gpt-updated")
 
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "meta", "snapshots", root.path, "--unknown",

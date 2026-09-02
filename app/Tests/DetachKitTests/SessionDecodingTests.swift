@@ -30,6 +30,16 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertNil(plain.stopRequestedAt)
     }
 
+    func testOpaqueLifecycleIDDecodesAndDefaultsToNil() throws {
+        let identified = running.replacingOccurrences(
+            of: "\"finished_at\":null}",
+            with: "\"finished_at\":null,\"lifecycle_id\":\"run-view-id\"}")
+        XCTAssertEqual(
+            SessionListParser.parse(identified).sessions.first?.lifecycleID,
+            "run-view-id")
+        XCTAssertNil(SessionListParser.parse(running).sessions.first?.lifecycleID)
+    }
+
     func testDecodesRunningSession() throws {
         let result = SessionListParser.parse(running)
         XCTAssertFalse(result.hadInvalidLines)

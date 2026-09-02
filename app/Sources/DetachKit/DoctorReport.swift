@@ -112,9 +112,16 @@ public struct DistributionClient: Sendable {
 
     public func doctor() async throws -> DoctorReport {
         let result = try await cli.run(arguments: ["doctor", "--json"], timeout: 15)
-        guard !result.timedOut, let data = result.stdout.data(using: .utf8), !data.isEmpty else {
+        guard !result.timedOut,
+              !result.stdoutTruncated,
+              let data = result.stdout.data(using: .utf8),
+              !data.isEmpty else {
             throw DistributionClientError.doctorOutputMissing(
-                result.timedOut ? L10n.string("detach doctor timed out") : result.stderr)
+                result.timedOut
+                    ? L10n.string("detach doctor timed out")
+                    : result.stdoutTruncated
+                        ? L10n.string("detach returned incomplete output")
+                        : result.stderr)
         }
         let report = try JSONDecoder().decode(DoctorReport.self, from: data)
         guard report.schema == 1 else {

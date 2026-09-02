@@ -47,9 +47,9 @@ not be the weak link.
 - **See what needs you now.** Sessions that wait for a reply move into
   **Answer ready**. Notifications and the menu bar show when a turn finishes,
   fails, or becomes recoverable.
-- **Get changes without a refresh delay.** Native filesystem events wake the
-  dashboard when lifecycle or provider turn data changes. Detach does not run
-  a repeating session-list timer while nothing changes.
+- **Update only when state changes.** Native filesystem events trigger a
+  dashboard refresh for lifecycle and provider turn changes. Detach does not
+  run a repeating session-list timer while nothing changes.
 - **Return the correct way.** Attach to a live process, Resume a provider
   conversation, or Recover an interrupted Detach run from a validated local
   checkpoint.
@@ -167,10 +167,12 @@ The dashboard also updates from events. Detach coalesces a provider transcript
 burst into one update at the start and one after output becomes quiet. Each
 event reads a complete typed session list. A dropped event or app activation
 causes a full resync. There is no Refresh interval setting and no periodic
-session-list process while state is idle.
+session-list process while state is idle. Unchanged transcript summaries use a
+private file-identity cache, so consecutive event refreshes do not reread every
+retained transcript tail.
 
-Power status is event-driven too. An atomic watchdog report wakes the app
-immediately. One deadline marks a silent report stale. The menu bar, Settings,
+Power status is event-driven too. An atomic watchdog report wakes the app when
+it changes. One deadline marks a silent report stale. The menu bar, Settings,
 and notifications do not poll the same file on repeating timers.
 
 <details>

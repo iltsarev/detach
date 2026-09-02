@@ -144,7 +144,9 @@ final class SessionNotificationService: ObservableObject {
     func pollOnce(using cli: DetachCLIRunning) async {
         do {
             let result = try await cli.run(arguments: ["list", "--json"], timeout: 5)
-            guard result.exitCode == 0, !result.timedOut else { return }
+            guard result.exitCode == 0,
+                  !result.timedOut,
+                  !result.stdoutTruncated else { return }
             let parsed = SessionListParser.parse(result.stdout)
             guard !parsed.hadInvalidLines else { return }
             await observe(parsed.sessions)

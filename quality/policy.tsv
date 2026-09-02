@@ -73,7 +73,7 @@ coverage-region	ui	app/Sources/DetachApp/TerminalPreferencePicker.swift	window-p
 coverage-region	ui	app/Sources/DetachApp/OnboardingView.swift	ui-e2e-instrumentation	SC-UI-ONBOARD-FIRST-RUN,SC-UI-ONBOARD-PROVIDER,SC-UI-ONBOARD-APPROVAL	Packaged onboarding journeys own their semantic locators and safe poller.
 coverage-region	ui	app/Sources/DetachApp/RootView.swift	ui-e2e-instrumentation	SC-UI-DASHBOARD,SC-UI-ONBOARD-FIRST-RUN,SC-UI-ONBOARD-PROVIDER,SC-UI-ONBOARD-APPROVAL	Packaged journeys cover the test-only semantic bridge and route.
 coverage-region	ui	app/Sources/DetachApp/SessionDetailView.swift	ui-e2e-instrumentation	SC-UI-SESSION-STOP,SC-UI-SESSION-DELETE,SC-UI-SESSION-DETAIL	The packaged journey covers action geometry, UUID copy, and its negative control.
-coverage-region	ui	app/Sources/DetachApp/SessionAttachTerminalView.swift	swiftterm-metal	SC-UI-SESSION-DETAIL	XCTest cannot host LocalProcessTerminalView. HeadlessTerminal owns the process proof.
+coverage-region	ui	app/Sources/DetachApp/SessionAttachTerminalView.swift	swiftterm-renderer	SC-UI-SESSION-DETAIL	XCTest cannot host LocalProcessTerminalView. HeadlessTerminal owns the process proof.
 coverage-region	ui	app/Sources/DetachApp/SessionAttachTerminalView.swift	swiftterm-host	SC-UI-SESSION-DETAIL	XCTest cannot construct the SwiftTerm representable. The packaged journey hosts it.
 coverage-region	ui	app/Sources/DetachApp/SettingsView.swift	ui-e2e-instrumentation	SC-UI-SETTINGS	The packaged Settings journey covers its semantic control.
 coverage-region	ui	app/Sources/DetachApp/SettingsView.swift	system-heartbeat	SC-UI-SETTINGS	XCTest cannot map SwiftUI task modifiers. Unit tests cover the extracted System heartbeat loop.

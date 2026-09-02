@@ -39,6 +39,10 @@ public final class LogPoller {
                 errorText = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 return
             }
+            guard !result.stdoutTruncated else {
+                errorText = L10n.string("detach returned incomplete output")
+                return
+            }
             let all = result.stdout.split(separator: "\n", omittingEmptySubsequences: false)
                 .map(String.init)
             let tail = Array(all.suffix(Self.tailLimit))
@@ -81,6 +85,7 @@ public final class SessionLogSnapshotCache {
         let checkpoint: Date?
         let finished: Date?
         let exitStatus: Int?
+        let lifecycleID: String?
         /// A new run may reuse an explicit name; its creation time and,
         /// once bound, its provider identity differ.
         let created: Date?
@@ -262,6 +267,7 @@ public final class SessionLogSnapshotCache {
             checkpoint: session.lastCheckpointAt,
             finished: session.finishedAt,
             exitStatus: session.exitStatus,
+            lifecycleID: session.lifecycleID,
             created: session.createdAt,
             agentSessionID: session.agentSessionId)
     }

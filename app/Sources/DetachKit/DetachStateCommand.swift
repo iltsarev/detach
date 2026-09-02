@@ -116,7 +116,7 @@ public enum DetachStateCommand {
             throw DetachStateCommandError.invalidArguments
         }
         do {
-            try SessionEventSignal.publish(atPath: arguments[0])
+            try SessionEventSignal.publish(inStateRoot: arguments[0])
         } catch {
             throw DetachStateCommandError.unsafeEventSignal
         }
@@ -447,6 +447,7 @@ public enum DetachStateCommand {
             "exit_status": NSNull(),
             "finished_at": NSNull(),
             "stop_requested_at": NSNull(),
+            "lifecycle_id": NSNull(),
             "model": NSNull(),
             "context_used_tokens": NSNull(),
             "context_window": NSNull(),
@@ -554,6 +555,8 @@ public enum DetachStateCommand {
                 object["worker_heartbeat_at"] = optionalString(value)
             case "--stop-requested-at":
                 object["stop_requested_at"] = optionalString(value)
+            case "--lifecycle-id":
+                object["lifecycle_id"] = optionalString(value)
             default:
                 throw DetachStateCommandError.invalidArguments
             }
@@ -596,6 +599,7 @@ public enum DetachStateCommand {
         ("session_color", ["session_color"]),
         ("transcript_path", ["transcript_path", "rollout_path"]),
         ("run_token", ["run_token"]),
+        ("lifecycle_id", ["lifecycle_id"]),
         ("worker_heartbeat_epoch", ["worker_heartbeat_epoch"]),
         ("last_checkpoint_epoch", ["last_checkpoint_epoch"]),
         ("health_schema", ["health_schema"]),
@@ -643,9 +647,8 @@ public enum DetachStateCommand {
             throw DetachStateCommandError.invalidArguments
         }
         let includesTranscriptSummary = arguments.count == 2
-        let sessions = try metadataSnapshots(at: arguments[0])
         var output = Data()
-        for (session, values) in sessions {
+        try forEachMetadataSnapshot(at: arguments[0]) { session, values, directory in
             appendNULTerminated(session, to: &output)
             appendNULTerminated(values == nil ? "false" : "true", to: &output)
             for value in values ?? Array(repeating: nil, count: metadataSnapshotFields.count) {
@@ -654,7 +657,8 @@ public enum DetachStateCommand {
             if includesTranscriptSummary {
                 for value in transcriptSummarySnapshotValues(
                     session: session,
-                    metadataValues: values) {
+                    metadataValues: values,
+                    sessionDirectory: directory) {
                     appendNULTerminated(value, to: &output)
                 }
             }
@@ -670,7 +674,8 @@ public enum DetachStateCommand {
     /// and never invalidates the independently validated metadata record.
     private static func transcriptSummarySnapshotValues(
         session: String,
-        metadataValues: [DetachStateScalar?]?
+        metadataValues: [DetachStateScalar?]?,
+        sessionDirectory: Int32
     ) -> [String] {
         let empty = Array(repeating: "", count: 5)
         guard let metadataValues,
@@ -689,21 +694,114 @@ public enum DetachStateCommand {
         } else {
             return empty
         }
-        // The removed shell path required a regular file before it read the
-        // transcript. A FIFO or device here would block the whole list, so
-        // open without blocking and check the opened descriptor itself.
-        guard transcriptPath.hasPrefix("/"),
-              let tail = try? regularFileTail(
-                atPath: transcriptPath,
-                maximumByteCount: 262_144) else { return empty }
+        // Open without blocking and validate the descriptor. A FIFO, device, or
+        // final-component symlink must not stall or redirect the complete list.
+        guard transcriptPath.hasPrefix("/") else { return empty }
+        let descriptor = open(
+            transcriptPath, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return empty }
+        defer { close(descriptor) }
+        var beforeMetadata = stat()
+        guard fstat(descriptor, &beforeMetadata) == 0,
+              let before = TranscriptValidationIdentity(beforeMetadata) else {
+            return empty
+        }
+
+        let receiptName = ".transcript-summary-cache.json"
+        if let receiptData = readOwnedMetadataFile(
+                in: sessionDirectory, name: receiptName),
+           let receipt = try? JSONDecoder().decode(
+                TranscriptSummaryReceipt.self, from: receiptData),
+           let values = receipt.snapshotValues(
+                provider: provider,
+                transcriptPath: transcriptPath,
+                identity: before) {
+            return values
+        }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        let size = UInt64(beforeMetadata.st_size)
+        let maximumByteCount: UInt64 = 262_144
+        guard (try? handle.seek(
+                toOffset: size > maximumByteCount ? size - maximumByteCount : 0)) != nil
+        else { return empty }
+        var tail = Data()
+        while tail.count < Int(maximumByteCount) {
+            let remaining = Int(maximumByteCount) - tail.count
+            let chunk: Data
+            do {
+                chunk = try handle.read(
+                    upToCount: min(64 * 1_024, remaining)) ?? Data()
+            } catch {
+                return empty
+            }
+            guard !chunk.isEmpty else { break }
+            tail.append(chunk)
+        }
+        var afterMetadata = stat()
+        guard fstat(descriptor, &afterMetadata) == 0,
+              let after = TranscriptValidationIdentity(afterMetadata),
+              before == after else { return empty }
         let summary = TranscriptDocument.summary(ofTail: tail, provider: provider)
-        return [
+        let values = [
             summary.model ?? "",
             summary.contextUsed.map(String.init) ?? "",
             summary.contextWindow.map(String.init) ?? "",
             summary.agentTurnState?.rawValue ?? "",
             summary.agentTurnID ?? "",
         ]
+        let receipt = TranscriptSummaryReceipt(
+            schema: 1,
+            provider: provider.rawValue,
+            transcriptPath: transcriptPath,
+            identity: after,
+            model: summary.model,
+            contextUsed: summary.contextUsed,
+            contextWindow: summary.contextWindow,
+            agentTurnState: summary.agentTurnState?.rawValue,
+            agentTurnID: summary.agentTurnID)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if var receiptData = try? encoder.encode(receipt) {
+            receiptData.append(0x0A)
+            try? replaceOwnedFileAtomically(
+                receiptData, in: sessionDirectory, name: receiptName)
+        }
+        return values
+    }
+
+    private struct TranscriptSummaryReceipt: Codable {
+        var schema: Int
+        var provider: String
+        var transcriptPath: String
+        var identity: TranscriptValidationIdentity
+        var model: String?
+        var contextUsed: Int?
+        var contextWindow: Int?
+        var agentTurnState: String?
+        var agentTurnID: String?
+
+        func snapshotValues(
+            provider expectedProvider: Provider,
+            transcriptPath expectedPath: String,
+            identity expectedIdentity: TranscriptValidationIdentity
+        ) -> [String]? {
+            guard schema == 1,
+                  provider == expectedProvider.rawValue,
+                  transcriptPath == expectedPath,
+                  identity == expectedIdentity,
+                  contextUsed.map({ $0 >= 0 }) ?? true,
+                  contextWindow.map({ $0 >= 0 }) ?? true,
+                  agentTurnState.map({ AgentTurnState(rawValue: $0) != nil }) ?? true
+            else { return nil }
+            return [
+                model ?? "",
+                contextUsed.map(String.init) ?? "",
+                contextWindow.map(String.init) ?? "",
+                agentTurnState ?? "",
+                agentTurnID ?? "",
+            ]
+        }
     }
 
     private static func metadataSnapshotValues(
@@ -758,6 +856,17 @@ public enum DetachStateCommand {
     static func metadataSnapshots(
         at root: String
     ) throws -> [(String, [DetachStateScalar?]?)] {
+        var snapshots: [(String, [DetachStateScalar?]?)] = []
+        try forEachMetadataSnapshot(at: root) { name, values, _ in
+            snapshots.append((name, values))
+        }
+        return snapshots
+    }
+
+    private static func forEachMetadataSnapshot(
+        at root: String,
+        visit: (String, [DetachStateScalar?]?, Int32) throws -> Void
+    ) throws {
         let components = root.split(separator: "/", omittingEmptySubsequences: false)
         guard root.hasPrefix("/"),
               root != "/",
@@ -794,7 +903,6 @@ public enum DetachStateCommand {
             }
             if name != "." && name != ".." { names.append(name) }
         }
-        var sessions: [(String, [DetachStateScalar?]?)] = []
         for name in names.sorted() {
             var item = stat()
             if fstatat(rootDescriptor, name, &item, AT_SYMLINK_NOFOLLOW) != 0 {
@@ -826,14 +934,13 @@ public enum DetachStateCommand {
             let values: [DetachStateScalar?]?
             do {
                 values = try metadataSnapshotValues(in: session, session: name)
+                try visit(name, values, session)
             } catch {
                 close(session)
                 throw error
             }
             close(session)
-            sessions.append((name, values))
         }
-        return sessions
     }
 
     /// Returns only transcript files recorded by usable Detach metadata.
@@ -1455,25 +1562,6 @@ public enum DetachStateCommand {
 
         try data.write(to: temporaryURL, options: .withoutOverwriting)
         try FileManager.default.linkItem(at: temporaryURL, to: url)
-    }
-
-    /// Reads the tail of one regular file without a path race. The
-    /// non-blocking open cannot stall on a FIFO or device, and the check runs
-    /// on the descriptor that is read, not on a name that may be replaced.
-    private static func regularFileTail(
-        atPath path: String,
-        maximumByteCount: UInt64
-    ) throws -> Data? {
-        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
-        guard descriptor >= 0 else { return nil }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0,
-              isRegularFile(metadata),
-              metadata.st_size > 0 else { return nil }
-        let size = UInt64(metadata.st_size)
-        try handle.seek(toOffset: size > maximumByteCount ? size - maximumByteCount : 0)
-        return try handle.readToEnd() ?? Data()
     }
 
     private static func tail(

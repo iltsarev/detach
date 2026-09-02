@@ -23,11 +23,13 @@ public struct SessionTransition: Equatable, Sendable {
 public struct SessionTransitionDetector: Sendable {
     private struct Lifecycle: Hashable, Sendable {
         let sessionName: String
+        let lifecycleID: String?
         let createdAt: Date?
 
         init(_ session: Session) {
             sessionName = session.sessionName
-            createdAt = session.createdAt
+            lifecycleID = session.lifecycleID
+            createdAt = session.lifecycleID == nil ? session.createdAt : nil
         }
     }
 

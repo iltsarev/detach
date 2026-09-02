@@ -33,22 +33,18 @@ public enum SessionEventParser {
 /// The token is only an event hint. Session metadata remains the source of
 /// truth, so persistence and directory fsync are intentionally unnecessary.
 enum SessionEventSignal {
-    static func publish(atPath path: String) throws {
+    static func publish(inStateRoot path: String) throws {
         guard path.hasPrefix("/"), !path.utf8.contains(0) else {
             throw DetachStateCommandError.unsafeEventSignal
         }
-        // The runtime builds this path from environment roots that may carry
-        // a trailing slash or `//`. Standardize instead of rejecting, so a
-        // cosmetic path difference cannot silently disable every hint.
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard url.path.hasPrefix("/"),
-              url.path != "/",
-              !url.lastPathComponent.isEmpty,
-              url.lastPathComponent != ".",
-              url.lastPathComponent != ".." else {
+        // The runtime root may carry a trailing slash or `//`. Standardize it,
+        // then derive the fixed token name here. Callers cannot choose a final
+        // component that could replace unrelated user data.
+        let parent = URL(fileURLWithPath: path, isDirectory: true)
+            .standardizedFileURL
+        guard parent.path.hasPrefix("/"), parent.path != "/" else {
             throw DetachStateCommandError.unsafeEventSignal
         }
-        let parent = url.deletingLastPathComponent()
         let directory = Darwin.open(
             parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else {
@@ -93,7 +89,7 @@ enum SessionEventSignal {
         guard written,
               Darwin.renameat(
                   directory, temporary,
-                  directory, url.lastPathComponent) == 0 else {
+                  directory, "session-change") == 0 else {
             throw DetachStateCommandError.unsafeEventSignal
         }
     }

@@ -42,6 +42,10 @@ public final class StorageStore {
                     : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
                 return
             }
+            guard !result.stdoutTruncated else {
+                state = .incompatible
+                return
+            }
             let decoder = JSONDecoder()
             guard let decoded = try? decoder.decode(StorageReport.self, from: Data(result.stdout.utf8)),
                   decoded.schema == 1 else {

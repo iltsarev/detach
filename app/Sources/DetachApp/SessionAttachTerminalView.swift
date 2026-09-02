@@ -17,6 +17,21 @@ final class SessionTerminalScreenCache {
         let sessionName: String
     }
 
+    private struct RunIdentity: Equatable {
+        let lifecycleID: String?
+        let createdAt: Date?
+        let agentSessionID: String?
+
+        init(_ session: Session) {
+            lifecycleID = session.lifecycleID
+            // New runtimes supply an opaque exact identity. Retain the older
+            // heuristic only for cached rows produced by compatible payloads.
+            createdAt = session.lifecycleID == nil ? session.createdAt : nil
+            agentSessionID = session.lifecycleID == nil
+                ? session.agentSessionId : nil
+        }
+    }
+
     /// The typed turn identity a warm-up last read for a session. A blank or
     /// failed read is not repeated until that identity changes, so a session
     /// with an empty pane cannot spawn one process per snapshot.
@@ -25,6 +40,7 @@ final class SessionTerminalScreenCache {
         let turnState: AgentTurnState?
         let turnID: String?
         let checkpoint: Date?
+        let lifecycleID: String?
         /// A new run may reuse an explicit name; its creation time and, once
         /// bound, its provider identity differ.
         let created: Date?
@@ -35,7 +51,7 @@ final class SessionTerminalScreenCache {
     private var attempted: [Key: Revision] = [:]
     /// The run a stored screen belongs to. A later run with the same name
     /// must not inherit it.
-    private var screenRuns: [Key: Date?] = [:]
+    private var screenRuns: [Key: RunIdentity] = [:]
     private var recency: [Key] = []
     private var cli: (any DetachCLIRunning)?
     private var configurationID = ""
@@ -111,7 +127,9 @@ final class SessionTerminalScreenCache {
                                 session.sessionName,
                             ],
                             timeout: 5)
-                        guard result.exitCode == 0, !result.timedOut else {
+                        guard result.exitCode == 0,
+                              !result.timedOut,
+                              !result.stdoutTruncated else {
                             return (session, nil)
                         }
                         return (session, Data(result.stdout.utf8))
@@ -137,7 +155,13 @@ final class SessionTerminalScreenCache {
 
     func screen(for session: Session) -> Data? {
         let key = Key(provider: session.provider, sessionName: session.sessionName)
-        guard let screen = screens[key] else { return nil }
+        guard let screen = screens[key],
+              screenRuns[key] == RunIdentity(session) else {
+            screens.removeValue(forKey: key)
+            screenRuns.removeValue(forKey: key)
+            recency.removeAll { $0 == key }
+            return nil
+        }
         touch(key)
         return screen
     }
@@ -149,8 +173,13 @@ final class SessionTerminalScreenCache {
             recency.removeAll { $0 == key }
             return
         }
+        storeNormalized(screen, for: session)
+    }
+
+    func storeNormalized(_ screen: Data, for session: Session) {
+        let key = Key(provider: session.provider, sessionName: session.sessionName)
         screens[key] = screen
-        screenRuns[key] = session.createdAt
+        screenRuns[key] = RunIdentity(session)
         touch(key)
         trimToCapacity()
     }
@@ -168,7 +197,8 @@ final class SessionTerminalScreenCache {
     private func dropScreensOfReplacedRuns(_ sessions: [Session]) {
         for session in sessions {
             let key = key(for: session)
-            if let storedRun = screenRuns[key], storedRun != session.createdAt {
+            if let storedRun = screenRuns[key],
+               storedRun != RunIdentity(session) {
                 screens.removeValue(forKey: key)
                 screenRuns.removeValue(forKey: key)
                 recency.removeAll { $0 == key }
@@ -218,6 +248,7 @@ final class SessionTerminalScreenCache {
             turnState: session.agentTurnState,
             turnID: session.agentTurnID,
             checkpoint: session.lastCheckpointAt,
+            lifecycleID: session.lifecycleID,
             created: session.createdAt,
             agentSessionID: session.agentSessionId)
     }
@@ -820,10 +851,10 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         func captureScreen(from view: LocalProcessTerminalView) {
             let data = view.terminal.getBufferAsData()
             MainActor.assumeIsolated {
-                guard SessionTerminalScreenCache.normalized(data) != nil else {
+                guard let screen = SessionTerminalScreenCache.normalized(data) else {
                     return
                 }
-                screenCache.store(data, for: session)
+                screenCache.storeNormalized(screen, for: session)
             }
         }
 

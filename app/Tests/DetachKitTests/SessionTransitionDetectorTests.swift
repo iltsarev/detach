@@ -253,6 +253,23 @@ final class SessionTransitionDetectorTests: XCTestCase {
         XCTAssertEqual(transitions.map(\.kind), [.completed])
     }
 
+    func testLifecycleIDDistinguishesSameSecondReplacement() {
+        var detector = SessionTransitionDetector()
+        _ = detector.observe([
+            makeSession(
+                name: "work", status: .completed,
+                lifecycleID: "first-run")
+        ])
+
+        let transitions = detector.observe([
+            makeSession(
+                name: "work", status: .completed,
+                lifecycleID: "replacement-run")
+        ])
+
+        XCTAssertEqual(transitions.map(\.kind), [.completed])
+    }
+
     func testDeletedLifecycleDoesNotSuppressReusedNameWithoutCreationDate() {
         var detector = SessionTransitionDetector()
         _ = detector.observe([
@@ -337,15 +354,17 @@ final class SessionTransitionDetectorTests: XCTestCase {
         turnState: AgentTurnState? = nil,
         turnID: String? = nil,
         agentSessionID: String? = "uuid",
-        stopRequested: Bool = false
+        stopRequested: Bool = false,
+        lifecycleID: String? = nil
     ) -> Session {
         let createdAtJSON = createdAt.map { "\"\($0)\"" } ?? "null"
         let turnStateJSON = turnState.map { "\"\($0.rawValue)\"" } ?? "null"
         let turnIDJSON = turnID.map { "\"\($0)\"" } ?? "null"
         let agentSessionIDJSON = agentSessionID.map { "\"\($0)\"" } ?? "null"
         let stopRequestedJSON = stopRequested ? "\"2026-07-13T10:05:00Z\"" : "null"
+        let lifecycleJSON = lifecycleID.map { "\"\($0)\"" } ?? "null"
         let json = """
-        {"schema":1,"provider":"codex","session_name":"\(name)","name":"\(name)","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(agentSessionIDJSON),"project_dir":"/tmp/\(name)","created_at":\(createdAtJSON),"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"stop_requested_at":\(stopRequestedJSON),"agent_turn_state":\(turnStateJSON),"agent_turn_id":\(turnIDJSON)}
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"\(name)","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":\(agentSessionIDJSON),"project_dir":"/tmp/\(name)","created_at":\(createdAtJSON),"lifecycle_id":\(lifecycleJSON),"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"stop_requested_at":\(stopRequestedJSON),"agent_turn_state":\(turnStateJSON),"agent_turn_id":\(turnIDJSON)}
         """
         return SessionListParser.parse(json).sessions[0]
     }

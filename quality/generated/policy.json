@@ -260,7 +260,7 @@
     {
       "group": "ui",
       "path": "app/Sources/DetachApp/SessionAttachTerminalView.swift",
-      "region": "swiftterm-metal",
+      "region": "swiftterm-renderer",
       "scenarios": [
         "SC-UI-SESSION-DETAIL"
       ],

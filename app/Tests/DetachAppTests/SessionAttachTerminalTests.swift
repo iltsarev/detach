@@ -49,6 +49,24 @@ private actor BlankTerminalScreenCLI: DetachCLIRunning {
     func recordedCalls() -> [[String]] { calls }
 }
 
+private actor TruncatedTerminalScreenCLI: DetachCLIRunning {
+    private var calls = 0
+
+    func run(arguments: [String], timeout: TimeInterval) async throws
+        -> CLIResult
+    {
+        calls += 1
+        return CLIResult(
+            exitCode: 0,
+            stdout: "partial screen",
+            stderr: "",
+            timedOut: false,
+            stdoutTruncated: true)
+    }
+
+    func callCount() -> Int { calls }
+}
+
 private actor SuspendedTerminalScreenCLI: DetachCLIRunning {
     private var calls = 0
     private var continuations: [CheckedContinuation<Void, Never>] = []
@@ -624,6 +642,21 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalScreenPrefetchRejectsTruncatedOutput() async throws {
+        let session = try XCTUnwrap(Self.session(
+            status: "running", name: "detach-codex-truncated"))
+        let cli = TruncatedTerminalScreenCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: cli, configurationID: "/tmp/detach")
+
+        await cache.prefetch([session])
+
+        XCTAssertNil(cache.screen(for: session))
+        let calls = await cli.callCount()
+        XCTAssertEqual(calls, 1)
+    }
+
+    @MainActor
     func testNewRunUnderTheSameNameNeverInheritsAnOldScreen() async throws {
         let first = try XCTUnwrap(Self.session(
             status: "running", name: "detach-codex-reused",
@@ -641,6 +674,47 @@ final class SessionAttachTerminalTests: XCTestCase {
         cache.schedulePrefetch(for: [replacement])
         XCTAssertNil(cache.screen(for: first))
         await waitUntilAsync { cache.screen(for: replacement) != nil }
+        let calls = await cli.recordedCalls()
+        XCTAssertEqual(calls.count, 2)
+    }
+
+    @MainActor
+    func testLifecycleIDInvalidatesSameSecondReplacementScreen() throws {
+        let created = "2026-09-02T10:00:00Z"
+        let first = try XCTUnwrap(Self.session(
+            name: "detach-codex-same-second",
+            createdAt: created,
+            lifecycleID: "first-run"))
+        let replacement = try XCTUnwrap(Self.session(
+            name: "detach-codex-same-second",
+            createdAt: created,
+            lifecycleID: "replacement-run"))
+        let cache = SessionTerminalScreenCache()
+        cache.store(Data("old screen".utf8), for: first)
+
+        XCTAssertNil(cache.screen(for: replacement))
+    }
+
+    @MainActor
+    func testLifecycleIDRetriesSameSecondReplacementAfterBlankPrefetch()
+        async throws
+    {
+        let created = "2026-09-02T10:00:00Z"
+        let first = try XCTUnwrap(Self.session(
+            name: "detach-codex-same-second-blank",
+            createdAt: created,
+            lifecycleID: "first-run"))
+        let replacement = try XCTUnwrap(Self.session(
+            name: "detach-codex-same-second-blank",
+            createdAt: created,
+            lifecycleID: "replacement-run"))
+        let cli = BlankTerminalScreenCLI()
+        let cache = SessionTerminalScreenCache()
+        cache.configure(cli: cli, configurationID: "/tmp/detach")
+
+        await cache.prefetch([first])
+        await cache.prefetch([replacement])
+
         let calls = await cli.recordedCalls()
         XCTAssertEqual(calls.count, 2)
     }
@@ -1066,11 +1140,13 @@ final class SessionAttachTerminalTests: XCTestCase {
     private static func session(
         status: String = "running",
         name: String = "detach-codex-proj-abcd1234",
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        lifecycleID: String? = nil
     ) -> Session? {
         let created = createdAt.map { "\"\($0)\"" } ?? "null"
+        let lifecycle = lifecycleID.map { "\"\($0)\"" } ?? "null"
         return SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":\(created),"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":\(created),"lifecycle_id":\(lifecycle),"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
         """).sessions.first
     }
 
