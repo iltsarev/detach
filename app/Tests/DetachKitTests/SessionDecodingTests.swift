@@ -20,6 +20,16 @@ final class SessionDecodingTests: XCTestCase {
     {"schema":1,"provider":"codex","session_name":"detach-codex-x-ffffffff","name":"x-ffffffff","effective_status":"corrupt","meta_status":null,"agent_session_id":null,"project_dir":null,"created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
     """
 
+    func testStopIntentDecodesAndDefaultsToNil() throws {
+        let stopping = running.replacingOccurrences(
+            of: "\"finished_at\":null}",
+            with: "\"finished_at\":null,\"stop_requested_at\":\"2026-07-10T18:30:00Z\"}")
+        let intent = try XCTUnwrap(SessionListParser.parse(stopping).sessions.first)
+        XCTAssertNotNil(intent.stopRequestedAt)
+        let plain = try XCTUnwrap(SessionListParser.parse(running).sessions.first)
+        XCTAssertNil(plain.stopRequestedAt)
+    }
+
     func testDecodesRunningSession() throws {
         let result = SessionListParser.parse(running)
         XCTAssertFalse(result.hadInvalidLines)

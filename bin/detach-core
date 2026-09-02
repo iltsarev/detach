@@ -684,6 +684,7 @@ reset_meta_snapshot() {
   META_WORKER_HEARTBEAT_EPOCH=""
   META_LAST_CHECKPOINT_EPOCH=""
   META_HEALTH_SCHEMA=""
+  META_STOP_REQUESTED_AT=""
   TRANSCRIPT_MODEL=""
   TRANSCRIPT_CTX_USED=""
   TRANSCRIPT_CTX_WINDOW=""
@@ -717,6 +718,7 @@ load_meta_snapshot_path() {
       worker_heartbeat_epoch) META_WORKER_HEARTBEAT_EPOCH="$value" ;;
       last_checkpoint_epoch) META_LAST_CHECKPOINT_EPOCH="$value" ;;
       health_schema) META_HEALTH_SCHEMA="$value" ;;
+      stop_requested_at) META_STOP_REQUESTED_AT="$value" ;;
       snapshot_complete) [ "$value" = true ] && META_SNAPSHOT_COMPLETE=1 ;;
       *) return 1 ;;
     esac
@@ -1939,6 +1941,7 @@ write_initial_meta() {
     --null worker_heartbeat_at
     --null worker_heartbeat_epoch
     --null exit_status
+    --null stop_requested_at
   )
   default_base="$(default_session_name "$cwd")"
   if [ -z "$display_name" ] && default_series_session_name "$session" "$default_base"; then
@@ -4556,6 +4559,7 @@ prepare_list_json_args() {
   local provider_pid="${17:-}"
   local worker_heartbeat_at="${18:-}"
   local display_name="${19:-}"
+  local stop_requested_at="${20:-}"
   local session_args
 
   [[ "$session_color" =~ ^#[0-9A-Fa-f]{6}$ ]] || session_color=''
@@ -4568,6 +4572,7 @@ prepare_list_json_args() {
     --created-at "$created"
     --last-checkpoint-at "$checkpoint"
     --finished-at "$finished"
+    --stop-requested-at "$stop_requested_at"
     --model "$model"
     --agent-turn-state "$agent_turn_state"
     --agent-turn-id "$agent_turn_id"
@@ -4667,6 +4672,7 @@ list_session_records() {
       IFS= read -r -d '' META_WORKER_HEARTBEAT_EPOCH && \
       IFS= read -r -d '' META_LAST_CHECKPOINT_EPOCH && \
       IFS= read -r -d '' META_HEALTH_SCHEMA && \
+      IFS= read -r -d '' META_STOP_REQUESTED_AT && \
       IFS= read -r -d '' TRANSCRIPT_MODEL && \
       IFS= read -r -d '' TRANSCRIPT_CTX_USED && \
       IFS= read -r -d '' TRANSCRIPT_CTX_WINDOW && \
@@ -4687,7 +4693,7 @@ list_session_records() {
         prepare_list_json_args \
           "$session" "" "-" "-" "${cwd:-?}" "" "null" "" \
           "" "null" "null" "" "" "$session_color" "$power_state" \
-          "" "" "" ""
+          "" "" "" "" ""
         session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
           request "${LIST_JSON_ARGS[@]}" || \
@@ -4739,7 +4745,8 @@ list_session_records() {
         "$exit_json" "$finished" "$TRANSCRIPT_MODEL" "$TRANSCRIPT_CTX_USED" \
         "$TRANSCRIPT_CTX_WINDOW" "$TRANSCRIPT_AGENT_TURN_STATE" \
         "$TRANSCRIPT_AGENT_TURN_ID" "$session_color" "$power_state" \
-        "$worker_pid" "$provider_pid" "$worker_heartbeat_at" "$display_name"
+        "$worker_pid" "$provider_pid" "$worker_heartbeat_at" "$display_name" \
+        "$META_STOP_REQUESTED_AT"
       session_health_envelope \
         "$session" true "$status" "$id" "$META_RUN_TOKEN" \
         "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
@@ -4866,6 +4873,12 @@ stop_session() {
     run_token="$(tmux_option "$session" '@detach_run_token')"
   fi
   [ -n "$run_token" ] || run_token="$(read_meta_field "$session" run_token 2>/dev/null || true)"
+
+  # Record the intent before the runtime is signalled. The worker then writes
+  # `interrupted` moments before `stopped` follows; consumers must never read
+  # that ordinary window as a crash. A fresh start clears the intent.
+  state_update_meta "$session" \
+    --string stop_requested_at "$(now_iso)" 2>/dev/null || true
 
   if tmux_has_session "$session"; then
     tmux_is_managed "$session" || die "refusing to stop unmanaged tmux session '$session'"

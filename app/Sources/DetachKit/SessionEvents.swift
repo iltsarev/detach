@@ -352,9 +352,14 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     }
 
     public static func run(arguments: [String]) throws -> Never {
+        // A consumer that is already gone must not leave an orphan, and a
+        // closed pipe must end this process quietly rather than as a crash.
+        let parent = Darwin.getppid()
+        guard parent > 1 else { Darwin._exit(EXIT_SUCCESS) }
+        Darwin.signal(SIGPIPE, SIG_IGN)
         let watcher = SessionFileEventWatcher(
             configuration: try .parse(arguments: arguments))
-        try watcher.start(parentProcessID: Darwin.getppid())
+        try watcher.start(parentProcessID: parent)
         return withExtendedLifetime(watcher) {
             dispatchMain()
         }
@@ -487,11 +492,28 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     }
 
     private func emit(_ kind: SessionEventKind) {
-        guard let data = try? JSONEncoder().encode(SessionEvent(event: kind)) else {
+        guard var data = try? JSONEncoder().encode(SessionEvent(event: kind)) else {
             return
         }
-        output.write(data)
-        output.write(Data([0x0A]))
+        data.append(0x0A)
+        let descriptor = output.fileDescriptor
+        let delivered = data.withUnsafeBytes { buffer -> Bool in
+            guard var base = buffer.baseAddress else { return true }
+            var remaining = buffer.count
+            while remaining > 0 {
+                let written = Darwin.write(descriptor, base, remaining)
+                if written < 0 {
+                    if errno == EINTR || errno == EAGAIN { continue }
+                    return false
+                }
+                remaining -= written
+                base = base.advanced(by: written)
+            }
+            return true
+        }
+        // EPIPE means the consumer closed its end. The stream has no other
+        // purpose, so end without an uncaught-exception crash report.
+        if !delivered, errno == EPIPE { Darwin._exit(EXIT_SUCCESS) }
     }
 
     private func availableWatchedPaths() -> [String] {

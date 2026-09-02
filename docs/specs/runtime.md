@@ -9,9 +9,9 @@ Detach.app installs an immutable payload under
 
 Install and Repair validate the payload before activation; failure keeps the
 active payload. A live or retained session defers replacement. One PATH entry
-supports all shells. `--keep-state` preserves checkpoints. `--purge-state`
+supports all shells. `--keep-state` keeps checkpoints. `--purge-state`
 removes Detach state, not provider data. Uninstall restores an unchanged
-profile or removes only its own entry. Source edits require app sync or Repair.
+profile or removes only its entry. Source edits require app sync or Repair.
 
 The app registers its power LaunchDaemon and per-user watchdog with
 `SMAppService`. The root helper needs one administrator approval. The portable
@@ -35,7 +35,7 @@ them except in isolated UI tests. Production resolves tmux and state/power
 helpers only as immutable siblings. Providers resolve through `PATH`.
 
 `client switch` targets one exact attached client on the private tmux socket.
-It requires its PID, user ID, expected source, and a live managed target. A
+It needs its PID, user ID, expected source, and a live managed target. A
 failed proof causes no mutation. Attach can declare synchronized-output support
 to hold the complete frame until the target redraw.
 
@@ -63,7 +63,7 @@ token, PID ownership, metadata, and checkpoint freshness. Stale data cannot
 make a proven live provider hung. A runtime without managed tmux blocks
 mutations until its exact processes exit.
 
-The JSON list reads both providers concurrently and emits Codex before Claude.
+The JSON list reads both providers concurrently, Codex before Claude.
 Each captures one all-pane tmux snapshot and one clock sample. `proc_pidinfo`
 reads only recorded worker/provider PIDs and 64 parents. An empty tmux expansion
 is missing; a present wrong identity is a collision. Mutations repeat ownership,
@@ -80,8 +80,8 @@ roots before traversal. The checked Codex SQLite backup is never restored
 automatically.
 
 Bulk cleanup selects only fully scanned `stopped` or `orphaned` sessions.
-Before deletion, the app re-reads and matches the displayed status and byte
-counts. The provider command waits up to 30 seconds for the checkpoint lock,
+Before deletion, the app re-reads and matches the shown status and byte
+counts. The provider command waits up to 30 s for the checkpoint lock,
 then rechecks managed tmux liveness and ownership, rejecting symlinked or
 foreign-owned state/session directories. A partial failure keeps and reports
 each failed session.
@@ -120,7 +120,7 @@ Install migration checks the older default and historical
 from stable install state, then enters the canonical project beneath its
 cleanup trap.
 
-Tmux environment arguments stay in memory; credentials are never scratch data.
+Tmux environment arguments stay in memory; credentials never touch disk.
 
 Default starts form a provider/project history series. A fresh start refuses a
 live member or second writer; otherwise it allocates a successor without
@@ -160,7 +160,7 @@ Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user
 session. They do not promise survival across logout or reboot; killing
 tmux or the provider ends the live run. Recovery checkpoints remain.
-Provider test parts use private roots; the parent orders and requires all.
+Provider test parts use private roots; the parent orders and needs all.
 Small hosts use three Codex and two Claude parts.
 
 Detach status options use session-local `@detach*` keys and never touch a
@@ -187,8 +187,8 @@ the original copy tables immediately.
 `*:extkeys` and `*:hyperlinks` once; OSC 8 links stay independent.
 
 `list --json` emits JSONL schema 1 with optional `display_name`, power and turn
-state, opaque turn ID, PIDs, health, reconcile, freshness, ownership,
-and cleanup fields. Keep the emitter and Swift `Session` decoder synchronized.
+state, opaque turn ID, PIDs, health, reconcile, freshness, ownership, cleanup,
+and `stop_requested_at`, which Stop records before it signals. Keep the emitter and the Swift `Session` decoder in sync.
 `watch --json` emits only change hints and never replaces this snapshot.
 Provider lifecycle records, never terminal text, supply turn state
 and the private run-token activity file defined in `power.md`.
@@ -208,7 +208,7 @@ unambiguous, and keeps the current binding on a creation-time tie. Subagent
 threads never rebind a session. Wrapper-owned provider flags are rejected;
 policy defaults apply only without an allowed override.
 
-By default, a per-session lock protects a checkpoint every 300 seconds. It has
+By default, a per-session lock protects a checkpoint every 300 s. It has
 metadata, validated provider JSONL, pane capture, and a repository root from a
 real `.git` ancestor. Codex removes temporary sidecars after its checked SQLite
 backup. Claude archives its matching project session and companions.

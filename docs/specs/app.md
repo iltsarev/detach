@@ -66,14 +66,14 @@ UI never calls `pmset` or root XPC. Closing the
 last window keeps the app, event source, and icon.
 ⌘Q and Quit end the app while sessions, checkpoints, and protection continue.
 Settings → General owns both menu bar toggles. Settings → System keeps the only
-Mac Power status and approval controls. The Settings window follows the hosting
-screen; System scrolls. Temperature safety has its own warning shape and the
+Mac Power status and approval controls. Settings follows the hosting screen;
+System scrolls. Temperature safety has its own warning shape and the
 text **Mac can sleep: temperature**.
 
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
-and semantic color. Clicking the single UUID chip copies the full UUID and
-shows **Copied**.
+and semantic color. Clicking the UUID chip copies the full UUID and shows
+**Copied**.
 
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
@@ -177,16 +177,17 @@ ready sessions. Numbers appear in rows and stay stable across both sections.
 When a session leaves them, the earliest waiting session gets its number;
 extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
-Notifications are opt-in. Snapshots deduplicate transitions. One 350 ms
-recheck confirms `interrupted` or `hung`.
+Notifications are opt-in. Snapshots deduplicate transitions. A typed Stop
+intent is never a failure; a 350 ms recheck confirms other `interrupted` or
+`hung` rows.
 
 Sparkle 2 and SwiftTerm 1.19.0 are pinned. The exact SwiftTerm shader bundle is
 shipped and verified. Sparkle keeps its symlink layout and is signed inside-out.
-Only ad-hoc builds use `com.apple.security.cs.disable-library-validation`.
+Only ad-hoc builds disable library validation.
 `UpdaterService` starts only in `/Applications` with a valid HTTPS feed URL and
 32-byte Ed25519 public key.
 A generated or published appcast must contain exactly one arm64 hardware
-requirement so Intel clients are never offered the update.
+requirement, so Intel clients never see the update.
 A Sparkle update replaces only the app; bootstrap atomically activates its new
 immutable CLI payload without rewriting live-session binaries. Sparkle errors
 for a disk image or App Translocation say to move Detach to

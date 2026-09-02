@@ -1297,6 +1297,11 @@ run_codex stop integration
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 [ "$("$STATE_HELPER" meta get "$meta" status)" = "stopped" ]
 [ -n "$("$STATE_HELPER" meta get "$meta" stopped_at)" ]
+# Stop records its intent in typed state before it signals the runtime, and
+# the list carries it, so an `interrupted` window is never read as a crash.
+[ -n "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
+run_codex list --json | grep -F "\"session_name\":\"$SESSION\"" | \
+  grep -F '"stop_requested_at":"' >/dev/null
 grep -Fx "release --session $SESSION --run-token $stopped_run_token" \
   "$FAKE_POWER_RELEASES_FILE" >/dev/null
 codex_scenario_event pass SC-SESSION-STOP-CODEX
@@ -1325,6 +1330,8 @@ fi
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
+# A new run under the same name starts without the previous Stop intent.
+[ -z "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ -n "$pane_id" ] || { printf 'recovered session is missing its pane ID\n' >&2; exit 1; }
 worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"

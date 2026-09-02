@@ -55,7 +55,8 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(Set(object.keys), Set([
             "schema", "provider", "session_name", "name", "display_name", "session_color",
             "effective_status", "meta_status", "agent_session_id", "project_dir",
-            "created_at", "last_checkpoint_at", "exit_status", "finished_at", "model",
+            "created_at", "last_checkpoint_at", "exit_status", "finished_at",
+            "stop_requested_at", "model",
             "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
             "power_protection_state", "health_reason", "health_actions",
             "reconcile_action", "ownership_proven", "cleanup_eligible",
@@ -86,7 +87,8 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(object["name"] as? String, "legacy-name")
         for key in [
             "display_name", "session_color", "meta_status", "agent_session_id", "project_dir",
-            "created_at", "last_checkpoint_at", "exit_status", "finished_at", "model",
+            "created_at", "last_checkpoint_at", "exit_status", "finished_at",
+            "stop_requested_at", "model",
             "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
             "power_protection_state", "health_reason", "health_actions",
             "reconcile_action", "ownership_proven", "cleanup_eligible",
@@ -158,9 +160,11 @@ final class DetachStateCommandTests: XCTestCase {
             "--worker-pid", "-",
             "--provider-pid", "321",
             "--worker-heartbeat-at", "?",
+            "--stop-requested-at", "2026-09-02T10:00:00Z",
         ])
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: output) as? [String: Any])
+        XCTAssertEqual(object["stop_requested_at"] as? String, "2026-09-02T10:00:00Z")
 
         XCTAssertTrue(object["agent_turn_state"] is NSNull)
         XCTAssertTrue(object["session_color"] is NSNull)
@@ -389,7 +393,7 @@ final class DetachStateCommandTests: XCTestCase {
         let values = output.split(separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        let recordSize = 19
+        let recordSize = 20
         XCTAssertEqual(values.count, recordSize * 3 + 2)
         XCTAssertEqual(values[0], "detach-claude-three")
         XCTAssertEqual(values[1], "true")
@@ -559,10 +563,10 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 24 + 2)
+        XCTAssertEqual(values.count, 25 + 2)
         XCTAssertEqual(values[0], "detach-codex-summary")
         XCTAssertEqual(values[1], "true")
-        XCTAssertEqual(Array(values[19..<24]), [
+        XCTAssertEqual(Array(values[20..<25]), [
             "gpt-batched", "", "", "working", "turn-batched",
         ])
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])

@@ -76,6 +76,13 @@ public struct SessionTransitionDetector: Sendable {
             let previousStatus = previous?.status
 
             if session.effectiveStatus == .interrupted {
+                // Typed Stop intent: the runtime recorded the user's request
+                // before it signalled the worker, so this is not a crash no
+                // matter how long `stopped` takes to follow.
+                if session.stopRequestedAt != nil {
+                    pendingInterrupted.remove(lifecycle)
+                    continue
+                }
                 if pendingInterrupted.remove(lifecycle) != nil {
                     transitions.append(SessionTransition(kind: .failed, session: session))
                 } else if previousStatus != .interrupted {

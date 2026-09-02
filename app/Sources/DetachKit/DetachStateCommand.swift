@@ -446,6 +446,7 @@ public enum DetachStateCommand {
             "last_checkpoint_at": NSNull(),
             "exit_status": NSNull(),
             "finished_at": NSNull(),
+            "stop_requested_at": NSNull(),
             "model": NSNull(),
             "context_used_tokens": NSNull(),
             "context_window": NSNull(),
@@ -551,6 +552,8 @@ public enum DetachStateCommand {
                     ? NSNull() : try integer(value)
             case "--worker-heartbeat-at":
                 object["worker_heartbeat_at"] = optionalString(value)
+            case "--stop-requested-at":
+                object["stop_requested_at"] = optionalString(value)
             default:
                 throw DetachStateCommandError.invalidArguments
             }
@@ -596,6 +599,7 @@ public enum DetachStateCommand {
         ("worker_heartbeat_epoch", ["worker_heartbeat_epoch"]),
         ("last_checkpoint_epoch", ["last_checkpoint_epoch"]),
         ("health_schema", ["health_schema"]),
+        ("stop_requested_at", ["stop_requested_at"]),
     ]
 
     /// Emits fixed key/value pairs separated by NUL bytes. The final complete
