@@ -54,6 +54,14 @@ enum QuickChatLaunch {
         Provider(rawValue: rawValue) ?? .claude
     }
 
+    static func existingSessionIDs(in sessions: [Session]) -> Set<String> {
+        var ids: Set<String> = []
+        for session in sessions {
+            ids.insert(session.id)
+        }
+        return ids
+    }
+
     static func start(
         store: SessionStore,
         providerRawValue: String,
@@ -88,10 +96,7 @@ enum QuickChatLaunch {
                 prompt: nil)
         }
 
-        var existingIDs: Set<String> = []
-        for session in store.sessions {
-            existingIDs.insert(session.id)
-        }
+        let existingIDs = existingSessionIDs(in: store.sessions)
         return await withTaskGroup(of: Outcome.self) { group in
             group.addTask {
                 .launch(await store.startDetached(

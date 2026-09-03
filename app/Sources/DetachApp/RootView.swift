@@ -141,21 +141,18 @@ struct RootView: View {
                         executable: URL(fileURLWithPath: detachPath)))
                 })
             initialSetupComplete = true
-        }
-        .task(id: notificationsEnabled) {
-            guard AppSettings.uiE2E == nil else { return }
-            await notifications.configure(enabled: notificationsEnabled)
-        }
 // quality-coverage:begin ui-e2e-instrumentation
-        .task(id: initialSetupComplete) {
-            guard initialSetupComplete else { return }
             await UIE2ETestDriver.runIfRequested(
                 installation: installation,
                 store: store,
                 sessionLogSnapshots: sessionLogSnapshots,
                 shortcuts: shortcuts)
-        }
 // quality-coverage:end ui-e2e-instrumentation
+        }
+        .task(id: notificationsEnabled) {
+            guard AppSettings.uiE2E == nil else { return }
+            await notifications.configure(enabled: notificationsEnabled)
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, initialSetupComplete else { return }
             Task {
