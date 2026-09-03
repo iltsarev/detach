@@ -1853,6 +1853,50 @@ PATH="$shadow_bin:$PATH" run_codex stop "$shadow_name"
   "$DETACH_CODEX_STATE_ROOT/sessions/$shadow_session/meta.json" status)" = stopped ]
 run_codex delete --force "$shadow_name"
 
+# A legacy worker or a faulty final checkpoint can remain alive after its
+# recorded provider has exited. Stop must keep actions closed until that exact
+# worker is gone, but it must not spend the full live-provider grace on cleanup.
+slow_cleanup_name=stop-slow-final-checkpoint
+slow_cleanup_session=detach-codex-stop-slow-final-checkpoint
+slow_cleanup_marker="$TMP_ROOT/slow-final-checkpoint"
+slow_cleanup_started="$TMP_ROOT/slow-final-checkpoint-started"
+slow_cleanup_sqlite="$TMP_ROOT/slow-final-checkpoint-sqlite"
+sqlite_delegate="$(command -v sqlite3)"
+printf '%s\n' \
+  '#!/bin/bash' \
+  "if [ -f '$slow_cleanup_marker' ]; then" \
+  "  : >'$slow_cleanup_started'" \
+  "  trap '' HUP INT TERM" \
+  '  sleep 30' \
+  'fi' \
+  "exec '$sqlite_delegate' \"\$@\"" \
+  >"$slow_cleanup_sqlite"
+chmod 0755 "$slow_cleanup_sqlite"
+DETACH_SQLITE_BIN="$slow_cleanup_sqlite" \
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$slow_cleanup_name" --detach -- \
+    'bounded Stop finalization coverage'
+wait_for_tmux_option "$slow_cleanup_session" @detach_status running
+slow_cleanup_meta="$DETACH_CODEX_STATE_ROOT/sessions/$slow_cleanup_session/meta.json"
+: >"$slow_cleanup_marker"
+slow_cleanup_start_seconds=$SECONDS
+run_codex stop "$slow_cleanup_name"
+slow_cleanup_elapsed=$((SECONDS - slow_cleanup_start_seconds))
+[ -f "$slow_cleanup_started" ]
+if [ "$slow_cleanup_elapsed" -ge 7 ]; then
+  printf 'Stop spent %s seconds waiting after provider exit\n' \
+    "$slow_cleanup_elapsed" >&2
+  exit 1
+fi
+slow_cleanup_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$slow_cleanup_session\"")"
+[ "$(printf '%s' "$slow_cleanup_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
+printf '%s' "$slow_cleanup_json" | \
+  grep -F '"health_actions":["resume","delete"]' >/dev/null
+[ "$("$STATE_HELPER" meta get "$slow_cleanup_meta" status)" = stopped ]
+run_codex delete --force "$slow_cleanup_name"
+
 # Freeze the worker after Start, then request Stop. The process-group TERM
 # removes the provider while the stopped worker cannot publish final metadata.
 # This holds the exact UI-visible transition long enough to assert that durable

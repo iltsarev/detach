@@ -149,11 +149,11 @@ silently, records and publishes status, and retains the pane for logs;
 `pane-died` publishes again. A terminal record with a live
 owned pane and dead provider is finished, not hung.
 
-Stop binds intent and each signal or removal to the exact run token. A failed
-intent write leaves the runtime untouched. During Stop, a live worker with no
-provider stays interrupted with no action or cleanup after terminal metadata.
-Delete removes a retained tmux session without a state directory and never
-reports success over leftover state.
+Stop binds intent and mutations to the run token. Intent failure leaves
+the run untouched. A live provider keeps its full grace. After exit, the worker
+stays interrupted; actions and cleanup remain blocked for a short checkpoint
+grace, then Stop ends the run. Delete handles retained tmux without state and
+never reports success over leftovers.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user

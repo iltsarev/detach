@@ -31,6 +31,8 @@ DEFAULT_HISTORY_LIMIT=50000
 DEFAULT_HEALTH_HEARTBEAT_INTERVAL=10
 DEFAULT_HEALTH_HEARTBEAT_STALE=45
 DEFAULT_IDLE_HEALTH_HEARTBEAT_INTERVAL=30
+STOP_TERM_ATTEMPTS=60
+STOP_WORKER_CLEANUP_ATTEMPTS=8
 
 error() {
   printf '%s: %s\n' "$PROGRAM" "$*" >&2
@@ -4877,9 +4879,12 @@ show_logs() {
 stop_session() {
   local session="$1"
   local attempts=0
+  local cleanup_attempts=0
+  local cleanup_grace_expired=0
   local pane
   local pane_pid
   local pgid
+  local provider_pid
   local run_token
   local stop_requested_at
   local stop_intent_recorded=0
@@ -4909,6 +4914,8 @@ stop_session() {
           die "could not record Stop intent for the exact managed run"
       stop_intent_recorded=1
       pane_pid="$("${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
+      provider_pid="$(read_meta_field "$session" provider_pid 2>/dev/null || true)"
+      case "$provider_pid" in ''|*[!0-9]*) provider_pid="" ;; esac
       if [ -n "$pane_pid" ]; then
         pgid="$(/bin/ps -o pgid= -p "$pane_pid" 2>/dev/null | tr -d '[:space:]')"
         case "$pgid" in ''|*[!0-9]*) pgid="" ;; esac
@@ -4918,12 +4925,28 @@ stop_session() {
           2>/dev/null || true
       fi
 
-      while [ "$(tmux_pane_dead "$session")" = "0" ] && [ "$attempts" -lt 60 ]; do
+      while [ "$(tmux_pane_dead "$session")" = "0" ] && \
+            [ "$attempts" -lt "$STOP_TERM_ATTEMPTS" ]; do
         attempts=$((attempts + 1))
         sleep 0.25
+        # Old immutable workers can remain in final checkpoint work after the
+        # provider exits. Keep that safe window bounded without shortening the
+        # grace for a provider that is still the worker's exact descendant.
+        if [ -n "$provider_pid" ] && [ -n "$pgid" ] && \
+           ! process_is_descendant "$provider_pid" "$pane_pid"; then
+          cleanup_attempts=$((cleanup_attempts + 1))
+          if [ "$cleanup_attempts" -ge "$STOP_WORKER_CLEANUP_ATTEMPTS" ]; then
+            cleanup_grace_expired=1
+            break
+          fi
+        else
+          cleanup_attempts=0
+        fi
       done
       if [ "$(tmux_pane_dead "$session")" = "0" ]; then
-        error "$PROVIDER_LABEL did not stop after 15 seconds; sending KILL"
+        if [ "$cleanup_grace_expired" -eq 0 ]; then
+          error "$PROVIDER_LABEL did not stop after 15 seconds; sending KILL"
+        fi
         if [ -n "$pgid" ] && \
            ! signal_managed_pane_group "$session" "$run_token" "$pane" "$pane_pid" "$pgid" KILL \
              2>/dev/null; then

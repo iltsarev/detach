@@ -295,6 +295,9 @@ Stop, Recover, Delete, and bulk cleanup until that exact runtime is gone. It
 never signals or removes foreign processes and unmanaged tmux sessions.
 Concurrent Stop, Recover, and Delete requests are serialized per session and
 recheck ownership immediately before mutation.
+Stop gives a live provider its full termination grace. After that provider
+exits, Detach gives its worker a short final-checkpoint grace, then ends the
+exact run. Resume and Delete stay unavailable until the worker is gone.
 
 <details>
 <summary><strong>Checkpoint and recovery rules</strong></summary>
