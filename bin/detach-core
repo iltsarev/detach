@@ -1758,6 +1758,7 @@ switch_attached_client() {
   local target_session="$3"
   local session_name
   local format row_pid client_name client_session client_uid marker extra
+  local client_rows attempt
   local matched_name=""
   local matches=0
 
@@ -1784,20 +1785,31 @@ switch_attached_client() {
     die "target tmux session '$target_session' has no live pane"
 
   format=$'#{client_pid}\t#{client_name}\t#{client_session}\t#{client_uid}\tEND'
-  while IFS=$'\t' read -r row_pid client_name client_session client_uid marker extra; do
-    [ "$row_pid" = "$client_pid" ] || continue
-    matches=$((matches + 1))
-    [ "$marker" = END ] && [ -z "$extra" ] || \
-      die "tmux returned an invalid client record"
-    [ "$client_uid" = "$UID" ] || \
-      die "refusing to switch a foreign-owned tmux client"
-    [ "$client_session" = "$source_session" ] || \
-      die "tmux client $client_pid is not attached to '$source_session'"
-    matched_name="$client_name"
-  done < <("${TMUX_CMD[@]}" list-clients -F "$format" 2>/dev/null || true)
-
-  [ "$matches" -eq 1 ] && [ -n "$matched_name" ] || \
-    die "could not identify one exact tmux client for PID $client_pid"
+  for attempt in 1 2 3; do
+    matched_name=""
+    matches=0
+    if client_rows="$("${TMUX_CMD[@]}" list-clients -F "$format" 2>/dev/null)"; then
+      while IFS=$'\t' read -r row_pid client_name client_session client_uid marker extra; do
+        [ "$row_pid" = "$client_pid" ] || continue
+        matches=$((matches + 1))
+        [ "$marker" = END ] && [ -z "$extra" ] || \
+          die "tmux returned an invalid client record"
+        [ "$client_uid" = "$UID" ] || \
+          die "refusing to switch a foreign-owned tmux client"
+        [ "$client_session" = "$source_session" ] || \
+          die "tmux client $client_pid is not attached to '$source_session'"
+        matched_name="$client_name"
+      done <<<"$client_rows"
+      [ "$matches" -le 1 ] || \
+        die "could not identify one exact tmux client for PID $client_pid"
+      if [ "$matches" -eq 1 ] && [ -n "$matched_name" ]; then
+        break
+      fi
+    fi
+    [ "$attempt" -lt 3 ] || \
+      die "could not identify one exact tmux client for PID $client_pid"
+    sleep 0.05
+  done
   [ "$source_session" != "$target_session" ] || return 0
   "${TMUX_CMD[@]}" switch-client -c "$matched_name" -t "=$target_session" || \
     die "could not switch tmux client $client_pid to '$target_session'"
