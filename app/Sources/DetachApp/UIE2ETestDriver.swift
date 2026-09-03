@@ -170,15 +170,39 @@ enum UIE2ETestDriver {
             scenarioStartedAt = ProcessInfo.processInfo.systemUptime
             scenarioDeadline = scenarioStartedAt
                 + Double(configuration.driverBudgetSeconds)
-            trace(
-                "\(configuration.scenario) driver started "
-                    + "(budget \(configuration.driverBudgetSeconds)s)")
-            let report = await runScenario(
-                configuration: configuration,
-                installation: installation,
-                store: store,
-                sessionLogSnapshots: sessionLogSnapshots,
-                shortcuts: shortcuts)
+            while !store.hasFreshSnapshot {
+                guard ProcessInfo.processInfo.systemUptime < scenarioDeadline else {
+                    break
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                } catch {
+                    return
+                }
+            }
+            let report: Report
+            if store.hasFreshSnapshot {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                scenarioStartedAt = ProcessInfo.processInfo.systemUptime
+                scenarioDeadline = scenarioStartedAt
+                    + Double(configuration.driverBudgetSeconds)
+                trace(
+                    "\(configuration.scenario) driver started "
+                        + "(budget \(configuration.driverBudgetSeconds)s)")
+                report = await runScenario(
+                    configuration: configuration,
+                    installation: installation,
+                    store: store,
+                    sessionLogSnapshots: sessionLogSnapshots,
+                    shortcuts: shortcuts)
+            } else {
+                report = Report(
+                    schema: 1,
+                    passed: false,
+                    checks: [],
+                    error: "initial typed session snapshot timed out",
+                    accessibilityTree: snapshots())
+            }
             trace("\(configuration.scenario) driver finished: \(report.passed)")
             try? write(report, to: configuration.result)
             NSApp.terminate(nil)

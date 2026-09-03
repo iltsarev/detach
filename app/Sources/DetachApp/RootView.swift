@@ -141,18 +141,20 @@ struct RootView: View {
                         executable: URL(fileURLWithPath: detachPath)))
                 })
             initialSetupComplete = true
-// quality-coverage:begin ui-e2e-instrumentation
-            await UIE2ETestDriver.runIfRequested(
-                installation: installation,
-                store: store,
-                sessionLogSnapshots: sessionLogSnapshots,
-                shortcuts: shortcuts)
-// quality-coverage:end ui-e2e-instrumentation
         }
         .task(id: notificationsEnabled) {
             guard AppSettings.uiE2E == nil else { return }
             await notifications.configure(enabled: notificationsEnabled)
         }
+// quality-coverage:begin ui-e2e-instrumentation
+        .task {
+            await UIE2ETestDriver.runIfRequested(
+                installation: installation,
+                store: store,
+                sessionLogSnapshots: sessionLogSnapshots,
+                shortcuts: shortcuts)
+        }
+// quality-coverage:end ui-e2e-instrumentation
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, initialSetupComplete else { return }
             Task {
