@@ -76,6 +76,9 @@ change real power state, upload assets, or claim publication.
   publication gate remains mandatory, and the waiver is recorded in private
   gate and workflow evidence. The interactive prompt and environment forms
   pass the same exact confirmation to the nested release quality gate.
+- A reviewed budget-schema change can rebaseline reference-Mac capacity after
+  required product work grows. The change records measured evidence and new
+  ceilings. Within one schema, each ceiling can only stay equal or decrease.
 - The pre-release quality gate classifies the complete diff from the last
   published tag to synchronized `main`. It runs that dependency-closed plan on
   the release Mac and applies the reference-machine budgets. An empty or

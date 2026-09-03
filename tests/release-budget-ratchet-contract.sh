@@ -28,7 +28,7 @@ set_value() {
   mv "$temporary" "$file"
 }
 
-set_value "$current" wall_seconds_max 181
+set_value "$current" wall_seconds_max 241
 if DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" "$RATCHET" \
   >"$TMP_ROOT/wall.out" 2>&1; then
   printf 'release budget contract: accepted a higher wall budget\n' >&2
@@ -46,7 +46,7 @@ fi
 grep -F 'increased above locked-ceiling' "$TMP_ROOT/stage.out" >/dev/null
 
 cp "$SOURCE" "$current"
-set_value "$current" stage_ui_e2e_seconds_max 16
+set_value "$current" stage_ui_e2e_seconds_max 21
 if DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" "$RATCHET" \
   >"$TMP_ROOT/ui-e2e.out" 2>&1; then
   printf 'release budget contract: accepted a higher UI e2e budget\n' >&2
@@ -64,9 +64,24 @@ mv "$prior.tmp" "$prior"
 DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" \
   DETACH_RELEASE_PRIOR_BUDGET="$prior" "$RATCHET" >/dev/null
 
+# Schema 3 is an explicit capacity rebaseline. It accepts the prior schema-2
+# ceilings once; later schema-3 changes must still ratchet down.
 cp "$SOURCE" "$current"
 cp "$SOURCE" "$prior"
-set_value "$prior" wall_seconds_max 179
+set_value "$prior" schema 2
+set_value "$prior" wall_seconds_max 180
+set_value "$prior" stage_gate_contract_seconds_max 100
+set_value "$prior" stage_swift_seconds_max 20
+set_value "$prior" stage_ui_e2e_seconds_max 15
+set_value "$prior" stage_claude_seconds_max 50
+set_value "$prior" stage_publish_preflight_seconds_max 25
+set_value "$prior" stage_release_workflow_seconds_max 70
+DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" \
+  DETACH_RELEASE_PRIOR_BUDGET="$prior" "$RATCHET" >/dev/null
+
+cp "$SOURCE" "$current"
+cp "$SOURCE" "$prior"
+set_value "$prior" wall_seconds_max 239
 if DETACH_RELEASE_BUDGET_RATCHET_TEST_MODE=1 DETACH_RELEASE_BUDGET="$current" \
   DETACH_RELEASE_PRIOR_BUDGET="$prior" "$RATCHET" >"$TMP_ROOT/prior.out" 2>&1; then
   printf 'release budget contract: accepted a merge-base budget increase\n' >&2

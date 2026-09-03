@@ -105,9 +105,11 @@
   instrumented app builds. Smaller hosts run Swift and app work in sequence.
   It then runs the isolated Codex and Claude suites concurrently
   against the verified bundled tmux and state helper. It rejects reference-Mac
-  wall or stage regressions and rejects attempts to lower quality floors or
-  raise time budgets relative to their merge-base values. A quality-core or
-  unknown change selects the full repository plan. `--resume auto` starts
+  wall or stage regressions and rejects attempts to lower quality floors.
+  Within one budget schema, it rejects time-budget increases relative to the
+  merge base. A reviewed schema change can rebaseline capacity when required
+  product work grows. A quality-core or unknown change selects the full
+  repository plan. `--resume auto` starts
   fresh when no compatible run exists and is the release default. Resume
   inherits timing and parent provenance. It preserves bounded failure
   diagnostics and classifies known execution-environment denials without

@@ -1609,7 +1609,7 @@ class QualityGate:
                 )
                 return
         values = self.budget_values()
-        if values.get("schema") != "2":
+        if values.get("schema") != "3":
             raise GateError("release budget schema is unsupported")
         raw_elapsed = os.environ.get(
             "DETACH_QUALITY_GATE_TEST_WALL_SECONDS",

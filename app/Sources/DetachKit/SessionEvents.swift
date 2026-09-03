@@ -439,6 +439,7 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     private let configuration: SessionEventWatchConfiguration
     private let quietWindow: TimeInterval
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private let output: FileHandle
     private var stream: FSEventStreamRef?
     private var parentMonitor: SessionEventParentMonitor?
@@ -461,6 +462,7 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
         self.quietWindow = quietWindow
         self.queue = queue
         self.output = output
+        queue.setSpecific(key: queueKey, value: 1)
     }
 
     public static func run(arguments: [String]) throws -> Never {
@@ -480,12 +482,28 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     /// The FSEvents context holds an unretained pointer to this watcher. Stop
     /// the stream before the pointer can dangle for a late callback.
     deinit {
-        trailingWorkItem?.cancel()
-        transcriptMonitor.stop()
-        if let stream {
-            FSEventStreamStop(stream)
-            FSEventStreamInvalidate(stream)
-            FSEventStreamRelease(stream)
+        stop()
+    }
+
+    /// Stops native sources and drains callbacks before their output can close.
+    func stop() {
+        let operation = {
+            self.trailingWorkItem?.cancel()
+            self.trailingWorkItem = nil
+            self.transcriptMonitor.stop()
+            if let stream = self.stream {
+                FSEventStreamStop(stream)
+                FSEventStreamInvalidate(stream)
+                FSEventStreamRelease(stream)
+                self.stream = nil
+            }
+            self.parentMonitor = nil
+            self.activeWatchedPaths = []
+        }
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            operation()
+        } else {
+            queue.sync(execute: operation)
         }
     }
 

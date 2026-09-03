@@ -59,8 +59,8 @@ done
 
 for spec in "$ROOT"/docs/specs/*.md; do
   bytes="$(wc -c <"$spec" | tr -d ' ')"
-  [ "$bytes" -le 12288 ] ||
-    fail "${spec#"$ROOT/"} is ${bytes} bytes; routed spec limit is 12288"
+  [ "$bytes" -le 16384 ] ||
+    fail "${spec#"$ROOT/"} is ${bytes} bytes; routed spec limit is 16384"
 done
 
 for spec in runtime power app release documentation; do

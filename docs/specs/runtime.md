@@ -94,6 +94,7 @@ sources cover 64 live transcripts, including old
 runtimes. Bursts yield leading and 150 ms trailing hints. Drops or root changes
 yield `resync`. Lifecycle signals refresh roots; heartbeats do not. The
 publisher writes `session-change` under state root. Activation repairs loss.
+Watcher shutdown drains native callbacks before its output can close.
 
 ### Session lifecycle and tmux
 
