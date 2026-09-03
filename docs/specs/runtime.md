@@ -141,18 +141,18 @@ metadata and tmux identity match; only then can provider PID be absent. The
 power wrapper confirms both layers and publishes readiness and exact provider
 PID. The starter proves ancestry before `running` and prints `Started` last.
 HUP/INT/TERM forward while the wrapper releases its lease and assertion;
-`detach stop` also releases by session/run token. The provider inherits the
-wrapper's tmux foreground process group to prevent terminal-I/O stops. On exit,
-the worker publishes actionless `finalizing` with the intended status,
+`detach stop` releases by run token. Providers get `COLORTERM=truecolor` and
+the wrapper's tmux process group. Captures keep styles; I/O cannot stop it. The
+worker publishes actionless `finalizing` with the intended status,
 checkpoints, publishes `terminal`, and retains logs; `pane-died` publishes
 again. A terminal record with an owned live pane and dead provider is finished.
 
-Stop binds intent and mutations to the run token; intent failure changes
-nothing. Before signaling, it publishes `stopping` and the stopped outcome.
-Stop intent makes it monotonic. Actions and cleanup stay closed while
-teardown is live; dead phases converge. A live provider keeps full grace. Its exact
-worker and Stop publish `terminal` idempotently. Delete handles retained tmux
-without state and never reports success over leftovers.
+Stop binds intent and mutations to the run token; failure changes nothing. It
+publishes `stopping` and stopped, captures the pane, then signals. Stop intent
+is monotonic. Actions and cleanup stay closed during live teardown; dead phases
+converge. A live provider keeps full grace. Worker and Stop publish `terminal`
+idempotently. Delete handles retained tmux without state and never reports
+success over leftovers.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user

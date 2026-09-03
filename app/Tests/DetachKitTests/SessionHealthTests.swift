@@ -2,6 +2,54 @@ import XCTest
 @testable import DetachKit
 
 final class SessionHealthTests: XCTestCase {
+    func testRuntimeLifecyclePhaseAllowsOnlyTheDeclaredGraph() {
+        let allowed: [(RuntimeLifecyclePhase, [RuntimeLifecyclePhase])] = [
+            (.initializing, [.initializing, .starting, .terminal]),
+            (.starting, [.starting, .running, .stopping, .finalizing, .terminal]),
+            (.running, [.running, .stopping, .finalizing, .terminal]),
+            (.stopping, [.stopping, .running, .terminal]),
+            (.finalizing, [.finalizing, .terminal]),
+            (.terminal, [.terminal]),
+        ]
+        let phases = allowed.map(\.0)
+
+        for (source, targets) in allowed {
+            for target in phases {
+                XCTAssertEqual(
+                    source.allows(target),
+                    targets.contains { $0 == target },
+                    "\(source) -> \(target)")
+            }
+        }
+    }
+
+    func testInitializingPhaseIsActionlessUntilIdentityAppearsOrDies() {
+        let starting = evaluate(
+            status: .starting,
+            provider: .unknown,
+            lifecyclePhase: .initializing)
+        XCTAssertEqual(starting.effectiveStatus, .starting)
+        XCTAssertEqual(starting.reason, .healthy)
+        XCTAssertTrue(starting.actions.isEmpty)
+
+        let replacement = evaluate(
+            status: .starting,
+            token: .mismatch,
+            provider: .unknown,
+            lifecyclePhase: .initializing)
+        XCTAssertEqual(replacement.effectiveStatus, .corrupt)
+        XCTAssertEqual(replacement.reason, .runTokenMismatch)
+
+        let dead = evaluate(
+            status: .starting,
+            tmux: .missing,
+            worker: .dead,
+            provider: .dead,
+            lifecyclePhase: .initializing)
+        XCTAssertEqual(dead.effectiveStatus, .recoverable)
+        XCTAssertEqual(dead.actions, [.recover, .delete])
+    }
+
     func testForeignTmuxCollisionNeverOffersAnAction() {
         let result = evaluate(tmux: .foreign)
 

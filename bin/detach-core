@@ -3801,6 +3801,10 @@ tmux_environment_args() {
   local name
   local value
 
+  # The private pane supports true color even when Finder launched Detach.app
+  # without a terminal environment. Keep provider rendering and ANSI
+  # checkpoints independent of whichever process first daemonized tmux.
+  printf '%s\0%s\0' '-e' 'COLORTERM=truecolor'
   for name in PATH HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL LC_CTYPE \
               XDG_CONFIG_HOME XDG_STATE_HOME \
               NODE_EXTRA_CA_CERTS HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
@@ -4967,6 +4971,9 @@ stop_session() {
         --string status stopped || \
           die "could not record Stop intent for the exact managed run"
       stop_intent_recorded=1
+      # Preserve the stop-edge screen before the first signal. A bounded Stop
+      # may later terminate a worker stuck in a slow database checkpoint.
+      checkpoint_pane "$session" || true
       pane_pid="$("${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
       provider_pid="$(read_meta_field "$session" provider_pid 2>/dev/null || true)"
       case "$provider_pid" in ''|*[!0-9]*) provider_pid="" ;; esac

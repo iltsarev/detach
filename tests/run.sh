@@ -415,6 +415,7 @@ export CODEX_HOME="$TMP_ROOT/codex-home"
 export CLAUDE_CONFIG_DIR="$TMP_ROOT/claude-home"
 export DETACH_CLAUDE_STATE_ROOT="$TMP_ROOT/claude-state"
 export FAKE_CODEX_ARGS_FILE="$TMP_ROOT/args.txt"
+export FAKE_CODEX_COLORTERM_FILE="$TMP_ROOT/codex-colorterm.txt"
 export FAKE_CODEX_SLEEP=4
 export FAKE_CODEX_EXIT=7
 export FAKE_CODEX_FOREIGN_FIRST=1
@@ -1012,7 +1013,8 @@ if codex_part_selected lifecycle; then
   codex_scenario_event begin SC-SESSION-RECOVER-CODEX
   codex_scenario_event begin SC-SESSION-STOP-CODEX
   codex_scenario_event begin SC-SESSION-DELETE-CODEX
-  LC_ALL=C run_codex --name integration --detach -- "$literal_prompt"
+  COLORTERM=ambient-is-not-a-capability \
+    LC_ALL=C run_codex --name integration --detach -- "$literal_prompt"
 
 wait_for_tmux_option "$SESSION" @detach_status running
 wait_for_tmux_option "$SESSION" set-titles on
@@ -1020,6 +1022,8 @@ LC_ALL=C.UTF-8 wait_for_tmux_option \
   "$SESSION" set-titles-string "Detach · $PROJECT_LABEL"
 wait_for_tmux_option_text "$SESSION" status-left RUNNING
 tmux -L "$SOCKET" has-session -t "=$SESSION"
+wait_for_file_text "$FAKE_CODEX_COLORTERM_FILE" truecolor
+[ "$(<"$FAKE_CODEX_COLORTERM_FILE")" = truecolor ]
 "$DETACH" list | grep -F 'codex' | grep -F "$SESSION" >/dev/null
 codex_scenario_event pass SC-SESSION-CREATE-CODEX
 mkdir -p "$TMP_ROOT/unrelated-tmux-tmpdir"
@@ -1465,6 +1469,10 @@ run_codex stop integration
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 [ "$("$STATE_HELPER" meta get "$meta" status)" = "stopped" ]
 [ -n "$("$STATE_HELPER" meta get "$meta" stopped_at)" ]
+# The immutable ANSI checkpoint keeps true-color provider styling after tmux
+# is gone, including when the app launched the original provider.
+run_codex logs --ansi integration | LC_ALL=C \
+  grep -F $'\033[38;2;12;34;56mtrue-color checkpoint probe' >/dev/null
 # Stop records its intent in typed state before it signals the runtime, and
 # the list carries it, so an `interrupted` window is never read as a crash.
 [ -n "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
@@ -1974,6 +1982,10 @@ DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
     'bounded Stop finalization coverage'
 wait_for_tmux_option "$slow_cleanup_session" @detach_status running
 slow_cleanup_meta="$DETACH_CODEX_STATE_ROOT/sessions/$slow_cleanup_session/meta.json"
+slow_cleanup_checkpoint="$(dirname "$slow_cleanup_meta")/checkpoint"
+# Only Stop can recreate these snapshots: the final worker checkpoint blocks
+# in SQLite before it reaches pane capture.
+rm -f "$slow_cleanup_checkpoint/pane.txt" "$slow_cleanup_checkpoint/pane-ansi.txt"
 : >"$slow_cleanup_marker"
 slow_cleanup_start_seconds=$SECONDS
 run_codex stop "$slow_cleanup_name"
@@ -1991,6 +2003,9 @@ slow_cleanup_json="$(run_codex list --json | \
 printf '%s' "$slow_cleanup_json" | \
   grep -F '"health_actions":["resume","delete"]' >/dev/null
 [ "$("$STATE_HELPER" meta get "$slow_cleanup_meta" status)" = stopped ]
+[ -s "$slow_cleanup_checkpoint/pane.txt" ]
+run_codex logs --ansi "$slow_cleanup_name" | LC_ALL=C \
+  grep -F $'\033[38;2;12;34;56mtrue-color checkpoint probe' >/dev/null
 run_codex delete --force "$slow_cleanup_name"
 
 # Freeze the worker after Start, then request Stop. The process-group TERM

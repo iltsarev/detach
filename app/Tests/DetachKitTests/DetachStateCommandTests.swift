@@ -1299,6 +1299,7 @@ final class DetachStateCommandTests: XCTestCase {
             "--checkpoint-recoverable", "true",
             "--agent-session-known", "true",
             "--stop-requested", "true",
+            "--lifecycle-phase", "stopping",
         ]
         let output = try DetachStateCommand.run(arguments: arguments)
         let assessment = try JSONDecoder().decode(
@@ -1310,11 +1311,18 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertTrue(assessment.actions.isEmpty)
         XCTAssertFalse(assessment.cleanupEligible)
         var invalidArguments = arguments
-        invalidArguments[invalidArguments.count - 1] = "yes"
+        invalidArguments[invalidArguments.count - 3] = "yes"
         XCTAssertThrowsError(try DetachStateCommand.run(
             arguments: invalidArguments
         )) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .invalidBoolean("yes"))
+        }
+        var invalidPhase = arguments
+        invalidPhase[invalidPhase.count - 1] = "unknown"
+        XCTAssertThrowsError(try DetachStateCommand.run(
+            arguments: invalidPhase
+        )) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
         }
     }
 
