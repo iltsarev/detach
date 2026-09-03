@@ -32,10 +32,10 @@ Tests inject paths through explicit `DETACH_*` environments. An app CLI strips
 them except in isolated UI tests. Production resolves tmux and state/power
 helpers only as immutable siblings. Providers resolve through `PATH`.
 
-`client switch` retries failed or empty client reads. PID, UID, source,
-private socket, and live managed target must match. Failed proof
-causes no mutation. Attach can hold a synchronized frame until the target
-redraws.
+`client switch` retries failed or empty reads for 0.5 seconds. PID, UID,
+source, private socket, and managed target must match. Failed
+proof causes no mutation. Attach can hold a synchronized frame until the
+target redraws.
 
 Core self-reinvokes critical mutations under `lockf`. Start, Resume, Stop,
 Recover, and Delete hold a session lock before install, project, and checkpoint

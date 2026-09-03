@@ -1785,7 +1785,9 @@ switch_attached_client() {
     die "target tmux session '$target_session' has no live pane"
 
   format=$'#{client_pid}\t#{client_name}\t#{client_session}\t#{client_uid}\tEND'
-  for attempt in 1 2 3; do
+  attempt=0
+  while [ "$attempt" -lt 10 ]; do
+    attempt=$((attempt + 1))
     matched_name=""
     matches=0
     if client_rows="$("${TMUX_CMD[@]}" list-clients -F "$format" 2>/dev/null)"; then
@@ -1806,7 +1808,7 @@ switch_attached_client() {
         break
       fi
     fi
-    [ "$attempt" -lt 3 ] || \
+    [ "$attempt" -lt 10 ] || \
       die "could not identify one exact tmux client for PID $client_pid"
     sleep 0.05
   done
