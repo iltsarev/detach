@@ -1312,6 +1312,20 @@ attach_client_pid="$(tmux -L "$SOCKET" list-clients \
 case "$attach_client_pid" in
   ''|*[!0-9]*) printf 'attach client PID is missing\n' >&2; exit 1 ;;
 esac
+attach_client_name="$(tmux -L "$SOCKET" list-clients \
+  -F '#{client_pid}|#{client_name}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')"
+[ -n "$attach_client_name" ] || {
+  printf 'attach client name is missing\n' >&2
+  exit 1
+}
+attach_client_uid="$(tmux -L "$SOCKET" list-clients \
+  -F '#{client_pid}|#{client_uid}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')"
+[ "$attach_client_uid" = "$UID" ] || {
+  printf 'attach client UID is not the test user\n' >&2
+  exit 1
+}
 client_features="$(tmux -L "$SOCKET" list-clients \
   -F '#{client_pid}|#{client_termfeatures}' | \
   awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')"
@@ -1342,13 +1356,24 @@ fi
   awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
 client_switch_tmux="$TMP_ROOT/client-switch-tmux"
 client_switch_inspections="$TMP_ROOT/client-switch-inspections"
+client_switch_mutation="$TMP_ROOT/client-switch-mutation"
+# Keep retry control-flow deterministic. The wrapper records the proven
+# mutation without delaying the real PTY client; the following direct call
+# proves the separate tmux mutation contract.
 export DETACH_CLIENT_SWITCH_TMUX_HELPER="$TMUX_TEST_BIN"
 export DETACH_CLIENT_SWITCH_INSPECTIONS="$client_switch_inspections"
+export DETACH_CLIENT_SWITCH_MUTATION="$client_switch_mutation"
+export DETACH_CLIENT_SWITCH_PID="$attach_client_pid"
+export DETACH_CLIENT_SWITCH_NAME="$attach_client_name"
+export DETACH_CLIENT_SWITCH_SESSION="$SESSION"
+export DETACH_CLIENT_SWITCH_UID="$attach_client_uid"
 printf '%s\n' \
   '#!/bin/bash' \
   'is_list=0' \
+  'is_switch=0' \
   'for argument in "$@"; do' \
   '  [ "$argument" != list-clients ] || is_list=1' \
+  '  [ "$argument" != switch-client ] || is_switch=1' \
   'done' \
   'if [ "$is_list" = 1 ]; then' \
   '  completed=0' \
@@ -1356,6 +1381,12 @@ printf '%s\n' \
   '  printf '\''attempt\n'\'' >>"$DETACH_CLIENT_SWITCH_INSPECTIONS"' \
   '  [ "$completed" -ge 2 ] || exit 1' \
   '  [ "$completed" -ge 4 ] || exit 0' \
+  '  printf '\''%s\t%s\t%s\t%s\tEND\n'\'' "$DETACH_CLIENT_SWITCH_PID" "$DETACH_CLIENT_SWITCH_NAME" "$DETACH_CLIENT_SWITCH_SESSION" "$DETACH_CLIENT_SWITCH_UID"' \
+  '  exit 0' \
+  'fi' \
+  'if [ "$is_switch" = 1 ]; then' \
+  '  printf '\''%s\n'\'' "$@" >"$DETACH_CLIENT_SWITCH_MUTATION"' \
+  '  exit 0' \
   'fi' \
   'exec "$DETACH_CLIENT_SWITCH_TMUX_HELPER" "$@"' \
   >"$client_switch_tmux"
@@ -1363,7 +1394,15 @@ chmod 0755 "$client_switch_tmux"
 DETACH_TMUX_BIN="$client_switch_tmux" \
   "$DETACH" client switch --pid "$attach_client_pid" \
   --from "$SESSION" --to "$switch_target" --provider codex
-[ "$(wc -l <"$client_switch_inspections" | tr -d '[:space:]')" -ge 5 ]
+[ "$(wc -l <"$client_switch_inspections" | tr -d '[:space:]')" = 5 ]
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
+grep -Fx -- 'switch-client' "$client_switch_mutation" >/dev/null
+grep -Fx -- '-c' "$client_switch_mutation" >/dev/null
+grep -Fx -- "$attach_client_name" "$client_switch_mutation" >/dev/null
+grep -Fx -- "=$switch_target" "$client_switch_mutation" >/dev/null
+"$DETACH" client switch --pid "$attach_client_pid" \
+  --from "$SESSION" --to "$switch_target" --provider codex
 [ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
   awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$switch_target" ]
 "$DETACH" client switch --pid "$attach_client_pid" \
