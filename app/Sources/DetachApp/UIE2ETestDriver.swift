@@ -744,7 +744,12 @@ enum UIE2ETestDriver {
             let collapsedHeight = sheet.frame.height
             let advanced = try await element(identifier: "new-session-advanced")
             try requireSemanticControl(advanced, name: "new session Advanced")
-            try await click(advanced, name: "new session Advanced")
+            try await clickUntil(
+                advanced,
+                name: "new session Advanced",
+                outcome: "new session prompt geometry") {
+                UIE2EGeometryRegistry.frame(for: "new-session-prompt") != nil
+            }
             _ = try await measuredFrame(
                 identifier: "new-session-prompt", name: "new session prompt")
             guard UIE2EGeometryRegistry.frame(for: "new-session-terminal") == nil else {

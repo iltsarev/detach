@@ -1769,7 +1769,7 @@ switch_attached_client() {
   [ "$client_pid" -gt 1 ] || die "client PID must be greater than one"
   for session_name in "$source_session" "$target_session"; do
     case "$session_name" in
-      ''|*$'\n'*|*$'\r'*|*$'\t'*) die "client session name is invalid" ;;
+      ''|*'|'*|*$'\n'*|*$'\r'*|*$'\t'*) die "client session name is invalid" ;;
     esac
   done
 
@@ -1784,14 +1784,16 @@ switch_attached_client() {
   tmux_session_running "$target_session" || \
     die "target tmux session '$target_session' has no live pane"
 
-  format=$'#{client_pid}\t#{client_name}\t#{client_session}\t#{client_uid}\tEND'
+  # tmux sanitizes literal control characters in format output when LC_ALL=C.
+  # Use a printable separator and reject it in the caller-controlled names.
+  format='#{client_pid}|#{client_name}|#{client_session}|#{client_uid}|END'
   attempt=0
   while [ "$attempt" -lt 10 ]; do
     attempt=$((attempt + 1))
     matched_name=""
     matches=0
     if client_rows="$("${TMUX_CMD[@]}" list-clients -F "$format" 2>/dev/null)"; then
-      while IFS=$'\t' read -r row_pid client_name client_session client_uid marker extra; do
+      while IFS='|' read -r row_pid client_name client_session client_uid marker extra; do
         [ "$row_pid" = "$client_pid" ] || continue
         matches=$((matches + 1))
         [ "$marker" = END ] && [ -z "$extra" ] || \
