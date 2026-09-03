@@ -16,7 +16,10 @@ final class SessionAttachTests: XCTestCase {
         XCTAssertEqual(invocation.executable, "/Users/me/.local/bin/detach")
         XCTAssertEqual(
             invocation.arguments,
-            ["codex", "attach", "detach-codex-proj-abcd1234"])
+            [
+                "codex", "attach", "--terminal-features", "sync",
+                "detach-codex-proj-abcd1234",
+            ])
         XCTAssertFalse(invocation.arguments.contains { $0.contains("tmux") })
         XCTAssertFalse(invocation.environment.contains { $0.hasPrefix("TMUX=") })
         XCTAssertFalse(invocation.environment.contains { $0.hasPrefix("TMUX_PANE=") })
@@ -43,7 +46,27 @@ final class SessionAttachTests: XCTestCase {
             SessionAttachInvocation.arguments(for: session(
                 provider: .claude,
                 name: "detach-claude-review")),
-            ["claude", "attach", "detach-claude-review"])
+            [
+                "claude", "attach", "--terminal-features", "sync",
+                "detach-claude-review",
+            ])
+    }
+
+    func testClientSwitchBindsExactPIDSourceAndTargetProvider() {
+        XCTAssertEqual(
+            SessionClientSwitchInvocation.arguments(
+                clientPID: 4242,
+                from: session(),
+                to: session(
+                    provider: .claude,
+                    name: "detach-claude-review")),
+            [
+                "client", "switch",
+                "--pid", "4242",
+                "--from", "detach-codex-proj-abcd1234",
+                "--to", "detach-claude-review",
+                "--provider", "claude",
+            ])
     }
 
     func testOnlyLiveAttachableSessionsAreEligible() {

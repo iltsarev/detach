@@ -18,6 +18,27 @@ esac
 
 printf '%s\n' "$*" >>"$INVOCATIONS"
 
+if [ "$#" -eq 2 ] && [ "$1" = watch ] && [ "$2" = --json ]; then
+  fixture_signature() {
+    local marker
+    printf '%s' "$(<"$STATE")"
+    for marker in \
+      recovered resumed stopped-deleted new-session-started quick-chat-started; do
+      [ ! -e "$ROOT/fake/$marker" ] || printf ':%s' "$marker"
+    done
+  }
+  signature="$(fixture_signature)"
+  printf '%s\n' '{"schema":1,"event":"ready"}'
+  trap 'exit 0' HUP INT TERM
+  while sleep 0.05; do
+    next_signature="$(fixture_signature)"
+    [ "$next_signature" = "$signature" ] && continue
+    signature="$next_signature"
+    printf '%s\n' '{"schema":1,"event":"changed"}'
+  done
+  exit 0
+fi
+
 if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
   if [ "$(<"$STATE")" = empty ]; then
     exit 0
@@ -26,7 +47,7 @@ if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
     printf 'The session list is temporarily unavailable; retry from the dashboard.\n' >&2
     exit 75
   fi
-  completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","effective_status":"completed","created_at":"2026-07-22T07:00:00Z","finished_at":"2026-07-22T07:30:00Z","exit_status":0,"agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"allowed","health_actions":["resume","delete"]}'
+  completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","effective_status":"completed","created_at":"2026-07-22T07:00:00Z","finished_at":"2026-07-22T07:30:00Z","exit_status":0,"agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"allowed","health_reason":"checkpoint_stale","health_actions":["resume","delete"]}'
   if [ -f "$ROOT/fake/resumed" ]; then
     completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","effective_status":"running","created_at":"2026-07-22T07:00:00Z","agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"protected","health_actions":["attach","stop"]}'
   fi
@@ -46,8 +67,11 @@ if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
   printf '%s\n' \
     '{"schema":1,"provider":"codex","session_name":"detach-codex-ui-running","name":"UI Running","effective_status":"running","created_at":"2026-07-22T08:00:00Z","model":"gpt-ui-fixture","agent_turn_state":"working","session_color":"#36C5F0","power_protection_state":"protected","health_actions":["attach","stop"]}' \
     "$recoverable" \
-    "$completed" \
-    '{"schema":1,"provider":"codex","session_name":"detach-codex-ui-stopped","name":"UI Stopped","effective_status":"stopped","created_at":"2026-07-22T06:00:00Z","finished_at":"2026-07-22T06:30:00Z","exit_status":143,"session_color":"#1D4ED8","power_protection_state":"allowed","health_actions":["delete"]}'
+    "$completed"
+  if [ ! -f "$ROOT/fake/stopped-deleted" ]; then
+    printf '%s\n' \
+      '{"schema":1,"provider":"codex","session_name":"detach-codex-ui-stopped","name":"UI Stopped","effective_status":"stopped","created_at":"2026-07-22T06:00:00Z","finished_at":"2026-07-22T06:30:00Z","exit_status":143,"session_color":"#1D4ED8","power_protection_state":"allowed","health_actions":["delete"]}'
+  fi
   [ -z "$started" ] || printf '%s\n' "$started"
   [ -z "$quick" ] || printf '%s\n' "$quick"
   exit 0
@@ -71,12 +95,131 @@ if [ "$#" -eq 2 ] && [ "$1" = config ] \
 fi
 
 if [ "$#" -eq 4 ] && [ "$2" = logs ] && [ "$3" = --ansi ]; then
+  if [ "$4" = detach-codex-ui-recoverable ]; then
+    if [ -f "$ROOT/fake/recoverable-log-ready" ]; then
+      : >"$ROOT/fake/recoverable-log-refresh-delayed"
+      sleep 0.25
+    fi
+    printf '\033[32mUI fixture log for %s\033[0m\n' "$4"
+    : >"$ROOT/fake/recoverable-log-ready"
+    exit 0
+  fi
   printf '\033[32mUI fixture log for %s\033[0m\n' "$4"
+  exit 0
+fi
+
+if [ "$#" -eq 10 ] && [ "$1" = client ] && [ "$2" = switch ] \
+    && [ "$3" = --pid ] && [ "$5" = --from ] && [ "$7" = --to ] \
+    && [ "$9" = --provider ]; then
+  expected_pid="$(<"$ROOT/fake/attach-client-pid")"
+  current_session="$(<"$ROOT/fake/attach-client-current")"
+  [ "$4" = "$expected_pid" ] || {
+    printf 'fake client PID mismatch\n' >&2
+    exit 65
+  }
+  [ "$6" = "$current_session" ] || {
+    printf 'fake client source mismatch\n' >&2
+    exit 65
+  }
+  case "$8" in detach-"${10}"-*) ;; *)
+    printf 'fake client target provider mismatch\n' >&2
+    exit 65
+    ;;
+  esac
+  : >"$ROOT/fake/client-switch-requested"
+  # Keep the old complete terminal frame visible while the command is in
+  # flight. A private FIFO models tmux socket delivery without cross-process
+  # signals that the packaged app sandbox can reject.
+  sleep 0.25
+  [ -p "$ROOT/fake/attach-client-control" ] || {
+    printf 'fake attached client control channel is missing\n' >&2
+    exit 65
+  }
+  printf '%s\n' "$8" >"$ROOT/fake/attach-client-control"
+  attempts=0
+  while [ "$attempts" -lt 50 ] \
+      && [ "$(<"$ROOT/fake/attach-client-current")" != "$8" ]; do
+    attempts=$((attempts + 1))
+    sleep 0.01
+  done
+  [ "$(<"$ROOT/fake/attach-client-current")" = "$8" ]
+  exit 0
+fi
+
+if [ "$#" -eq 5 ] && { [ "$1" = codex ] || [ "$1" = claude ]; } \
+    && [ "$2" = attach ] && [ "$3" = --terminal-features ] \
+    && [ "$4" = sync ]; then
+  attach_session="$5"
+  if [ "$attach_session" = detach-codex-ui-recoverable ] \
+      && [ ! -f "$ROOT/fake/reconnect-ready" ]; then
+    printf 'UI fixture attach for %s\n' "$attach_session"
+    : >"$ROOT/fake/reconnect-ready"
+    exit 0
+  fi
+  [ "$attach_session" != detach-claude-ui-new ] || \
+    : >"$ROOT/fake/new-session-attach-ready"
+
+  render_switched_session() {
+    local target="$1"
+    printf '\033[?2026h\033[2J\033[HUI fixture synchronized repaint for %s\n\033[?2026l' \
+      "$target"
+    printf '%s\n' "$target" >"$ROOT/fake/attach-client-current"
+    case "$target" in
+      detach-codex-ui-running) : >"$ROOT/fake/control-v-ready" ;;
+      detach-claude-ui-new) : >"$ROOT/fake/new-session-attach-ready" ;;
+      detach-codex-ui-quick) : >"$ROOT/fake/quick-session-ready" ;;
+    esac
+  }
+  control_loop() {
+    local target
+    while true; do
+      if IFS= read -r target <"$ROOT/fake/attach-client-control"; then
+        render_switched_session "$target"
+      fi
+    done
+  }
+  cleanup_attach() {
+    [ -z "${control_pid:-}" ] || kill "$control_pid" 2>/dev/null || true
+    if [ -f "$ROOT/fake/attach-client-pid" ] \
+        && [ "$(<"$ROOT/fake/attach-client-pid")" = "$$" ]; then
+      /bin/rm -f "$ROOT/fake/attach-client-pid" \
+        "$ROOT/fake/attach-client-control"
+    fi
+  }
+  trap 'cleanup_attach; exit 0' HUP INT TERM
+  trap cleanup_attach EXIT
+  /bin/rm -f "$ROOT/fake/attach-client-control"
+  mkfifo -m 0600 "$ROOT/fake/attach-client-control"
+  printf '%s\n' "$$" >"$ROOT/fake/attach-client-pid"
+  printf '%s\n' "$attach_session" >"$ROOT/fake/attach-client-current"
+  printf 'UI fixture attach for %s\n' "$attach_session"
+  : >"$ROOT/fake/control-v.bin"
+  case "$attach_session" in
+    detach-codex-ui-running) : >"$ROOT/fake/control-v-ready" ;;
+    detach-claude-ui-new) : >"$ROOT/fake/new-session-attach-ready" ;;
+    detach-codex-ui-quick) : >"$ROOT/fake/quick-session-ready" ;;
+  esac
+  control_loop &
+  control_pid=$!
+  stty raw -echo
+  # The real attach client exits 0 when the PTY closes. Falling through to the
+  # unexpected-invocation exit would look like a crashed client to the app.
+  /usr/bin/tee -a "$ROOT/fake/control-v.bin" || true
   exit 0
 fi
 
 if [ "$#" -eq 3 ] && [ "$1" = codex ] && [ "$2" = attach ] \
     && [ "$3" = detach-codex-ui-running ]; then
+  if [ -s "$ROOT/fake/control-v.bin" ]; then
+    # Reproduce tmux's attach handoff: clear first, then deliver the new
+    # screen later. The packaged UI journey proves that Detach covers this
+    # gap with its passive retained screen.
+    printf '\033[2J\033[H'
+    : >"$ROOT/fake/running-attach-cleared"
+    sleep 0.25
+    printf 'UI fixture delayed repaint for %s\n' "$3"
+    exec /bin/cat
+  fi
   printf 'UI fixture attach for %s\n' "$3"
   stty raw -echo
   : >"$ROOT/fake/control-v-ready"
@@ -162,6 +305,11 @@ fi
 if [ "$#" -eq 4 ] && [ "$1" = codex ] && [ "$2" = delete ] \
     && [ "$3" = --force ] && [ "$4" = detach-codex-ui-stopped ]; then
   printf '%s\n' "$*" >>"$ACTIONS"
+  # Let the UI driver record the accepted action before the event arrives.
+  # This proves that a later typed snapshot, not an earlier refresh, closes
+  # the deletion flow.
+  sleep 0.1
+  : >"$ROOT/fake/stopped-deleted"
   exit 0
 fi
 

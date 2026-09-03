@@ -161,6 +161,7 @@ enum UIE2ETestDriver {
     static func runIfRequested(
         installation: InstallationStore,
         store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
         shortcuts: SessionShortcutRegistry
     ) async {
         guard let configuration = AppSettings.uiE2E, !started else { return }
@@ -176,6 +177,7 @@ enum UIE2ETestDriver {
                 configuration: configuration,
                 installation: installation,
                 store: store,
+                sessionLogSnapshots: sessionLogSnapshots,
                 shortcuts: shortcuts)
             trace("\(configuration.scenario) driver finished: \(report.passed)")
             try? write(report, to: configuration.result)
@@ -193,6 +195,7 @@ enum UIE2ETestDriver {
         configuration: UIE2EConfiguration,
         installation: InstallationStore,
         store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
         shortcuts: SessionShortcutRegistry
     ) async -> Report {
         cursorRestorePoint = CGEvent(source: nil)?.location
@@ -221,6 +224,7 @@ enum UIE2ETestDriver {
             return await runMainScenario(
                 configuration: configuration,
                 store: store,
+                sessionLogSnapshots: sessionLogSnapshots,
                 shortcuts: shortcuts)
         }
     }
@@ -228,6 +232,7 @@ enum UIE2ETestDriver {
     private static func runMainScenario(
         configuration: UIE2EConfiguration,
         store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
         shortcuts: SessionShortcutRegistry
     ) async -> Report {
         var checks: [String] = []
@@ -268,10 +273,39 @@ enum UIE2ETestDriver {
                 identifier: "session-row-\(recoverableID)")
             try requireSemanticControl(
                 recoverableRow, name: "recoverable session row")
+            guard let recoverableSession = store.sessions.first(where: {
+                $0.id == recoverableID
+            }) else {
+                throw Failure(message: "recoverable session is missing")
+            }
+            try await waitUntil("recoverable log snapshot warm-up") {
+                sessionLogSnapshots.poller(for: recoverableSession).hasLoaded
+            }
             _ = try await clickUntilElement(
                 recoverableRow,
                 name: "recoverable session row",
                 resultIdentifier: "session-detail-\(recoverableID)")
+            // Prove that selection uses the snapshot warmed above. A wall-clock
+            // bound here also measures the synthetic click, Accessibility, and
+            // runner scheduling, none of which can distinguish a cache miss.
+            try await waitUntil("warm recoverable log without a reread", attempts: 5) {
+                guard let scrollView = find(identifier: "session-preview-log")
+                        as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else {
+                    return false
+                }
+                let invocations = try? String(
+                    contentsOf: configuration.root
+                        .appendingPathComponent("fake/invocations.log"),
+                    encoding: .utf8)
+                let logReads = invocations?
+                    .split(separator: "\n")
+                    .filter { $0 == "codex logs --ansi \(recoverableID)" }
+                    .count ?? 0
+                return logReads == 1 && textView.string.contains(
+                    "UI fixture log for \(recoverableID)")
+            }
+            checks.append("non-live-session-switch-uses-warm-cache")
             let recoverButton = try await element(
                 identifier: "session-action-recover-in-app")
             let recoverFallback = try await element(
@@ -312,7 +346,9 @@ enum UIE2ETestDriver {
                     encoding: .utf8)
                 let attachCount = invocations?
                     .split(separator: "\n")
-                    .filter { $0 == "codex attach \(recoverableID)" }
+                    .filter {
+                        $0 == "codex attach --terminal-features sync \(recoverableID)"
+                    }
                     .count ?? 0
                 return attachCount >= 2
             }
@@ -331,6 +367,9 @@ enum UIE2ETestDriver {
                 name: "completed session row",
                 resultIdentifier: "session-detail-\(completedID)")
             try requireGeometry(completedDetail, name: "completed session detail")
+            let completedLogSurface = try await measuredFrame(
+                identifier: "session-detail-log-surface",
+                name: "completed session log surface")
             let deleteButton = try await element(identifier: "session-action-delete")
             try requireSemanticControl(deleteButton, name: "delete action")
             checks.append("sidebar-selects-completed-session")
@@ -397,6 +436,16 @@ enum UIE2ETestDriver {
                 find(identifier: "session-preview-terminal") != nil
             }
             checks.append("live-session-hosts-attach-client")
+            let runningLogSurface = try await measuredFrame(
+                identifier: "session-detail-log-surface",
+                name: "running session log surface")
+            guard abs(runningLogSurface.minY - completedLogSurface.minY) <= 1,
+                  abs(runningLogSurface.height - completedLogSurface.height) <= 1 else {
+                throw Failure(message:
+                    "session selection changed the terminal frame from "
+                    + "\(completedLogSurface) to \(runningLogSurface)")
+            }
+            checks.append("session-switch-keeps-terminal-layout-stable")
             try await waitUntil("event-driven terminal renderer", attempts: 80) {
                 guard let terminal = find(
                     identifier: "session-preview-terminal")
@@ -404,17 +453,21 @@ enum UIE2ETestDriver {
                     return false
                 }
                 return SessionAttachRendering
-                    .hasEnergyEfficientMetalRenderer(in: terminal)
+                    .hasEnergyEfficientRenderer(in: terminal)
             }
             guard let liveTerminal = find(
                 identifier: "session-preview-terminal")
                 as? LocalProcessTerminalView else {
                 throw Failure(message: "live terminal is not a SwiftTerm view")
             }
+            let liveClientPID = liveTerminal.process.shellPid
+            guard liveClientPID > 1 else {
+                throw Failure(message: "live terminal client PID is missing")
+            }
             liveTerminal.terminal.setCursorStyle(.blinkUnderline)
             guard liveTerminal.terminal.options.cursorStyle.tagName
                     == CursorStyle.steadyUnderline.tagName,
-                  SessionAttachRendering.hasEnergyEfficientMetalRenderer(
+                  SessionAttachRendering.hasEnergyEfficientRenderer(
                     in: liveTerminal) else {
                 throw Failure(message: "live terminal retained a blinking cursor timer")
             }
@@ -429,6 +482,79 @@ enum UIE2ETestDriver {
                     .appendingPathComponent("fake/control-v.bin"))) == Data([0x16])
             }
             checks.append("live-terminal-routes-control-v")
+
+            try await waitUntil("running terminal frame") {
+                String(decoding: liveTerminal.terminal.getBufferAsData(), as: UTF8.self)
+                    .contains(runningID)
+            }
+            let invocationsURL = configuration.root
+                .appendingPathComponent("fake/invocations.log")
+            let attachCountBefore = try String(
+                contentsOf: invocationsURL,
+                encoding: .utf8)
+                .split(separator: "\n")
+                .filter { $0.contains(" attach --terminal-features sync ") }
+                .count
+
+            // Both rows are live. Selection must preserve the exact SwiftTerm
+            // object and PTY while the public client-switch command is delayed.
+            let resumedRow = try await element(
+                identifier: "session-row-\(completedID)")
+            let toCompleted = "client switch --pid \(liveClientPID)"
+                + " --from \(runningID) --to \(completedID) --provider claude"
+            _ = try await clickUntilElement(
+                resumedRow,
+                name: "resumed session row",
+                resultIdentifier: "session-detail-\(completedID)")
+            guard let terminalDuringSwitch = find(
+                    identifier: "session-preview-terminal")
+                    as? LocalProcessTerminalView,
+                  terminalDuringSwitch === liveTerminal,
+                  terminalDuringSwitch.process.shellPid == liveClientPID,
+                  String(decoding: terminalDuringSwitch.terminal.getBufferAsData(), as: UTF8.self)
+                    .contains(runningID) else {
+                throw Failure(message:
+                    "live switch replaced the terminal or cleared its complete frame")
+            }
+            try await waitUntil("ownership-safe client switch starts", attempts: 20) {
+                let invocations = try? String(
+                    contentsOf: invocationsURL,
+                    encoding: .utf8)
+                return invocations?.split(separator: "\n")
+                    .contains(Substring(toCompleted)) == true
+            }
+            try await waitUntil("synchronized completed redraw", attempts: 40) {
+                String(decoding: liveTerminal.terminal.getBufferAsData(), as: UTF8.self)
+                    .contains(completedID)
+            }
+
+            let toRunning = "client switch --pid \(liveClientPID)"
+                + " --from \(completedID) --to \(runningID) --provider codex"
+            try await keyPress("1", keyCode: 18, modifiers: [.command])
+            try await waitUntil("same client switches back", attempts: 40) {
+                guard let terminal = find(identifier: "session-preview-terminal")
+                        as? LocalProcessTerminalView,
+                      terminal === liveTerminal,
+                      terminal.process.shellPid == liveClientPID else { return false }
+                let invocations = try? String(
+                    contentsOf: invocationsURL,
+                    encoding: .utf8)
+                return invocations?.split(separator: "\n")
+                    .contains(Substring(toRunning)) == true
+                    && String(decoding: terminal.terminal.getBufferAsData(), as: UTF8.self)
+                        .contains(runningID)
+            }
+            let attachCountAfter = try String(
+                contentsOf: invocationsURL,
+                encoding: .utf8)
+                .split(separator: "\n")
+                .filter { $0.contains(" attach --terminal-features sync ") }
+                .count
+            guard attachCountAfter == attachCountBefore else {
+                throw Failure(message:
+                    "live switches launched a replacement attach client")
+            }
+            checks.append("live-session-switch-reuses-synchronized-client")
             let identityMarker = try await measuredFrame(
                 identifier: "session-detail-identity-marker",
                 name: "session identity marker")

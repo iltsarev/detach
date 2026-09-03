@@ -37,6 +37,8 @@ public struct BoundedProcessResult: Equatable, Sendable {
     public let standardOutput: Data
     public let standardError: Data
     public let timedOut: Bool
+    public let standardOutputTruncated: Bool
+    public let standardErrorTruncated: Bool
 }
 
 public enum BoundedProcessError: Error, Equatable, Sendable {
@@ -59,6 +61,7 @@ private final class NonblockingPipeCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var shouldStop = false
     private var captured = Data()
+    private var didTruncate = false
 
     init(descriptor: Int32, maximumBytes: Int) {
         self.descriptor = descriptor
@@ -71,7 +74,12 @@ private final class NonblockingPipeCapture: @unchecked Sendable {
 
     func start() {
         group.enter()
-        DispatchQueue.global(qos: .utility).async { [self] in
+        // The synchronous runner waits for both readers after reaping the
+        // child. Scheduling those readers on the same bounded global pool as
+        // several concurrent runners can starve every reader on a low-core
+        // host. A dedicated short-lived thread keeps pipe progress independent
+        // from Swift and libdispatch worker availability.
+        Thread.detachNewThread { [self] in
             defer {
                 _ = Darwin.close(descriptor)
                 group.leave()
@@ -107,8 +115,9 @@ private final class NonblockingPipeCapture: @unchecked Sendable {
         group.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow)) == .success
     }
 
-    func stopAndWait() {
+    func stopAndWait(markIncomplete: Bool = false) {
         lock.lock()
+        if markIncomplete { didTruncate = true }
         shouldStop = true
         lock.unlock()
         group.wait()
@@ -120,6 +129,12 @@ private final class NonblockingPipeCapture: @unchecked Sendable {
         return captured
     }
 
+    var isTruncated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didTruncate
+    }
+
     private var stopping: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -129,9 +144,10 @@ private final class NonblockingPipeCapture: @unchecked Sendable {
     private func append(_ bytes: [UInt8], count: Int) {
         lock.lock()
         defer { lock.unlock() }
-        guard captured.count < maximumBytes else { return }
-        captured.append(contentsOf: bytes.prefix(
-            min(count, maximumBytes - captured.count)))
+        let remaining = max(0, maximumBytes - captured.count)
+        if count > remaining { didTruncate = true }
+        guard remaining > 0 else { return }
+        captured.append(contentsOf: bytes.prefix(min(count, remaining)))
     }
 }
 
@@ -244,14 +260,20 @@ public struct BoundedProcessRunner: Sendable {
                 signalGroup(childPID, SIGKILL)
             }
         }
-        stdout.stopAndWait()
-        stderr.stopAndWait()
+        // A reader that did not reach EOF before the bounded drain deadline
+        // may still have unread bytes behind an inherited descriptor. Treat
+        // that uncertainty as incomplete output instead of publishing a
+        // prefix as a complete response.
+        stdout.stopAndWait(markIncomplete: !stdoutFinished)
+        stderr.stopAndWait(markIncomplete: !stderrFinished)
 
         return BoundedProcessResult(
             exitCode: exitCode(from: waitStatus),
             standardOutput: stdout.data,
             standardError: stderr.data,
-            timedOut: timedOut)
+            timedOut: timedOut,
+            standardOutputTruncated: stdout.isTruncated,
+            standardErrorTruncated: stderr.isTruncated)
     }
 
     private func makePipe() throws -> (read: Int32, write: Int32) {

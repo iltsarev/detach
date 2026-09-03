@@ -31,14 +31,23 @@ public struct SessionAttachInvocation: Equatable, Sendable {
     }
 
     public static func arguments(for session: Session) -> [String] {
-        [session.provider.rawValue, "attach", session.sessionName]
+        [
+            session.provider.rawValue,
+            "attach",
+            "--terminal-features",
+            "sync",
+            session.sessionName,
+        ]
     }
 
     public static func environment(
         from base: [String: String],
         termName: String = termName
     ) -> [String] {
-        var env = ProcessDetachCLI.runtimeEnvironment(base)
+        // The attach client must see the same runtime roots as every other
+        // child, so inherited `DETACH_*` overrides are removed here as well.
+        var env = ProcessDetachCLI.runtimeEnvironment(
+            base, allowsDetachOverrides: false)
         env.removeValue(forKey: "TMUX")
         env.removeValue(forKey: "TMUX_PANE")
         env["TERM"] = termName
@@ -48,5 +57,22 @@ public struct SessionAttachInvocation: Equatable, Sendable {
         return env.keys.sorted().map { key in
             "\(key)=\(env[key] ?? "")"
         }
+    }
+}
+
+/// Public, ownership-checked request to retarget the one visible tmux client.
+public enum SessionClientSwitchInvocation {
+    public static func arguments(
+        clientPID: Int32,
+        from source: Session,
+        to target: Session
+    ) -> [String] {
+        [
+            "client", "switch",
+            "--pid", String(clientPID),
+            "--from", source.sessionName,
+            "--to", target.sessionName,
+            "--provider", target.provider.rawValue,
+        ]
     }
 }

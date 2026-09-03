@@ -27,8 +27,8 @@ protocol SessionNotificationCenterBackend {
 }
 
 /// App-level notification consumer. It observes the shared session snapshot
-/// store (one `detach list --json` poller for the whole app), so closing the
-/// main window does not stop notifications and no second subprocess loop runs.
+/// store (one event stream for the whole app), so closing the main window does
+/// not stop notifications and no second subprocess loop runs.
 @MainActor
 final class SessionNotificationService: ObservableObject {
     @Published private(set) var authorizationStatus: SessionNotificationAuthorizationStatus = .unknown
@@ -36,7 +36,6 @@ final class SessionNotificationService: ObservableObject {
 
     private let center: SessionNotificationCenterBackend
     private let identifierProvider: () -> String
-    private let powerReader: PowerHeartbeatReader?
     private var detector = SessionTransitionDetector()
     private var pendingPayloads: [SessionNotificationPayload] = []
     private var pendingGeneration: UInt64 = 0
@@ -45,24 +44,20 @@ final class SessionNotificationService: ObservableObject {
     private var configurationGeneration: UInt64 = 0
     private var authorizationStatusGeneration: UInt64 = 0
     private var authorizationRequestTask: Task<Bool, Error>?
-    private var powerMonitorTask: Task<Void, Never>?
+    private var backgroundDeliveryTask: Task<Void, Never>?
     private var thermalSafetyWasActive = false
 
     init(identifierProvider: @escaping () -> String = { UUID().uuidString }) {
         center = SystemSessionNotificationCenter()
         self.identifierProvider = identifierProvider
-        powerReader = PowerHeartbeatReader(
-            statusURL: PowerHeartbeatReader.defaultStatusURL())
     }
 
     init(
         center: SessionNotificationCenterBackend,
-        identifierProvider: @escaping () -> String = { UUID().uuidString },
-        powerReader: PowerHeartbeatReader? = nil
+        identifierProvider: @escaping () -> String = { UUID().uuidString }
     ) {
         self.center = center
         self.identifierProvider = identifierProvider
-        self.powerReader = powerReader
     }
 
     /// Synchronizes the app preference with macOS authorization. The system
@@ -75,11 +70,7 @@ final class SessionNotificationService: ObservableObject {
         isEnabled = enabled
         errorMessage = nil
 
-        if enabled {
-            startPowerMonitoring()
-        } else {
-            powerMonitorTask?.cancel()
-            powerMonitorTask = nil
+        if !enabled {
             thermalSafetyWasActive = false
         }
 
@@ -154,7 +145,9 @@ final class SessionNotificationService: ObservableObject {
     func pollOnce(using cli: DetachCLIRunning) async {
         do {
             let result = try await cli.run(arguments: ["list", "--json"], timeout: 5)
-            guard result.exitCode == 0, !result.timedOut else { return }
+            guard result.exitCode == 0,
+                  !result.timedOut,
+                  !result.stdoutTruncated else { return }
             let parsed = SessionListParser.parse(result.stdout)
             guard !parsed.hadInvalidLines else { return }
             await observe(parsed.sessions)
@@ -169,6 +162,14 @@ final class SessionNotificationService: ObservableObject {
     func observe(_ sessions: [Session]) async {
         let transitions = detector.observe(sessions)
         await enqueue(transitions.map(payload(for:)))
+    }
+
+    /// Accepts the ordered store snapshot without waiting for Notification
+    /// Center. The detector advances on the main actor before this returns;
+    /// one delivery task drains the queue independently of session events.
+    func observeFromSessionStore(_ sessions: [Session]) {
+        let transitions = detector.observe(sessions)
+        enqueueWithoutWaiting(transitions.map(payload(for:)))
     }
 
     /// The thermal latch, not just the effective power label, drives this
@@ -200,17 +201,28 @@ final class SessionNotificationService: ObservableObject {
         }
     }
 
-    private func startPowerMonitoring() {
-        guard powerMonitorTask == nil, let powerReader else { return }
-        powerMonitorTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                await self?.observePower(powerReader.read())
-                do {
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
-                } catch {
-                    return
-                }
-            }
+    private func enqueueWithoutWaiting(
+        _ payloads: [SessionNotificationPayload]
+    ) {
+        guard isEnabled else { return }
+
+        switch authorizationStatus {
+        case .authorized:
+            pendingPayloads.append(contentsOf: payloads)
+            scheduleBackgroundDelivery()
+        case .unknown, .notDetermined:
+            pendingPayloads.append(contentsOf: payloads)
+        case .denied:
+            clearPendingPayloads()
+        }
+    }
+
+    private func scheduleBackgroundDelivery() {
+        guard backgroundDeliveryTask == nil else { return }
+        backgroundDeliveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.deliverPendingPayloads()
+            self.backgroundDeliveryTask = nil
         }
     }
 
@@ -257,7 +269,7 @@ final class SessionNotificationService: ObservableObject {
                     "Could not show notification: %@",
                     error.localizedDescription)
                 if generation == pendingGeneration {
-                    // Put the exact same payload back so a later poll retries
+                    // Put the exact same payload back so a later snapshot retries
                     // with the same system identifier.
                     pendingPayloads.insert(payload, at: 0)
                     return

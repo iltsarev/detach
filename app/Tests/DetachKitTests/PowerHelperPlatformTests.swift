@@ -42,6 +42,8 @@ final class PowerHelperPlatformTests: XCTestCase {
 
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertLessThanOrEqual(result.standardOutput.utf8.count, 1_024)
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertFalse(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerBoundsBothStreamsAndUsesFixedEnvironment() throws {
@@ -55,6 +57,8 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.standardOutput, "/usr/")
         XCTAssertEqual(result.standardError, "12345")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerCanDiscardAllOutput() throws {
@@ -67,6 +71,8 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.standardOutput, "")
         XCTAssertEqual(result.standardError, "")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerReturnsNonzeroProcessStatus() throws {
@@ -134,6 +140,26 @@ final class PowerHelperPlatformTests: XCTestCase {
                     error as? PowerHelperPlatformError,
                     .unrecognizedPMSetOutput)
             }
+    }
+
+    func testPowerReadersRejectTruncatedSystemOutput() {
+        let runner = FakeCommandRunner()
+        runner.results = [
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "SleepDisabled 1\n",
+                standardOutputTruncated: true),
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "Now drawing from 'AC Power'\n",
+                standardOutputTruncated: true),
+        ]
+
+        XCTAssertThrowsError(
+            try PMSetClosedLidProtectionController(runner: runner)
+                .protectionIsEnabled())
+        XCTAssertThrowsError(
+            try PMSetBatterySafetyReader(runner: runner).isLowBattery())
     }
 
     func testPMSetBackendRejectsAmbiguousAndExtraFieldStatus() {

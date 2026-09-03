@@ -64,7 +64,7 @@ struct MacPowerSettingsPresentation: Equatable {
             }
         case .allowed:
             // The heartbeat wins, but never claim "no sessions" while the
-            // session poller can see live ones.
+            // session snapshot can see live ones.
             if let activeSessionCount, activeSessionCount > 0 {
                 if workingSessionCount == 0 {
                     reason = .waitingSessions(activeSessionCount)
@@ -118,25 +118,15 @@ enum MacPowerActiveSessions {
     }
 }
 
-/// Heartbeat refresh for Settings → System. The SwiftUI `.task` wrapper
-/// only calls this; XCTest cannot map that modifier.
+/// One initial Settings → System refresh. Later heartbeat changes arrive from
+/// the app-level event monitor; storage remains an explicit pane load.
 enum SystemTabHeartbeatRefresh {
     static func run(
         refreshPower: () -> Void,
-        refreshStorage: () async -> Void,
-        sleepNanoseconds: UInt64 = 10_000_000_000
+        refreshStorage: () async -> Void
     ) async {
         refreshPower()
-        async let storageRefresh: Void = refreshStorage()
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: sleepNanoseconds)
-            } catch {
-                break
-            }
-            refreshPower()
-        }
-        await storageRefresh
+        await refreshStorage()
     }
 }
 
@@ -195,8 +185,8 @@ private extension SettingsDestination {
 struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     let installation: InstallationStore
-    /// The app-level shared session poller. Settings can be the only open
-    /// scene, so CLI path and cadence changes are applied here as well.
+    /// The app-level shared session source. Settings can be the only open
+    /// scene, so CLI path changes are applied here as well.
     let sessionStore: SessionStore
     let storageStore: StorageStore
     @ObservedObject var updater: UpdaterService
@@ -205,7 +195,6 @@ struct SettingsView: View {
 
     @AppStorage("detachPath", store: AppSettings.defaults)
     private var detachPath = AppSettings.initialDetachPath
-    @AppStorage("pollInterval", store: AppSettings.defaults) private var pollInterval = 2.0
     @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
     private var fontPointSize = AppFontSize.defaultValue
     @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
@@ -366,9 +355,6 @@ struct SettingsView: View {
             draft.synchronizeAppliedValue(clamped)
             fontSizeDraft = draft
         }
-        .onChange(of: pollInterval) { _, value in
-            sessionStore.startPolling(interval: value)
-        }
         .onChange(of: detachPath) { _, _ in
             Task {
                 await sessionStore.configure(cli: ProcessDetachCLI(
@@ -502,20 +488,6 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.indigo)
                     .disabled(fontSizeDraft?.hasChanges != true)
-                }
-                HStack(spacing: 8) {
-                    Text(L10n.string("Refresh interval"))
-                    Spacer(minLength: 12)
-                    Slider(value: $pollInterval, in: 1...10, step: 1) {
-                        Text(L10n.string("Refresh interval"))
-                    }
-                    .labelsHidden()
-                    .frame(width: 150)
-                    Text(L10n.format("%d sec", Int(pollInterval)))
-                        .appFont(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 44, alignment: .trailing)
                 }
                 Toggle(L10n.string("Show tips"), isOn: $tipsEnabled)
 // quality-coverage:begin ui-e2e-instrumentation
@@ -1125,7 +1097,9 @@ struct SettingsView: View {
     }
 
     var macPowerPresentation: MacPowerSettingsPresentation {
-        let counts = MacPowerActiveSessions.counts(in: sessionStore.sessions)
+        // A cached cold-start row is presentation only and carries no power claim.
+        let counts = MacPowerActiveSessions.counts(
+            in: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [])
         return MacPowerSettingsPresentation(
             state: installation.powerProtectionState,
             helperStatus: installation.powerHelperStatus,
@@ -1150,10 +1124,15 @@ struct SettingsView: View {
                 Text(L10n.string(macPowerPresentation.stateLocalizationKey))
                     .appFont(.headline, weight: .semibold)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(macPowerDetailLine)
-                    .appFont(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // The heartbeat age is a clock reading. Redraw it each second
+                // while this pane is visible instead of waking the app-level
+                // monitor for it.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(macPowerDetailLine(now: context.date))
+                        .appFont(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -1173,9 +1152,9 @@ struct SettingsView: View {
         }
     }
 
-    private var macPowerDetailLine: String {
+    private func macPowerDetailLine(now: Date) -> String {
         var parts = [macPowerReasonText]
-        if let age = macPowerHeartbeatAgeText { parts.append(age) }
+        if let age = macPowerHeartbeatAgeText(now: now) { parts.append(age) }
         return parts.joined(separator: " · ")
     }
 
@@ -1183,10 +1162,10 @@ struct SettingsView: View {
         macPowerPresentation.reason.localizedText
     }
 
-    private var macPowerHeartbeatAgeText: String? {
+    private func macPowerHeartbeatAgeText(now: Date) -> String? {
         let snapshot = installation.watchdogHeartbeat
         guard snapshot.healthy,
-              let age = snapshot.age(relativeTo: Date()), age >= 0 else {
+              let age = snapshot.age(relativeTo: now), age >= 0 else {
             return nil
         }
         return powerCheckedAgeText(seconds: Int(age))

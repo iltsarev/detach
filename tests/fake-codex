@@ -18,6 +18,9 @@ sqlite() {
 }
 
 printf '%s\n' "$@" >"$args_file"
+if [ -n "${FAKE_CODEX_COLORTERM_FILE:-}" ]; then
+  printf '%s\n' "${COLORTERM:-}" >"$FAKE_CODEX_COLORTERM_FILE"
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -72,6 +75,9 @@ sqlite "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, u
 
 printf 'fake Codex started in %s\n' "$cwd"
 printf 'mode=%s id=%s\n' "$mode" "$id"
+if [ "$COLORTERM" = truecolor ]; then
+  printf '\033[38;2;12;34;56mtrue-color checkpoint probe\033[0m\n'
+fi
 if [ -n "${FAKE_CODEX_RELEASE_FILE:-}" ]; then
   case "$FAKE_CODEX_RELEASE_FILE" in
     /*) ;;

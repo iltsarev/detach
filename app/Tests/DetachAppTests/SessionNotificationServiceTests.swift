@@ -389,6 +389,41 @@ final class SessionNotificationServiceTests: XCTestCase {
         XCTAssertEqual(center.delivered.count, 1)
     }
 
+    func testSessionSnapshotsAdvanceWhileNotificationDeliveryIsSuspended() async {
+        let center = SuspendedDeliveryNotificationCenter()
+        let service = SessionNotificationService(
+            center: center, identifierProvider: { "realtime" })
+        await service.configure(enabled: true)
+
+        service.observeFromSessionStore([
+            makeSession(status: .running, turnState: .working, turnID: "turn-1")
+        ])
+        service.observeFromSessionStore([
+            makeSession(status: .running, turnState: .waiting, turnID: "turn-1")
+        ])
+        await center.waitUntilDeliveryStarted()
+
+        // A reply and the next completed turn must reach the detector while
+        // Notification Center still owns the first suspended delivery.
+        service.observeFromSessionStore([
+            makeSession(status: .running, turnState: .working, turnID: "turn-2")
+        ])
+        service.observeFromSessionStore([
+            makeSession(status: .running, turnState: .waiting, turnID: "turn-2")
+        ])
+
+        center.resumeDelivery()
+        for _ in 0..<100 where center.attemptedIdentifiers.count < 2 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(center.attemptedIdentifiers, [
+            "detach.session.realtime",
+            "detach.session.realtime",
+        ])
+        center.resumeDelivery()
+    }
+
     func testDisablingDuringFailedDeliveryDoesNotPublishStaleErrorOrRetry() async {
         let failure = NSError(
             domain: "SessionNotificationServiceTests", code: 41,
@@ -475,6 +510,9 @@ final class SessionNotificationServiceTests: XCTestCase {
                 exitCode: 0, stdout: sessionLine(status: .running),
                 stderr: "", timedOut: true)),
             .success(CLIResult(
+                exitCode: 0, stdout: sessionLine(status: .failed),
+                stderr: "", timedOut: false, stdoutTruncated: true)),
+            .success(CLIResult(
                 exitCode: 0, stdout: sessionLine(status: .running),
                 stderr: "", timedOut: false)),
             .success(CLIResult(
@@ -484,7 +522,7 @@ final class SessionNotificationServiceTests: XCTestCase {
         let service = SessionNotificationService(center: center)
         await service.configure(enabled: true)
 
-        for _ in 0..<5 { await service.pollOnce(using: cli) }
+        for _ in 0..<6 { await service.pollOnce(using: cli) }
 
         XCTAssertEqual(center.delivered.count, 1)
         XCTAssertEqual(center.delivered.first?.title, "Session completed")

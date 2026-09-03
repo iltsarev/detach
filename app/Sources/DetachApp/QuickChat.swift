@@ -45,6 +45,11 @@ enum QuickChatProjectDirectory {
 
 @MainActor
 enum QuickChatLaunch {
+    private enum Outcome: Sendable {
+        case session(String?)
+        case launch(SessionStartResult)
+    }
+
     static func provider(rawValue: String) -> Provider {
         Provider(rawValue: rawValue) ?? .claude
     }
@@ -57,9 +62,6 @@ enum QuickChatLaunch {
         onSessionAvailable: (@MainActor (String) -> Void)? = nil,
         createProjectDirectory: (URL, FileManager) throws -> URL = {
             try QuickChatProjectDirectory.create(inside: $0, fileManager: $1)
-        },
-        discoverySleep: @escaping @Sendable (UInt64) async throws -> Void = {
-            try await Task.sleep(nanoseconds: $0)
         }
     ) async -> SessionStartResult {
         guard let directory = DirectoryPreference.existingDirectoryURL(
@@ -87,65 +89,42 @@ enum QuickChatLaunch {
         }
 
         let existingIDs = Set(store.sessions.map(\.id))
-        var launchFinished = false
-        let launchTask = Task { @MainActor in
-            defer { launchFinished = true }
-            return await store.startDetached(
-                provider: provider,
-                projectDirectory: projectDirectory,
-                name: nil,
-                prompt: nil)
-        }
-        defer { launchTask.cancel() }
-
-        // The typed `starting` row exists before the CLI finishes its runtime
-        // readiness checks. Select it as soon as it is unambiguous.
-        var selectedEarly = false
-        for delay in [75_000_000, 175_000_000] where !launchFinished {
-            do {
-                try await discoverySleep(UInt64(delay))
-            } catch {
-                break
+        return await withTaskGroup(of: Outcome.self) { group in
+            group.addTask {
+                .launch(await store.startDetached(
+                    provider: provider,
+                    projectDirectory: projectDirectory,
+                    name: nil,
+                    prompt: nil))
             }
-            guard !launchFinished else { break }
-            await store.refresh()
-            if let sessionID = newSessionID(
-                in: store.sessions,
-                excluding: existingIDs,
-                provider: provider,
-                projectDirectory: projectDirectory) {
-                selectedEarly = true
-                onSessionAvailable(sessionID)
-                break
+            group.addTask {
+                .session(await store.waitForSession(
+                    provider: provider,
+                    projectDirectory: projectDirectory,
+                    excluding: existingIDs))
             }
-        }
 
-        let result = await launchTask.value
-        if selectedEarly && result.message != nil {
-            await store.refresh()
+            var selectedEarly = false
+            while let outcome = await group.next() {
+                switch outcome {
+                case .session(let sessionID):
+                    guard let sessionID else { continue }
+                    selectedEarly = true
+                    onSessionAvailable(sessionID)
+                case .launch(let result):
+                    if !selectedEarly, let sessionID = result.sessionID {
+                        onSessionAvailable(sessionID)
+                    }
+                    if selectedEarly, result.message != nil {
+                        await store.refresh()
+                    }
+                    group.cancelAll()
+                    return result
+                }
+            }
+            return SessionStartResult(message: L10n.string(
+                "Could not start quick chat"))
         }
-        return result
-    }
-
-    private static func newSessionID(
-        in sessions: [Session],
-        excluding existingIDs: Set<String>,
-        provider: Provider,
-        projectDirectory: URL
-    ) -> String? {
-        let projectPath = canonicalProjectPath(projectDirectory.path)
-        let candidates = sessions.filter {
-            !existingIDs.contains($0.id)
-                && $0.provider == provider
-                && $0.projectDir.map(canonicalProjectPath) == projectPath
-        }
-        return candidates.count == 1 ? candidates[0].id : nil
-    }
-
-    private static func canonicalProjectPath(_ path: String) -> String {
-        URL(fileURLWithPath: path, isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL.path
     }
 }
 

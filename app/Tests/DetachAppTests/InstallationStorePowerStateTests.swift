@@ -213,6 +213,96 @@ final class InstallationStorePowerStateTests: XCTestCase {
             .mainApp)
     }
 
+    func testCompletedOnboardingKeepsDashboardDuringPowerRetry() {
+        XCTAssertEqual(
+            InstallationStore.onboardingStep(
+                phase: .syncing,
+                onboardingEverCompleted: true,
+                input: .init(
+                    isStableApplicationLocation: true,
+                    isBusy: true,
+                    failureMessage: nil,
+                    distributionMatchesBundle: true,
+                    powerHelperEnabled: true,
+                    watchdogEnabled: true,
+                    powerReadinessConfirmed: false,
+                    providerInstalled: true,
+                    onboardingEverCompleted: true)),
+            .mainApp)
+    }
+
+    func testCompletedOnboardingKeepsDashboardWhenPowerReadinessFails() {
+        XCTAssertEqual(
+            InstallationStore.onboardingStep(
+                phase: .actionRequired,
+                onboardingEverCompleted: true,
+                input: .init(
+                    isStableApplicationLocation: true,
+                    isBusy: false,
+                    failureMessage: nil,
+                    distributionMatchesBundle: true,
+                    powerHelperEnabled: true,
+                    watchdogEnabled: true,
+                    powerReadinessConfirmed: false,
+                    providerInstalled: true,
+                    onboardingEverCompleted: true)),
+            .mainApp)
+    }
+
+    func testCompletedOnboardingKeepsDashboardWhenProviderIsMissing() {
+        XCTAssertEqual(
+            InstallationStore.onboardingStep(
+                phase: .actionRequired,
+                onboardingEverCompleted: true,
+                input: .init(
+                    isStableApplicationLocation: true,
+                    isBusy: false,
+                    failureMessage: nil,
+                    distributionMatchesBundle: true,
+                    powerHelperEnabled: true,
+                    watchdogEnabled: true,
+                    powerReadinessConfirmed: true,
+                    providerInstalled: false,
+                    onboardingEverCompleted: true)),
+            .mainApp)
+    }
+
+    func testCompletedOnboardingKeepsDashboardForTransientDoctorFailure() {
+        XCTAssertEqual(
+            InstallationStore.onboardingStep(
+                phase: .failed("helper is unavailable"),
+                onboardingEverCompleted: true,
+                input: .init(
+                    isStableApplicationLocation: true,
+                    isBusy: false,
+                    failureMessage: "helper is unavailable",
+                    distributionMatchesBundle: true,
+                    powerHelperEnabled: true,
+                    watchdogEnabled: true,
+                    powerReadinessConfirmed: false,
+                    providerInstalled: true,
+                    onboardingEverCompleted: true)),
+            .mainApp)
+    }
+
+    func testCompletedOnboardingShowsRuntimeRepairWhenPayloadDoesNotMatch() {
+        XCTAssertEqual(
+            InstallationStore.onboardingStep(
+                phase: .failed("runtime mismatch"),
+                onboardingEverCompleted: true,
+                input: .init(
+                    isStableApplicationLocation: true,
+                    isBusy: false,
+                    failureMessage: "runtime mismatch",
+                    distributionMatchesBundle: false,
+                    powerHelperEnabled: true,
+                    watchdogEnabled: true,
+                    powerReadinessConfirmed: true,
+                    providerInstalled: true,
+                    onboardingEverCompleted: true)),
+            .autoSetup(failureMessage: "runtime mismatch"))
+    }
+
     func testCompletedOnboardingShowsActionableLocationGuidance() {
         XCTAssertEqual(
             InstallationStore.onboardingStep(
@@ -395,6 +485,126 @@ final class InstallationStorePowerStateTests: XCTestCase {
 
         XCTAssertTrue(heartbeatObservationInvalidated)
         XCTAssertEqual(store.watchdogHeartbeat.powerState, .protected)
+        XCTAssertEqual(store.powerProtectionState, .protected)
+    }
+
+    func testTimestampOnlyHeartbeatRefreshRedrawsAgeWithoutNotifying()
+        async throws
+    {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp(offset: -30))"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+        let initialCheckedAt = try XCTUnwrap(store.watchdogHeartbeat.checkedAt)
+        var forwardedSnapshots = 0
+        store.onPowerSnapshot = { _ in forwardedSnapshots += 1 }
+
+        nonisolated(unsafe) var observationInvalidated = false
+        withObservationTracking {
+            _ = store.watchdogHeartbeat
+        } onChange: {
+            observationInvalidated = true
+        }
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
+            to: root)
+        store.refreshPowerProtectionState()
+        for _ in 0..<10 { await Task.yield() }
+
+        // Views present `checked_at` as an age, so the routine write redraws
+        // them. It changes no semantic state and forwards nothing.
+        XCTAssertTrue(observationInvalidated)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(store.watchdogHeartbeat.checkedAt),
+            initialCheckedAt)
+        XCTAssertEqual(store.powerProtectionState, .allowed)
+        XCTAssertEqual(forwardedSnapshots, 0)
+    }
+
+    func testPowerObservationPublishesAtomicChangesWithoutPolling() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+        var delivered: PowerHeartbeatSnapshot?
+        store.onPowerSnapshot = { delivered = $0 }
+        store.startPowerObservation()
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
+            to: root)
+        for _ in 0..<100
+            where store.powerProtectionState != .protected
+                || delivered?.effectivePowerState != .protected {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(store.powerProtectionState, .protected)
+        XCTAssertEqual(delivered?.effectivePowerState, .protected)
+    }
+
+    func testPowerObservationNeverForwardsConstructorSnapshotAfterNewerDocument()
+        async throws
+    {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
+            to: root)
+        var delivered: [PowerProtectionState] = []
+        store.onPowerSnapshot = { delivered.append($0.effectivePowerState) }
+        store.startPowerObservation()
+        for _ in 0..<100 where delivered.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(delivered, [.protected])
+        XCTAssertEqual(store.powerProtectionState, .protected)
+    }
+
+    func testPowerObservationFollowsARecreatedStateDirectory() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())"}"#,
+            to: root)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+        store.startPowerObservation()
+        XCTAssertEqual(store.powerProtectionState, .allowed)
+
+        // A repair removes and recreates the directory. The old vnode belongs
+        // to the unlinked directory and would never report the new writes.
+        try FileManager.default.removeItem(at: root)
+        for _ in 0..<100 where store.powerProtectionState == .allowed {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp())"}"#,
+            to: root)
+        for _ in 0..<200 where store.powerProtectionState != .protected {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
         XCTAssertEqual(store.powerProtectionState, .protected)
     }
 

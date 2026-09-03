@@ -54,7 +54,7 @@ final class SessionShortcutRegistry: ObservableObject {
         }.sorted { $0.slot < $1.slot }
 
         // Published delivers its current value to a later subscriber, so an
-        // unchanged poll does not need to redraw the sidebar or command menu.
+        // unchanged snapshot does not need to redraw the sidebar or command menu.
         if assignments != updated {
             assignments = updated
         }

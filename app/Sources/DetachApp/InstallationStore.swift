@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import DetachKit
 
 enum InstallationContextOperation: Equatable, Sendable {
@@ -59,7 +60,15 @@ final class InstallationStore {
     private(set) var report: DoctorReport?
     private(set) var watchdogStatus: WatchdogStatus = .unavailable
     private(set) var watchdogError: String?
-    private(set) var watchdogHeartbeat: PowerHeartbeatSnapshot
+    /// Timestamp-only watchdog writes update the backing snapshot without
+    /// invalidating SwiftUI. A semantic power or freshness change uses the
+    /// observation registrar and redraws all dependent surfaces at once.
+    @ObservationIgnored private var watchdogHeartbeatStorage:
+        PowerHeartbeatSnapshot
+    var watchdogHeartbeat: PowerHeartbeatSnapshot {
+        access(keyPath: \.watchdogHeartbeat)
+        return watchdogHeartbeatStorage
+    }
     private(set) var powerHelperStatus: PowerHelperRegistrationStatus = .unavailable
     private(set) var powerHelperError: String?
     private(set) var lastInstallMessage: String?
@@ -97,6 +106,13 @@ final class InstallationStore {
     @ObservationIgnored private var pendingContextRepair = false
     @ObservationIgnored private var contextOperationWaiters:
         [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var heartbeatMonitor: PowerHeartbeatMonitor?
+    @ObservationIgnored private var lastPowerSnapshotSequence: UInt64 = 0
+    @ObservationIgnored private var powerObservationNeedsInitialDelivery = true
+    @ObservationIgnored private let powerSnapshotSequence =
+        OSAllocatedUnfairLock<UInt64>(initialState: 0)
+    @ObservationIgnored var onPowerSnapshot:
+        (@MainActor (PowerHeartbeatSnapshot) async -> Void)?
 
     init(
         detachPath: String,
@@ -123,7 +139,7 @@ final class InstallationStore {
             statusURL: self.powerStateRoot
                 .appendingPathComponent("watchdog-status.json"))
         self.heartbeatReader = heartbeatReader
-        watchdogHeartbeat = heartbeatReader.read()
+        watchdogHeartbeatStorage = heartbeatReader.read()
         self.defaults = defaults
         onboardingEverCompleted = defaults.bool(
             forKey: Self.onboardingCompletedKey)
@@ -182,9 +198,75 @@ final class InstallationStore {
     var isBusy: Bool { phase == .syncing || contextOperationRunning }
 
     func refreshPowerProtectionState() {
-        let snapshot = heartbeatReader.read()
-        watchdogHeartbeat = snapshot
-        powerProtectionState = snapshot.effectivePowerState
+        // Reserve the number before reading. A monitor delivery numbered
+        // later then read the document no earlier than this read did, so the
+        // higher number is never the older document.
+        let sequence = nextPowerSnapshotSequence()
+        publishPowerSnapshot(heartbeatReader.read(), sequence: sequence)
+    }
+
+    private func nextPowerSnapshotSequence() -> UInt64 {
+        powerSnapshotSequence.withLock { state -> UInt64 in
+            state += 1
+            return state
+        }
+    }
+
+    func startPowerObservation() {
+        guard heartbeatMonitor == nil else { return }
+        // The monitor delivers on a serial queue, but each hop to the main
+        // actor is an unordered task. Number the snapshots so a stale one can
+        // never land after a newer one.
+        let sequence = powerSnapshotSequence
+        let monitor = PowerHeartbeatMonitor(reader: heartbeatReader) {
+            [weak self] snapshot in
+            let number = sequence.withLock { state -> UInt64 in
+                state += 1
+                return state
+            }
+            Task { @MainActor [weak self] in
+                self?.publishPowerSnapshot(
+                    snapshot,
+                    sequence: number,
+                    isObservationDelivery: true)
+            }
+        }
+        heartbeatMonitor = monitor
+        monitor.start()
+    }
+
+    private func publishPowerSnapshot(
+        _ snapshot: PowerHeartbeatSnapshot,
+        sequence: UInt64? = nil,
+        isObservationDelivery: Bool = false
+    ) {
+        if let sequence {
+            guard sequence > lastPowerSnapshotSequence else { return }
+            lastPowerSnapshotSequence = sequence
+        }
+        let isInitialObservation = isObservationDelivery
+            && powerObservationNeedsInitialDelivery
+        if isInitialObservation {
+            powerObservationNeedsInitialDelivery = false
+        }
+        let previous = watchdogHeartbeatStorage
+        let presentedStateChanged = !snapshot.hasSamePresentedState(as: previous)
+        if snapshot != previous {
+            // Views present `checked_at` as an age, so a timestamp-only write
+            // must redraw them too. Only the semantic change below fans out
+            // to notifications.
+            withMutation(keyPath: \.watchdogHeartbeat) {
+                watchdogHeartbeatStorage = snapshot
+            }
+        }
+        if snapshot.effectivePowerState != powerProtectionState {
+            powerProtectionState = snapshot.effectivePowerState
+        }
+        guard presentedStateChanged || isInitialObservation,
+              let onPowerSnapshot else { return }
+        Task { @MainActor in
+            await onPowerSnapshot(snapshot)
+        }
     }
 
     /// Pure registration-status read for live onboarding polling: no
@@ -240,19 +322,25 @@ final class InstallationStore {
         onboardingEverCompleted: Bool,
         input: OnboardingStepInput
     ) -> OnboardingStep {
-        // A returning user must never see a transient setup card while the
-        // app bootstraps, refreshes, or waits for active power leases to end.
-        // Keep the dashboard mounted until a completed check publishes a real
-        // actionable state.
+        let step = SetupGuidance.step(for: input)
+        // A returning user keeps access to existing sessions when power
+        // readiness regresses. The dashboard and Settings surface the error;
+        // the runtime still fails closed before starting a new provider.
         if onboardingEverCompleted {
             switch phase {
             case .idle, .syncing, .updateDeferred, .ready:
                 return .mainApp
             case .actionRequired, .failed:
-                break
+                if !input.isStableApplicationLocation {
+                    return .moveToApplications
+                }
+                if !input.distributionMatchesBundle {
+                    return step
+                }
+                return .mainApp
             }
         }
-        return SetupGuidance.step(for: input)
+        return step
     }
 
     func bootstrap() async {

@@ -154,6 +154,25 @@ final class StorageStoreTests: XCTestCase {
         XCTAssertEqual(store.report, report)
     }
 
+    func testTruncatedStorageJSONDoesNotReplaceLastGoodReport() async throws {
+        let cli = FakeCLI()
+        let report = makeReport([makeSession(name: "detach-codex-one", bytes: 4_096)])
+        cli.responses["storage --json"] = ok(try encode(report))
+        let store = StorageStore(cli: cli)
+        await store.refresh()
+        cli.responses["storage --json"] = .success(CLIResult(
+            exitCode: 0,
+            stdout: "{}",
+            stderr: "",
+            timedOut: false,
+            stdoutTruncated: true))
+
+        await store.refresh()
+
+        XCTAssertEqual(store.state, .incompatible)
+        XCTAssertEqual(store.report, report)
+    }
+
     private func ok(_ stdout: String) -> Result<CLIResult, Error> {
         .success(CLIResult(exitCode: 0, stdout: stdout, stderr: "", timedOut: false))
     }

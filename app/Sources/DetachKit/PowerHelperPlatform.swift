@@ -21,15 +21,21 @@ public struct RootCommandResult: Equatable, Sendable {
     public let exitCode: Int32
     public let standardOutput: String
     public let standardError: String
+    public let standardOutputTruncated: Bool
+    public let standardErrorTruncated: Bool
 
     public init(
         exitCode: Int32,
         standardOutput: String = "",
-        standardError: String = ""
+        standardError: String = "",
+        standardOutputTruncated: Bool = false,
+        standardErrorTruncated: Bool = false
     ) {
         self.exitCode = exitCode
         self.standardOutput = standardOutput
         self.standardError = standardError
+        self.standardOutputTruncated = standardOutputTruncated
+        self.standardErrorTruncated = standardErrorTruncated
     }
 }
 
@@ -41,6 +47,7 @@ private final class BoundedRootCommandOutput: @unchecked Sendable {
     private let lock = NSLock()
     private let maximumBytes: Int
     private var data = Data()
+    private var didTruncate = false
 
     init(maximumBytes: Int) {
         self.maximumBytes = max(0, maximumBytes)
@@ -49,14 +56,22 @@ private final class BoundedRootCommandOutput: @unchecked Sendable {
     func append(_ chunk: Data) {
         lock.lock()
         defer { lock.unlock() }
-        guard data.count < maximumBytes else { return }
-        data.append(chunk.prefix(maximumBytes - data.count))
+        let remaining = max(0, maximumBytes - data.count)
+        if chunk.count > remaining { didTruncate = true }
+        guard remaining > 0 else { return }
+        data.append(chunk.prefix(remaining))
     }
 
     var string: String {
         lock.lock()
         defer { lock.unlock() }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    var isTruncated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didTruncate
     }
 }
 
@@ -128,7 +143,9 @@ public struct RootProcessCommandRunner: RootCommandRunning {
         return RootCommandResult(
             exitCode: process.terminationStatus,
             standardOutput: output.string,
-            standardError: errorOutput.string)
+            standardError: errorOutput.string,
+            standardOutputTruncated: output.isTruncated,
+            standardErrorTruncated: errorOutput.isTruncated)
     }
 
     private static func drain(
@@ -581,6 +598,10 @@ public struct PMSetClosedLidProtectionController: ClosedLidProtectionControlling
                 message: String(result.standardError.prefix(512))
                     .trimmingCharacters(in: .whitespacesAndNewlines))
         }
+        guard !result.standardOutputTruncated,
+              !result.standardErrorTruncated else {
+            throw PowerHelperPlatformError.unrecognizedPMSetOutput
+        }
         return result
     }
 }
@@ -611,6 +632,10 @@ public struct PMSetBatterySafetyReader: PowerBatterySafetyReading {
                 exitCode: result.exitCode,
                 message: String(result.standardError.prefix(512))
                     .trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard !result.standardOutputTruncated,
+              !result.standardErrorTruncated else {
+            throw PowerHelperPlatformError.unrecognizedPMSetOutput
         }
         let output = result.standardOutput
         if output.contains("'AC Power'") { return false }

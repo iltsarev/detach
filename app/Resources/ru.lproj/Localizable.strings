@@ -22,6 +22,7 @@
 
 /* DetachKit errors */
 "detach list timed out" = "Истекло время ожидания detach list";
+"detach returned incomplete output" = "detach вернул неполный вывод";
 "Internal error: %@ must run in Terminal" = "Внутренняя ошибка: команда %@ должна выполняться в Terminal";
 "Internal error: %@ is not an in-app start action" = "Внутренняя ошибка: %@ не запускается внутри приложения";
 "The session has no provider UUID to resume." = "У сессии нет UUID провайдера для продолжения.";
@@ -153,7 +154,6 @@
 "Recover" = "Восстановить";
 "Reconnect" = "Переподключиться";
 "Recover in %@" = "Восстановить в %@";
-"Refresh interval" = "Интервал обновления";
 "Refresh terminal list" = "Обновить список терминалов";
 "Reinstall command-line tools" = "Переустановить командные инструменты";
 "Remove everything, including checkpoints…" = "Удалить всё, включая чекпойнты…";
@@ -278,7 +278,6 @@
 "Text size preview" = "Предпросмотр размера текста";
 "Apply" = "Применить";
 "%d pt" = "%d пт";
-"%d sec" = "%d с";
 "Command line" = "Командная строка";
 "Answer ready · 2 min ago" = "Ответ готов · 2 мин назад";
 "tmux status line" = "Строка статуса tmux";
@@ -434,6 +433,8 @@
 "⌘N opens New session. ⌘T starts Quick chat immediately." = "⌘N открывает новую сессию. ⌘T сразу запускает быстрый чат.";
 "Could not start quick chat" = "Не удалось запустить быстрый чат";
 "Quick chat folder is unavailable: %@" = "Папка быстрого чата недоступна: %@";
+"Could not identify the active terminal client" = "Не удалось определить активный клиент терминала";
+"Could not switch the terminal session" = "Не удалось переключить сессию терминала";
 
 /* Menu bar item */
 "Open Detach" = "Открыть Detach";
@@ -448,3 +449,5 @@
 "Show Detach in the menu bar" = "Показывать Detach в строке меню";
 "Show active session count next to the icon" = "Число активных сессий рядом со значком";
 "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own." = "Окно можно закрывать — значок продолжит показывать состояние сна. ⌘Q завершает Detach; сессии и защита от сна продолжаются сами.";
+"Only a signed Detach release can update the background monitor." = "Только подписанный релиз Detach может обновить фоновый монитор.";
+"Only a signed Detach release can update the power helper." = "Только подписанный релиз Detach может обновить помощник питания.";

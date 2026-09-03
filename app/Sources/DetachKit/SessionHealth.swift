@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum TmuxHealthState: String, Codable, Sendable {
@@ -24,6 +25,152 @@ public enum FreshnessState: String, Codable, Sendable {
     case fresh
     case stale
     case missing
+}
+
+/// An authoritative phase owned by the runtime. Stable user outcomes remain
+/// in metadata `status`; this phase only makes multi-step transitions explicit.
+public enum RuntimeLifecyclePhase: String, Codable, Sendable {
+    case initializing
+    case starting
+    case running
+    case stopping
+    case finalizing
+    case terminal
+
+    func allows(_ target: RuntimeLifecyclePhase) -> Bool {
+        if self == target { return true }
+        return switch self {
+        case .initializing:
+            target == .starting || target == .terminal
+        case .starting:
+            target == .running || target == .stopping
+                || target == .finalizing || target == .terminal
+        case .running:
+            target == .stopping || target == .finalizing || target == .terminal
+        case .stopping:
+            // Stop can roll back only if the exact managed pane survived a
+            // failed removal and the runtime remains usable.
+            target == .running || target == .terminal
+        case .finalizing:
+            target == .terminal
+        case .terminal:
+            target == .terminal
+        }
+    }
+
+    static func inferred(fromMetadataStatus status: String?) -> RuntimeLifecyclePhase {
+        switch status {
+        case "starting": .starting
+        case "running", "recovering", "hung": .running
+        default: .terminal
+        }
+    }
+}
+
+struct SessionProcessHealth: Equatable, Sendable {
+    var worker: ProcessHealthState
+    var provider: ProcessHealthState
+}
+
+struct SessionProcessIdentity: Equatable, Sendable {
+    var parentPID: pid_t
+    var userID: uid_t
+}
+
+/// Reads only the process identities named by one health record. The result is
+/// presentation evidence. Runtime mutations repeat their established live
+/// ownership and tmux-token checks immediately before they act.
+enum SessionProcessHealthInspector {
+    typealias Lookup = (pid_t) -> SessionProcessIdentity?
+
+    static func inspect(
+        tmuxState: TmuxHealthState,
+        workerPID rawWorkerPID: String,
+        providerPID rawProviderPID: String,
+        panePID rawPanePID: String,
+        userID: uid_t = geteuid(),
+        lookup: Lookup = liveIdentity
+    ) -> SessionProcessHealth {
+        let workerPID = validPID(rawWorkerPID)
+        let providerPID = validPID(rawProviderPID)
+        let panePID = validPID(rawPanePID)
+        var identities: [pid_t: SessionProcessIdentity?] = [:]
+        func identity(_ pid: pid_t) -> SessionProcessIdentity? {
+            if let cached = identities[pid] { return cached }
+            let value = lookup(pid)
+            identities[pid] = .some(value)
+            return value
+        }
+
+        var worker: ProcessHealthState
+        if let workerPID {
+            worker = identity(workerPID)?.userID == userID ? .alive : .dead
+        } else {
+            worker = .unknown
+        }
+
+        var provider: ProcessHealthState
+        if let providerPID {
+            if identity(providerPID)?.userID != userID {
+                provider = .dead
+            } else if let workerPID,
+                      worker == .alive,
+                      isDescendant(
+                          providerPID,
+                          of: workerPID,
+                          identity: identity) {
+                provider = .alive
+            } else {
+                provider = .mismatch
+            }
+        } else {
+            provider = .unknown
+        }
+
+        if tmuxState == .live,
+           worker == .alive,
+           panePID != workerPID {
+            worker = .mismatch
+            provider = .mismatch
+        }
+        return SessionProcessHealth(worker: worker, provider: provider)
+    }
+
+    private static func validPID(_ raw: String) -> pid_t? {
+        guard let value = Int64(raw),
+              value > 1,
+              value <= Int64(Int32.max) else { return nil }
+        return pid_t(value)
+    }
+
+    private static func isDescendant(
+        _ child: pid_t,
+        of ancestor: pid_t,
+        identity: (pid_t) -> SessionProcessIdentity?
+    ) -> Bool {
+        var current = child
+        for _ in 0..<64 {
+            if current == ancestor { return true }
+            guard let parent = identity(current)?.parentPID,
+                  parent > 1 else { return false }
+            current = parent
+        }
+        return false
+    }
+
+    private static func liveIdentity(_ pid: pid_t) -> SessionProcessIdentity? {
+        var information = proc_bsdinfo()
+        let expected = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(
+            pid,
+            PROC_PIDTBSDINFO,
+            0,
+            &information,
+            expected) == expected else { return nil }
+        return SessionProcessIdentity(
+            parentPID: pid_t(information.pbi_ppid),
+            userID: uid_t(information.pbi_uid))
+    }
 }
 
 public enum SessionHealthReason: String, Codable, Sendable {
@@ -70,6 +217,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
     public var checkpointFreshness: FreshnessState
     public var checkpointRecoverable: Bool
     public var agentSessionKnown: Bool
+    public var stopRequested: Bool
+    public var lifecyclePhase: RuntimeLifecyclePhase
 
     public init(
         metadataValid: Bool,
@@ -82,7 +231,9 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         heartbeatFreshness: FreshnessState,
         checkpointFreshness: FreshnessState,
         checkpointRecoverable: Bool,
-        agentSessionKnown: Bool
+        agentSessionKnown: Bool,
+        stopRequested: Bool = false,
+        lifecyclePhase: RuntimeLifecyclePhase? = nil
     ) {
         self.metadataValid = metadataValid
         self.runtimeIdentityExpected = runtimeIdentityExpected
@@ -95,6 +246,9 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         self.checkpointFreshness = checkpointFreshness
         self.checkpointRecoverable = checkpointRecoverable
         self.agentSessionKnown = agentSessionKnown
+        self.stopRequested = stopRequested
+        self.lifecyclePhase = lifecyclePhase
+            ?? RuntimeLifecyclePhase.inferred(fromMetadataStatus: metaStatus.rawValue)
     }
 }
 
@@ -139,6 +293,50 @@ public enum SessionHealthEvaluator {
                 actions: actions,
                 ownershipProven: evidence.tmuxState == .live || evidence.tmuxState == .dead,
                 evidence: evidence)
+        }
+
+        // Active transition phases close user actions while an exact runtime
+        // component can still finish them. If all runtime evidence is dead,
+        // fall through so a crashed transition converges to Resume/Delete.
+        // A foreign tmux and malformed metadata still take precedence above.
+        let liveIdentityConflict = evidence.tmuxState == .live
+            && evidence.runTokenState != .match
+        let transitionInProgress = evidence.tmuxState == .live
+            || runtimeProcessMayStillBeAlive(evidence)
+        switch evidence.lifecyclePhase {
+        case .initializing:
+            if liveIdentityConflict { break }
+            if transitionInProgress {
+                return assessment(
+                    status: .starting,
+                    reason: .healthy,
+                    actions: [],
+                    evidence: evidence)
+            }
+        case .stopping:
+            if liveIdentityConflict { break }
+            if transitionInProgress {
+                var result = assessment(
+                    status: .stopped,
+                    reason: .finished,
+                    actions: [],
+                    evidence: evidence)
+                result.cleanupEligible = false
+                return result
+            }
+        case .finalizing:
+            if liveIdentityConflict { break }
+            if transitionInProgress {
+                var result = assessment(
+                    status: isActive(evidence.metaStatus) ? .interrupted : evidence.metaStatus,
+                    reason: .finished,
+                    actions: [],
+                    evidence: evidence)
+                result.cleanupEligible = false
+                return result
+            }
+        case .starting, .running, .terminal:
+            break
         }
 
         switch evidence.tmuxState {
@@ -196,6 +394,41 @@ public enum SessionHealthEvaluator {
             break
         }
 
+        // Stop records exact-run intent and its public outcome before
+        // signalling the process group. The provider can exit while its
+        // worker is still checkpointing. Keep that outcome monotonic and
+        // actions closed until the worker and tmux pane have finished.
+        if evidence.stopRequested,
+           evidence.runtimeIdentityExpected,
+           evidence.workerState == .alive,
+           evidence.providerState == .dead {
+            var result = assessment(
+                status: .stopped,
+                reason: .finished,
+                actions: [],
+                ownershipProven: true,
+                evidence: evidence)
+            result.cleanupEligible = false
+            return result
+        }
+
+        // The worker publishes its final status and only then exits, so a
+        // terminal metadata record with a live owned pane and a gone provider
+        // is a run that is finishing, not a hung one. The pane dies moments
+        // later. Reporting `hung` here would move a finished session into
+        // Problems until an unrelated event repaired it.
+        if evidence.runtimeIdentityExpected,
+           !isActive(evidence.metaStatus),
+           evidence.workerState == .alive,
+           evidence.providerState == .dead {
+            var result = finishedAssessment(evidence, reason: .finished)
+            result.ownershipProven = true
+            // The pane is still alive for a moment. Typed cleanup waits for
+            // the next snapshot, which sees the dead pane.
+            result.cleanupEligible = false
+            return result
+        }
+
         if !evidence.runtimeIdentityExpected {
             let reason: SessionHealthReason = evidence.checkpointFreshness == .stale
                 ? .checkpointStale : .heartbeatMissing
@@ -216,6 +449,22 @@ public enum SessionHealthEvaluator {
             return hungAssessment(reason: .workerPIDMismatch, evidence: evidence)
         case .alive:
             break
+        }
+
+        // The worker is the first exact process identity established during a
+        // new run. It publishes `starting` before the power wrapper exposes the
+        // provider PID so event consumers can show the row immediately. This
+        // is a coherent owned startup phase, not a lost provider. The runtime
+        // promotes the record to `running` only after it proves the provider
+        // descendant; any other status with a missing PID remains hung.
+        if evidence.metaStatus == .starting,
+           evidence.providerState == .unknown {
+            return assessment(
+                status: .starting,
+                reason: .healthy,
+                actions: [.attach, .stop],
+                ownershipProven: true,
+                evidence: evidence)
         }
 
         switch evidence.providerState {

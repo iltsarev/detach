@@ -14,18 +14,24 @@ APP_PID=""
 approved_invocation() {
   case "$1" in
     'list --json'|\
+    'watch --json'|\
     'codex logs --ansi detach-codex-ui-running'|\
-    'codex attach detach-codex-ui-running'|\
+    'codex attach --terminal-features sync detach-codex-ui-running'|\
+    'codex logs --ansi detach-codex-ui-stopped'|\
     'codex logs --ansi detach-codex-ui-recoverable'|\
     'codex recover --detach detach-codex-ui-recoverable'|\
-    'codex attach detach-codex-ui-recoverable'|\
+    'codex attach --terminal-features sync detach-codex-ui-recoverable'|\
     'claude logs --ansi detach-claude-ui-completed'|\
     'resume --detach a9f58f1d-1234-5678-9abc-def012342ed9'|\
-    'claude attach detach-claude-ui-completed'|\
+    'claude attach --terminal-features sync detach-claude-ui-completed'|\
     'claude --detach'|\
     'codex --detach'|\
-    'codex attach detach-codex-ui-quick'|\
-    'claude attach detach-claude-ui-new'|\
+    'codex logs --ansi detach-codex-ui-quick'|\
+    'codex attach --terminal-features sync detach-codex-ui-quick'|\
+    'claude logs --ansi detach-claude-ui-new'|\
+    'claude attach --terminal-features sync detach-claude-ui-new'|\
+    client\ switch\ --pid\ *\ --from\ *\ --to\ *\ --provider\ codex|\
+    client\ switch\ --pid\ *\ --from\ *\ --to\ *\ --provider\ claude|\
     'codex stop detach-codex-ui-running'|\
     'codex delete --force detach-codex-ui-stopped'|\
     'storage --json'|\
@@ -307,8 +313,11 @@ run_app_scenario() {
       background-app-starts-without-focus|disconnected-stop-blocks-action|\
       finished-selection-clears-scrollbar|session-uuid-copies-from-text-side|\
       live-session-hosts-attach-client|\
+      session-switch-keeps-terminal-layout-stable|\
       live-terminal-renders-on-demand|\
       live-terminal-routes-control-v|\
+      live-session-switch-reuses-synchronized-client|\
+      non-live-session-switch-uses-warm-cache|\
       recover-and-reconnect-run-in-app-with-terminal-fallback|\
       resume-runs-in-app-with-terminal-fallback|\
       session-shortcut-selects-assigned-session|\
@@ -354,14 +363,17 @@ run_app_scenario main sessions 32 \
   background-app-starts-without-focus \
   dashboard-accessible \
   sidebar-shortcut-guide-visible \
+  non-live-session-switch-uses-warm-cache \
   recover-and-reconnect-run-in-app-with-terminal-fallback \
   sidebar-selects-completed-session \
   session-uuid-copies-from-text-side \
   resume-runs-in-app-with-terminal-fallback \
   session-shortcut-selects-assigned-session \
   live-session-hosts-attach-client \
+  session-switch-keeps-terminal-layout-stable \
   live-terminal-renders-on-demand \
   live-terminal-routes-control-v \
+  live-session-switch-reuses-synchronized-client \
   session-signals-stay-distinct \
   disconnected-stop-blocks-action \
   safe-action-reaches-fake-cli \
@@ -395,15 +407,43 @@ while IFS= read -r invocation; do
   fi
 done <"$FAKE_DIR/invocations.log"
 
-[ "$(grep -Fxc 'codex recover --detach detach-codex-ui-recoverable' \
-  "$FAKE_DIR/invocations.log")" -ge 1 ]
-[ "$(grep -Fxc 'codex attach detach-codex-ui-recoverable' \
-  "$FAKE_DIR/invocations.log")" -ge 2 ]
-[ "$(grep -Fxc 'claude --detach' "$FAKE_DIR/invocations.log")" -eq 1 ]
-[ "$(grep -Fxc 'codex --detach' "$FAKE_DIR/invocations.log")" -eq 1 ]
-[ "$(grep -Fxc 'codex attach detach-codex-ui-quick' \
-  "$FAKE_DIR/invocations.log")" -ge 1 ]
-[ "$(grep -Fxc 'claude attach detach-claude-ui-new' \
-  "$FAKE_DIR/invocations.log")" -ge 1 ]
+recover_count="$(grep -Fxc 'codex recover --detach detach-codex-ui-recoverable' \
+  "$FAKE_DIR/invocations.log" || true)"
+recover_attach_count="$(grep -Fxc \
+  'codex attach --terminal-features sync detach-codex-ui-recoverable' \
+  "$FAKE_DIR/invocations.log" || true)"
+running_attach_count="$(grep -Fxc \
+  'codex attach --terminal-features sync detach-codex-ui-running' \
+  "$FAKE_DIR/invocations.log" || true)"
+switch_count="$(grep -Fc 'client switch --pid ' \
+  "$FAKE_DIR/invocations.log" || true)"
+claude_start_count="$(grep -Fxc 'claude --detach' \
+  "$FAKE_DIR/invocations.log" || true)"
+codex_start_count="$(grep -Fxc 'codex --detach' \
+  "$FAKE_DIR/invocations.log" || true)"
+quick_attach_count="$(grep -Fxc \
+  'codex attach --terminal-features sync detach-codex-ui-quick' \
+  "$FAKE_DIR/invocations.log" || true)"
+new_attach_count="$(grep -Fxc \
+  'claude attach --terminal-features sync detach-claude-ui-new' \
+  "$FAKE_DIR/invocations.log" || true)"
+quick_switch_count="$(grep -Fc \
+  ' --to detach-codex-ui-quick --provider codex' \
+  "$FAKE_DIR/invocations.log" || true)"
+new_switch_count="$(grep -Fc \
+  ' --to detach-claude-ui-new --provider claude' \
+  "$FAKE_DIR/invocations.log" || true)"
+if [ "$recover_count" -lt 1 ] || [ "$recover_attach_count" -lt 2 ] \
+    || [ "$switch_count" -lt 3 ] \
+    || [ "$claude_start_count" -ne 1 ] || [ "$codex_start_count" -ne 1 ] \
+    || [ "$((quick_attach_count + quick_switch_count))" -lt 1 ] \
+    || [ "$((new_attach_count + new_switch_count))" -lt 1 ]; then
+  printf 'UI e2e invocation counts: recover=%s recover_attach=%s running_attach=%s switch=%s claude_start=%s codex_start=%s quick_attach=%s quick_switch=%s new_attach=%s new_switch=%s\n' \
+    "$recover_count" "$recover_attach_count" "$running_attach_count" \
+    "$switch_count" "$claude_start_count" "$codex_start_count" \
+    "$quick_attach_count" "$quick_switch_count" "$new_attach_count" \
+    "$new_switch_count" >&2
+  exit 1
+fi
 
 printf 'Packaged Detach.app UI e2e smoke passed\n'

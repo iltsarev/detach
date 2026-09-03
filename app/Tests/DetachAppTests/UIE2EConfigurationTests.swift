@@ -184,7 +184,7 @@ final class UIE2EConfigurationTests: XCTestCase {
             XCTAssertEqual(
                 defaults.string(forKey: "detachPath"),
                 fixture.cli.resolvingSymlinksInPath().path)
-            XCTAssertEqual(defaults.double(forKey: "pollInterval"), 0.5)
+            XCTAssertNil(defaults.object(forKey: "pollInterval"))
             XCTAssertFalse(defaults.bool(forKey: AppSettings.notificationsEnabledKey))
             XCTAssertFalse(defaults.bool(forKey: AppSettings.tipsEnabledKey))
             XCTAssertFalse(defaults.bool(forKey: AppSettings.menuBarIconEnabledKey))

@@ -2,6 +2,54 @@ import XCTest
 @testable import DetachKit
 
 final class SessionHealthTests: XCTestCase {
+    func testRuntimeLifecyclePhaseAllowsOnlyTheDeclaredGraph() {
+        let allowed: [(RuntimeLifecyclePhase, [RuntimeLifecyclePhase])] = [
+            (.initializing, [.initializing, .starting, .terminal]),
+            (.starting, [.starting, .running, .stopping, .finalizing, .terminal]),
+            (.running, [.running, .stopping, .finalizing, .terminal]),
+            (.stopping, [.stopping, .running, .terminal]),
+            (.finalizing, [.finalizing, .terminal]),
+            (.terminal, [.terminal]),
+        ]
+        let phases = allowed.map(\.0)
+
+        for (source, targets) in allowed {
+            for target in phases {
+                XCTAssertEqual(
+                    source.allows(target),
+                    targets.contains { $0 == target },
+                    "\(source) -> \(target)")
+            }
+        }
+    }
+
+    func testInitializingPhaseIsActionlessUntilIdentityAppearsOrDies() {
+        let starting = evaluate(
+            status: .starting,
+            provider: .unknown,
+            lifecyclePhase: .initializing)
+        XCTAssertEqual(starting.effectiveStatus, .starting)
+        XCTAssertEqual(starting.reason, .healthy)
+        XCTAssertTrue(starting.actions.isEmpty)
+
+        let replacement = evaluate(
+            status: .starting,
+            token: .mismatch,
+            provider: .unknown,
+            lifecyclePhase: .initializing)
+        XCTAssertEqual(replacement.effectiveStatus, .corrupt)
+        XCTAssertEqual(replacement.reason, .runTokenMismatch)
+
+        let dead = evaluate(
+            status: .starting,
+            tmux: .missing,
+            worker: .dead,
+            provider: .dead,
+            lifecyclePhase: .initializing)
+        XCTAssertEqual(dead.effectiveStatus, .recoverable)
+        XCTAssertEqual(dead.actions, [.recover, .delete])
+    }
+
     func testForeignTmuxCollisionNeverOffersAnAction() {
         let result = evaluate(tmux: .foreign)
 
@@ -125,6 +173,44 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertFalse(result.ownershipProven)
     }
 
+    func testFinishingWorkerWithTerminalMetadataIsNotHung() {
+        // After Ctrl+C the worker writes `interrupted`, publishes the hint,
+        // and only then exits. The list that follows sees a live owned pane
+        // with a dead provider; that is a finished run, not a hung one.
+        for status in [EffectiveStatus.interrupted, .completed, .failed, .stopped] {
+            let result = evaluate(status: status, provider: .dead)
+
+            XCTAssertEqual(result.effectiveStatus, status, "\(status)")
+            XCTAssertEqual(result.reason, .finished)
+            XCTAssertTrue(result.ownershipProven)
+            XCTAssertFalse(result.actions.contains(.attach))
+            XCTAssertEqual(result.reconcileAction, .none)
+        }
+        // An active record with a dead provider still needs the hung signal.
+        XCTAssertEqual(evaluate(status: .running, provider: .dead).effectiveStatus, .hung)
+        // Only a live worker proves a finishing run; a lost or mismatched
+        // worker with a live pane keeps the established hung verdict and
+        // grants no cleanup on that pane.
+        XCTAssertEqual(
+            evaluate(status: .stopped, worker: .dead, provider: .dead).effectiveStatus, .hung)
+        XCTAssertEqual(
+            evaluate(status: .stopped, worker: .mismatch, provider: .dead).effectiveStatus,
+            .hung)
+        XCTAssertFalse(evaluate(status: .stopped, provider: .dead).cleanupEligible)
+        // A provider that is merely unproven keeps the established rules.
+        XCTAssertEqual(
+            evaluate(status: .interrupted, provider: .mismatch).effectiveStatus, .hung)
+        // Legacy metadata without runtime identity keeps its own branch.
+        XCTAssertEqual(
+            evaluate(
+                runtimeIdentityExpected: false,
+                status: .stopped,
+                worker: .unknown,
+                provider: .unknown,
+                heartbeat: .missing).effectiveStatus,
+            .running)
+    }
+
     func testWorkerCrashNeverRecoversWhileAnUnprovenProviderPIDIsStillAlive() {
         let result = evaluate(
             tmux: .dead,
@@ -192,6 +278,137 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertTrue(result.ownershipProven)
     }
 
+    func testStopIntentKeepsFinishingWorkerStopped() {
+        let result = evaluate(provider: .dead, stopRequested: true)
+
+        XCTAssertEqual(result.effectiveStatus, .stopped)
+        XCTAssertEqual(result.reason, .finished)
+        XCTAssertTrue(result.actions.isEmpty)
+        XCTAssertTrue(result.ownershipProven)
+        XCTAssertFalse(result.cleanupEligible)
+    }
+
+    func testStoppingPhaseStaysActionlessWhileRuntimeTeardownRemains() {
+        let inProgress: [(TmuxHealthState, ProcessHealthState)] = [
+            (.live, .dead),
+            (.dead, .alive),
+            (.missing, .alive),
+        ]
+        for (tmux, worker) in inProgress {
+            let result = evaluate(
+                status: .stopped,
+                tmux: tmux,
+                worker: worker,
+                provider: .dead,
+                stopRequested: true,
+                lifecyclePhase: .stopping)
+
+            XCTAssertEqual(result.effectiveStatus, .stopped, "tmux=\(tmux)")
+            XCTAssertEqual(result.reason, .finished, "tmux=\(tmux)")
+            XCTAssertTrue(result.actions.isEmpty, "tmux=\(tmux)")
+            XCTAssertEqual(result.reconcileAction, .none, "tmux=\(tmux)")
+            XCTAssertFalse(result.cleanupEligible, "tmux=\(tmux)")
+        }
+
+        let replacement = evaluate(
+            token: .mismatch,
+            stopRequested: true,
+            lifecyclePhase: .stopping)
+        XCTAssertEqual(replacement.effectiveStatus, .corrupt)
+        XCTAssertEqual(replacement.reason, .runTokenMismatch)
+    }
+
+    func testCrashedStoppingPhaseConvergesAfterRuntimeIsGone() {
+        for (tmux, reconcile) in [
+            (TmuxHealthState.dead, SessionReconcileAction.removeDeadTmux),
+            (.missing, .none),
+        ] {
+            let result = evaluate(
+                status: .stopped,
+                tmux: tmux,
+                worker: .dead,
+                provider: .dead,
+                stopRequested: true,
+                lifecyclePhase: .stopping)
+
+            XCTAssertEqual(result.effectiveStatus, .stopped, "tmux=\(tmux)")
+            XCTAssertEqual(result.reason, tmux == .dead ? .paneExited : .finished)
+            XCTAssertEqual(result.actions, [.resume, .delete], "tmux=\(tmux)")
+            XCTAssertEqual(result.reconcileAction, reconcile, "tmux=\(tmux)")
+            XCTAssertTrue(result.cleanupEligible, "tmux=\(tmux)")
+        }
+    }
+
+    func testFinalizingPhaseNeverReportsADeadProviderAsHung() {
+        for (status, expected) in [
+            (EffectiveStatus.completed, EffectiveStatus.completed),
+            (.failed, .failed),
+            (.interrupted, .interrupted),
+            (.running, .interrupted),
+        ] {
+            let result = evaluate(
+                status: status,
+                tmux: .live,
+                worker: .alive,
+                provider: .dead,
+                lifecyclePhase: .finalizing)
+
+            XCTAssertEqual(result.effectiveStatus, expected, "status=\(status)")
+            XCTAssertEqual(result.reason, .finished, "status=\(status)")
+            XCTAssertTrue(result.actions.isEmpty, "status=\(status)")
+            XCTAssertFalse(result.cleanupEligible, "status=\(status)")
+        }
+    }
+
+    func testCrashedFinalizingPhaseOpensTerminalActions() {
+        let result = evaluate(
+            status: .completed,
+            tmux: .missing,
+            worker: .dead,
+            provider: .dead,
+            lifecyclePhase: .finalizing)
+
+        XCTAssertEqual(result.effectiveStatus, .completed)
+        XCTAssertEqual(result.reason, .finished)
+        XCTAssertEqual(result.actions, [.resume, .delete])
+        XCTAssertFalse(result.cleanupEligible)
+    }
+
+    func testStopIntentKeepsStoppedOutcomeAfterTerminalMetadata() {
+        for status in [
+            EffectiveStatus.interrupted,
+            .stopped,
+            .completed,
+        ] {
+            let result = evaluate(
+                status: status,
+                provider: .dead,
+                stopRequested: true)
+
+            XCTAssertEqual(result.effectiveStatus, .stopped)
+            XCTAssertEqual(result.reason, .finished)
+            XCTAssertTrue(result.actions.isEmpty)
+            XCTAssertTrue(result.ownershipProven)
+            XCTAssertFalse(result.cleanupEligible)
+        }
+    }
+
+    func testStopIntentNeverMasksUnprovenRuntimeIdentity() {
+        XCTAssertEqual(evaluate(stopRequested: true).effectiveStatus, .running)
+        XCTAssertEqual(
+            evaluate(worker: .dead, provider: .dead, stopRequested: true).reason,
+            .workerProcessLost)
+        XCTAssertEqual(
+            evaluate(worker: .mismatch, provider: .dead, stopRequested: true).reason,
+            .workerPIDMismatch)
+        XCTAssertEqual(
+            evaluate(provider: .mismatch, stopRequested: true).reason,
+            .providerPIDNotDescendant)
+        XCTAssertEqual(
+            evaluate(token: .mismatch, provider: .dead, stopRequested: true).reason,
+            .runTokenMismatch)
+    }
+
     func testForeignProviderPIDIsNeverTreatedAsOwned() {
         let result = evaluate(provider: .mismatch)
 
@@ -223,6 +440,23 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertEqual(result.reason, .providerPIDMissing)
         XCTAssertEqual(result.actions, [.attach, .stop])
         XCTAssertTrue(result.ownershipProven)
+    }
+
+    func testOwnedStartingWorkerDoesNotEnterProblemsBeforeProviderLaunch() {
+        let result = evaluate(status: .starting, provider: .unknown)
+
+        XCTAssertEqual(result.effectiveStatus, .starting)
+        XCTAssertEqual(result.reason, .healthy)
+        XCTAssertEqual(result.actions, [.attach, .stop])
+        XCTAssertTrue(result.ownershipProven)
+        XCTAssertFalse(result.cleanupEligible)
+
+        let missingWorker = evaluate(
+            status: .starting,
+            worker: .unknown,
+            provider: .unknown)
+        XCTAssertEqual(missingWorker.effectiveStatus, .hung)
+        XCTAssertEqual(missingWorker.reason, .workerPIDMissing)
     }
 
     func testFreshOwnedRuntimeReportsHealthy() {
@@ -312,6 +546,83 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertEqual(result.reason, .checkpointStale)
     }
 
+    func testProcessInspectorFollowsOnlyTheBoundedOwnedParentChain() {
+        let identities: [Int32: SessionProcessIdentity] = [
+            30: SessionProcessIdentity(parentPID: 20, userID: 501),
+            20: SessionProcessIdentity(parentPID: 10, userID: 501),
+            10: SessionProcessIdentity(parentPID: 1, userID: 501),
+        ]
+        var reads: [Int32] = []
+
+        let result = SessionProcessHealthInspector.inspect(
+            tmuxState: .live,
+            workerPID: "10",
+            providerPID: "30",
+            panePID: "10",
+            userID: 501,
+            lookup: { pid in
+                reads.append(pid)
+                return identities[pid]
+            })
+
+        XCTAssertEqual(result, SessionProcessHealth(worker: .alive, provider: .alive))
+        XCTAssertEqual(Set(reads), Set([10, 20, 30]))
+        XCTAssertEqual(reads.count, 3, "one record must read each PID at most once")
+    }
+
+    func testProcessInspectorRejectsWrongPaneAndForeignOwnership() {
+        let owned: [Int32: SessionProcessIdentity] = [
+            10: SessionProcessIdentity(parentPID: 1, userID: 501),
+            30: SessionProcessIdentity(parentPID: 10, userID: 501),
+        ]
+        let paneMismatch = SessionProcessHealthInspector.inspect(
+            tmuxState: .live,
+            workerPID: "10",
+            providerPID: "30",
+            panePID: "99",
+            userID: 501,
+            lookup: { owned[$0] })
+        let foreign = SessionProcessHealthInspector.inspect(
+            tmuxState: .missing,
+            workerPID: "10",
+            providerPID: "30",
+            panePID: "-",
+            userID: 502,
+            lookup: { owned[$0] })
+
+        XCTAssertEqual(
+            paneMismatch,
+            SessionProcessHealth(worker: .mismatch, provider: .mismatch))
+        XCTAssertEqual(foreign, SessionProcessHealth(worker: .dead, provider: .dead))
+    }
+
+    func testProcessInspectorKeepsInvalidPIDsUnknownAndBoundsCycles() {
+        var reads = 0
+        let invalid = SessionProcessHealthInspector.inspect(
+            tmuxState: .missing,
+            workerPID: "-",
+            providerPID: "0",
+            panePID: "not-a-pid",
+            userID: 501,
+            lookup: { _ in reads += 1; return nil })
+        let cyclic = SessionProcessHealthInspector.inspect(
+            tmuxState: .missing,
+            workerPID: "10",
+            providerPID: "20",
+            panePID: "-",
+            userID: 501,
+            lookup: { pid in
+                reads += 1
+                return SessionProcessIdentity(
+                    parentPID: pid == 20 ? 21 : 20,
+                    userID: 501)
+            })
+
+        XCTAssertEqual(invalid, SessionProcessHealth(worker: .unknown, provider: .unknown))
+        XCTAssertEqual(cyclic, SessionProcessHealth(worker: .alive, provider: .mismatch))
+        XCTAssertLessThanOrEqual(reads, 3, "cycle identities must stay cached")
+    }
+
     private func evaluate(
         metadataValid: Bool = true,
         runtimeIdentityExpected: Bool = true,
@@ -323,7 +634,9 @@ final class SessionHealthTests: XCTestCase {
         heartbeat: FreshnessState = .fresh,
         checkpoint: FreshnessState = .fresh,
         recoverable: Bool = true,
-        agentSessionKnown: Bool = true
+        agentSessionKnown: Bool = true,
+        stopRequested: Bool = false,
+        lifecyclePhase: RuntimeLifecyclePhase? = nil
     ) -> SessionHealthAssessment {
         SessionHealthEvaluator.evaluate(SessionHealthEvidence(
             metadataValid: metadataValid,
@@ -336,6 +649,8 @@ final class SessionHealthTests: XCTestCase {
             heartbeatFreshness: heartbeat,
             checkpointFreshness: checkpoint,
             checkpointRecoverable: recoverable,
-            agentSessionKnown: agentSessionKnown))
+            agentSessionKnown: agentSessionKnown,
+            stopRequested: stopRequested,
+            lifecyclePhase: lifecyclePhase))
     }
 }

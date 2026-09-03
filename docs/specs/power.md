@@ -44,6 +44,29 @@ surface is limited to status, acquire, renew, release, and the typed
 prepare/cancel unregistration lifecycle; it must never execute arbitrary paths,
 shell strings, or provider commands as root.
 
+App updates replace the helper through a durable `SMAppService` handoff. Only
+the complete Developer ID release bundle may register or unregister the helper
+or watchdog. The app, helper, and watchdog must have their exact code
+identifiers and the same valid Team ID. An ad-hoc build or preview stays
+read-only at this boundary.
+
+An enabled registration needs a held root lifetime lock before the app calls
+the helper's prepare method. A missing or released lifetime lock proves that no
+helper process can answer. The app then skips XPC preparation and replays the
+submitted unregister phase under the system and per-user transaction locks.
+Only a busy lifetime lock permits the prepare call. A replacement is not
+registered until the old lifetime lock is released or an exact absent-job
+callback provides the required completion barrier.
+
+An enabled registration with a matching bundled-definition digest is not
+enough to prove liveness. At startup, a missing or released lifetime lock that
+stays unheld after a three-second grace also forces the durable replacement
+flow. The grace covers login, when the app and the service start together.
+This repairs a stale Background Task Management parent UUID after an app
+bundle is replaced with the same version. For a legacy watchdog without a
+lifetime lock, the exact bundled executable may prove that the old
+registration is still live.
+
 Before it creates the listener or changes power state, the helper must pass a
 strict check of its own signature with Security network access enabled. This
 check lets macOS refresh the system trust result that the listener needs for
@@ -83,7 +106,20 @@ failures are retried; an active failure is surfaced rather than silently
 reporting protection. Read-only
 status returns a cached snapshot refreshed at startup, after mutations, and by
 the reconciler. It must never invoke `pmset` or wait behind the root mutation
-lock, so UI, watchdog, and tmux polling remain nonblocking.
+lock, so watchdog and explicit status reads remain nonblocking.
+The combined session list reads the private typed watchdog heartbeat once and
+shares its effective state across both providers. This list-only quick read
+does not open XPC. A missing, unhealthy, malformed, or older-than-three-minutes
+heartbeat reports `unknown` without delaying the session snapshot. Full status,
+start preflight, doctor, acquire, renewal, and mutation keep their live XPC
+contracts and existing deadlines.
+
+The app observes atomic watchdog heartbeat replacements from the nearest
+existing parent directory. It moves the watch closer as missing state
+directories appear. Each document replaces one freshness deadline; the
+deadline publishes `unknown` if the watchdog stops. Menu bar, Settings, and
+temperature notifications share this state and run no repeating heartbeat
+reader.
 
 The default initial acquire carries an eight-second absolute server deadline.
 If protection is not confirmed before it, root rolls back only that request's
@@ -91,7 +127,8 @@ persisted lease, restores a previous matching lease when applicable, and
 reconciles the owned setting before returning failure. This prevents a timed-out
 caller from activating protection later. The outer XPC timeout remains 30
 seconds so rollback can finish. Root `pmset` invocations have bounded output and
-a two-second timeout. The readable tmux power label refreshes every ten seconds
+a two-second timeout; truncation fails closed. The readable tmux power label
+refreshes every ten seconds
 while working and every 30 seconds while waiting, rather than spawning one root
 status request every two seconds per session.
 

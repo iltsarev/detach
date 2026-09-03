@@ -35,7 +35,7 @@ public extension Session {
     /// Whether the provider process is still expected to produce live output.
     /// This intentionally stays independent from the sidebar section: a live
     /// session can move between Working and Answer ready without stopping log
-    /// polling.
+    /// observation.
     var isLive: Bool {
         switch effectiveStatus {
         case .starting, .running, .recovering, .hung: true

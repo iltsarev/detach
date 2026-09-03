@@ -157,7 +157,6 @@ enum AppSettings {
             return .standard
         }
         defaults.set(uiE2E.cli.path, forKey: "detachPath")
-        defaults.set(0.5, forKey: "pollInterval")
         defaults.set(false, forKey: notificationsEnabledKey)
         defaults.set(false, forKey: tipsEnabledKey)
         defaults.set(false, forKey: menuBarIconEnabledKey)
@@ -253,7 +252,6 @@ struct DetachApp: App {
     private var appDelegate
     @AppStorage("detachPath", store: AppSettings.defaults)
     private var detachPath = AppSettings.initialDetachPath
-    @AppStorage("pollInterval", store: AppSettings.defaults) private var pollInterval = 2.0
     @AppStorage(AppSettings.menuBarIconEnabledKey, store: AppSettings.defaults)
     private var menuBarIconEnabled = true
     @AppStorage(AppSettings.menuBarShowsSessionCountKey, store: AppSettings.defaults)
@@ -264,7 +262,14 @@ struct DetachApp: App {
         defaults: AppSettings.defaults)
     @State private var sessionStore = SessionStore(
         cli: ProcessDetachCLI(executable: URL(
-            fileURLWithPath: AppSettings.initialDetachPath)))
+            fileURLWithPath: AppSettings.initialDetachPath)),
+        snapshotCache: UserDefaultsSessionSnapshotCache(
+            defaults: AppSettings.defaults))
+    @State private var sessionLogSnapshots = SessionLogSnapshotCache(
+        cli: ProcessDetachCLI(executable: URL(
+            fileURLWithPath: AppSettings.initialDetachPath)),
+        configurationID: AppSettings.initialDetachPath)
+    @State private var terminalScreens = SessionTerminalScreenCache()
     @State private var storageStore = StorageStore(
         cli: ProcessDetachCLI(executable: URL(
             fileURLWithPath: AppSettings.initialDetachPath)))
@@ -279,8 +284,10 @@ struct DetachApp: App {
         Window("Detach", id: "main") {
             let activeDetachPath = installation.hasDistributionPayload
                 ? AppSettings.defaultDetachPath : detachPath
-            RootView(detachPath: activeDetachPath, pollInterval: pollInterval,
+            RootView(detachPath: activeDetachPath,
                      installation: installation, store: sessionStore,
+                     sessionLogSnapshots: sessionLogSnapshots,
+                     terminalScreens: terminalScreens,
                      navigation: mainNavigation,
                      shortcuts: sessionShortcuts,
                      notifications: notifications,

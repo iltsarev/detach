@@ -39,6 +39,54 @@ final class DetachStateTests: XCTestCase {
         XCTAssertNil(try SessionMetadataDocument.scalar(in: data, paths: ["nothing"]))
     }
 
+    func testMetadataCreateAcceptsNullAndRejectsUnknownLifecyclePhase() throws {
+        let legacy = try SessionMetadataDocument.create(changes: [
+            .init(key: "lifecycle_phase", value: .null),
+        ])
+        XCTAssertNil(try SessionMetadataDocument.scalar(
+            in: legacy, paths: ["lifecycle_phase"]))
+
+        XCTAssertThrowsError(try SessionMetadataDocument.create(changes: [
+            .init(key: "lifecycle_phase", value: .string("unknown")),
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecyclePhase)
+        }
+    }
+
+    func testLifecycleValidationRejectsInvalidCurrentPhaseAndStopInvariants() throws {
+        let invalidCurrent = Data(#"{"status":"running","lifecycle_phase":"unknown"}"#.utf8)
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            invalidCurrent,
+            changes: [.init(key: "lifecycle_phase", value: .string("terminal"))]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecyclePhase)
+        }
+
+        let legacyRunning = Data(#"{"status":"running"}"#.utf8)
+        XCTAssertNoThrow(try SessionMetadataDocument.patch(
+            legacyRunning,
+            changes: [
+                .init(key: "stop_requested_at", value: .string("now")),
+                .init(key: "status", value: .string("stopped")),
+                .init(key: "lifecycle_phase", value: .string("stopping")),
+            ]))
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            legacyRunning,
+            changes: [.init(key: "lifecycle_phase", value: .string("stopping"))]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecycleTransition)
+        }
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            legacyRunning,
+            changes: [
+                .init(key: "stop_requested_at", value: .string("now")),
+                .init(key: "lifecycle_phase", value: .string("finalizing")),
+            ]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecycleTransition)
+        }
+    }
+
     func testMetadataOperationsDistinguishMalformedJSONFromNonObjectJSON() {
         XCTAssertThrowsError(try SessionMetadataDocument.scalar(
             in: Data("not-json".utf8), paths: ["value"]
@@ -286,7 +334,10 @@ final class DetachStateTests: XCTestCase {
         let root = Data(#"{"payload":{"id":"session-1"}}"#.utf8)
         let event = Data(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#.utf8)
         var chunkIndex = 0
-        let eventCount = 100_000
+        // Twenty thousand independently supplied records are large enough to
+        // distinguish streaming from a one-shot parser without dominating the
+        // full coverage run on every change.
+        let eventCount = 20_000
 
         let valid = try TranscriptDocument.isValid(
             provider: .codex,

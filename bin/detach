@@ -20,6 +20,8 @@ usage() {
     '  detach codex [COMMAND] [ARGS...]' \
     '  detach claude [COMMAND] [ARGS...]' \
     '  detach list [--json]' \
+    '  detach watch --json' \
+    '  detach client switch --pid PID --from SESSION --to SESSION --provider PROVIDER' \
     '  detach resume [--name NAME] [--detach] SESSION_ID [PROVIDER_ARGS...]' \
     '  detach storage --json' \
     '  detach storage cleanup --dry-run --json [--session NAME ...]' \
@@ -389,16 +391,122 @@ exec_provider() {
     exec "$CORE" "$@"
 }
 
+LIST_WORKSPACE=""
+LIST_CODEX_OUTPUT=""
+LIST_CLAUDE_OUTPUT=""
+LIST_CODEX_PID=""
+LIST_CLAUDE_PID=""
+
+list_workspace_cleanup() {
+  local pid
+
+  for pid in "$LIST_CODEX_PID" "$LIST_CLAUDE_PID"; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  LIST_CODEX_PID=""
+  LIST_CLAUDE_PID=""
+  [ -z "$LIST_CODEX_OUTPUT" ] || /bin/rm -f -- "$LIST_CODEX_OUTPUT"
+  [ -z "$LIST_CLAUDE_OUTPUT" ] || /bin/rm -f -- "$LIST_CLAUDE_OUTPUT"
+  [ -z "$LIST_WORKSPACE" ] || rmdir "$LIST_WORKSPACE" 2>/dev/null || true
+  LIST_CODEX_OUTPUT=""
+  LIST_CLAUDE_OUTPUT=""
+  LIST_WORKSPACE=""
+}
+
+list_workspace_abort() {
+  local status="$1"
+
+  list_workspace_cleanup
+  trap - EXIT HUP INT TERM
+  exit "$status"
+}
+
 list_all() {
   local status=0
   local provider_status
+  local power_status=""
+  local DETACH_LIST_POWER_STATE="unavailable"
+  local temporary_base temporary_root codex_output claude_output
+  local codex_pid claude_pid codex_status=0 claude_status=0
 
-  DETACH_LIST_HEADER=1 run_provider codex list "$@" || status=$?
-  DETACH_LIST_HEADER=0 run_provider claude list "$@" || {
-    provider_status=$?
-    [ "$status" -ne 0 ] || status="$provider_status"
-  }
+  if [ "$#" -eq 1 ] && [ "$1" = "--json" ] && \
+     [ -x "$POWER_BIN" ] && [ -x "$STATE_BIN" ]; then
+    power_status="$("$POWER_BIN" status --json --quick 2>/dev/null || true)"
+    if [ -n "$power_status" ]; then
+      DETACH_LIST_POWER_STATE="$(printf '%s' "$power_status" | \
+        "$STATE_BIN" meta get /dev/stdin state 2>/dev/null || true)"
+    fi
+    case "$DETACH_LIST_POWER_STATE" in
+      allowed|transitioning|protected|low_battery|temperature|unavailable|unknown) ;;
+      *) DETACH_LIST_POWER_STATE="unavailable" ;;
+    esac
+    export DETACH_LIST_POWER_STATE
+  fi
+
+  if [ "$#" -eq 1 ] && [ "$1" = "--json" ]; then
+    # Provider state roots are independent. Overlap the two read-only
+    # snapshots, then publish their complete outputs in stable provider order.
+    # Private files prevent interleaved JSON without retaining output in shell
+    # variables, which cannot safely carry arbitrary size or NUL bytes.
+    temporary_base="${TMPDIR:-/tmp}"
+    temporary_base="${temporary_base%/}"
+    temporary_root="$(mktemp -d "$temporary_base/detach-list.XXXXXXXX")" || \
+      die "could not create private list workspace"
+    LIST_WORKSPACE="$temporary_root"
+    trap 'list_workspace_cleanup' EXIT
+    trap 'list_workspace_abort 129' HUP
+    trap 'list_workspace_abort 130' INT
+    trap 'list_workspace_abort 143' TERM
+    chmod 0700 "$temporary_root" || {
+      die "could not protect private list workspace"
+    }
+    codex_output="$temporary_root/codex.jsonl"
+    claude_output="$temporary_root/claude.jsonl"
+    LIST_CODEX_OUTPUT="$codex_output"
+    LIST_CLAUDE_OUTPUT="$claude_output"
+    DETACH_LIST_HEADER=1 exec_provider codex list --json >"$codex_output" &
+    codex_pid=$!
+    LIST_CODEX_PID="$codex_pid"
+    DETACH_LIST_HEADER=0 exec_provider claude list --json >"$claude_output" &
+    claude_pid=$!
+    LIST_CLAUDE_PID="$claude_pid"
+    wait "$codex_pid" || codex_status=$?
+    LIST_CODEX_PID=""
+    wait "$claude_pid" || claude_status=$?
+    LIST_CLAUDE_PID=""
+    [ ! -f "$codex_output" ] || /bin/cat "$codex_output" || status=1
+    [ ! -f "$claude_output" ] || /bin/cat "$claude_output" || status=1
+    list_workspace_cleanup
+    trap - EXIT HUP INT TERM
+    [ "$codex_status" -eq 0 ] || status="$codex_status"
+    if [ "$claude_status" -ne 0 ] && [ "$status" -eq 0 ]; then
+      status="$claude_status"
+    fi
+  else
+    DETACH_LIST_HEADER=1 run_provider codex list "$@" || status=$?
+    DETACH_LIST_HEADER=0 run_provider claude list "$@" || {
+      provider_status=$?
+      [ "$status" -ne 0 ] || status="$provider_status"
+    }
+  fi
   return "$status"
+}
+
+watch_all() {
+  [ "$#" -eq 1 ] && [ "$1" = "--json" ] || \
+    die "watch requires --json"
+  [ -x "$STATE_BIN" ] || die "state helper not found: $STATE_BIN"
+  # The ready event is emitted only after the native stream is installed, so
+  # the app can take a fresh typed snapshot without a refresh/watch race.
+  exec "$STATE_BIN" events watch --json \
+    --state-root "$STATE_ROOT" \
+    --signal "$STATE_ROOT/session-change" \
+    --sessions-root "$CODEX_STATE_ROOT/sessions" \
+    --sessions-root "$CLAUDE_STATE_ROOT/sessions" \
+    --transcript-root "$CODEX_PROVIDER_ROOT/sessions" \
+    --transcript-root "$CLAUDE_PROVIDER_ROOT/projects"
 }
 
 storage_report() {
@@ -565,6 +673,52 @@ resume_auto() {
   die "could not resume session UUID: $session_id"
 }
 
+client_switch() {
+  local action="${1:-}"
+  local client_pid=""
+  local source_session=""
+  local target_session=""
+  local provider=""
+
+  [ "$action" = switch ] || \
+    die "usage: detach client switch --pid PID --from SESSION --to SESSION --provider PROVIDER"
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --pid)
+        [ "$#" -ge 2 ] || die "client switch --pid requires a value"
+        client_pid="$2"
+        shift 2
+        ;;
+      --from)
+        [ "$#" -ge 2 ] || die "client switch --from requires a value"
+        source_session="$2"
+        shift 2
+        ;;
+      --to)
+        [ "$#" -ge 2 ] || die "client switch --to requires a value"
+        target_session="$2"
+        shift 2
+        ;;
+      --provider)
+        [ "$#" -ge 2 ] || die "client switch --provider requires a value"
+        provider="$2"
+        shift 2
+        ;;
+      *) die "unknown client switch option: $1" ;;
+    esac
+  done
+
+  case "$client_pid" in ''|*[!0-9]*) die "client switch PID must be a positive integer" ;; esac
+  [ "$client_pid" -gt 1 ] || die "client switch PID must be greater than one"
+  [ -n "$source_session" ] || die "client switch requires --from"
+  [ -n "$target_session" ] || die "client switch requires --to"
+  case "$provider" in codex|claude) ;; *) die "client switch provider must be codex or claude" ;; esac
+
+  run_provider "$provider" __switch_client \
+    "$client_pid" "$source_session" "$target_session"
+}
+
 main() {
   local command="${1:-}"
   local repair_metadata="" local_repair_source="" local_repair_version=""
@@ -622,6 +776,14 @@ main() {
           die "unknown list option: $1"
           ;;
       esac
+      ;;
+    watch)
+      shift
+      watch_all "$@"
+      ;;
+    client)
+      shift
+      client_switch "$@"
       ;;
     resume)
       shift

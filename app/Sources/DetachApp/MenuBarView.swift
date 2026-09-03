@@ -12,9 +12,11 @@ struct MenuBarLabel: View {
     let showsSessionCount: Bool
 
     var body: some View {
+        // Cached rows paint the sidebar on cold start, but a power or activity
+        // claim needs typed fresh state.
         let presentation = MenuBarPresentation(
             heartbeat: installation.watchdogHeartbeat,
-            sessions: sessionStore.sessions,
+            sessions: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [],
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
@@ -28,20 +30,6 @@ struct MenuBarLabel: View {
         }
         .accessibilityLabel(accessibilityText(
             for: presentation.icon, dot: presentation.sessionDot))
-        // The watchdog writes its heartbeat independently of the app. Keep
-        // the observable snapshot moving even when the session list and every
-        // window are idle, otherwise MenuBarExtra can preserve an obsolete
-        // protected/allowed glyph indefinitely.
-        .task {
-            while !Task.isCancelled {
-                installation.refreshPowerProtectionState()
-                do {
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
-                } catch {
-                    return
-                }
-            }
-        }
     }
 
     private func countBadge(for icon: MenuBarPresentation.Icon) -> String? {
@@ -88,7 +76,7 @@ struct MenuBarMenu: View {
     private var presentation: MenuBarPresentation {
         MenuBarPresentation(
             heartbeat: installation.watchdogHeartbeat,
-            sessions: sessionStore.sessions,
+            sessions: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [],
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
