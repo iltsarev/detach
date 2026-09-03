@@ -941,7 +941,10 @@ bootstrap_codex_checkpoint() {
 if codex_part_selected lifecycle; then
   marker="$TMP_ROOT/must-not-exist"
   literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
-  export FAKE_CODEX_SLEEP=12
+  # Keep the provider alive across the real PTY and nested-client checks. A
+  # cold release gate can legitimately spend more than 12 seconds before the
+  # client-switch assertions, and those assertions require a live source pane.
+  export FAKE_CODEX_SLEEP=60
   integration_release="$TMP_ROOT/integration-provider-release"
   export FAKE_CODEX_RELEASE_FILE="$integration_release"
 
