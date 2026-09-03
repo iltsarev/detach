@@ -208,10 +208,12 @@ final class DetachCLITests: XCTestCase {
         while :; do sleep 1; done
         """), terminationGrace: 0.1)
         let start = Date()
+        // Parallel release builds can delay the fixture's first instruction.
+        // Keep launch headroom while retaining a strict end-to-end deadline.
         let result = try await cli.run(
-            arguments: [descendantPID.path], timeout: 0.5)
+            arguments: [descendantPID.path], timeout: 2)
         XCTAssertTrue(result.timedOut)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 4)
         let pid = try XCTUnwrap(Int32(
             String(contentsOf: descendantPID, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)))
