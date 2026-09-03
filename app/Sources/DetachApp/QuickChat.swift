@@ -88,7 +88,10 @@ enum QuickChatLaunch {
                 prompt: nil)
         }
 
-        let existingIDs = Set(store.sessions.map(\.id))
+        var existingIDs: Set<String> = []
+        for session in store.sessions {
+            existingIDs.insert(session.id)
+        }
         return await withTaskGroup(of: Outcome.self) { group in
             group.addTask {
                 .launch(await store.startDetached(

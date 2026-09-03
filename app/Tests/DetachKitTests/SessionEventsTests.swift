@@ -109,6 +109,69 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(reducer.consume(.resync), .emit(.resync))
     }
 
+    func testNativeDeliveryDecodesAndForwardsTheTypedBatch() throws {
+        let pipe = Pipe()
+        defer {
+            try? pipe.fileHandleForWriting.close()
+            try? pipe.fileHandleForReading.close()
+        }
+        let queue = DispatchQueue(label: "detach-session-callback-test")
+        let watcher = SessionFileEventWatcher(
+            configuration: configuration,
+            queue: queue,
+            output: pipe.fileHandleForWriting)
+        let paths = [configuration.signalPath] as CFArray
+        var flag: FSEventStreamEventFlags = 0
+
+        let delivery = withUnsafePointer(to: &flag) { flags in
+            XCTAssertNil(sessionFSEventsDelivery(
+                info: nil,
+                count: 1,
+                pathsPointer: Unmanaged.passUnretained(paths).toOpaque(),
+                flagsPointer: flags))
+            return sessionFSEventsDelivery(
+                info: Unmanaged.passUnretained(watcher).toOpaque(),
+                count: 1,
+                pathsPointer: Unmanaged.passUnretained(paths).toOpaque(),
+                flagsPointer: flags)
+        }
+        XCTAssertTrue(delivery?.watcher === watcher)
+        XCTAssertEqual(
+            delivery?.batch,
+            SessionFileEventBatch(paths: [configuration.signalPath], flags: [0]))
+        queue.sync {
+            if let delivery {
+                delivery.watcher.receive(delivery.batch)
+            }
+        }
+
+        var buffer = Data()
+        XCTAssertEqual(
+            try readEvent(from: pipe.fileHandleForReading, buffer: &buffer),
+            SessionEvent(event: .changed))
+    }
+
+    func testWatcherForwardsTranscriptMonitorChanges() throws {
+        let pipe = Pipe()
+        defer {
+            try? pipe.fileHandleForWriting.close()
+            try? pipe.fileHandleForReading.close()
+        }
+        let queue = DispatchQueue(label: "detach-session-transcript-callback-test")
+        let watcher = SessionFileEventWatcher(
+            configuration: configuration,
+            quietWindow: 10,
+            queue: queue,
+            output: pipe.fileHandleForWriting)
+
+        queue.sync { watcher.receiveTranscriptChange() }
+
+        var buffer = Data()
+        XCTAssertEqual(
+            try readEvent(from: pipe.fileHandleForReading, buffer: &buffer),
+            SessionEvent(event: .changed))
+    }
+
     func testTypedPublisherAtomicallyReplacesItsHint() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "detach-session-events-\(UUID().uuidString)",

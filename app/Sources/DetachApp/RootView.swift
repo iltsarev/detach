@@ -147,7 +147,8 @@ struct RootView: View {
             await notifications.configure(enabled: notificationsEnabled)
         }
 // quality-coverage:begin ui-e2e-instrumentation
-        .task {
+        .task(id: initialSetupComplete) {
+            guard initialSetupComplete else { return }
             await UIE2ETestDriver.runIfRequested(
                 installation: installation,
                 store: store,
