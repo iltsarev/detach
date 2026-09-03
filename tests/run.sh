@@ -1285,11 +1285,15 @@ tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
 
 # SwiftTerm closes the in-app attach client with SIGTERM. Attach through the
 # public CLI on a real PTY, terminate that client, and prove the managed
-# session, worker, and provider survive.
-TERM=xterm-256color /usr/bin/script -q /dev/null \
-  "$DETACH" codex attach --terminal-features sync integration \
-  </dev/null >/dev/null 2>&1 &
-attach_client_wrapper=$!
+# session, worker, and provider survive. A second tmux server owns the test
+# PTY, so the client never borrows the release orchestrator's terminal.
+attach_client_returned="$TMP_ROOT/pty-attach-returned"
+attach_host_session=foreign-pty
+attach_host_pane="$(tmux -L "$OUTER_SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s "$attach_host_session" -x 120 -y 30)"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$attach_host_pane" -- \
+  "$DETACH codex attach --terminal-features sync integration; printf returned >'$attach_client_returned'"
+tmux -L "$OUTER_SOCKET" send-keys -t "$attach_host_pane" C-m
 attempts=0
 while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
     grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 100 ]; do
@@ -1354,7 +1358,13 @@ while tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
 done
 ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
   grep -Fx "$SESSION" >/dev/null
-wait "$attach_client_wrapper" 2>/dev/null || true
+attempts=0
+while [ ! -f "$attach_client_returned" ] && [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -f "$attach_client_returned" ]
+tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 kill -0 "$first_worker_pid"
 kill -0 "$provider_pid"
