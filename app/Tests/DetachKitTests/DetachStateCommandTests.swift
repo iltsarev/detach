@@ -656,6 +656,33 @@ final class DetachStateCommandTests: XCTestCase {
         ])
     }
 
+    func testMetaSnapshotsFailClosedForNonFileTranscripts() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "invalid-summary-sessions", isDirectory: true)
+        let name = "detach-codex-directory-summary"
+        let session = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": name,
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": temporaryDirectory.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        let output = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let values = output.split(separator: 0, omittingEmptySubsequences: false)
+            .dropLast()
+            .map { String(decoding: $0, as: UTF8.self) }
+
+        XCTAssertEqual(values.count, 27 + 2)
+        XCTAssertEqual(Array(values[22..<27]), Array(repeating: "", count: 5))
+        XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
+    }
+
     func testMetaSnapshotsContinueTurnStateAfterStartLeavesBoundedTail() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "incremental-summary-sessions", isDirectory: true)
@@ -1150,6 +1177,14 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "meta", "get", "-", "state",
         ]))
+        XCTAssertEqual(try DetachStateCommand.run(arguments: [
+            "jsonl", "first", "-", "payload.id",
+        ]), Data())
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate", "codex", "-", "session-id",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidTranscript)
+        }
         let summary = try DetachStateCommand.run(arguments: [
             "jsonl", "summary", "codex", "-",
         ])
