@@ -30,6 +30,22 @@ struct SidebarFailurePresentation: Equatable, Identifiable {
     }
 }
 
+struct FinishedSelectionReconciliation: Equatable {
+    let selectedIDs: Set<String>
+    let isSelecting: Bool
+
+    static func resolve(
+        selectedIDs: Set<String>,
+        currentIDs: [String],
+        isSelecting: Bool,
+        isDeleting: Bool
+    ) -> Self {
+        Self(
+            selectedIDs: selectedIDs.intersection(currentIDs),
+            isSelecting: currentIDs.isEmpty && !isDeleting ? false : isSelecting)
+    }
+}
+
 struct SidebarView: View {
     @Environment(\.appFontPointSize) private var fontPointSize
     let store: SessionStore
@@ -182,10 +198,13 @@ struct SidebarView: View {
             startQuickChat()
         }
         .onChange(of: deletableFinishedSessions.map(\.id)) { _, currentIDs in
-            selectedFinishedIDs.formIntersection(currentIDs)
-            if currentIDs.isEmpty && !isDeletingFinished {
-                isSelectingFinished = false
-            }
+            let state = FinishedSelectionReconciliation.resolve(
+                selectedIDs: selectedFinishedIDs,
+                currentIDs: currentIDs,
+                isSelecting: isSelectingFinished,
+                isDeleting: isDeletingFinished)
+            selectedFinishedIDs = state.selectedIDs
+            isSelectingFinished = state.isSelecting
         }
         .navigationSplitViewColumnWidth(
             min: max(230, fontPointSize * 18),

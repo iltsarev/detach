@@ -714,6 +714,9 @@ enum UIE2ETestDriver {
             try await waitUntil("post-delete session refresh") {
                 store.lastUpdated.map { $0 >= deleteObservedAt } == true
             }
+            try await waitUntil("finished selection closes after delete") {
+                find(identifier: "finished-select-all-button") == nil
+            }
             try await waitUntil("delete confirmation dismissal") {
                 NSApp.windows.allSatisfy(\.sheets.isEmpty)
             }
