@@ -1340,8 +1340,29 @@ if "$DETACH" client switch --pid "$attach_client_pid" \
 fi
 [ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
   awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
-"$DETACH" client switch --pid "$attach_client_pid" \
+client_switch_tmux="$TMP_ROOT/client-switch-tmux"
+client_switch_inspections="$TMP_ROOT/client-switch-inspections"
+export DETACH_CLIENT_SWITCH_TMUX_HELPER="$TMUX_TEST_BIN"
+export DETACH_CLIENT_SWITCH_INSPECTIONS="$client_switch_inspections"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'is_list=0' \
+  'for argument in "$@"; do' \
+  '  [ "$argument" != list-clients ] || is_list=1' \
+  'done' \
+  'if [ "$is_list" = 1 ]; then' \
+  '  completed=0' \
+  '  [ ! -f "$DETACH_CLIENT_SWITCH_INSPECTIONS" ] || completed="$(wc -l <"$DETACH_CLIENT_SWITCH_INSPECTIONS" | tr -d "[:space:]")"' \
+  '  printf '\''attempt\n'\'' >>"$DETACH_CLIENT_SWITCH_INSPECTIONS"' \
+  '  [ "$completed" -ge 2 ] || exit 1' \
+  'fi' \
+  'exec "$DETACH_CLIENT_SWITCH_TMUX_HELPER" "$@"' \
+  >"$client_switch_tmux"
+chmod 0755 "$client_switch_tmux"
+DETACH_TMUX_BIN="$client_switch_tmux" \
+  "$DETACH" client switch --pid "$attach_client_pid" \
   --from "$SESSION" --to "$switch_target" --provider codex
+[ "$(wc -l <"$client_switch_inspections" | tr -d '[:space:]')" = 3 ]
 [ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
   awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$switch_target" ]
 "$DETACH" client switch --pid "$attach_client_pid" \
