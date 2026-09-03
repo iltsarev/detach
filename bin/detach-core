@@ -688,6 +688,7 @@ reset_meta_snapshot() {
   META_LAST_CHECKPOINT_EPOCH=""
   META_HEALTH_SCHEMA=""
   META_STOP_REQUESTED_AT=""
+  META_LIFECYCLE_PHASE=""
   TRANSCRIPT_MODEL=""
   TRANSCRIPT_CTX_USED=""
   TRANSCRIPT_CTX_WINDOW=""
@@ -723,6 +724,7 @@ load_meta_snapshot_path() {
       last_checkpoint_epoch) META_LAST_CHECKPOINT_EPOCH="$value" ;;
       health_schema) META_HEALTH_SCHEMA="$value" ;;
       stop_requested_at) META_STOP_REQUESTED_AT="$value" ;;
+      lifecycle_phase) META_LIFECYCLE_PHASE="$value" ;;
       snapshot_complete) [ "$value" = true ] && META_SNAPSHOT_COMPLETE=1 ;;
       *) return 1 ;;
     esac
@@ -1933,6 +1935,7 @@ write_initial_meta() {
     --string created_at "$(now_iso)"
     --integer created_at_ms "$start_ms"
     --string status starting
+    --string lifecycle_phase initializing
     --string run_token "$run_token"
     --string lifecycle_id "$lifecycle_id"
     --string provider "$PROVIDER"
@@ -3634,13 +3637,6 @@ worker_main() {
       kill "$power_monitor_pid" 2>/dev/null || true
       wait "$power_monitor_pid" 2>/dev/null || true
     fi
-    # The final status write below publishes the lifecycle hint. A separate
-    # hint from this checkpoint would wake the app while the provider is
-    # already gone and this worker is still alive, which reads as hung.
-    DETACH_SUPPRESS_SESSION_EVENT=1 checkpoint_once "$session" "$run_token" || true
-    rm -f "$provider_pid_file" "$power_activity_file" \
-      "$power_activity_source_file"
-
     if [ "$exit_status" -eq 0 ]; then
       status_label="completed"
     elif [ "$cleanup_status" -ge 128 ]; then
@@ -3648,7 +3644,32 @@ worker_main() {
       exit_status="$cleanup_status"
     fi
 
+    # Stop owns its terminal outcome from the moment its exact-run intent is
+    # recorded. Other exits first publish their intended outcome as finalizing.
+    # Health keeps both phases actionless while the final checkpoint completes.
+    if [ -n "$(read_meta_field "$session" stop_requested_at 2>/dev/null || true)" ]; then
+      status_label="stopped"
+      state_update_meta_for_run_without_event "$session" "$run_token" \
+        --string lifecycle_phase stopping \
+        --string status "$status_label" \
+        --integer exit_status "$exit_status" \
+        --string finished_at "$(now_iso)" || true
+    else
+      state_update_meta_for_run "$session" "$run_token" \
+        --string lifecycle_phase finalizing \
+        --string status "$status_label" \
+        --integer exit_status "$exit_status" \
+        --string finished_at "$(now_iso)" || true
+    fi
+
+    # The phase write above is the lifecycle hint. The checkpoint itself does
+    # not need to wake the app before the terminal phase is committed.
+    DETACH_SUPPRESS_SESSION_EVENT=1 checkpoint_once "$session" "$run_token" || true
+    rm -f "$provider_pid_file" "$power_activity_file" \
+      "$power_activity_source_file"
+
     state_update_meta_for_run "$session" "$run_token" \
+      --string lifecycle_phase terminal \
       --string status "$status_label" \
       --integer exit_status "$exit_status" \
       --string finished_at "$(now_iso)" || true
@@ -3672,6 +3693,7 @@ worker_main() {
   cd -P "$cwd" >/dev/null 2>&1 || die "could not enter project directory: $cwd"
 
   state_update_meta_for_run_without_event "$session" "$run_token" \
+    --string lifecycle_phase starting \
     --string status starting \
     --string worker_started_at "$(now_iso)" \
     --integer worker_pid "$$" \
@@ -3860,6 +3882,7 @@ start_tmux_session() {
       rm -f "$power_ready_file" "$provider_pid_file" "$power_activity_file" \
         "$power_activity_source_file" "$legacy_env_file"
       state_update_meta_for_run "$session" "$run_token" \
+        --string lifecycle_phase terminal \
         --string status start_failed --string finished_at "$(now_iso)" || true
     fi
     exit "$cleanup_status"
@@ -3950,6 +3973,7 @@ start_tmux_session() {
       die "$PROVIDER_LABEL exited before its managed runtime was confirmed"
   runtime_heartbeat_once "$session" "$run_token" "$worker_pid" "$provider_pid_file"
   state_update_meta_for_run "$session" "$run_token" \
+    --string lifecycle_phase running \
     --string status running \
     --integer worker_pid "$worker_pid" \
     --integer provider_pid "$provider_pid" \
@@ -4400,12 +4424,13 @@ session_health_envelope() {
   local health_schema="${10:-}"
   local output_mode="${11:-assessment}"
   local stop_requested_at="${12:-}"
+  local lifecycle_phase="${13:-}"
   local stop_requested=false
   local now
   local checkpoint_threshold
 
-  if [ "$#" -ge 12 ]; then
-    shift 12
+  if [ "$#" -ge 13 ]; then
+    shift 13
   else
     set --
   fi
@@ -4415,6 +4440,16 @@ session_health_envelope() {
     recoverable|orphaned|corrupt|collision|unknown) ;;
     start_failed) meta_status="failed" ;;
     *) meta_status="unknown" ;;
+  esac
+  case "$lifecycle_phase" in
+    initializing|starting|running|stopping|finalizing|terminal) ;;
+    *)
+      case "$meta_status" in
+        starting) lifecycle_phase="starting" ;;
+        running|recovering|hung) lifecycle_phase="running" ;;
+        *) lifecycle_phase="terminal" ;;
+      esac
+      ;;
   esac
   if [ "$metadata_valid" = "true" ]; then
     [ "$health_schema" = "1" ] && runtime_identity_expected=true
@@ -4518,6 +4553,7 @@ session_health_envelope() {
     --checkpoint-recoverable "$checkpoint_recoverable" \
     --agent-session-known "$agent_session_known" \
     --stop-requested "$stop_requested"
+    --lifecycle-phase "$lifecycle_phase"
   )
   if [ "$output_mode" = "request" ]; then
     health_args+=(
@@ -4559,7 +4595,7 @@ refuse_runtime_without_managed_tmux() {
     "$session" true "$status" "$id" "$META_RUN_TOKEN" \
     "$META_WORKER_PID" "$META_PROVIDER_PID" "$META_WORKER_HEARTBEAT_EPOCH" \
     "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" assessment \
-    "$META_STOP_REQUESTED_AT")" || \
+    "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE")" || \
     die "could not safely evaluate runtime ownership for '$session'"
   health_json="${health_output#*$'\n'}"
   [ "$health_json" != "$health_output" ] || \
@@ -4698,6 +4734,7 @@ list_session_records() {
       IFS= read -r -d '' META_LAST_CHECKPOINT_EPOCH && \
       IFS= read -r -d '' META_HEALTH_SCHEMA && \
       IFS= read -r -d '' META_STOP_REQUESTED_AT && \
+      IFS= read -r -d '' META_LIFECYCLE_PHASE && \
       IFS= read -r -d '' TRANSCRIPT_MODEL && \
       IFS= read -r -d '' TRANSCRIPT_CTX_USED && \
       IFS= read -r -d '' TRANSCRIPT_CTX_WINDOW && \
@@ -4721,12 +4758,12 @@ list_session_records() {
           "" "" "" "" "" ""
         session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          request "" "${LIST_JSON_ARGS[@]}" || \
+          request "" "" "${LIST_JSON_ARGS[@]}" || \
           die "could not evaluate health for '$session'"
       else
         health_output="$(session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          assessment "")" || \
+          assessment "" "")" || \
           die "could not evaluate health for '$session'"
       fi
       if [ "$json_mode" = "1" ]; then
@@ -4741,6 +4778,10 @@ list_session_records() {
       fi
       continue
     fi
+    # `initializing` metadata exists only so the worker and starter can share
+    # one typed document. It is not a coherent list record until the worker has
+    # published its exact PID against the configured tmux run token.
+    [ "$META_LIFECYCLE_PHASE" != "initializing" ] || continue
     status="$META_STATUS"
     display_name="$META_DISPLAY_NAME"
     cwd="$META_PROJECT_DIR"
@@ -4777,14 +4818,15 @@ list_session_records() {
         "$session" true "$status" "$id" "$META_RUN_TOKEN" \
         "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
         "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" \
-        request "$META_STOP_REQUESTED_AT" "${LIST_JSON_ARGS[@]}" || \
+        request "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE" \
+        "${LIST_JSON_ARGS[@]}" || \
         die "could not evaluate health for '$session'"
     else
       health_output="$(session_health_envelope \
         "$session" true "$status" "$id" "$META_RUN_TOKEN" \
         "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
         "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" assessment \
-        "$META_STOP_REQUESTED_AT")" || \
+        "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE")" || \
         die "could not evaluate health for '$session'"
     fi
     if [ "$json_mode" = "1" ]; then
@@ -4920,7 +4962,9 @@ stop_session() {
       # first signal. A failed write aborts Stop; a fresh start clears intent.
       stop_requested_at="$(now_iso)"
       state_update_meta_for_run "$session" "$run_token" \
-        --string stop_requested_at "$stop_requested_at" || \
+        --string stop_requested_at "$stop_requested_at" \
+        --string lifecycle_phase stopping \
+        --string status stopped || \
           die "could not record Stop intent for the exact managed run"
       stop_intent_recorded=1
       pane_pid="$("${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
@@ -4978,7 +5022,9 @@ stop_session() {
          tmux_has_session "$session" && \
          [ "$(tmux_pane_dead "$session")" = "0" ]; then
         state_update_meta_for_run "$session" "$run_token" \
-          --null stop_requested_at >/dev/null 2>&1 || \
+          --null stop_requested_at \
+          --string lifecycle_phase running \
+          --string status running >/dev/null 2>&1 || \
             error "warning: could not clear failed Stop intent"
       fi
       die "could not remove tmux session '$session'"
@@ -4994,12 +5040,14 @@ stop_session() {
   if [ -n "$run_token" ]; then
     if [ "$stop_intent_recorded" -eq 1 ]; then
       state_update_meta_for_run "$session" "$run_token" \
+        --string lifecycle_phase terminal \
         --string status stopped --string stopped_at "$(now_iso)" || \
           die "tmux was stopped, but exact-run metadata could not be updated"
     else
       stop_requested_at="$(now_iso)"
       state_update_meta_for_run "$session" "$run_token" \
         --string stop_requested_at "$stop_requested_at" \
+        --string lifecycle_phase terminal \
         --string status stopped --string stopped_at "$(now_iso)" || \
           die "tmux was stopped, but exact-run metadata could not be updated"
     fi
@@ -5007,6 +5055,7 @@ stop_session() {
     stop_requested_at="$(now_iso)"
     state_update_meta "$session" \
       --string stop_requested_at "$stop_requested_at" \
+      --string lifecycle_phase terminal \
       --string status stopped --string stopped_at "$(now_iso)" || \
         die "tmux was stopped, but session metadata could not be updated"
   fi

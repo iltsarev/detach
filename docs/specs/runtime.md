@@ -36,10 +36,10 @@ helpers only as immutable siblings. Providers resolve through `PATH`.
 socket, and live managed target. Failed proof causes no mutation. Attach can
 hold a synchronized frame until the target redraw.
 
-Critical mutations self-reinvoke core under `lockf`. Start, Resume, Stop,
-Recover, and Delete serialize through a per-session lock before narrower
-install, project, and checkpoint locks. Keep this order and the lock around the
-whole child. The install lock covers readiness and outlasts the worst hold.
+Core self-reinvokes critical mutations under `lockf`. Start, Resume, Stop,
+Recover, and Delete hold a session lock before install, project, and checkpoint
+locks. Each lock covers the child; the install lock covers readiness and the
+worst hold.
 
 ### Typed state boundary
 
@@ -52,25 +52,26 @@ Integer conversion must not trap. Storage reports allocated and logical bytes,
 excludes provider storage, does not follow symlinks, and authorizes cleanup
 only after a complete scan with explicit `cleanup_eligible: true`.
 
-Per-session `meta.json` schema 1 has internal `session_name`, optional
-`display_name`, and `run_token`. Older documents remain valid. Stale workers
-cannot overwrite a replacement run. New runs publish `health_schema=1`, exact
-worker/provider PIDs, heartbeat, and checkpoint epoch. Health uses tmux, run
-token, PID ownership, metadata, and checkpoint freshness. Stale data cannot
-make a proven live provider hung. A runtime without managed tmux blocks
-mutations until its exact processes exit.
+Per-session `meta.json` schema 1 stores internal `session_name`, optional
+`display_name`, and `run_token`; older documents remain valid. Each patch locks
+its read-change-atomic-replace transaction, so concurrent writers keep disjoint
+fields. Run tokens stop stale workers from overwriting replacement runs. New
+runs publish `health_schema=1`, exact worker/provider PIDs, heartbeat, and
+checkpoint epoch. Health combines tmux, run token, PID ownership, metadata, and
+checkpoint freshness. Stale data cannot make a proven live provider hung. A
+runtime without managed tmux blocks mutations until its exact processes exit.
 
-`list --json` reads Codex and Claude concurrently, then emits that order. Each
+`list --json` reads Codex and Claude concurrently and emits that order. Each
 uses one all-pane tmux snapshot and clock sample. `proc_pidinfo` reads recorded
 PIDs and 64 parents. Empty tmux output is missing; wrong identity is collision.
 Mutations recheck ownership, pane, run token, and process group. List jobs
-`exec` cores; cleanup signals the PIDs.
+`exec` cores; cleanup signals PIDs.
 
-Typed state caches Codex checkpoint assessment in a receipt bound to provider,
-session ID, and file identity. A change forces a full scan. Restore ignores the
-receipt, validates a temporary copy, then replaces the live file.
-List summaries use an atomic receipt bound to provider, path, device, inode,
-size, and nanosecond mtime. An unchanged identity skips the 256 KiB tail read.
+Typed state caches Codex checkpoint assessment by provider, session ID, and
+file identity. A change forces a full scan. Restore ignores this receipt,
+validates a temporary copy, then replaces the live file. List summaries use an
+atomic receipt bound to provider, path, device, inode, size, and nanosecond
+mtime. An unchanged identity skips the 256 KiB tail read.
 
 State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
@@ -96,27 +97,23 @@ publisher writes `session-change` under state root. Activation repairs loss.
 
 ### Session lifecycle and tmux
 
-`start` takes one cross-provider project lock, creates a safe identifier, sets
+`start` takes a cross-provider project lock, creates a safe identifier, sets
 window `remain-on-exit` off and the provider pane on, then launches `__worker`.
-Splits close on exit; logs and status remain. Without `--name`, the first
-history is `detach-<provider>-<project-slug>-<project-hash>`;
-successors use a monotonic `-r<12-hex>` suffix and persist the unsuffixed
-`default_session_base`. An explicit name is 1–100 printable UTF-8 bytes.
-Legacy-safe names retain the exact
-`detach-<provider>-<name>` identifier; all other names derive a deterministic
-ASCII slug plus a 12-hex content hash. A full `detach-<provider>-<safe-name>`
-stays reserved as an internal identifier; user input never becomes a tmux name
-or state path unless it satisfies that legacy-safe grammar.
+Splits close on exit; logs and status remain. The first unnamed history is
+`detach-<provider>-<project-slug>-<project-hash>`; successors add a monotonic
+`-r<12-hex>` and store the base as `default_session_base`. Explicit names are
+1–100 printable UTF-8 bytes. Legacy-safe names keep
+`detach-<provider>-<name>`; others use a deterministic ASCII slug plus 12-hex
+content hash. The full internal form stays reserved. User input becomes a tmux
+name or state path only if it matches the legacy-safe grammar.
 
-The optional display name is persisted separately, emitted through typed state,
-preserved across resume/recovery, and resolved deterministically by later
-lifecycle commands. The shared tmux daemon is anchored in install state, not
-the first project directory, and is addressed only through the private
+The optional display name is separate typed state, survives resume/recovery,
+and resolves later lifecycle commands. The shared tmux daemon is anchored in
+install state and uses only the private
 `$DETACH_INSTALL_STATE_ROOT/tmux/tmux.sock`, never ambient `TMUX_TMPDIR`.
-Install migration checks the older default and historical
-`-L dev.tsarev.detach` sockets before switching payloads. Each worker starts
-from stable install state, then enters the canonical project beneath its
-cleanup trap.
+Migration checks older default and `-L dev.tsarev.detach` sockets before a
+payload switch. Each worker starts from stable install state, then enters its
+canonical project beneath the cleanup trap.
 
 Tmux environment arguments stay in memory; credentials never touch disk.
 
@@ -137,23 +134,25 @@ detach-power run --session <name> --run-token <token>
   -- <provider> ...
 ```
 
-The worker emits `starting` only after metadata and tmux identity match;
-only then may its provider PID be absent. The power wrapper confirms both
-protection layers and publishes its ready file and exact provider PID. The
-starter proves ancestry before `running` and prints `Started` last.
-HUP/INT/TERM forward to the provider while the wrapper stays alive to release
-its lease and assertion; `detach stop` also releases by session/run token. The provider must inherit the
-wrapper's tmux foreground process group; a separate group makes interactive
-Codex or Claude stop on terminal I/O. On provider exit the worker checkpoints
-silently, records and publishes status, and retains the pane for logs;
-`pane-died` publishes again. A terminal record with a live
-owned pane and dead provider is finished, not hung.
+Metadata has a typed phase machine: `initializing`, `starting`, `running`,
+`stopping`, `finalizing`, `terminal`. Invalid transitions fail; `status` stores
+outcomes. List hides `initializing`. The worker emits `starting` only after its
+metadata and tmux identity match; only then can provider PID be absent. The
+power wrapper confirms both layers and publishes readiness and exact provider
+PID. The starter proves ancestry before `running` and prints `Started` last.
+HUP/INT/TERM forward while the wrapper releases its lease and assertion;
+`detach stop` also releases by session/run token. The provider inherits the
+wrapper's tmux foreground process group to prevent terminal-I/O stops. On exit,
+the worker publishes actionless `finalizing` with the intended status,
+checkpoints, publishes `terminal`, and retains logs; `pane-died` publishes
+again. A terminal record with an owned live pane and dead provider is finished.
 
-Stop binds intent and mutations to the run token. Intent failure leaves
-the run untouched. A live provider keeps its full grace. After exit, the worker
-stays interrupted; actions and cleanup remain blocked for a short checkpoint
-grace, then Stop ends the run. Delete handles retained tmux without state and
-never reports success over leftovers.
+Stop binds intent and mutations to the run token; intent failure changes
+nothing. Before signaling, it publishes `stopping` and the stopped outcome.
+Stop intent makes it monotonic. Actions and cleanup stay closed while
+teardown is live; dead phases converge. A live provider keeps full grace. Its exact
+worker and Stop publish `terminal` idempotently. Delete handles retained tmux
+without state and never reports success over leftovers.
 
 Closing Terminal or Detach.app only removes clients. The Detach tmux server,
 worker, provider, checkpoint loop, and power wrapper continue in the macOS user

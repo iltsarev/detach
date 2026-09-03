@@ -37,6 +37,8 @@ public enum DetachStateError: Error, Equatable, Sendable {
     case invalidJSON
     case invalidMetadata
     case staleRunToken
+    case invalidLifecyclePhase
+    case invalidLifecycleTransition
     case unsupportedScalar
 }
 
@@ -91,9 +93,13 @@ public enum SessionMetadataDocument {
             throw DetachStateError.staleRunToken
         }
 
+        let original = object
+
         for change in changes {
             object[change.key] = foundationValue(change.value)
         }
+
+        try validateLifecycleMutation(from: original, to: object, changes: changes)
 
         guard JSONSerialization.isValidJSONObject(object) else {
             throw DetachStateError.invalidMetadata
@@ -112,6 +118,14 @@ public enum SessionMetadataDocument {
         var object: [String: Any] = [:]
         for change in changes {
             object[change.key] = foundationValue(change.value)
+        }
+
+        if let rawPhase = object["lifecycle_phase"] {
+            guard rawPhase is NSNull
+                    || (rawPhase as? String).flatMap(RuntimeLifecyclePhase.init(rawValue:)) != nil
+            else {
+                throw DetachStateError.invalidLifecyclePhase
+            }
         }
 
         guard JSONSerialization.isValidJSONObject(object) else {
@@ -245,6 +259,52 @@ public enum SessionMetadataDocument {
         integer(from: object["schema"]) == 1
             && object["session_name"] as? String == expectedSessionName
             && object["project_dir"] is String
+    }
+
+    /// Validates only runtime-owned phase changes. Ordinary scalar patches do
+    /// not need to know the lifecycle graph and remain forward-compatible.
+    private static func validateLifecycleMutation(
+        from original: [String: Any],
+        to updated: [String: Any],
+        changes: [Change]
+    ) throws {
+        guard let change = changes.last(where: { $0.key == "lifecycle_phase" }) else {
+            return
+        }
+        guard case .string(let rawTarget) = change.value,
+              let target = RuntimeLifecyclePhase(rawValue: rawTarget) else {
+            throw DetachStateError.invalidLifecyclePhase
+        }
+
+        let current: RuntimeLifecyclePhase
+        if let rawCurrent = original["lifecycle_phase"] as? String {
+            guard let parsed = RuntimeLifecyclePhase(rawValue: rawCurrent) else {
+                throw DetachStateError.invalidLifecyclePhase
+            }
+            current = parsed
+        } else {
+            current = RuntimeLifecyclePhase.inferred(
+                fromMetadataStatus: original["status"] as? String)
+        }
+        guard current.allows(target) else {
+            throw DetachStateError.invalidLifecycleTransition
+        }
+
+        let stopRequested = (updated["stop_requested_at"] as? String)
+            .map { !$0.isEmpty } ?? false
+        let status = updated["status"] as? String
+        if target == .stopping,
+           !stopRequested || status != "stopped" {
+            throw DetachStateError.invalidLifecycleTransition
+        }
+        if target == .finalizing, stopRequested {
+            throw DetachStateError.invalidLifecycleTransition
+        }
+        if target == .terminal, stopRequested, status != "stopped" {
+            // Stop intent wins a same-run race with worker finalization. This
+            // check runs under the metadata transaction lock.
+            throw DetachStateError.invalidLifecycleTransition
+        }
     }
 
     private static func foundationValue(_ scalar: DetachStateScalar) -> Any {

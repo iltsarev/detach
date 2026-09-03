@@ -890,7 +890,6 @@ final class SessionAttachTerminalTests: XCTestCase {
         let terminal = SessionAttachLocalProcessTerminalView(
             frame: NSRect(x: 0, y: 0, width: 640, height: 360))
         let retained = Data("retained session output".utf8)
-        terminal.feed(byteArray: Array(retained)[...])
         terminal.retainScreen(
             retained,
             fontPointSize: 13)
@@ -898,6 +897,9 @@ final class SessionAttachTerminalTests: XCTestCase {
         terminal.onFirstVisibleFrame = { visibleFrameCount += 1 }
 
         XCTAssertTrue(terminal.isRetainingScreen)
+        XCTAssertFalse(
+            SessionAttachLocalProcessTerminalView.hasVisibleContent(
+                in: terminal.terminal))
         terminal.dataReceived(slice: Array("\u{001B}[2J\u{001B}[H".utf8)[...])
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
 

@@ -1,6 +1,10 @@
 import Darwin
 import Foundation
 
+// Swift imports Darwin's `struct flock` under the same name as flock(2).
+@_silgen_name("flock")
+private func metadataFileLock(_ descriptor: Int32, _ operation: Int32) -> Int32
+
 public enum DetachStateCommandError: Error, Equatable, Sendable {
     case invalidArguments
     case invalidInteger(String)
@@ -334,7 +338,9 @@ public enum DetachStateCommand {
         let processInspection = Set([
             "--inspect-processes", "--worker-pid", "--provider-pid", "--pane-pid",
         ])
-        let allowed = required.union(processInspection).union(["--stop-requested"])
+        let allowed = required.union(processInspection).union([
+            "--stop-requested", "--lifecycle-phase",
+        ])
         var values: [String: String] = [:]
         var index = 0
         while index < arguments.count {
@@ -368,6 +374,15 @@ public enum DetachStateCommand {
             throw DetachStateCommandError.invalidArguments
         }
         let stopRequested = try values["--stop-requested"].map(boolean) ?? false
+        let lifecyclePhase: RuntimeLifecyclePhase?
+        if let rawPhase = values["--lifecycle-phase"] {
+            guard let parsed = RuntimeLifecyclePhase(rawValue: rawPhase) else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            lifecyclePhase = parsed
+        } else {
+            lifecyclePhase = nil
+        }
         if let inspectRaw = values["--inspect-processes"] {
             guard try boolean(inspectRaw),
                   processInspection.allSatisfy({ values[$0] != nil }),
@@ -398,7 +413,8 @@ public enum DetachStateCommand {
             checkpointFreshness: checkpoint,
             checkpointRecoverable: try boolean(recoverableRaw),
             agentSessionKnown: try boolean(knownRaw),
-            stopRequested: stopRequested))
+            stopRequested: stopRequested,
+            lifecyclePhase: lifecyclePhase))
     }
 
     private static func maintenanceReconcile(
@@ -611,6 +627,7 @@ public enum DetachStateCommand {
         ("last_checkpoint_epoch", ["last_checkpoint_epoch"]),
         ("health_schema", ["health_schema"]),
         ("stop_requested_at", ["stop_requested_at"]),
+        ("lifecycle_phase", ["lifecycle_phase"]),
     ]
 
     /// Emits fixed key/value pairs separated by NUL bytes. The final complete
@@ -1167,13 +1184,48 @@ public enum DetachStateCommand {
             Array(arguments.dropFirst()),
             allowRunToken: true)
         let url = fileURL(path)
-        let original = try Data(contentsOf: url)
-        let updated = try SessionMetadataDocument.patch(
-            original,
-            expectedRunToken: mutation.expectedRunToken,
-            changes: mutation.changes)
-        try updated.write(to: url, options: .atomic)
+        try withMetadataPatchLock(for: url) {
+            let original = try Data(contentsOf: url)
+            let updated = try SessionMetadataDocument.patch(
+                original,
+                expectedRunToken: mutation.expectedRunToken,
+                changes: mutation.changes)
+            try updated.write(to: url, options: .atomic)
+        }
         return Data()
+    }
+
+    /// Serializes the complete read-modify-replace transaction across helper
+    /// processes. Atomic rename prevents torn JSON but does not prevent two
+    /// readers from replacing each other's disjoint changes.
+    private static func withMetadataPatchLock<T>(
+        for metadataURL: URL,
+        operation: () throws -> T
+    ) throws -> T {
+        let lockURL = metadataURL.deletingLastPathComponent()
+            .appendingPathComponent(".meta-patch.lock")
+        let descriptor = open(
+            lockURL.path,
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        defer { close(descriptor) }
+
+        var information = stat()
+        guard fstat(descriptor, &information) == 0,
+              information.st_mode & S_IFMT == S_IFREG,
+              information.st_uid == geteuid() else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        while metadataFileLock(descriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+        defer { _ = metadataFileLock(descriptor, LOCK_UN) }
+        return try operation()
     }
 
     private struct MetaMutationArguments {

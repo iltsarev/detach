@@ -688,6 +688,16 @@ if codex_part_selected preflight; then
     "$ROOT/bin/detach-core")"
   printf '%s\n' "$worker_cleanup_source" | \
     grep -F 'DETACH_SUPPRESS_SESSION_EVENT=1 checkpoint_once' >/dev/null
+  finalizing_line="$(printf '%s\n' "$worker_cleanup_source" | \
+    grep -n -- '--string lifecycle_phase finalizing' | head -1 | cut -d: -f1)"
+  final_checkpoint_line="$(printf '%s\n' "$worker_cleanup_source" | \
+    grep -n 'checkpoint_once' | tail -1 | cut -d: -f1)"
+  terminal_line="$(printf '%s\n' "$worker_cleanup_source" | \
+    grep -n -- '--string lifecycle_phase terminal' | head -1 | cut -d: -f1)"
+  [ -n "$finalizing_line" ] && [ -n "$final_checkpoint_line" ] && \
+    [ -n "$terminal_line" ]
+  [ "$finalizing_line" -lt "$final_checkpoint_line" ]
+  [ "$final_checkpoint_line" -lt "$terminal_line" ]
   delete_source="$(sed -n \
     '/^delete_locked() {/,/^restore_rollout_if_needed() {/p' \
     "$ROOT/bin/detach-core")"
@@ -934,6 +944,22 @@ if codex_part_selected lifecycle; then
   integration_release="$TMP_ROOT/integration-provider-release"
   export FAKE_CODEX_RELEASE_FILE="$integration_release"
 
+  # Initial metadata is a private handoff document. It must not create a row
+  # before tmux and the worker have published one coherent runtime identity.
+  initializing_session=detach-codex-initializing-fixture
+  initializing_dir="$DETACH_CODEX_STATE_ROOT/sessions/$initializing_session"
+  mkdir -p "$initializing_dir"
+  "$STATE_HELPER" meta create "$initializing_dir/meta.json" \
+    --integer schema 1 \
+    --string session_name "$initializing_session" \
+    --string project_dir "$ROOT" \
+    --string status starting \
+    --string lifecycle_phase initializing \
+    --string run_token initializing-token \
+    --integer health_schema 1
+  ! run_codex list --json | grep -F "\"session_name\":\"$initializing_session\"" >/dev/null
+  rm -rf "$initializing_dir"
+
   # Hold the power wrapper between the exact worker handshake and provider
   # launch. The lifecycle hint observed in this phase must remain `starting`;
   # it must never flash through Problems as a false missing-provider failure.
@@ -960,6 +986,7 @@ if codex_part_selected lifecycle; then
     ''|*[!0-9]*) printf 'startup worker identity was not published\n' >&2; exit 1 ;;
   esac
   [ "$("$STATE_HELPER" meta get "$startup_meta" status)" = starting ]
+  [ "$("$STATE_HELPER" meta get "$startup_meta" lifecycle_phase)" = starting ]
   wait_for_tmux_option "$startup_session" @detach_status starting
   startup_health="$(
     run_codex list --json | grep -F "\"session_name\":\"$startup_session\""
@@ -976,6 +1003,7 @@ if codex_part_selected lifecycle; then
   )"
   [ "$(printf '%s' "$startup_health" | \
     "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+  [ "$("$STATE_HELPER" meta get "$startup_meta" lifecycle_phase)" = running ]
   run_codex stop startup-health >/dev/null
   run_codex delete --force startup-health >/dev/null
 
@@ -1967,8 +1995,9 @@ run_codex delete --force "$slow_cleanup_name"
 
 # Freeze the worker after Start, then request Stop. The process-group TERM
 # removes the provider while the stopped worker cannot publish final metadata.
-# This holds the exact UI-visible transition long enough to assert that durable
-# Stop intent keeps it out of Problems without authorizing an early action.
+# This holds the exact UI-visible transition long enough to assert that the
+# formal stopping phase reports the requested outcome without authorizing an
+# early action.
 stop_transition_name=stop-transition
 stop_transition_session=detach-codex-stop-transition
 DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
@@ -1999,7 +2028,7 @@ kill -CONT "$stop_transition_worker" 2>/dev/null || true
 wait "$stop_transition_pid"
 [ -n "$stop_transition_json" ]
 [ "$(printf '%s' "$stop_transition_json" | \
-  "$STATE_HELPER" meta get /dev/stdin effective_status)" = interrupted ]
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
 [ "$(printf '%s' "$stop_transition_json" | \
   "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
 [ "$(printf '%s' "$stop_transition_json" | \
@@ -2008,6 +2037,7 @@ wait "$stop_transition_pid"
   "$STATE_HELPER" meta get /dev/stdin stop_requested_at)" ]
 printf '%s' "$stop_transition_json" | grep -F '"health_actions":[]' >/dev/null
 [ "$("$STATE_HELPER" meta get "$stop_transition_meta" status)" = stopped ]
+[ "$("$STATE_HELPER" meta get "$stop_transition_meta" lifecycle_phase)" = terminal ]
 run_codex delete --force "$stop_transition_name"
 
 # A start holds the install lock through its readiness wait (up to 35

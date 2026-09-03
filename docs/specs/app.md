@@ -56,11 +56,11 @@ tints so power warnings stay visible. Monochrome states remain template; tints
 resolve from label or system colors. VoiceOver names
 the session state. The first menu line is `state · reason · freshness`.
 Protected counts working sessions. Allowed names all-waiting or an unprotected
-working session and never claims no sessions. One typed heartbeat source and
-one `detach watch --json` source supply them. A schema-1 hint, activation, or
-`resync` triggers `list --json`; only the newest hint waits. No list timer runs.
-A dead or never-ready watcher restarts with 2–60 s backoff; a failed list
-retries alike. Cold start waits 1 s for `ready`; a late `ready` repeats its
+working session and never claims no sessions. Typed heartbeat and
+`detach watch --json` sources supply them. A schema-1 hint, activation, or
+`resync` starts a serialized `list --json`. Hints during a read share one ordered
+trailing read. No list timer runs. Dead or unready watchers and failed lists retry
+with 2–60 s backoff. Cold start waits 1 s for `ready`; a late `ready` repeats the
 snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
 checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
 Settings → General owns both menu bar toggles. Settings → System keeps the only
@@ -153,13 +153,13 @@ rows grant no action, ownership, PID, cleanup, or power claim until a fresh
 list arrives. A failed refresh keeps them visible but not authoritative. Only
 presentation is stored.
 
-Timer-free caches preload 12 non-live 500-line logs, three at once, and nine
-live screens, two at once. They retain no PTY. Empty and failed reads wait for
-a typed revision. Bursts keep active reads. The lifecycle ID blocks cache
+Timer-free caches preload 12 non-live 500-line logs (three at once) and nine
+live screens (two at once), with no PTY. Empty and failed reads wait for
+a revision. Bursts keep active reads. The lifecycle ID blocks cache
 inheritance after name reuse; older rows use creation and provider identity.
-A detached live log rereads every 2 s. A cold attach can show one passive
-SwiftTerm screen. Live switching uses no raster or replacement PTY. tmux holds
-the frame until a synchronized redraw.
+Detached live logs reread every 2 s. Cold attach uses one passive SwiftTerm
+overlay; cached bytes never enter the live buffer. Live switching keeps its PTY.
+tmux holds the frame until a synchronized redraw.
 Metadata stays in one scrolling row. Selection keeps header, terminal, and
 action geometry. A cold passive screen leaves within one second.
 New session accepts an optional printable UTF-8 name up to 100 bytes and

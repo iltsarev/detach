@@ -2,6 +2,16 @@ import Darwin
 import XCTest
 @testable import DetachKit
 
+@_silgen_name("flock")
+private func testMetadataFileLock(_ descriptor: Int32, _ operation: Int32) -> Int32
+
+private actor MetadataPatchCompletionProbe {
+    private var completed = false
+
+    func markCompleted() { completed = true }
+    func isCompleted() -> Bool { completed }
+}
+
 final class DetachStateCommandTests: XCTestCase {
     private var temporaryDirectory: URL!
 
@@ -399,7 +409,7 @@ final class DetachStateCommandTests: XCTestCase {
         let values = output.split(separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        let recordSize = 21
+        let recordSize = 22
         XCTAssertEqual(values.count, recordSize * 3 + 2)
         XCTAssertEqual(values[0], "detach-claude-three")
         XCTAssertEqual(values[1], "true")
@@ -569,10 +579,10 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 26 + 2)
+        XCTAssertEqual(values.count, 27 + 2)
         XCTAssertEqual(values[0], "detach-codex-summary")
         XCTAssertEqual(values[1], "true")
-        XCTAssertEqual(Array(values[21..<26]), [
+        XCTAssertEqual(Array(values[22..<27]), [
             "gpt-batched", "", "", "working", "turn-batched",
         ])
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
@@ -591,7 +601,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(cachedValues[21], "cached-proof")
+        XCTAssertEqual(cachedValues[22], "cached-proof")
 
         try Data("""
         {"payload":{"model":"gpt-updated"}}
@@ -604,7 +614,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(changedValues[21], "gpt-updated")
+        XCTAssertEqual(changedValues[22], "gpt-updated")
 
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "meta", "snapshots", root.path, "--unknown",
@@ -641,7 +651,7 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(Array(values[21..<26]), [
+        XCTAssertEqual(Array(values[22..<27]), [
             "claude-test", "10", "", "working", "turn-claude",
         ])
     }
@@ -675,7 +685,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[24..<26])
+            return Array(values[25..<27])
         }
 
         XCTAssertEqual(try turnFields(), ["working", "turn-long"])
@@ -729,7 +739,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[24..<26])
+            return Array(values[25..<27])
         }
 
         XCTAssertEqual(try turnFields(), ["waiting", "turn-old"])
@@ -815,6 +825,126 @@ final class DetachStateCommandTests: XCTestCase {
             "--string", "status", "failed",
         ]))
         XCTAssertEqual(try Data(contentsOf: file), afterValidPatch)
+    }
+
+    func testConcurrentMetaPatchesPreserveEveryDisjointUpdate() async throws {
+        let file = temporaryDirectory.appendingPathComponent("concurrent-meta.json")
+        try Data(#"{"schema":1,"session_name":"s","project_dir":"/tmp/p","run_token":"current"}"#.utf8)
+            .write(to: file)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<64 {
+                group.addTask {
+                    _ = try DetachStateCommand.run(arguments: [
+                        "meta", "patch", file.path,
+                        "--run-token", "current",
+                        "--integer", "concurrent_\(index)", "\(index)",
+                    ])
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        for index in 0..<64 {
+            XCTAssertEqual(object["concurrent_\(index)"] as? Int, index)
+        }
+    }
+
+    func testMetaPatchWaitsForTheCommonInterprocessLock() async throws {
+        let file = temporaryDirectory.appendingPathComponent("blocked-meta.json")
+        let lock = temporaryDirectory.appendingPathComponent(".meta-patch.lock")
+        try Data(#"{"schema":1,"session_name":"s","project_dir":"/tmp/p","run_token":"current"}"#.utf8)
+            .write(to: file)
+        let descriptor = open(
+            lock.path,
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { if descriptor >= 0 { close(descriptor) } }
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_EX), 0)
+
+        let completion = MetadataPatchCompletionProbe()
+        let patch = Task.detached {
+            _ = try DetachStateCommand.run(arguments: [
+                "meta", "patch", file.path,
+                "--run-token", "current",
+                "--string", "status", "running",
+            ])
+            await completion.markCompleted()
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let completedWhileLocked = await completion.isCompleted()
+        XCTAssertFalse(completedWhileLocked)
+
+        XCTAssertEqual(testMetadataFileLock(descriptor, LOCK_UN), 0)
+        try await patch.value
+        let completedAfterUnlock = await completion.isCompleted()
+        XCTAssertTrue(completedAfterUnlock)
+    }
+
+    func testMetaPatchEnforcesTheRuntimeLifecycleGraph() throws {
+        let file = temporaryDirectory.appendingPathComponent("lifecycle-meta.json")
+        try Data(#"{"schema":1,"session_name":"s","project_dir":"/tmp/p","run_token":"current","status":"starting","lifecycle_phase":"initializing"}"#.utf8)
+            .write(to: file)
+
+        for phase in ["starting", "running", "finalizing", "terminal"] {
+            _ = try DetachStateCommand.run(arguments: [
+                "meta", "patch", file.path,
+                "--run-token", "current",
+                "--string", "lifecycle_phase", phase,
+            ])
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", file.path,
+            "--run-token", "current",
+            "--string", "lifecycle_phase", "running",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecycleTransition)
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", file.path,
+            "--run-token", "current",
+            "--string", "lifecycle_phase", "almost_done",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecyclePhase)
+        }
+    }
+
+    func testStopIntentWinsARaceWithWorkerTerminalOutcome() throws {
+        let file = temporaryDirectory.appendingPathComponent("stop-race-meta.json")
+        try Data(#"{"schema":1,"session_name":"s","project_dir":"/tmp/p","run_token":"current","status":"running","lifecycle_phase":"running"}"#.utf8)
+            .write(to: file)
+
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", file.path,
+            "--run-token", "current",
+            "--string", "stop_requested_at", "2026-09-03T09:00:00Z",
+            "--string", "lifecycle_phase", "stopping",
+            "--string", "status", "stopped",
+        ])
+        let stopped = try Data(contentsOf: file)
+
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", file.path,
+            "--run-token", "current",
+            "--string", "lifecycle_phase", "terminal",
+            "--string", "status", "completed",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecycleTransition)
+        }
+        XCTAssertEqual(try Data(contentsOf: file), stopped)
+
+        _ = try DetachStateCommand.run(arguments: [
+            "meta", "patch", file.path,
+            "--run-token", "current",
+            "--string", "lifecycle_phase", "terminal",
+            "--string", "status", "stopped",
+        ])
+        XCTAssertEqual(
+            try DetachStateCommand.run(arguments: ["meta", "get", file.path, "status"]),
+            Data("stopped\n".utf8))
     }
 
     func testMetadataMutationParserRejectsInvalidTypedChanges() throws {
@@ -1154,7 +1284,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(assessment.reason, .healthy)
     }
 
-    func testHealthEvaluateTreatsExactStopTransitionAsInterrupted() throws {
+    func testHealthEvaluateKeepsExactStopTransitionStopped() throws {
         let arguments = [
             "health", "evaluate",
             "--metadata-valid", "true",
@@ -1175,7 +1305,7 @@ final class DetachStateCommandTests: XCTestCase {
             SessionHealthAssessment.self,
             from: output)
 
-        XCTAssertEqual(assessment.effectiveStatus, .interrupted)
+        XCTAssertEqual(assessment.effectiveStatus, .stopped)
         XCTAssertEqual(assessment.reason, .finished)
         XCTAssertTrue(assessment.actions.isEmpty)
         XCTAssertFalse(assessment.cleanupEligible)

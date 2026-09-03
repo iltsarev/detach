@@ -230,17 +230,103 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertTrue(result.ownershipProven)
     }
 
-    func testStopIntentKeepsFinishingWorkerOutOfProblems() {
+    func testStopIntentKeepsFinishingWorkerStopped() {
         let result = evaluate(provider: .dead, stopRequested: true)
 
-        XCTAssertEqual(result.effectiveStatus, .interrupted)
+        XCTAssertEqual(result.effectiveStatus, .stopped)
         XCTAssertEqual(result.reason, .finished)
         XCTAssertTrue(result.actions.isEmpty)
         XCTAssertTrue(result.ownershipProven)
         XCTAssertFalse(result.cleanupEligible)
     }
 
-    func testStopIntentKeepsActionsClosedAfterTerminalMetadata() {
+    func testStoppingPhaseStaysActionlessWhileRuntimeTeardownRemains() {
+        let inProgress: [(TmuxHealthState, ProcessHealthState)] = [
+            (.live, .dead),
+            (.dead, .alive),
+            (.missing, .alive),
+        ]
+        for (tmux, worker) in inProgress {
+            let result = evaluate(
+                status: .stopped,
+                tmux: tmux,
+                worker: worker,
+                provider: .dead,
+                stopRequested: true,
+                lifecyclePhase: .stopping)
+
+            XCTAssertEqual(result.effectiveStatus, .stopped, "tmux=\(tmux)")
+            XCTAssertEqual(result.reason, .finished, "tmux=\(tmux)")
+            XCTAssertTrue(result.actions.isEmpty, "tmux=\(tmux)")
+            XCTAssertEqual(result.reconcileAction, .none, "tmux=\(tmux)")
+            XCTAssertFalse(result.cleanupEligible, "tmux=\(tmux)")
+        }
+
+        let replacement = evaluate(
+            token: .mismatch,
+            stopRequested: true,
+            lifecyclePhase: .stopping)
+        XCTAssertEqual(replacement.effectiveStatus, .corrupt)
+        XCTAssertEqual(replacement.reason, .runTokenMismatch)
+    }
+
+    func testCrashedStoppingPhaseConvergesAfterRuntimeIsGone() {
+        for (tmux, reconcile) in [
+            (TmuxHealthState.dead, SessionReconcileAction.removeDeadTmux),
+            (.missing, .none),
+        ] {
+            let result = evaluate(
+                status: .stopped,
+                tmux: tmux,
+                worker: .dead,
+                provider: .dead,
+                stopRequested: true,
+                lifecyclePhase: .stopping)
+
+            XCTAssertEqual(result.effectiveStatus, .stopped, "tmux=\(tmux)")
+            XCTAssertEqual(result.reason, tmux == .dead ? .paneExited : .finished)
+            XCTAssertEqual(result.actions, [.resume, .delete], "tmux=\(tmux)")
+            XCTAssertEqual(result.reconcileAction, reconcile, "tmux=\(tmux)")
+            XCTAssertTrue(result.cleanupEligible, "tmux=\(tmux)")
+        }
+    }
+
+    func testFinalizingPhaseNeverReportsADeadProviderAsHung() {
+        for (status, expected) in [
+            (EffectiveStatus.completed, EffectiveStatus.completed),
+            (.failed, .failed),
+            (.interrupted, .interrupted),
+            (.running, .interrupted),
+        ] {
+            let result = evaluate(
+                status: status,
+                tmux: .live,
+                worker: .alive,
+                provider: .dead,
+                lifecyclePhase: .finalizing)
+
+            XCTAssertEqual(result.effectiveStatus, expected, "status=\(status)")
+            XCTAssertEqual(result.reason, .finished, "status=\(status)")
+            XCTAssertTrue(result.actions.isEmpty, "status=\(status)")
+            XCTAssertFalse(result.cleanupEligible, "status=\(status)")
+        }
+    }
+
+    func testCrashedFinalizingPhaseOpensTerminalActions() {
+        let result = evaluate(
+            status: .completed,
+            tmux: .missing,
+            worker: .dead,
+            provider: .dead,
+            lifecyclePhase: .finalizing)
+
+        XCTAssertEqual(result.effectiveStatus, .completed)
+        XCTAssertEqual(result.reason, .finished)
+        XCTAssertEqual(result.actions, [.resume, .delete])
+        XCTAssertFalse(result.cleanupEligible)
+    }
+
+    func testStopIntentKeepsStoppedOutcomeAfterTerminalMetadata() {
         for status in [
             EffectiveStatus.interrupted,
             .stopped,
@@ -251,7 +337,7 @@ final class SessionHealthTests: XCTestCase {
                 provider: .dead,
                 stopRequested: true)
 
-            XCTAssertEqual(result.effectiveStatus, .interrupted)
+            XCTAssertEqual(result.effectiveStatus, .stopped)
             XCTAssertEqual(result.reason, .finished)
             XCTAssertTrue(result.actions.isEmpty)
             XCTAssertTrue(result.ownershipProven)
@@ -501,7 +587,8 @@ final class SessionHealthTests: XCTestCase {
         checkpoint: FreshnessState = .fresh,
         recoverable: Bool = true,
         agentSessionKnown: Bool = true,
-        stopRequested: Bool = false
+        stopRequested: Bool = false,
+        lifecyclePhase: RuntimeLifecyclePhase? = nil
     ) -> SessionHealthAssessment {
         SessionHealthEvaluator.evaluate(SessionHealthEvidence(
             metadataValid: metadataValid,
@@ -515,6 +602,7 @@ final class SessionHealthTests: XCTestCase {
             checkpointFreshness: checkpoint,
             checkpointRecoverable: recoverable,
             agentSessionKnown: agentSessionKnown,
-            stopRequested: stopRequested))
+            stopRequested: stopRequested,
+            lifecyclePhase: lifecyclePhase))
     }
 }

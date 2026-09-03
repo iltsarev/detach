@@ -27,6 +27,46 @@ public enum FreshnessState: String, Codable, Sendable {
     case missing
 }
 
+/// An authoritative phase owned by the runtime. Stable user outcomes remain
+/// in metadata `status`; this phase only makes multi-step transitions explicit.
+public enum RuntimeLifecyclePhase: String, Codable, Sendable {
+    case initializing
+    case starting
+    case running
+    case stopping
+    case finalizing
+    case terminal
+
+    func allows(_ target: RuntimeLifecyclePhase) -> Bool {
+        if self == target { return true }
+        return switch self {
+        case .initializing:
+            target == .starting || target == .terminal
+        case .starting:
+            target == .running || target == .stopping
+                || target == .finalizing || target == .terminal
+        case .running:
+            target == .stopping || target == .finalizing || target == .terminal
+        case .stopping:
+            // Stop can roll back only if the exact managed pane survived a
+            // failed removal and the runtime remains usable.
+            target == .running || target == .terminal
+        case .finalizing:
+            target == .terminal
+        case .terminal:
+            target == .terminal
+        }
+    }
+
+    static func inferred(fromMetadataStatus status: String?) -> RuntimeLifecyclePhase {
+        switch status {
+        case "starting": .starting
+        case "running", "recovering", "hung": .running
+        default: .terminal
+        }
+    }
+}
+
 struct SessionProcessHealth: Equatable, Sendable {
     var worker: ProcessHealthState
     var provider: ProcessHealthState
@@ -178,6 +218,7 @@ public struct SessionHealthEvidence: Equatable, Sendable {
     public var checkpointRecoverable: Bool
     public var agentSessionKnown: Bool
     public var stopRequested: Bool
+    public var lifecyclePhase: RuntimeLifecyclePhase
 
     public init(
         metadataValid: Bool,
@@ -191,7 +232,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         checkpointFreshness: FreshnessState,
         checkpointRecoverable: Bool,
         agentSessionKnown: Bool,
-        stopRequested: Bool = false
+        stopRequested: Bool = false,
+        lifecyclePhase: RuntimeLifecyclePhase? = nil
     ) {
         self.metadataValid = metadataValid
         self.runtimeIdentityExpected = runtimeIdentityExpected
@@ -205,6 +247,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         self.checkpointRecoverable = checkpointRecoverable
         self.agentSessionKnown = agentSessionKnown
         self.stopRequested = stopRequested
+        self.lifecyclePhase = lifecyclePhase
+            ?? RuntimeLifecyclePhase.inferred(fromMetadataStatus: metaStatus.rawValue)
     }
 }
 
@@ -249,6 +293,50 @@ public enum SessionHealthEvaluator {
                 actions: actions,
                 ownershipProven: evidence.tmuxState == .live || evidence.tmuxState == .dead,
                 evidence: evidence)
+        }
+
+        // Active transition phases close user actions while an exact runtime
+        // component can still finish them. If all runtime evidence is dead,
+        // fall through so a crashed transition converges to Resume/Delete.
+        // A foreign tmux and malformed metadata still take precedence above.
+        let liveIdentityConflict = evidence.tmuxState == .live
+            && evidence.runTokenState != .match
+        let transitionInProgress = evidence.tmuxState == .live
+            || runtimeProcessMayStillBeAlive(evidence)
+        switch evidence.lifecyclePhase {
+        case .initializing:
+            if liveIdentityConflict { break }
+            if transitionInProgress {
+                return assessment(
+                    status: .starting,
+                    reason: .healthy,
+                    actions: [],
+                    evidence: evidence)
+            }
+        case .stopping:
+            if liveIdentityConflict { break }
+            if transitionInProgress {
+                var result = assessment(
+                    status: .stopped,
+                    reason: .finished,
+                    actions: [],
+                    evidence: evidence)
+                result.cleanupEligible = false
+                return result
+            }
+        case .finalizing:
+            if liveIdentityConflict { break }
+            if transitionInProgress {
+                var result = assessment(
+                    status: isActive(evidence.metaStatus) ? .interrupted : evidence.metaStatus,
+                    reason: .finished,
+                    actions: [],
+                    evidence: evidence)
+                result.cleanupEligible = false
+                return result
+            }
+        case .starting, .running, .terminal:
+            break
         }
 
         switch evidence.tmuxState {
@@ -306,21 +394,22 @@ public enum SessionHealthEvaluator {
             break
         }
 
-        // Stop records exact-run intent before signalling the process group.
-        // The provider can exit while its worker is still checkpointing and
-        // writing the final `stopped` metadata. That proven transition is an
-        // interruption in progress, not a lost provider. Keep actions closed
-        // until the worker and tmux pane have finished.
+        // Stop records exact-run intent and its public outcome before
+        // signalling the process group. The provider can exit while its
+        // worker is still checkpointing. Keep that outcome monotonic and
+        // actions closed until the worker and tmux pane have finished.
         if evidence.stopRequested,
            evidence.runtimeIdentityExpected,
            evidence.workerState == .alive,
            evidence.providerState == .dead {
-            return assessment(
-                status: .interrupted,
+            var result = assessment(
+                status: .stopped,
                 reason: .finished,
                 actions: [],
                 ownershipProven: true,
                 evidence: evidence)
+            result.cleanupEligible = false
+            return result
         }
 
         // The worker publishes its final status and only then exits, so a

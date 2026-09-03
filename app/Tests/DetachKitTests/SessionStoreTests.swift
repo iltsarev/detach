@@ -88,10 +88,12 @@ private actor OverlappingStartCLI: DetachCLIRunning {
         await withCheckedContinuation { listWaiters.append((call, $0)) }
     }
 
-    func finishListCall(_ call: Int) {
+    var currentListCallCount: Int { listCallCount }
+
+    func finishListCall(_ call: Int, output: String? = nil) {
         listContinuations.removeValue(forKey: call)?.resume(returning: CLIResult(
             exitCode: 0,
-            stdout: listOutput,
+            stdout: output ?? listOutput,
             stderr: "",
             timedOut: false))
     }
@@ -439,7 +441,7 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(result, SessionStartResult(sessionID: "detach-codex-p-1"))
     }
 
-    func testStartDetachedKeepsItsSelectionWhenAnOverlappingRefreshSupersedesPublication() async {
+    func testStartDetachedKeepsItsSelectionWhenAnOverlappingRefreshQueuesATrailingRead() async {
         let cli = OverlappingStartCLI(listOutput: line)
         let store = SessionStore(cli: cli)
         let project = URL(fileURLWithPath: "/tmp/p", isDirectory: true)
@@ -453,14 +455,43 @@ final class SessionStoreTests: XCTestCase {
         }
         await cli.waitForListCall(1)
         let backgroundPoll = Task { @MainActor in await store.refresh() }
-        await cli.waitForListCall(2)
+        await Task.yield()
+        let callsBeforeFirstCompletion = await cli.currentListCallCount
+        XCTAssertEqual(callsBeforeFirstCompletion, 1)
 
         await cli.finishListCall(1)
-        let result = await launch.value
+        await cli.waitForListCall(2)
         await cli.finishListCall(2)
+        let result = await launch.value
         _ = await backgroundPoll.value
 
         XCTAssertEqual(result.sessionID, "detach-codex-p-1")
+        XCTAssertEqual(store.sessions.first?.id, "detach-codex-p-1")
+    }
+
+    func testOverlappingRefreshesUseOneTrailingSnapshotAndPublishNewestObservation() async {
+        let cli = OverlappingStartCLI(listOutput: line)
+        let store = SessionStore(cli: cli)
+        let first = Task { @MainActor in await store.refresh() }
+        await cli.waitForListCall(1)
+
+        let second = Task { @MainActor in await store.refresh() }
+        let third = Task { @MainActor in await store.refresh() }
+        await Task.yield()
+        let callsBeforeFirstCompletion = await cli.currentListCallCount
+        XCTAssertEqual(callsBeforeFirstCompletion, 1)
+
+        await cli.finishListCall(1, output: "")
+        await cli.waitForListCall(2)
+        let callsDuringTrailingRead = await cli.currentListCallCount
+        XCTAssertEqual(callsDuringTrailingRead, 2)
+        await cli.finishListCall(2, output: line)
+        _ = await first.value
+        _ = await second.value
+        _ = await third.value
+
+        let finalCallCount = await cli.currentListCallCount
+        XCTAssertEqual(finalCallCount, 2)
         XCTAssertEqual(store.sessions.first?.id, "detach-codex-p-1")
     }
 
@@ -1352,9 +1383,12 @@ final class SessionStoreTests: XCTestCase {
 
         let second = FakeCLI()
         second.responses["list --json"] = ok("")
-        await store.configure(cli: second)
+        let configuration = Task { @MainActor in
+            await store.configure(cli: second)
+        }
         await first.finish(with: CLIResult(
             exitCode: 0, stdout: line, stderr: "", timedOut: false))
+        await configuration.value
         _ = await staleRefresh.value
 
         XCTAssertEqual(store.sessions, [])

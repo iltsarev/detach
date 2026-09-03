@@ -301,9 +301,8 @@ final class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     /// Keeps the previous rendered screen above the new PTY until the attach
-    /// client has produced a non-empty frame. tmux clears the terminal during
-    /// attach, so feeding cached bytes into the terminal alone can still show
-    /// a black frame between the clear and the first repaint.
+    /// client has produced a non-empty frame. Cached bytes never enter the
+    /// live terminal because they would create phantom scrollback after Resume.
     func retainScreen(
         _ screen: Data,
         fontPointSize: CGFloat
@@ -724,7 +723,6 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         context.coordinator.installKeyboardMonitor(for: view)
         if let screen = context.coordinator.screenCache.screen(
             for: context.coordinator.session) {
-            view.feed(byteArray: Array(screen)[...])
             view.retainScreen(
                 screen,
                 fontPointSize: fontPointSize)

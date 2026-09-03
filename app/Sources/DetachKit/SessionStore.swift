@@ -33,6 +33,11 @@ public final class SessionStore {
         let continuation: CheckedContinuation<String?, Never>
     }
 
+    private struct RefreshWaiter {
+        let generation: UInt64
+        let continuation: CheckedContinuation<[Session], Never>
+    }
+
     private enum Mutation {
         case stop
         case delete
@@ -76,7 +81,14 @@ public final class SessionStore {
     @ObservationIgnored private var transientConfirmationTask: Task<Void, Never>?
     @ObservationIgnored private var confirmedTransientSessionIDs: Set<String> = []
     @ObservationIgnored private var eventGeneration: UInt64 = 0
-    @ObservationIgnored private var refreshGeneration: UInt64 = 0
+    /// Epoch invalidates results from a previous CLI/observation lifetime.
+    @ObservationIgnored private var refreshEpoch: UInt64 = 0
+    /// Requests are serialized. A request received during an active read waits
+    /// for one trailing read instead of launching a competing `list` process.
+    @ObservationIgnored private var refreshRequestGeneration: UInt64 = 0
+    @ObservationIgnored private var refreshCompletedGeneration: UInt64 = 0
+    @ObservationIgnored private var refreshInProgress = false
+    @ObservationIgnored private var refreshWaiters: [RefreshWaiter] = []
     @ObservationIgnored private var sessionWaiters: [UUID: SessionWaiter] = [:]
     @ObservationIgnored private let confirmationSleep:
         @Sendable (UInt64) async throws -> Void
@@ -209,7 +221,7 @@ public final class SessionStore {
         // Invalidate in-flight snapshots and every delayed refresh owned by
         // this observation lifetime. A stopped store must launch no later CLI
         // work until an explicit refresh or a new watcher starts it again.
-        refreshGeneration &+= 1
+        refreshEpoch &+= 1
         refreshRetryTask?.cancel()
         refreshRetryTask = nil
         refreshRetryAttempt = 0
@@ -315,45 +327,77 @@ public final class SessionStore {
         }
     }
 
-    /// Returns this request's valid typed snapshot even when a newer refresh
-    /// owns publication to the shared store.
+    /// Serializes typed observations. A request received while one list is in
+    /// flight waits for one trailing snapshot, which closes the state-change
+    /// window without allowing out-of-order subprocess results to publish.
     @discardableResult
     public func refresh() async -> [Session] {
-        refreshGeneration &+= 1
-        let generation = refreshGeneration
+        refreshRequestGeneration &+= 1
+        let requestGeneration = refreshRequestGeneration
+        if refreshInProgress {
+            return await withCheckedContinuation { continuation in
+                refreshWaiters.append(RefreshWaiter(
+                    generation: requestGeneration,
+                    continuation: continuation))
+            }
+        }
+
+        refreshInProgress = true
+        var latestSnapshot: [Session] = []
+        repeat {
+            let servicedGeneration = refreshRequestGeneration
+            let epoch = refreshEpoch
+            latestSnapshot = await performRefresh(epoch: epoch)
+            refreshCompletedGeneration = servicedGeneration
+
+            var pending: [RefreshWaiter] = []
+            for waiter in refreshWaiters {
+                if waiter.generation <= servicedGeneration {
+                    waiter.continuation.resume(returning: latestSnapshot)
+                } else {
+                    pending.append(waiter)
+                }
+            }
+            refreshWaiters = pending
+        } while refreshCompletedGeneration != refreshRequestGeneration
+        refreshInProgress = false
+        return latestSnapshot
+    }
+
+    private func performRefresh(epoch: UInt64) async -> [Session] {
         let cli = self.cli
         do {
             let result = try await cli.run(arguments: ["list", "--json"], timeout: 5)
             guard result.exitCode == 0, !result.timedOut else {
-                if generation == refreshGeneration {
+                if epoch == refreshEpoch {
                     state = .error(result.timedOut ? L10n.string("detach list timed out")
                                    : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
-                    scheduleRefreshRetry(generation: generation)
+                    scheduleRefreshRetry(epoch: epoch)
                 }
                 return []
             }
             guard !result.stdoutTruncated else {
-                if generation == refreshGeneration {
+                if epoch == refreshEpoch {
                     state = .error(L10n.string("detach returned incomplete output"))
-                    scheduleRefreshRetry(generation: generation)
+                    scheduleRefreshRetry(epoch: epoch)
                 }
                 return []
             }
             let parsed = SessionListParser.parse(result.stdout)
             if parsed.hadInvalidLines {
-                if generation == refreshGeneration {
+                if epoch == refreshEpoch {
                     state = .incompatible // spec: never update the list from bad data
-                    scheduleRefreshRetry(generation: generation)
+                    scheduleRefreshRetry(epoch: epoch)
                 }
                 return []
             }
             let snapshot = parsed.sessions.sorted {
                 ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
             }
-            // Event refreshes, explicit refreshes, and CLI reconfiguration may
-            // overlap while their subprocesses are suspended. Only the latest
-            // request may publish state or notify transition consumers.
-            guard generation == refreshGeneration else { return snapshot }
+            // A replaced CLI can still finish after its process task is
+            // cancelled. Its decoded value belongs to the caller only and may
+            // not overwrite the new observation lifetime.
+            guard epoch == refreshEpoch else { return snapshot }
             refreshRetryTask?.cancel()
             refreshRetryTask = nil
             refreshRetryAttempt = 0
@@ -370,9 +414,9 @@ public final class SessionStore {
             if let onSnapshot { onSnapshot(sessions) }
             return snapshot
         } catch {
-            if generation == refreshGeneration {
+            if epoch == refreshEpoch {
                 state = .cliMissing
-                scheduleRefreshRetry(generation: generation)
+                scheduleRefreshRetry(epoch: epoch)
             }
             return []
         }
@@ -381,7 +425,7 @@ public final class SessionStore {
     /// One lifecycle hint arrives per transition. When the typed list that
     /// follows it fails, nothing else would repeat the request, so retry with
     /// bounded backoff until a newer refresh supersedes this one.
-    private func scheduleRefreshRetry(generation: UInt64) {
+    private func scheduleRefreshRetry(epoch: UInt64) {
         refreshRetryTask?.cancel()
         let delay = Self.backoffDelay(attempt: refreshRetryAttempt)
         refreshRetryAttempt += 1
@@ -393,7 +437,7 @@ public final class SessionStore {
                 return
             }
             guard let self, !Task.isCancelled,
-                  generation == self.refreshGeneration else { return }
+                  epoch == self.refreshEpoch else { return }
             self.refreshRetryTask = nil
             await self.refresh()
         }
