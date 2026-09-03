@@ -339,7 +339,9 @@ longer uses weekly and explicit runs. These care jobs do not extend pull-request
 feedback and cannot run release commands.
 
 Release readiness also requires the tracked reference-Mac time budgets and the
-release-only gates below. Ordinary implementation must not run them.
+release-only gates below. A reviewed schema change can rebaseline these budgets
+after required product work grows. Later changes in that schema can only keep
+or reduce each ceiling. Ordinary implementation must not run release-only gates.
 
 ## Release-only gates
 

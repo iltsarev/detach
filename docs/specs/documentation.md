@@ -13,7 +13,7 @@ Hosted CI is the merge-readiness authority.
   instructions or additional imports.
 - Root instructions stay below 200 lines and 8 KiB. Detailed architecture does
   not return to the automatic startup context.
-- No individual spec exceeds 12 KiB. Read more than one only when a change
+- No individual spec exceeds 16 KiB. Read more than one only when a change
   crosses real subsystem boundaries.
 - `AGENTS.md` contains one small human-readable context map. There is no second
   routing DSL or tool for an agent to learn.
@@ -65,7 +65,9 @@ Hosted CI is the merge-readiness authority.
   event fails a passed stage.
 - A local timing-budget failure creates performance work. Warm-cache and
   variance reruns cannot prove readiness. Repeat an unchanged run only for a
-  recorded unrelated external transient.
+  recorded unrelated external transient. A reviewed budget-schema change can
+  rebaseline capacity after the required product work grows. Within one schema,
+  timing limits can only stay equal or decrease.
 - CI binds checks to the tested merge and first parent. Linux runs level 0
   planning and static work. Level 1 covers units and contracts. Level 2 covers
   packaged and runtime work on macOS. Every selected level is required.

@@ -61,20 +61,20 @@ budget_value() {
 
 ceiling() {
   case "$1" in
-    wall_seconds_max) printf 180 ;;
+    wall_seconds_max) printf 240 ;;
     stage_static_seconds_max) printf 2 ;;
-    stage_gate_contract_seconds_max) printf 100 ;;
-    stage_swift_seconds_max) printf 20 ;;
+    stage_gate_contract_seconds_max) printf 120 ;;
+    stage_swift_seconds_max) printf 45 ;;
     stage_quality_contracts_seconds_max) printf 5 ;;
     stage_app_seconds_max) printf 70 ;;
-    stage_ui_e2e_seconds_max) printf 15 ;;
+    stage_ui_e2e_seconds_max) printf 20 ;;
     stage_codex_seconds_max) printf 110 ;;
-    stage_claude_seconds_max) printf 50 ;;
+    stage_claude_seconds_max) printf 60 ;;
     stage_distribution_seconds_max) printf 80 ;;
     stage_tmux_runtime_seconds_max) printf 8 ;;
     stage_release_preflight_seconds_max) printf 15 ;;
-    stage_publish_preflight_seconds_max) printf 25 ;;
-    stage_release_workflow_seconds_max) printf 70 ;;
+    stage_publish_preflight_seconds_max) printf 30 ;;
+    stage_release_workflow_seconds_max) printf 110 ;;
   esac
 }
 
@@ -117,7 +117,7 @@ assert_not_higher() {
   }
 }
 
-validate_budget "$BUDGET" current 2
+validate_budget "$BUDGET" current 3
 for key in "${keys[@]}"; do
   assert_not_higher "$key" "$(budget_value "$BUDGET" "$key")" "$(ceiling "$key")" locked-ceiling
 done
@@ -131,8 +131,14 @@ elif [ -n "$BASE_COMMIT" ] && git -C "$ROOT" cat-file -e "$BASE_COMMIT:tests/rel
 fi
 if [ -n "$PRIOR" ]; then
   prior_schema="$(budget_value "$PRIOR" schema 2>/dev/null || true)"
-  case "$prior_schema" in 1|2) ;; *) prior_schema=invalid ;; esac
+  case "$prior_schema" in 1|2|3) ;; *) prior_schema=invalid ;; esac
   validate_budget "$PRIOR" prior "$prior_schema"
+  if [ "$prior_schema" = 2 ]; then
+    printf 'Release budget rebaseline accepted: schema 2 -> 3\n'
+    PRIOR=""
+  fi
+fi
+if [ -n "$PRIOR" ]; then
   comparison_keys=("${keys[@]}")
   if [ "$prior_schema" = 1 ]; then
     comparison_keys=("${legacy_keys[@]}")

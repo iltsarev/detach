@@ -373,6 +373,7 @@ final class SessionEventsTests: XCTestCase {
             quietWindow: 0.02,
             queue: queue,
             output: pipe.fileHandleForWriting)
+        defer { watcher.stop() }
 
         try watcher.start()
         XCTAssertEqual(
@@ -426,7 +427,6 @@ final class SessionEventsTests: XCTestCase {
             SessionEvent(event: .changed))
         queue.sync {}
 
-        withExtendedLifetime(watcher) {}
     }
 
     func testTranscriptMonitorRejectsUnsafeFilesAndRearmsAReplacement() throws {
