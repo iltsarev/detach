@@ -308,6 +308,23 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertTrue(result.ownershipProven)
     }
 
+    func testOwnedStartingWorkerDoesNotEnterProblemsBeforeProviderLaunch() {
+        let result = evaluate(status: .starting, provider: .unknown)
+
+        XCTAssertEqual(result.effectiveStatus, .starting)
+        XCTAssertEqual(result.reason, .healthy)
+        XCTAssertEqual(result.actions, [.attach, .stop])
+        XCTAssertTrue(result.ownershipProven)
+        XCTAssertFalse(result.cleanupEligible)
+
+        let missingWorker = evaluate(
+            status: .starting,
+            worker: .unknown,
+            provider: .unknown)
+        XCTAssertEqual(missingWorker.effectiveStatus, .hung)
+        XCTAssertEqual(missingWorker.reason, .workerPIDMissing)
+    }
+
     func testFreshOwnedRuntimeReportsHealthy() {
         let result = evaluate()
 

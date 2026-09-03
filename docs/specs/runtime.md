@@ -137,10 +137,10 @@ detach-power run --session <name> --run-token <token>
   -- <provider> ...
 ```
 
-The power wrapper must confirm both protection layers, atomically mark the
-ready file before launching the provider, then atomically publish the exact
-spawned provider PID. The starter waits for both handshakes and one forced
-runtime heartbeat and never prints `Started` before they arrive.
+The worker emits `starting` only after metadata and tmux identity match;
+only then may its provider PID be absent. The power wrapper confirms both
+protection layers and publishes its ready file and exact provider PID. The
+starter proves ancestry before `running` and prints `Started` last.
 HUP/INT/TERM forward to the provider while the wrapper stays alive to release
 its lease and assertion; `detach stop` also releases by session/run token. The provider must inherit the
 wrapper's tmux foreground process group; a separate group makes interactive

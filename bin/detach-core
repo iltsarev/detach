@@ -3671,17 +3671,22 @@ worker_main() {
   # project in the worker so the provider and checkpoint loop never inherit it.
   cd -P "$cwd" >/dev/null 2>&1 || die "could not enter project directory: $cwd"
 
-  state_update_meta_for_run "$session" "$run_token" \
-    --string status running \
+  state_update_meta_for_run_without_event "$session" "$run_token" \
+    --string status starting \
     --string worker_started_at "$(now_iso)" \
     --integer worker_pid "$$" \
     --string worker_heartbeat_at "$(now_iso)" \
-    --integer worker_heartbeat_epoch "$(date '+%s')" || true
+    --integer worker_heartbeat_epoch "$(date '+%s')" || \
+      die "could not record worker startup identity"
   if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 1 2>/dev/null || true
     "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_worker_pid "$$" 2>/dev/null || true
-    tmux_update_session_status "$session" running 2>/dev/null || true
+    tmux_update_session_status "$session" starting 2>/dev/null || true
   fi
+  # The first lifecycle hint is safe only after metadata and tmux name the
+  # exact live worker. The provider PID is intentionally absent until the
+  # power wrapper launches it and the starter completes its readiness proof.
+  publish_session_event
 
   if [ "$PROVIDER" = "claude" ]; then
     agent_session_id="$(read_meta_field "$session" agent_session_id)"
@@ -3917,10 +3922,6 @@ start_tmux_session() {
     env_args+=( "$arg" )
   done < <(tmux_environment_args)
 
-  # Publish `starting` only after tmux ownership and presentation metadata are
-  # complete. An event consumer must never observe the new managed row as a
-  # transient foreign-session collision.
-  publish_session_event
   "${TMUX_CMD[@]}" respawn-pane -k \
     -t "$pane_id" \
     -c "$cwd" \
@@ -3948,6 +3949,15 @@ start_tmux_session() {
     process_is_descendant "$provider_pid" "$worker_pid" || \
       die "$PROVIDER_LABEL exited before its managed runtime was confirmed"
   runtime_heartbeat_once "$session" "$run_token" "$worker_pid" "$provider_pid_file"
+  state_update_meta_for_run "$session" "$run_token" \
+    --string status running \
+    --integer worker_pid "$worker_pid" \
+    --integer provider_pid "$provider_pid" \
+    --string worker_heartbeat_at "$(now_iso)" \
+    --integer worker_heartbeat_epoch "$(date '+%s')" || \
+      die "could not publish confirmed runtime readiness"
+  tmux_update_session_status "$session" running || \
+    error "warning: could not publish confirmed runtime style"
   rm -f "$power_ready_file"
 
   started=1

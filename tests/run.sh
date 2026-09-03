@@ -331,6 +331,8 @@ export FAKE_ENV_ARGS_FILE="$TMP_ROOT/env-args.txt"
 export FAKE_POWER_ARGS_FILE="$TMP_ROOT/power-args.txt"
 export FAKE_POWER_STATUS_FILE="$TMP_ROOT/power-status.txt"
 export FAKE_POWER_RELEASES_FILE="$TMP_ROOT/power-releases.txt"
+export FAKE_POWER_DELAY_SESSION="detach-codex-startup-health"
+export FAKE_POWER_DELAY_RELEASE_FILE="$TMP_ROOT/startup-health-release"
 printf '%s\n' \
   '#!/bin/bash' \
   'if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then' \
@@ -346,14 +348,24 @@ printf '%s\n' \
   '  printf '\''%s\n'\'' "$@" >"$FAKE_POWER_ARGS_FILE"' \
   '  ready_file=' \
   '  pid_file=' \
+  '  managed_session=' \
   '  shift' \
   '  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do' \
+  '    if [ "$1" = --session ]; then managed_session="$2"; shift 2; continue; fi' \
   '    if [ "$1" = --ready-file ]; then ready_file="$2"; shift 2; continue; fi' \
   '    if [ "$1" = --pid-file ]; then pid_file="$2"; shift 2; continue; fi' \
   '    shift' \
   '  done' \
   '  [ "${1:-}" = -- ] || exit 2' \
   '  [ "${FAKE_POWER_FAIL_RUN:-0}" != 1 ] || exit 1' \
+  '  if [ "$managed_session" = "${FAKE_POWER_DELAY_SESSION:-}" ]; then' \
+  '    delay_attempts=0' \
+  '    while [ ! -f "$FAKE_POWER_DELAY_RELEASE_FILE" ] && [ "$delay_attempts" -lt 200 ]; do' \
+  '      delay_attempts=$((delay_attempts + 1))' \
+  '      sleep 0.05' \
+  '    done' \
+  '    [ -f "$FAKE_POWER_DELAY_RELEASE_FILE" ] || exit 124' \
+  '  fi' \
   '  [ -z "$ready_file" ] || : >"$ready_file"' \
   '  [ -z "$pid_file" ] || printf '\''%s\n'\'' "$$" >"$pid_file"' \
   '  shift' \
@@ -637,10 +649,20 @@ if codex_part_selected preflight; then
   start_source="$(sed -n \
     '/^start_tmux_session() {/,/^running_session_for_project() {/p' \
     "$ROOT/bin/detach-core")"
-  printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
-    grep -F 'publish_session_event' >/dev/null
+  if printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
+     grep -F 'publish_session_event' >/dev/null; then
+    printf 'start published lifecycle state before the worker existed\n' >&2
+    exit 1
+  fi
   printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
     grep -F 'install_session_event_hook' >/dev/null
+  worker_start_source="$(sed -n \
+    '/^worker_main() {/,/^  if \[ "$PROVIDER" = "claude" \]; then/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$worker_start_source" | \
+    grep -F 'state_update_meta_for_run_without_event' >/dev/null
+  printf '%s\n' "$worker_start_source" | \
+    grep -F 'publish_session_event' >/dev/null
   # The pane-died hook string crosses tmux quoting and `sh -c`. Paths with
   # spaces are common; characters either layer could reinterpret are refused.
   hook_command="$(
@@ -911,6 +933,52 @@ if codex_part_selected lifecycle; then
   export FAKE_CODEX_SLEEP=12
   integration_release="$TMP_ROOT/integration-provider-release"
   export FAKE_CODEX_RELEASE_FILE="$integration_release"
+
+  # Hold the power wrapper between the exact worker handshake and provider
+  # launch. The lifecycle hint observed in this phase must remain `starting`;
+  # it must never flash through Problems as a false missing-provider failure.
+  startup_session="$FAKE_POWER_DELAY_SESSION"
+  startup_meta="$DETACH_CODEX_STATE_ROOT/sessions/$startup_session/meta.json"
+  startup_output="$TMP_ROOT/startup-health-output"
+  rm -f "$FAKE_POWER_DELAY_RELEASE_FILE"
+  run_codex --name startup-health --detach -- 'startup health transition' \
+    >"$startup_output" 2>&1 &
+  startup_command_pid=$!
+  attempts=0
+  startup_worker_pid=""
+  while [ "$attempts" -lt 100 ]; do
+    if [ -f "$startup_meta" ]; then
+      startup_worker_pid="$(
+        "$STATE_HELPER" meta get "$startup_meta" worker_pid 2>/dev/null || true
+      )"
+    fi
+    case "$startup_worker_pid" in ''|*[!0-9]*) ;; *) break ;; esac
+    attempts=$((attempts + 1))
+    sleep 0.05
+  done
+  case "$startup_worker_pid" in
+    ''|*[!0-9]*) printf 'startup worker identity was not published\n' >&2; exit 1 ;;
+  esac
+  [ "$("$STATE_HELPER" meta get "$startup_meta" status)" = starting ]
+  wait_for_tmux_option "$startup_session" @detach_status starting
+  startup_health="$(
+    run_codex list --json | grep -F "\"session_name\":\"$startup_session\""
+  )"
+  [ "$(printf '%s' "$startup_health" | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)" = starting ]
+  [ "$(printf '%s' "$startup_health" | \
+    "$STATE_HELPER" meta get /dev/stdin health_reason)" = healthy ]
+  : >"$FAKE_POWER_DELAY_RELEASE_FILE"
+  wait "$startup_command_pid"
+  grep -F "Started $startup_session" "$startup_output" >/dev/null
+  startup_health="$(
+    run_codex list --json | grep -F "\"session_name\":\"$startup_session\""
+  )"
+  [ "$(printf '%s' "$startup_health" | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+  run_codex stop startup-health >/dev/null
+  run_codex delete --force startup-health >/dev/null
+
   codex_scenario_event begin SC-SESSION-CREATE-CODEX
   codex_scenario_event begin SC-SESSION-PERSIST-CODEX
   codex_scenario_event begin SC-SESSION-RECOVER-CODEX

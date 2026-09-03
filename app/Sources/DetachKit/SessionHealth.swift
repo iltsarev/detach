@@ -362,6 +362,22 @@ public enum SessionHealthEvaluator {
             break
         }
 
+        // The worker is the first exact process identity established during a
+        // new run. It publishes `starting` before the power wrapper exposes the
+        // provider PID so event consumers can show the row immediately. This
+        // is a coherent owned startup phase, not a lost provider. The runtime
+        // promotes the record to `running` only after it proves the provider
+        // descendant; any other status with a missing PID remains hung.
+        if evidence.metaStatus == .starting,
+           evidence.providerState == .unknown {
+            return assessment(
+                status: .starting,
+                reason: .healthy,
+                actions: [.attach, .stop],
+                ownershipProven: true,
+                evidence: evidence)
+        }
+
         switch evidence.providerState {
         case .unknown:
             return hungAssessment(reason: .providerPIDMissing, evidence: evidence)
