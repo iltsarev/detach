@@ -528,12 +528,14 @@ if codex_part_selected preflight; then
     "$cancel_list_payload/detach" list --json >/dev/null 2>&1 &
   cancel_list_frontend_pid=$!
   attempts=0
+  # The full gate overlaps this process-start proof with release contracts.
+  # Keep the poll short, but allow bounded scheduler contention.
   while [ "$(wc -l <"$cancel_list_pids" 2>/dev/null || printf 0)" -lt 2 ] && \
-        [ "$attempts" -lt 100 ]; do
+        [ "$attempts" -lt 300 ]; do
     attempts=$((attempts + 1))
     sleep 0.01
   done
-  [ "$attempts" -lt 100 ]
+  [ "$attempts" -lt 300 ]
   kill -TERM "$cancel_list_frontend_pid"
   wait "$cancel_list_frontend_pid" 2>/dev/null || true
   cancel_list_survivors=""
@@ -1285,7 +1287,8 @@ tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
 # public CLI on a real PTY, terminate that client, and prove the managed
 # session, worker, and provider survive.
 TERM=xterm-256color /usr/bin/script -q /dev/null \
-  "$DETACH" codex attach --terminal-features sync integration >/dev/null 2>&1 &
+  "$DETACH" codex attach --terminal-features sync integration \
+  </dev/null >/dev/null 2>&1 &
 attach_client_wrapper=$!
 attempts=0
 while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \

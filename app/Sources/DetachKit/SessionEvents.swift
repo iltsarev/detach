@@ -381,14 +381,29 @@ private func sessionFSEventsCallback(
     flagsPointer: UnsafePointer<FSEventStreamEventFlags>,
     _: UnsafePointer<FSEventStreamEventId>
 ) {
-    guard let info else { return }
+    guard let delivery = sessionFSEventsDelivery(
+        info: info,
+        count: count,
+        pathsPointer: pathsPointer,
+        flagsPointer: flagsPointer)
+    else { return }
+    delivery.watcher.receive(delivery.batch)
+}
+
+func sessionFSEventsDelivery(
+    info: UnsafeMutableRawPointer?,
+    count: Int,
+    pathsPointer: UnsafeMutableRawPointer,
+    flagsPointer: UnsafePointer<FSEventStreamEventFlags>
+) -> (watcher: SessionFileEventWatcher, batch: SessionFileEventBatch)? {
+    guard let info else { return nil }
     let watcher = Unmanaged<SessionFileEventWatcher>
         .fromOpaque(info).takeUnretainedValue()
     let pathsArray = Unmanaged<CFArray>
         .fromOpaque(pathsPointer).takeUnretainedValue() as NSArray
     let paths = pathsArray.compactMap { $0 as? String }
     let flags = (0..<count).map { UInt32(flagsPointer[$0]) }
-    watcher.receive(SessionFileEventBatch(paths: paths, flags: flags))
+    return (watcher, SessionFileEventBatch(paths: paths, flags: flags))
 }
 
 /// Ends a long-lived watcher when the process that launched it exits. Task
@@ -433,10 +448,7 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     private var activeWatchedPaths: [String] = []
     private lazy var transcriptMonitor = SessionTranscriptFileMonitor(
         queue: queue,
-        onChange: { [weak self] in
-            guard let self else { return }
-            self.apply(self.coalescer.consume(.transcript))
-        })
+        onChange: { [weak self] in self?.receiveTranscriptChange() })
 
     public init(
         configuration: SessionEventWatchConfiguration,
@@ -538,6 +550,10 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
             scheduleStreamRootRefreshIfNeeded()
         }
         apply(coalescer.consume(classification))
+    }
+
+    func receiveTranscriptChange() {
+        apply(coalescer.consume(.transcript))
     }
 
     private func refreshManagedTranscriptPaths() {

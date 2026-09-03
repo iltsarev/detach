@@ -50,6 +50,26 @@ final class QuickChatTests: XCTestCase {
         XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o700))
     }
 
+    func testQuickChatLaunchUsesTheDefaultPrivateProjectDirectory() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "detach-quick-chat-launch-test-\(UUID().uuidString)",
+            isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: parent,
+            withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let cli = QuickChatRecordingCLI()
+
+        _ = await QuickChatLaunch.start(
+            store: SessionStore(cli: cli),
+            providerRawValue: Provider.codex.rawValue,
+            directoryPath: parent.path)
+
+        let project = try XCTUnwrap(cli.calls.first?.currentDirectory)
+        XCTAssertEqual(project.deletingLastPathComponent(), parent.standardizedFileURL)
+        XCTAssertTrue(project.lastPathComponent.hasPrefix("detach-chat-"))
+    }
+
     func testQuickChatUsesConfiguredProviderAndWorkingDirectory() async {
         let directory = try! XCTUnwrap(
             DirectoryPreference.existingDirectoryURL(path: "/tmp"))
@@ -218,6 +238,17 @@ final class QuickChatTests: XCTestCase {
         XCTAssertEqual(
             QuickChatLaunch.provider(rawValue: "removed-provider"),
             .claude)
+    }
+
+    func testQuickChatSnapshotsEveryExistingSessionID() throws {
+        let sessions = SessionListParser.parse("""
+        {"schema":1,"provider":"codex","session_name":"existing-codex","name":"Codex","effective_status":"running"}
+        {"schema":1,"provider":"claude","session_name":"existing-claude","name":"Claude","effective_status":"stopped"}
+        """).sessions
+
+        XCTAssertEqual(
+            QuickChatLaunch.existingSessionIDs(in: sessions),
+            ["existing-codex", "existing-claude"])
     }
 
     func testNavigationCreatesDistinctQuickChatRequests() {
