@@ -24,10 +24,14 @@ Protected counts working sessions. Allowed names all-waiting or an unprotected
 working session and never claims no sessions. Typed heartbeat and
 `detach watch --json` sources supply them. A schema-1 hint, activation, or
 `resync` starts a serialized `list --json`. Hints during a read share one ordered
-trailing read. No list timer runs. Dead or unready watchers and failed lists retry
+trailing read. Stop discards queued reads and prevents old results from updating
+the store. A new explicit read remains serialized with an active old read.
+No list timer runs. Dead or unready watchers and failed lists retry
 with 2–60 s backoff. Cold start waits 1 s for `ready`; a late `ready` repeats the
 snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
 checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
+After a transcript file is replaced, registration of its new file observer
+emits a refresh hint. Writes before registration must not leave the UI stale.
 
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
@@ -78,8 +82,10 @@ When a session leaves them, the earliest waiting session gets its number;
 extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
 Notifications are opt-in and deduplicated. Stop intent is not failure;
-`interrupted` and `hung` get one 350 ms recheck. Ordered detection never waits
-for delivery.
+`interrupted` and `hung` get one 350 ms recheck. Snapshot bursts do not restart
+that deadline. A new transition waits for the pending recheck, then gets its
+own deadline. Stable state cancels an obsolete recheck. Each observation
+lifetime confirms its own transitions. Ordered detection never waits for delivery.
 
 SwiftTerm 1.19.0 is pinned. The exact SwiftTerm shader bundle is shipped and
 verified.

@@ -440,6 +440,7 @@ final class SessionEventsTests: XCTestCase {
 
         let first = expectation(description: "replacement observed")
         let second = expectation(description: "replacement rearmed")
+        let third = expectation(description: "append observed after registration")
         let lock = NSLock()
         nonisolated(unsafe) var deliveryCount = 0
         let queue = DispatchQueue(label: "detach-session-vnode-rearm-test")
@@ -450,6 +451,7 @@ final class SessionEventsTests: XCTestCase {
             }
             if count == 1 { first.fulfill() }
             if count == 2 { second.fulfill() }
+            if count == 3 { third.fulfill() }
         }
         monitor.update(paths: [
             "relative/transcript.jsonl",
@@ -459,17 +461,47 @@ final class SessionEventsTests: XCTestCase {
         queue.sync { monitor.update(paths: [transcript.path]) }
 
         try Data("replacement\n".utf8).write(to: transcript, options: .atomic)
-        wait(for: [first], timeout: 1)
-        Thread.sleep(forTimeInterval: 0.1)
+        wait(for: [first, second], timeout: 2, enforceOrder: true)
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data("append\n".utf8))
         try handle.synchronize()
         try handle.close()
 
-        wait(for: [second], timeout: 1)
+        wait(for: [third], timeout: 2)
         monitor.update(paths: [])
         monitor.stop()
+    }
+
+    func testTranscriptMonitorReportsWritesDuringReplacementRegistration() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "detach-session-vnode-gap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("managed.jsonl")
+        try Data().write(to: transcript)
+        let refreshed = expectation(description: "replacement registration refreshes missed writes")
+        let queue = DispatchQueue(label: "detach-session-vnode-gap-test")
+        nonisolated(unsafe) var deliveryCount = 0
+        let monitor = SessionTranscriptFileMonitor(queue: queue) {
+            deliveryCount += 1
+            if deliveryCount == 1 {
+                // This callback still watches the old inode. Write the new
+                // file before the replacement source can be registered.
+                do {
+                    let handle = try FileHandle(forWritingTo: transcript)
+                    defer { try? handle.close() }
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: Data("gap append\n".utf8))
+                } catch { XCTFail("Could not append replacement fixture: \(error)") }
+            } else if deliveryCount == 2 {
+                refreshed.fulfill()
+            }
+        }
+        defer { monitor.stop() }
+        monitor.update(paths: [transcript.path])
+        try Data("replacement\n".utf8).write(to: transcript, options: .atomic)
+        wait(for: [refreshed], timeout: 2)
     }
 
     func testParentMonitorObservesProcessExit() throws {

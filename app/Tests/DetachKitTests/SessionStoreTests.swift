@@ -59,12 +59,14 @@ private actor DelayedCLI: DetachCLIRunning {
 
 private actor OverlappingStartCLI: DetachCLIRunning {
     private let listOutput: String
+    private let suspendsAfterFirstCall: Bool
     private var listCallCount = 0
     private var listContinuations: [Int: CheckedContinuation<CLIResult, Never>] = [:]
     private var listWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
-    init(listOutput: String) {
+    init(listOutput: String, suspendsAfterFirstCall: Bool = true) {
         self.listOutput = listOutput
+        self.suspendsAfterFirstCall = suspendsAfterFirstCall
     }
 
     func run(
@@ -78,6 +80,9 @@ private actor OverlappingStartCLI: DetachCLIRunning {
         let ready = listWaiters.filter { $0.0 <= call }
         listWaiters.removeAll { $0.0 <= call }
         ready.forEach { $0.1.resume() }
+        if call > 1, !suspendsAfterFirstCall {
+            return CLIResult(exitCode: 0, stdout: listOutput, stderr: "", timedOut: false)
+        }
         return await withCheckedContinuation { continuation in
             listContinuations[call] = continuation
         }
@@ -493,6 +498,64 @@ final class SessionStoreTests: XCTestCase {
         let finalCallCount = await cli.currentListCallCount
         XCTAssertEqual(finalCallCount, 2)
         XCTAssertEqual(store.sessions.first?.id, "detach-codex-p-1")
+    }
+
+    func testStopDiscardsQueuedRefreshesWithoutPublishingOrLaunchingAnotherList() async {
+        let cli = OverlappingStartCLI(listOutput: line, suspendsAfterFirstCall: false)
+        let store = SessionStore(cli: cli)
+        var snapshots: [[Session]] = []
+        store.onSnapshot = { snapshots.append($0) }
+        let first = Task { await store.refresh() }
+        await cli.waitForListCall(1)
+        let queued = expectation(description: "refresh queued")
+        let second = Task { @MainActor in
+            queued.fulfill()
+            return await store.refresh()
+        }
+        await fulfillment(of: [queued], timeout: 1)
+
+        store.stopObserving()
+        await cli.finishListCall(1)
+        _ = await first.value
+        let queuedResult = await second.value
+
+        let calls = await cli.currentListCallCount
+        XCTAssertEqual(calls, 1)
+        XCTAssertTrue(queuedResult.isEmpty)
+        XCTAssertTrue(snapshots.isEmpty)
+        XCTAssertTrue(store.sessions.isEmpty)
+        XCTAssertFalse(store.hasFreshSnapshot)
+
+        await store.refresh()
+        let callsAfterExplicitRefresh = await cli.currentListCallCount
+        XCTAssertEqual(callsAfterExplicitRefresh, 2)
+        XCTAssertEqual(store.sessions.first?.id, "detach-codex-p-1")
+    }
+
+    func testExplicitRefreshAfterStopWaitsForThePreviousReadAndPublishes() async {
+        let cli = OverlappingStartCLI(listOutput: line, suspendsAfterFirstCall: false)
+        let store = SessionStore(cli: cli)
+        let first = Task { await store.refresh() }
+        await cli.waitForListCall(1)
+        store.stopObserving()
+
+        let queued = expectation(description: "new lifetime refresh queued")
+        let second = Task { @MainActor in
+            queued.fulfill()
+            return await store.refresh()
+        }
+        await fulfillment(of: [queued], timeout: 1)
+        let callsBeforeCompletion = await cli.currentListCallCount
+        XCTAssertEqual(callsBeforeCompletion, 1)
+
+        await cli.finishListCall(1, output: "")
+        _ = await first.value
+        let fresh = await second.value
+        let calls = await cli.currentListCallCount
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(fresh.first?.id, "detach-codex-p-1")
+        XCTAssertEqual(store.sessions, fresh)
+        XCTAssertTrue(store.hasFreshSnapshot)
     }
 
     func testStartDetachedKeepsFailuresAndTimeoutsInTheCaller() async {
@@ -952,6 +1015,75 @@ final class SessionStoreTests: XCTestCase {
 
         XCTAssertEqual(snapshotCount, 2)
         XCTAssertEqual(confirmationCalls, 1)
+    }
+
+    func testSnapshotBurstsKeepTheOriginalTransientConfirmationDeadline() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"hung""#))
+        let probe = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { delay in await probe.sleep(nanoseconds: delay) },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in })
+        await store.refresh()
+        await probe.waitForCallCount(1)
+        for _ in 0..<5 { await store.refresh() }
+        // A main-actor barrier lets any incorrectly restarted deadline enter
+        // the probe before the count is checked.
+        await Task { @MainActor in }.value
+        let calls = await probe.calls()
+        XCTAssertEqual(calls, 1)
+
+        let confirmed = expectation(description: "original deadline confirms")
+        store.onSnapshot = { _ in confirmed.fulfill() }
+        await probe.resumeSleepers()
+        await fulfillment(of: [confirmed], timeout: 1)
+        XCTAssertEqual(cli.calls.count, 7)
+        store.stopObserving()
+    }
+
+    func testNewTransientGetsItsOwnConfirmationAfterThePendingDeadline() async {
+        let cli = FakeCLI()
+        let hung = line.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"hung""#)
+        let interrupted = hung.replacingOccurrences(of: "p-1", with: "p-2")
+            .replacingOccurrences(of: "hung", with: "interrupted")
+        let probe = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in await probe.sleep() },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in })
+        cli.responses["list --json"] = ok(hung)
+        await store.refresh()
+        await probe.waitForCallCount(1)
+
+        cli.responses["list --json"] = ok(hung + "\n" + interrupted)
+        await store.refresh()
+        let firstConfirmation = expectation(description: "first transition confirmed")
+        store.onSnapshot = { _ in firstConfirmation.fulfill() }
+        await probe.resumeSleepers()
+        await fulfillment(of: [firstConfirmation], timeout: 1)
+        await probe.waitForCallCount(2)
+
+        let secondConfirmation = expectation(description: "new transition confirmed")
+        store.onSnapshot = { _ in secondConfirmation.fulfill() }
+        await probe.resumeSleepers()
+        await fulfillment(of: [secondConfirmation], timeout: 1)
+        XCTAssertEqual(cli.calls.count, 4)
+
+        // A new observation lifetime must confirm again even if the same
+        // session names still report transient state.
+        store.stopObserving()
+        store.onSnapshot = nil
+        await store.refresh()
+        await probe.waitForCallCount(3)
+        store.stopObserving()
+        await probe.resumeSleepers()
     }
 
     func testDefaultConfirmationDelayPublishesTheFollowUpSnapshot() async {
