@@ -291,7 +291,7 @@ public struct PowerHelperLifetimeBarrier: Sendable {
     /// its separately persisted boot-session evidence to accept `.missing`.
     public func status() throws -> PowerHelperLifetimeBarrierStatus {
         let descriptor = Darwin.open(
-            fileURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             let code = errno
             if code == ENOENT { return .missing }
@@ -476,7 +476,7 @@ public struct PowerHelperSystemHandoffLock: Sendable {
     /// handled separately by the app; an existing file is never recreated.
     public func acquire() throws -> PowerHelperSystemHandoffLease? {
         let descriptor = Darwin.open(
-            fileURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             let code = errno
             if code == ENOENT { return nil }

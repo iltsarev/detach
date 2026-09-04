@@ -1295,7 +1295,7 @@ public enum DetachStateCommand {
         name: String
     ) -> Data? {
         let descriptor = openat(
-            directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            directory, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
         defer { close(descriptor) }
         var item = stat()
@@ -1749,7 +1749,7 @@ public enum DetachStateCommand {
         }
 
         let descriptor = openat(
-            directory, fileName, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            directory, fileName, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             throw DetachStateCommandError.invalidTranscript
         }
