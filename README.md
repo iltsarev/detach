@@ -26,33 +26,42 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/detach-app.png" width="920" alt="Detach showing Codex and Claude Code sessions with a live interactive terminal">
+  <img src="docs/assets/detach-app.png" width="920" alt="Detach dashboard with an Answer ready session, working Codex and Claude sessions, finished history, and a live terminal">
+  <br>
+  <sub>Answer-ready work comes first. Switch live sessions without restarting the agent.</sub>
 </p>
 
-Detach gives long-running coding agents a durable place to work. Start a run,
-use the built-in terminal, close the app, and return when the agent needs you.
-Detach keeps the process, health state, checkpoints, logs, and Mac power policy
-together.
+Detach is a native control center for agent work that must outlive a terminal
+window. Start a run, use the built-in terminal, close the app, and return when
+the agent needs you. The live process, typed lifecycle state, recovery data,
+and Mac power policy stay together.
 
 ## Why Detach
 
 Codex and Claude Code can work for minutes or hours. A terminal window should
 not be the weak link.
 
-- **Leave without ending the run.** Close Terminal, close the Detach window, or
-  detach from tmux. The managed agent continues in the background.
-- **Run everything in one native app.** Start Codex or Claude Code, type in the
-  interactive terminal, paste text or images, search output, and reconnect a
-  terminal client without restarting the agent.
+- **Leave without ending the run.** Close Terminal, close the Detach window,
+  or detach from tmux. The managed agent continues in the background.
+- **Start in the app.** Use New session for a project run or Quick chat for a
+  private temporary workspace. Both Codex and Claude Code use the same managed
+  lifecycle.
+- **Work in one native terminal.** Type, paste text or images, find output, and
+  switch between live sessions with `Cmd-1` through `Cmd-9`. Detach keeps the
+  same PTY and does not restart the agent during a switch.
 - **See what needs you now.** Sessions that wait for a reply move into
   **Answer ready**. Notifications and the menu bar show when a turn finishes,
   fails, or becomes recoverable.
-- **Update only when state changes.** Native filesystem events trigger a
-  dashboard refresh for lifecycle and provider turn changes. Detach does not
-  run a repeating session-list timer while nothing changes.
-- **Return the correct way.** Attach to a live process, Resume a provider
-  conversation, or Recover an interrupted Detach run from a validated local
-  checkpoint.
+- **Use actions that match proven state.** Stop is for a live owned process.
+  Resume continues a provider conversation. Recover restarts an interrupted
+  managed run from a validated checkpoint. Delete stays blocked until state is
+  safe to remove.
+- **Get updates when state changes.** Native filesystem events trigger a
+  dashboard refresh for lifecycle and provider turn changes. There is no
+  repeating session-list timer while nothing changes.
+- **Recover conversation state, not source files.** Validated local
+  checkpoints can restore an interrupted agent conversation. Detach never
+  rolls repository files back.
 - **Let the Mac keep working safely.** Two-layer sleep protection can keep an
   active run working with the lid closed. It releases protection while all
   agents wait, and it fails safe for low battery or high temperature.
@@ -345,6 +354,12 @@ when you open it again.
 </details>
 
 ## Closed-lid work with fail-safe limits
+
+<p align="center">
+  <img src="docs/assets/detach-system.png" width="560" alt="Detach System settings showing Mac stays awake with the sleep-protection helper and background power monitor ready">
+  <br>
+  <sub>Settings → System shows the effective Mac power state and both required protection components.</sub>
+</p>
 
 Keep-awake protection starts automatically with a managed session. An
 unprivileged wrapper holds the normal IOKit idle-sleep assertion. A narrowly
