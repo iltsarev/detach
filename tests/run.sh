@@ -3747,6 +3747,56 @@ fi
 # full preservation below in its integration; keep the Codex lane's mirror
 # bounded to exact monotonic slot selection.
 if codex_part_selected history; then
+# Codex writes the model near the start of a turn. A long turn can move that
+# record outside the bounded summary tail. The provider database can supply
+# the model only for the exact managed UUID and rollout path.
+model_home="$TMP_ROOT/model-home's"
+model_state="$TMP_ROOT/model-display-state"
+model_session=detach-codex-model-display
+model_id=11111111-2222-4333-8444-555555555555
+model_transcript="$model_home/sessions/rollout-model.jsonl"
+model_database="$model_home/state_5.sqlite"
+mkdir -p "$model_home/sessions" "$model_state/sessions/$model_session"
+printf '%s\n' \
+  "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$model_id\"}}" \
+  '{"type":"turn_context","payload":{"model":"gpt-transcript-old"}}' \
+  >"$model_transcript"
+printf '{"payload":{"padding":"' >>"$model_transcript"
+dd if=/dev/zero bs=1024 count=300 2>/dev/null | tr '\000' x >>"$model_transcript"
+printf '"}}\n' >>"$model_transcript"
+"$STATE_HELPER" meta create "$model_state/sessions/$model_session/meta.json" \
+  --integer schema 1 --string session_name "$model_session" \
+  --string project_dir "$ROOT" --string status stopped \
+  --string agent_session_id "$model_id" --string transcript_path "$model_transcript"
+model_transcript_sql="$(printf '%s' "$model_transcript" | sed "s/'/''/g")"
+test_sqlite "$model_database" \
+  "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, model TEXT);
+   INSERT INTO threads VALUES ('$model_id', '$model_transcript_sql', 'gpt-database');"
+require_list_model() {
+  local expected="$1" result
+  result="$(CODEX_HOME="$model_home" DETACH_CODEX_STATE_ROOT="$model_state" \
+    run_codex list --json)"
+  printf '%s' "$result" | grep -F "\"model\":$expected" >/dev/null || {
+    printf 'Codex list did not report model %s\n' "$expected" >&2
+    return 1
+  }
+}
+require_list_model '"gpt-database"'
+test_sqlite "$model_database" "UPDATE threads SET model = 'gpt-database-updated';"
+require_list_model '"gpt-database-updated"'
+test_sqlite "$model_database" "UPDATE threads SET rollout_path = '/different/rollout.jsonl';"
+require_list_model null
+test_sqlite "$model_database" \
+  "UPDATE threads SET rollout_path = '$model_transcript_sql', id = 'different-thread';"
+require_list_model null
+test_sqlite "$model_database" "UPDATE threads SET id = '$model_id', model = NULL;"
+require_list_model null
+test_sqlite "$model_database" "ALTER TABLE threads RENAME COLUMN model TO legacy_model;"
+require_list_model null
+printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-tail-fallback"}}' \
+  >>"$model_transcript"
+require_list_model '"gpt-tail-fallback"'
+
 default_slug="$(basename "$ROOT" | LC_ALL=C tr -cs 'A-Za-z0-9_-' '-' | \
   sed 's/^-*//; s/-*$//')"
 [ -n "$default_slug" ] || default_slug=project
