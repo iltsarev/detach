@@ -156,6 +156,7 @@ enum UIE2ETestDriver {
     private static var scenarioDeadline = TimeInterval.greatestFiniteMagnitude
     private static var nextMouseEventNumber = Int(
         ProcessInfo.processInfo.systemUptime * 1_000)
+    private static let mouseClickInterval: TimeInterval = 0.03
     private static var cursorRestorePoint: CGPoint?
 
     static func runIfRequested(
@@ -1612,6 +1613,35 @@ enum UIE2ETestDriver {
         return result!
     }
 
+    static func mouseClickEvents(
+        at windowPoint: CGPoint,
+        windowNumber: Int,
+        name: String
+    ) throws -> [NSEvent] {
+        var events: [NSEvent] = []
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        let eventNumber = nextMouseEventNumber
+        nextMouseEventNumber += 1
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(
+                with: type,
+                location: windowPoint,
+                modifierFlags: [],
+                timestamp: timestamp + Double(events.count) * mouseClickInterval,
+                windowNumber: windowNumber,
+                context: nil,
+                eventNumber: eventNumber,
+                clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0)
+            else { continue }
+            events.append(event)
+        }
+        guard events.count == 2 else {
+            throw Failure(message: "cannot create mouse pair for \(name)")
+        }
+        return events
+    }
+
     private static func click(
         frame targetFrame: CGRect,
         name: String,
@@ -1645,35 +1675,15 @@ enum UIE2ETestDriver {
             }
             trace("hit chain for \(name): \(names.joined(separator: " > "))")
         }
-        var events: [NSEvent] = []
-        let timestamp = ProcessInfo.processInfo.systemUptime
-        let clickInterval: TimeInterval = 0.03
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let eventNumber = nextMouseEventNumber
-            nextMouseEventNumber += 1
-            guard let event = NSEvent.mouseEvent(
-                with: type,
-                location: windowPoint,
-                modifierFlags: [],
-                timestamp: timestamp + Double(events.count) * clickInterval,
-                windowNumber: window.windowNumber,
-                context: nil,
-                eventNumber: eventNumber,
-                clickCount: 1,
-                pressure: type == .leftMouseDown ? 1 : 0)
-            else { continue }
-            events.append(event)
-        }
-        guard events.count == 2 else {
-            throw Failure(message: "cannot create mouse pair for \(name)")
-        }
+        let events = try mouseClickEvents(
+            at: windowPoint, windowNumber: window.windowNumber, name: name)
         // AppKit permits postEvent from a subthread. Delay mouseUp so SwiftUI
         // receives a physical-duration click even inside a tracking loop. Put
         // mouseUp at the queue tail so a busy main thread cannot process it
         // before the mouseDown event at the queue head.
         let mouseUp = UIE2EDeferredMouseUp(application: NSApp, event: events[1])
         DispatchQueue.global(qos: .userInitiated).asyncAfter(
-            deadline: .now() + clickInterval
+            deadline: .now() + mouseClickInterval
         ) {
             mouseUp.post()
         }

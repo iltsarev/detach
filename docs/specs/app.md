@@ -100,7 +100,8 @@ signed marker. UI smoke uses a stripped private copy below
 unsafe identity, build mismatch, or payload fails closed.
 
 Smoke restores focus and the pointer, then sends ordered AppKit events to
-controls. Slider changes use the native control's Accessibility increment
+controls. Each mouse click uses one event number for both events.
+Slider changes use the native control's Accessibility increment
 action. It covers all main surfaces, focus, session actions, and
 onboarding. Stop disconnects first. Stages have deadlines. Coverage isolates
 the normal bundle, instrumented copy, tests, binary, and profiles. The driver
