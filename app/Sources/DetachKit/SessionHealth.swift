@@ -118,9 +118,12 @@ enum ExactProcessStateProbe {
         return existence(pid) == .missing ? .dead : .unknown
     }
 
-    private static func liveExistence(_ pid: pid_t) -> Existence {
-        if Darwin.kill(pid, 0) == 0 { return .exists }
-        switch errno {
+    static func classifyExistence(
+        killResult: Int32,
+        errorNumber: Int32
+    ) -> Existence {
+        if killResult == 0 { return .exists }
+        switch errorNumber {
         case ESRCH:
             return .missing
         case EPERM:
@@ -128,6 +131,11 @@ enum ExactProcessStateProbe {
         default:
             return .unknown
         }
+    }
+
+    private static func liveExistence(_ pid: pid_t) -> Existence {
+        let result = Darwin.kill(pid, 0)
+        return classifyExistence(killResult: result, errorNumber: errno)
     }
 }
 
@@ -476,13 +484,6 @@ public enum SessionHealthEvaluator {
             guard isActive(evidence.metaStatus) else {
                 return finishedAssessment(evidence, reason: .finished)
             }
-            if runtimeProcessMayStillBeAlive(evidence) {
-                return assessment(
-                    status: .hung,
-                    reason: .runtimeProcessWithoutTmux,
-                    actions: [],
-                    evidence: evidence)
-            }
             return interruptedAssessment(evidence, deadTmux: false)
 
         case .dead:
@@ -490,13 +491,6 @@ public enum SessionHealthEvaluator {
                 var result = finishedAssessment(evidence, reason: .paneExited)
                 result.reconcileAction = .removeDeadTmux
                 return result
-            }
-            if runtimeProcessMayStillBeAlive(evidence) {
-                return assessment(
-                    status: .hung,
-                    reason: .runtimeProcessWithoutTmux,
-                    actions: [],
-                    evidence: evidence)
             }
             return interruptedAssessment(evidence, deadTmux: true)
 

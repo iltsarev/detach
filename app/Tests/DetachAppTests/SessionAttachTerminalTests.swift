@@ -933,7 +933,7 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
-    func testControlShortcutsReachTheProviderAsRawBytes() throws {
+    func testControlVReachesTheProviderAsTheRawClipboardImageShortcut() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "detach-attach-control-shortcuts-\(UUID().uuidString)",

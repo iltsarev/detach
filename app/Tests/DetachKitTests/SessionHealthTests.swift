@@ -352,6 +352,12 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertFalse(result.ownershipProven)
     }
 
+    // Preserve the baseline test ID. The corrected contract now rejects the
+    // delete action that this regression test originally expected.
+    func testMalformedMetadataWithoutALivePaneOnlyOffersDelete() {
+        testMalformedMetadataWithoutALivePaneOffersNoMutation()
+    }
+
     func testMalformedMetadataWithADeadManagedPaneCannotAuthorizeMutation() {
         let result = evaluate(
             metadataValid: false,
@@ -362,6 +368,12 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertTrue(result.actions.isEmpty)
         XCTAssertFalse(result.ownershipProven)
         XCTAssertFalse(result.cleanupEligible)
+    }
+
+    // Preserve the baseline test ID. A dead pane no longer proves ownership;
+    // this anchor executes the replacement fail-closed assertion.
+    func testMalformedMetadataWithADeadManagedPaneProvesOwnership() {
+        testMalformedMetadataWithADeadManagedPaneCannotAuthorizeMutation()
     }
 
     func testMalformedMetadataCannotAuthorizeActionsWhileARecordedRuntimeLives() {
@@ -757,6 +769,18 @@ final class SessionHealthTests: XCTestCase {
 
         XCTAssertEqual(
             ExactProcessStateProbe.state(
+                pid: 1,
+                existence: { _ in XCTFail("invalid PID must not be inspected"); return .exists },
+                identity: { _ in XCTFail("invalid PID must not be inspected"); return nil }),
+            .unknown)
+        XCTAssertEqual(
+            ExactProcessStateProbe.state(
+                pid: 20,
+                existence: { _ in .unknown },
+                identity: { _ in XCTFail("unknown PID must not be inspected"); return nil }),
+            .unknown)
+        XCTAssertEqual(
+            ExactProcessStateProbe.state(
                 pid: 20,
                 userID: 501,
                 existence: { _ in .missing },
@@ -796,6 +820,19 @@ final class SessionHealthTests: XCTestCase {
                     return unknownReads == 1 ? .exists : .unknown
                 },
                 identity: { _ in nil }),
+            .unknown)
+
+        XCTAssertEqual(
+            ExactProcessStateProbe.classifyExistence(killResult: 0, errorNumber: 0),
+            .exists)
+        XCTAssertEqual(
+            ExactProcessStateProbe.classifyExistence(killResult: -1, errorNumber: ESRCH),
+            .missing)
+        XCTAssertEqual(
+            ExactProcessStateProbe.classifyExistence(killResult: -1, errorNumber: EPERM),
+            .exists)
+        XCTAssertEqual(
+            ExactProcessStateProbe.classifyExistence(killResult: -1, errorNumber: EINVAL),
             .unknown)
     }
 

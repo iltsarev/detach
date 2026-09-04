@@ -418,6 +418,25 @@ final class DetachStateCommandTests: XCTestCase {
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: linkedStage.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: linkedCheckpoint.path))
+
+        let unreadableSession = temporaryDirectory.appendingPathComponent(
+            "detach-codex-unreadable-stage", isDirectory: true)
+        let unreadableStageName = ".checkpoint-stage-unreadable"
+        let unreadableStage = unreadableSession.appendingPathComponent(
+            unreadableStageName, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: unreadableStage, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000], ofItemAtPath: unreadableStage.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: unreadableStage.path)
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "checkpoint", "exchange", unreadableSession.path, unreadableStageName,
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
     }
 
     func testMetaGetUsesFallbackPaths() throws {
@@ -556,6 +575,7 @@ final class DetachStateCommandTests: XCTestCase {
     func testMetaRecoveryBindingNormalizesAliasesAndRejectsWrongTypes() throws {
         let current = temporaryDirectory.appendingPathComponent("current-meta.json")
         let legacy = temporaryDirectory.appendingPathComponent("legacy-meta.json")
+        let sparse = temporaryDirectory.appendingPathComponent("sparse-meta.json")
         let invalid = temporaryDirectory.appendingPathComponent("invalid-meta.json")
         let common: [String: Any] = [
             "schema": 1,
@@ -584,6 +604,25 @@ final class DetachStateCommandTests: XCTestCase {
         ])
         XCTAssertEqual(currentBinding, legacyBinding)
 
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-project",
+            "project_dir": "/tmp/project",
+        ]).write(to: sparse)
+        let sparseBinding = try DetachStateCommand.run(arguments: [
+            "meta", "recovery-binding", sparse.path, "detach-codex-project",
+        ])
+        let sparseObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: sparseBinding) as? [String: Any])
+        XCTAssertEqual(sparseObject["project_dir"] as? String, "/tmp/project")
+        XCTAssertTrue(sparseObject["provider"] is NSNull)
+
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "recovery-binding", current.path, "detach-codex-other",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .unusableMetadata)
+        }
+
         var invalidObject = currentObject
         invalidObject["resume_args_file"] = 7
         try JSONSerialization.data(withJSONObject: invalidObject).write(to: invalid)
@@ -594,11 +633,12 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
-    func testMetaSnapshotsBatchesAbsentPrimaryFallbacksAndRejectsIncompleteInput() throws {
+    func testMetaSnapshotsBatchesFallbacksAndRejectsIncompleteInput() throws {
         let root = temporaryDirectory.appendingPathComponent("sessions", isDirectory: true)
         let first = root.appendingPathComponent("detach-codex-one", isDirectory: true)
         let second = root.appendingPathComponent("detach-codex-two", isDirectory: true)
         let third = root.appendingPathComponent("detach-claude-three", isDirectory: true)
+        let empty = root.appendingPathComponent("detach-codex-zempty", isDirectory: true)
         let checkpointDirectory = first.appendingPathComponent("checkpoint", isDirectory: true)
         let checkpoint = checkpointDirectory.appendingPathComponent("meta.json")
         try FileManager.default.createDirectory(
@@ -607,6 +647,8 @@ final class DetachStateCommandTests: XCTestCase {
             at: second, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
             at: third, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: empty, withIntermediateDirectories: true)
         try Data(count: 1_048_577).write(to: second.appendingPathComponent("meta.json"))
         let project = "/tmp/project\twith\ncontrols"
         try JSONSerialization.data(withJSONObject: [
@@ -632,7 +674,7 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
         let recordSize = 25
-        XCTAssertEqual(values.count, recordSize * 3 + 2)
+        XCTAssertEqual(values.count, recordSize * 4 + 2)
         XCTAssertEqual(values[0], "detach-claude-three")
         XCTAssertEqual(values[1], "true")
         XCTAssertEqual(values[2], "running")
@@ -649,6 +691,9 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(values[recordSize * 2 + 1], "false")
         XCTAssertEqual(values[recordSize * 2 + 24], "")
         XCTAssertTrue(values[(recordSize * 2 + 2)..<(recordSize * 3)].allSatisfy(\.isEmpty))
+        XCTAssertEqual(values[recordSize * 3], "detach-codex-zempty")
+        XCTAssertEqual(values[recordSize * 3 + 1], "false")
+        XCTAssertTrue(values[(recordSize * 3 + 2)..<(recordSize * 4)].allSatisfy(\.isEmpty))
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
         let repeatedSeparatorRoot = root.path.replacingOccurrences(
             of: "/sessions", with: "//sessions")
@@ -796,15 +841,18 @@ final class DetachStateCommandTests: XCTestCase {
             ("preserve_recovery_until_ready", "false"),
             ("runtime_ready_at", false),
             ("runtime_shutdown_observed_at", 0),
+            ("exit_status", "not-an-integer"),
+            ("status", 7),
         ]
         for (field, value) in malformedValues {
-            try JSONSerialization.data(withJSONObject: [
+            var object: [String: Any] = [
                 "schema": 1,
                 "session_name": "detach-codex-typed",
                 "project_dir": "/tmp/project",
                 "status": "starting",
-                field: value,
-            ]).write(to: primary)
+            ]
+            object[field] = value
+            try JSONSerialization.data(withJSONObject: object).write(to: primary)
 
             XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
                 "meta", "snapshot", primary.path, "detach-codex-typed",
