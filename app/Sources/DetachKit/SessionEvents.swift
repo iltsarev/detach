@@ -331,7 +331,7 @@ final class SessionTranscriptFileMonitor: @unchecked Sendable {
         if DispatchQueue.getSpecific(key: queueKey) == nil { queue.sync {} }
     }
 
-    private func armSource(for path: String) {
+    private func armSource(for path: String, refreshAfterRegistration: Bool = false) {
         guard path.hasPrefix("/"),
               URL(fileURLWithPath: path).standardizedFileURL.path == path else {
             return
@@ -360,7 +360,15 @@ final class SessionTranscriptFileMonitor: @unchecked Sendable {
                 guard let self,
                       self.targetPaths.contains(path),
                       self.sources[path] == nil else { return }
-                self.armSource(for: path)
+                self.armSource(for: path, refreshAfterRegistration: true)
+            }
+        }
+        if refreshAfterRegistration {
+            source.setRegistrationHandler { [weak self, weak source] in
+                guard let self, let source, self.sources[path] === source else { return }
+                // Writes to the replacement inode before registration have no
+                // vnode event. Refresh once the new source closes that gap.
+                self.onChange()
             }
         }
         source.setCancelHandler { Darwin.close(descriptor) }

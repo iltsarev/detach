@@ -30,6 +30,8 @@ No list timer runs. Dead or unready watchers and failed lists retry
 with 2–60 s backoff. Cold start waits 1 s for `ready`; a late `ready` repeats the
 snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
 checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
+After a transcript file is replaced, registration of its new file observer
+emits a refresh hint. Writes before registration must not leave the UI stale.
 
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
