@@ -1002,20 +1002,24 @@ enum UIE2ETestDriver {
         }
         window.setFrameOrigin(CGPoint(
             x: visible.maxX - window.frame.width, y: visible.minY))
-        let slider = try await element(role: .slider)
-        try requireGeometry(slider, name: "settings text size slider")
-        let sliderFrame = frame(slider)
-        try await click(
-            frame: CGRect(x: sliderFrame.maxX - 3, y: sliderFrame.midY - 1,
-                          width: 2, height: 2),
-            name: "maximum settings text size", owningWindow: window)
-        let apply = try await buttonLabeled(L10n.string("Apply"))
+        try await revealGeometry(
+            identifier: "settings-text-size", name: "settings text size slider")
+        let sliderFrame = try await measuredFrame(
+            identifier: "settings-text-size", name: "settings text size slider")
+        try await clickMeasuredControl(
+            identifier: "settings-text-size", name: "maximum settings text size",
+            offset: CGSize(width: sliderFrame.width - 4, height: 0),
+            size: CGSize(width: 2, height: sliderFrame.height))
+        let apply = try await element(identifier: "settings-apply-text-size")
         try await waitUntil("text size draft can be applied") { isEnabled(apply) }
         guard AppSettings.defaults.double(forKey: AppFontSize.storageKey) == originalFont,
               abs(window.frame.width - originalFrame.width) < 1 else {
             throw Failure(message: "text size draft resized Settings before Apply")
         }
-        try await click(apply, name: "apply maximum text size")
+        try await revealGeometry(
+            identifier: "settings-apply-text-size", name: "text size Apply")
+        try await clickMeasuredControl(
+            identifier: "settings-apply-text-size", name: "apply maximum text size")
         try await waitUntil("Settings grows within the hosting screen") {
             AppSettings.defaults.double(forKey: AppFontSize.storageKey)
                 == AppFontSize.allowedRange.upperBound

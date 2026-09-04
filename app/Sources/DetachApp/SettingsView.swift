@@ -472,6 +472,15 @@ struct SettingsView: View {
                     .frame(width: 150)
                     .accessibilityLabel(L10n.string("Text size"))
                     .accessibilityValue(L10n.format("%d pt", Int(previewFontPointSize)))
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                    .background {
+                        if AppSettings.uiE2E != nil {
+                            UIE2EGeometryProbe(identifier: "settings-text-size")
+                        }
+                    }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
                     Text(verbatim: "A")
                         .font(.system(size: 16))
                         .foregroundStyle(.secondary)
@@ -488,6 +497,19 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.indigo)
                     .disabled(fontSizeDraft?.hasChanges != true)
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                    .background {
+                        if AppSettings.uiE2E != nil {
+                            UIE2EGeometryProbe(
+                                identifier: "settings-apply-text-size",
+                                semanticLabel: L10n.string("Apply"),
+                                semanticRole: .button,
+                                semanticEnabled: fontSizeDraft?.hasChanges == true)
+                        }
+                    }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
                 }
                 Toggle(L10n.string("Show tips"), isOn: $tipsEnabled)
 // quality-coverage:begin ui-e2e-instrumentation
