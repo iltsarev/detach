@@ -60,12 +60,20 @@ runs publish `health_schema=1`, exact worker/provider PIDs, heartbeat, and
 checkpoint epoch. Health combines tmux, run token, PID ownership, metadata, and
 checkpoint freshness. Stale data cannot make a proven live provider hung. A
 runtime without managed tmux blocks mutations until its exact processes exit.
+`preserve_recovery_until_ready` is Boolean; `runtime_ready_at` and
+`runtime_shutdown_observed_at` are strings. A mistyped primary is unusable.
+Checkpoint metadata cannot replace it.
 
 `list --json` reads Codex and Claude concurrently and emits that order. Each
 uses one all-pane tmux snapshot and clock sample. `proc_pidinfo` reads recorded
 PIDs and 64 parents. Empty tmux output is missing; wrong identity is collision.
 Mutations recheck ownership, pane, run token, and process group. List jobs
 `exec` cores; cleanup signals PIDs.
+
+A retained dead pane is mutable only when its nonempty tmux token matches usable
+primary metadata. A checkpoint cannot authorize removal. Start, Resume,
+Recover, and Delete repeat this check under the operation lock. A tmux-only
+remnant remains removable without state.
 
 Typed state caches Codex checkpoint assessment by provider, session ID, and
 file identity. A change forces a full scan. Restore ignores this receipt,
@@ -192,7 +200,10 @@ mutation token. Keep the emitter and Swift `Session` decoder in sync.
 `watch --json` emits only change hints and never replaces this snapshot.
 Provider lifecycle records, never terminal text, supply turn state and the
 private activity file in `power.md`. Bounded append caching retains typed turns;
-an unseen oversized gap clears waiting to prevent stale Answer ready.
+an unseen oversized gap clears waiting to prevent stale Answer ready. A
+main-chain Claude `AskUserQuestion` with `stop_reason: tool_use` and a tool ID
+means waiting; only its matching user tool result restores working. Reducer
+changes invalidate old receipts so unchanged prompts are reclassified.
 Typed cleanup uses `cleanup_eligible`.
 
 ### Provider identity and checkpoints
@@ -212,10 +223,62 @@ policy defaults apply only without an allowed override.
 By default, a per-session lock protects a checkpoint every 300 s. It has
 metadata, validated provider JSONL, pane capture, and a repository root from a
 real `.git` ancestor. Codex removes temporary sidecars after its checked SQLite
-backup. Claude archives its matching project session and companions.
+backup. Claude archives its matching project session and companions. A writer
+validates a private sibling, rechecks the exact worker, recovery binding, and
+saved options, then atomically exchanges it with `checkpoint`. Readers cannot
+see a partial generation. Safe prior diagnostics survive a failed refresh.
+Checkpoint, discovery, and heartbeat writers recheck the primary run token,
+worker PID, live managed pane, and pane PID while they hold the session lock.
+An old writer cannot rebind or publish state. Recover holds this lock through
+source validation, retained-pane removal, reselection, and restore. Resume and
+Recover hold the install and project locks from occupancy check through start.
 Provider-created hard links become independent regular files in staging;
 archives and restore destinations still reject hard links and non-plain
-entries. A provider test override can disable the final `/bin/sync`.
+entries. Before any write, List and Recover validate the selected Claude source,
+companion trees, destinations, and `.detach.old` or `.detach.tmp` siblings.
+Unsafe optional data blocks recovery without changing its source. Task names
+match the UUID. Archived and existing team configs name that UUID as lead, so a
+checkpoint cannot replace another session's team. A valid selected live
+generation replaces an older checkpoint only after complete staging. Tests can
+disable durability syncs.
 
-Only allowlisted provider flags are serialized to `resume-args.bin`; a flag
-that should survive Resume or Recover must be added deliberately.
+Resume and Recover keep the last valid checkpoint and saved provider options
+until replacement B passes power and provider readiness. A failed handshake
+keeps that data. A fresh Start clears it. List and Recover share provider-source
+and saved-options checks. A selected live primary generation includes its
+provider ID, transcript, and options; Detach materializes the complete bundle
+before another replacement. An older checkpoint is not equivalent, even with
+the same run token. Every writer reads readiness from primary metadata and
+requires an explicit run token.
+
+The runtime syncs preserved recovery before primary metadata identifies B. It
+syncs new options before readiness names them, and syncs an exchanged checkpoint
+before it prunes prior options.
+
+Codex recovery binds a UUID to one exact rollout path. Every existing path
+component is a plain directory. A damaged rollout needs a matching database row
+or embedded UUID. Recovery never overwrites another thread's rollout and uses a
+private file plus atomic rename.
+
+Primary metadata identifies replacement B while it may live. List and Recover
+require durable shutdown observation. A dead worker and missing launch files do not
+prove that its power wrapper stopped. Normal wrapper return does. Before
+`respawn-pane`, removing the placeholder can prove shutdown; after that call,
+missing launch files prove nothing. A signal exit without provider identity is
+unknown and blocks mutation.
+
+If sync after a checkpoint exchange fails, Detach exchanges the prior
+generation back and removes the other only after rollback sync. An uncertain
+rollback or post-exchange signal keeps both names. A later writer removes an
+abandoned stage only after strict validation and canonical sync. Reset uses a
+typed marker that names its exact prior generation; an empty directory is not
+reset evidence.
+
+Primary metadata, saved options, checkpoint logs, known thread IDs, and exit
+status are plain files in the private session directory. Initialization checks
+their types before it changes a checkpoint. Writers publish replacement files
+with an atomic rename and never append through an untrusted path.
+
+Only allowlisted provider flags are serialized to a run-token-bound options
+file selected by typed metadata. Recover accepts the legacy `resume-args.bin`
+file. A flag that should survive Resume or Recover must be added deliberately.

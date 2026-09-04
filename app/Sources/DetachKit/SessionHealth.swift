@@ -77,6 +77,82 @@ struct SessionProcessIdentity: Equatable, Sendable {
     var userID: uid_t
 }
 
+enum ExactProcessState: String, Equatable, Sendable {
+    case alive
+    case dead
+    case unknown
+}
+
+enum ExactProcessStateProbe {
+    enum Existence: Equatable, Sendable {
+        case exists
+        case missing
+        case unknown
+    }
+
+    typealias ExistenceLookup = (pid_t) -> Existence
+    typealias IdentityLookup = (pid_t) -> SessionProcessIdentity?
+
+    static func state(
+        pid: pid_t,
+        userID: uid_t = geteuid(),
+        existence: ExistenceLookup = liveExistence,
+        identity: IdentityLookup = liveProcessIdentity
+    ) -> ExactProcessState {
+        guard pid > 1 else { return .unknown }
+        switch existence(pid) {
+        case .missing:
+            return .dead
+        case .unknown:
+            return .unknown
+        case .exists:
+            break
+        }
+        if let process = identity(pid) {
+            // A different user now owning this PID proves that the recorded
+            // process exited. Reuse by the same user stays conservatively live.
+            return process.userID == userID ? .alive : .dead
+        }
+        // The process can exit between kill(2) and proc_pidinfo(2). Confirm
+        // ESRCH once more; every other lookup failure remains unknown.
+        return existence(pid) == .missing ? .dead : .unknown
+    }
+
+    static func classifyExistence(
+        killResult: Int32,
+        errorNumber: Int32
+    ) -> Existence {
+        if killResult == 0 { return .exists }
+        switch errorNumber {
+        case ESRCH:
+            return .missing
+        case EPERM:
+            return .exists
+        default:
+            return .unknown
+        }
+    }
+
+    private static func liveExistence(_ pid: pid_t) -> Existence {
+        let result = Darwin.kill(pid, 0)
+        return classifyExistence(killResult: result, errorNumber: errno)
+    }
+}
+
+private func liveProcessIdentity(_ pid: pid_t) -> SessionProcessIdentity? {
+    var information = proc_bsdinfo()
+    let expected = Int32(MemoryLayout<proc_bsdinfo>.size)
+    guard proc_pidinfo(
+        pid,
+        PROC_PIDTBSDINFO,
+        0,
+        &information,
+        expected) == expected else { return nil }
+    return SessionProcessIdentity(
+        parentPID: pid_t(information.pbi_ppid),
+        userID: uid_t(information.pbi_uid))
+}
+
 /// Reads only the process identities named by one health record. The result is
 /// presentation evidence. Runtime mutations repeat their established live
 /// ownership and tmux-token checks immediately before they act.
@@ -89,7 +165,7 @@ enum SessionProcessHealthInspector {
         providerPID rawProviderPID: String,
         panePID rawPanePID: String,
         userID: uid_t = geteuid(),
-        lookup: Lookup = liveIdentity
+        lookup: Lookup = liveProcessIdentity
     ) -> SessionProcessHealth {
         let workerPID = validPID(rawWorkerPID)
         let providerPID = validPID(rawProviderPID)
@@ -158,19 +234,6 @@ enum SessionProcessHealthInspector {
         return false
     }
 
-    private static func liveIdentity(_ pid: pid_t) -> SessionProcessIdentity? {
-        var information = proc_bsdinfo()
-        let expected = Int32(MemoryLayout<proc_bsdinfo>.size)
-        guard proc_pidinfo(
-            pid,
-            PROC_PIDTBSDINFO,
-            0,
-            &information,
-            expected) == expected else { return nil }
-        return SessionProcessIdentity(
-            parentPID: pid_t(information.pbi_ppid),
-            userID: uid_t(information.pbi_uid))
-    }
 }
 
 public enum SessionHealthReason: String, Codable, Sendable {
@@ -192,6 +255,7 @@ public enum SessionHealthReason: String, Codable, Sendable {
     case providerProcessLost = "provider_process_lost"
     case providerPIDNotDescendant = "provider_pid_not_descendant"
     case runtimeProcessWithoutTmux = "runtime_process_without_tmux"
+    case runtimeQuiescenceUnproven = "runtime_quiescence_unproven"
     case recoverableCheckpoint = "recoverable_checkpoint"
     case noRecoveryCheckpoint = "no_recovery_checkpoint"
 }
@@ -217,6 +281,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
     public var checkpointFreshness: FreshnessState
     public var checkpointRecoverable: Bool
     public var agentSessionKnown: Bool
+    public var uncommittedReplacement: Bool
+    public var runtimeQuiescent: Bool
     public var stopRequested: Bool
     public var lifecyclePhase: RuntimeLifecyclePhase
 
@@ -232,6 +298,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         checkpointFreshness: FreshnessState,
         checkpointRecoverable: Bool,
         agentSessionKnown: Bool,
+        uncommittedReplacement: Bool = false,
+        runtimeQuiescent: Bool = false,
         stopRequested: Bool = false,
         lifecyclePhase: RuntimeLifecyclePhase? = nil
     ) {
@@ -246,6 +314,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         self.checkpointFreshness = checkpointFreshness
         self.checkpointRecoverable = checkpointRecoverable
         self.agentSessionKnown = agentSessionKnown
+        self.uncommittedReplacement = uncommittedReplacement
+        self.runtimeQuiescent = runtimeQuiescent
         self.stopRequested = stopRequested
         self.lifecyclePhase = lifecyclePhase
             ?? RuntimeLifecyclePhase.inferred(fromMetadataStatus: metaStatus.rawValue)
@@ -284,15 +354,85 @@ public enum SessionHealthEvaluator {
                 evidence: evidence)
         }
 
+        // A missing or retained dead tmux pane does not prove that the
+        // recorded runtime exited. Keep every mutation closed while either
+        // exact process can still be alive, independent of saved metadata.
+        if (evidence.tmuxState == .missing || evidence.tmuxState == .dead),
+           runtimeProcessMayStillBeAlive(evidence) {
+            return assessment(
+                status: .hung,
+                reason: .runtimeProcessWithoutTmux,
+                actions: [],
+                evidence: evidence)
+        }
+
         if !evidence.metadataValid {
-            let actions: [SessionAction] = evidence.tmuxState == .live
-                ? [.attach, .stop] : [.delete]
+            let actions: [SessionAction]
+            switch evidence.tmuxState {
+            case .live:
+                actions = [.attach, .stop]
+            case .missing:
+                // A present but unreadable operational record can hide a
+                // newer runtime generation. Typed cleanup must not infer
+                // ownership from absence of tmux alone.
+                actions = []
+            case .dead, .foreign:
+                // A retained pane needs a valid primary run token before any
+                // mutation. Foreign tmux was handled above.
+                actions = []
+            }
             return assessment(
                 status: .corrupt,
                 reason: .malformedMetadata,
                 actions: actions,
-                ownershipProven: evidence.tmuxState == .live || evidence.tmuxState == .dead,
+                ownershipProven: evidence.tmuxState == .live,
                 evidence: evidence)
+        }
+
+        // A retained dead pane is safe to remove only when it belongs to the
+        // exact operational generation in primary metadata. A mismatch can
+        // be a newer tmux run, so it authorizes no recovery or deletion.
+        if evidence.tmuxState == .dead,
+           evidence.runTokenState != .match {
+            return assessment(
+                status: .corrupt,
+                reason: evidence.runTokenState == .missing
+                    ? .runTokenMissing : .runTokenMismatch,
+                actions: [],
+                evidence: evidence)
+        }
+
+        if evidence.tmuxState == .missing || evidence.tmuxState == .dead {
+            if evidence.uncommittedReplacement,
+               !evidence.runtimeQuiescent {
+                return assessment(
+                    status: .hung,
+                    reason: .runtimeQuiescenceUnproven,
+                    actions: [],
+                    evidence: evidence)
+            }
+            if evidence.uncommittedReplacement,
+               evidence.runtimeQuiescent,
+               evidence.checkpointRecoverable {
+                var result = assessment(
+                    status: .recoverable,
+                    reason: .recoverableCheckpoint,
+                    actions: [.recover, .delete],
+                    evidence: evidence)
+                // Removing a retained dead pane is safe. Do not rewrite the
+                // primary replacement metadata that selects the checkpoint.
+                if evidence.tmuxState == .dead {
+                    result.reconcileAction = .removeDeadTmux
+                }
+                result.cleanupEligible = false
+                return result
+            }
+            if evidence.uncommittedReplacement,
+               evidence.runtimeQuiescent {
+                return interruptedAssessment(
+                    evidence,
+                    deadTmux: evidence.tmuxState == .dead)
+            }
         }
 
         // Active transition phases close user actions while an exact runtime
@@ -344,13 +484,6 @@ public enum SessionHealthEvaluator {
             guard isActive(evidence.metaStatus) else {
                 return finishedAssessment(evidence, reason: .finished)
             }
-            if runtimeProcessMayStillBeAlive(evidence) {
-                return assessment(
-                    status: .hung,
-                    reason: .runtimeProcessWithoutTmux,
-                    actions: [],
-                    evidence: evidence)
-            }
             return interruptedAssessment(evidence, deadTmux: false)
 
         case .dead:
@@ -358,13 +491,6 @@ public enum SessionHealthEvaluator {
                 var result = finishedAssessment(evidence, reason: .paneExited)
                 result.reconcileAction = .removeDeadTmux
                 return result
-            }
-            if runtimeProcessMayStillBeAlive(evidence) {
-                return assessment(
-                    status: .hung,
-                    reason: .runtimeProcessWithoutTmux,
-                    actions: [],
-                    evidence: evidence)
             }
             return interruptedAssessment(evidence, deadTmux: true)
 
@@ -581,9 +707,8 @@ public enum SessionHealthEvaluator {
     }
 
     private static func runtimeProcessMayStillBeAlive(_ evidence: SessionHealthEvidence) -> Bool {
-        evidence.runtimeIdentityExpected && (
-            evidence.workerState == .alive
-                || evidence.providerState == .alive
-                || evidence.providerState == .mismatch)
+        evidence.workerState == .alive
+            || evidence.providerState == .alive
+            || evidence.providerState == .mismatch
     }
 }

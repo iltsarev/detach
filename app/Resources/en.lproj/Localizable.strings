@@ -150,7 +150,7 @@
 "Provider" = "Provider";
 "Provider CLI" = "Provider CLI";
 "Ready — we'll notify you about ready responses, completed sessions, or session problems." = "Ready — we'll notify you about ready responses, completed sessions, or session problems.";
-"Recovery from the latest checkpoint is available" = "Recovery from the latest checkpoint is available";
+"Validated recovery data is available" = "Validated recovery data is available";
 "Recover" = "Recover";
 "Reconnect" = "Reconnect";
 "Recover in %@" = "Recover in %@";
@@ -414,8 +414,9 @@
 "The provider process exited while its worker remained alive." = "The provider process exited while its worker remained alive.";
 "The recorded provider PID is not owned by this worker." = "The recorded provider PID is not owned by this worker.";
 "A recorded runtime process is still alive without its managed tmux session; Detach will not signal it." = "A recorded runtime process is still alive without its managed tmux session; Detach will not signal it.";
-"The live runtime disappeared, but a valid checkpoint can be recovered." = "The live runtime disappeared, but a valid checkpoint can be recovered.";
-"The live runtime disappeared without a valid recovery checkpoint." = "The live runtime disappeared without a valid recovery checkpoint.";
+"Detach could not confirm that the replacement runtime stopped." = "Detach could not confirm that the replacement runtime stopped.";
+"The live runtime disappeared, but validated recovery data is available." = "The live runtime disappeared, but validated recovery data is available.";
+"The live runtime disappeared without validated recovery data." = "The live runtime disappeared without validated recovery data.";
 
 /* Session shortcuts and defaults */
 "Quick chat" = "Quick chat";

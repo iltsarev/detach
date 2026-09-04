@@ -51,10 +51,12 @@ replace it for a temporarily stale heartbeat.
 The menu bar is display-only. Its prompt mark is filled for protected, dim for
 sleep allowed, badged for attention, and outlined for unknown. Starting,
 running, and recovering sessions are active; hung sessions are not. Green means
-working and orange means waiting. Waiting outranks working. A badge hides both
-tints so power warnings stay visible. Monochrome states remain template; tints
-resolve from label or system colors. VoiceOver names
-the session state. The first menu line is `state · reason · freshness`.
+working and orange means waiting. Claude `AskUserQuestion` records with a
+`tool_use` stop reason enter waiting; their matching user tool-result records
+return to working. Waiting outranks working. A badge hides both tints so power
+warnings stay visible. Monochrome states remain template; tints resolve from
+label or system colors. VoiceOver names the session state. The first menu line
+is `state · reason · freshness`.
 Protected counts working sessions. Allowed names all-waiting or an unprotected
 working session and never claims no sessions. Typed heartbeat and
 `detach watch --json` sources supply them. A schema-1 hint, activation, or
@@ -144,9 +146,10 @@ tmux client. Closing the view ends the client.
 
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide
-native copy, paste, and find. `Ctrl-V` reaches provider image paste. A Finder
-drop sends shell-safe paths without reading files. Live views move Mac Power to
-metadata. An exited client offers Reconnect.
+native copy, paste, and find. `Ctrl-C` and `Ctrl-V` reach providers as
+conventional control bytes. A Finder drop sends shell-safe paths without
+reading files. Live views move Mac Power to metadata. An exited client offers
+Reconnect.
 
 Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
 rows grant no action, ownership, PID, cleanup, or power claim until a fresh

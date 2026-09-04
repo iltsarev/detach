@@ -648,22 +648,133 @@ session_meta() {
   printf '%s/meta.json\n' "$(session_dir "$1")"
 }
 
+session_file_is_safe_or_absent() {
+  local path="$1"
+  local parent
+
+  parent="$(dirname "$path")"
+  [ -d "$parent" ] && [ ! -L "$parent" ] && \
+    [ "$(stat -f '%u' "$parent" 2>/dev/null)" = "$UID" ] || return 1
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    safe_owned_plain_file "$path"
+  fi
+}
+
+replace_session_file_with_empty() {
+  local path="$1"
+  local parent
+  local tmp
+
+  session_file_is_safe_or_absent "$path" || return 1
+  parent="$(dirname "$path")"
+  tmp="$(/usr/bin/mktemp "$parent/.detach-session-file.XXXXXX")" || return 1
+  : >"$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  safe_owned_plain_file "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  mv -f -- "$tmp" "$path"
+}
+
+replace_session_file_with_line() {
+  local path="$1"
+  local value="$2"
+  local parent
+  local tmp
+
+  session_file_is_safe_or_absent "$path" || return 1
+  parent="$(dirname "$path")"
+  tmp="$(/usr/bin/mktemp "$parent/.detach-session-file.XXXXXX")" || return 1
+  printf '%s\n' "$value" >"$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  safe_owned_plain_file "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  mv -f -- "$tmp" "$path"
+}
+
 usable_meta_path() {
   local session="$1"
   local primary
   local checkpoint
-  local candidate
 
   primary="$(session_meta "$session")"
   checkpoint="$(session_dir "$session")/checkpoint/meta.json"
-  for candidate in "$primary" "$checkpoint"; do
-    [ -f "$candidate" ] || continue
-    if "$STATE_BIN" meta usable "$candidate" "$session" >/dev/null 2>&1; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  return 1
+
+  if [ -e "$primary" ] || [ -L "$primary" ]; then
+    [ -f "$primary" ] && [ ! -L "$primary" ] || return 1
+    "$STATE_BIN" meta snapshot "$primary" "$session" >/dev/null 2>&1 || \
+      return 1
+    printf '%s\n' "$primary"
+    return 0
+  fi
+  [ -e "$checkpoint" ] || [ -L "$checkpoint" ] || return 1
+  [ -f "$checkpoint" ] && [ ! -L "$checkpoint" ] || return 1
+  "$STATE_BIN" meta snapshot "$checkpoint" "$session" >/dev/null 2>&1 || \
+    return 1
+  printf '%s\n' "$checkpoint"
+  return 0
+}
+
+uncommitted_recovery_meta_path() {
+  local session="$1"
+  local primary
+  local checkpoint
+  local preserve_until_ready
+  local runtime_ready_at
+
+  primary="$(session_meta "$session")"
+  checkpoint="$(session_dir "$session")/checkpoint/meta.json"
+  [ -f "$primary" ] && [ ! -L "$primary" ] && \
+    "$STATE_BIN" meta usable "$primary" "$session" >/dev/null 2>&1 || return 1
+  load_meta_snapshot_path "$primary" "$session" || return 2
+  preserve_until_ready="$META_PRESERVE_RECOVERY_UNTIL_READY"
+  runtime_ready_at="$META_RUNTIME_READY_AT"
+  [ "$preserve_until_ready" = "true" ] && [ -z "$runtime_ready_at" ] || return 1
+  [ -f "$checkpoint" ] && [ ! -L "$checkpoint" ] && \
+    "$STATE_BIN" meta snapshot "$checkpoint" "$session" \
+      >/dev/null 2>&1 || return 2
+  printf '%s\n' "$checkpoint"
+}
+
+SELECTED_RECOVERY_META=""
+SELECTED_RECOVERY_IS_UNCOMMITTED=0
+
+select_recovery_meta_for_mutation() {
+  local session="$1"
+  local allow_missing="${2:-0}"
+  local selection_status=0
+  local selected=""
+  local primary
+  local checkpoint
+
+  SELECTED_RECOVERY_META=""
+  SELECTED_RECOVERY_IS_UNCOMMITTED=0
+  selected="$(uncommitted_recovery_meta_path "$session" 2>/dev/null)" || \
+    selection_status=$?
+  case "$selection_status" in
+    0) SELECTED_RECOVERY_IS_UNCOMMITTED=1 ;;
+    1)
+      if ! selected="$(usable_meta_path "$session" 2>/dev/null)"; then
+        primary="$(session_meta "$session")"
+        checkpoint="$(session_dir "$session")/checkpoint/meta.json"
+        if [ "$allow_missing" = "1" ] && \
+           [ ! -e "$primary" ] && [ ! -L "$primary" ] && \
+           [ ! -e "$checkpoint" ] && [ ! -L "$checkpoint" ]; then
+          return 0
+        fi
+        return 1
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+  SELECTED_RECOVERY_META="$selected"
 }
 
 reset_meta_snapshot() {
@@ -689,6 +800,8 @@ reset_meta_snapshot() {
   META_HEALTH_SCHEMA=""
   META_STOP_REQUESTED_AT=""
   META_LIFECYCLE_PHASE=""
+  META_PRESERVE_RECOVERY_UNTIL_READY=""
+  META_RUNTIME_READY_AT=""
   TRANSCRIPT_MODEL=""
   TRANSCRIPT_CTX_USED=""
   TRANSCRIPT_CTX_WINDOW=""
@@ -725,6 +838,8 @@ load_meta_snapshot_path() {
       health_schema) META_HEALTH_SCHEMA="$value" ;;
       stop_requested_at) META_STOP_REQUESTED_AT="$value" ;;
       lifecycle_phase) META_LIFECYCLE_PHASE="$value" ;;
+      preserve_recovery_until_ready) META_PRESERVE_RECOVERY_UNTIL_READY="$value" ;;
+      runtime_ready_at) META_RUNTIME_READY_AT="$value" ;;
       snapshot_complete) [ "$value" = true ] && META_SNAPSHOT_COMPLETE=1 ;;
       *) return 1 ;;
     esac
@@ -740,10 +855,19 @@ load_usable_meta_snapshot() {
 
   primary="$(session_meta "$session")"
   checkpoint="$(session_dir "$session")/checkpoint/meta.json"
-  if [ -f "$primary" ] && load_meta_snapshot_path "$primary" "$session"; then
-    return 0
+  if [ -e "$primary" ] || [ -L "$primary" ]; then
+    [ -f "$primary" ] && [ ! -L "$primary" ] || {
+      reset_meta_snapshot
+      return 1
+    }
+    if load_meta_snapshot_path "$primary" "$session"; then
+      return 0
+    fi
+    reset_meta_snapshot
+    return 1
   fi
-  if [ -f "$checkpoint" ] && load_meta_snapshot_path "$checkpoint" "$session"; then
+  if [ -f "$checkpoint" ] && [ ! -L "$checkpoint" ] && \
+     load_meta_snapshot_path "$checkpoint" "$session"; then
     return 0
   fi
   reset_meta_snapshot
@@ -1899,6 +2023,487 @@ state_update_meta_for_run() {
   state_update_meta "$session" --run-token "$run_token" "$@"
 }
 
+metadata_snapshots_have_same_recovery_binding() {
+  local session="$1"
+  local left="$2"
+  local right="$3"
+  local left_value
+  local right_value
+
+  if [ ! -e "$left" ] && [ ! -L "$left" ]; then
+    return 1
+  fi
+  [ -f "$left" ] && [ ! -L "$left" ] && \
+    left_value="$(
+      "$STATE_BIN" meta recovery-binding "$left" "$session" 2>/dev/null
+    )" || return 2
+  [ -f "$right" ] && [ ! -L "$right" ] && \
+    right_value="$(
+      "$STATE_BIN" meta recovery-binding "$right" "$session" 2>/dev/null
+    )" || return 2
+  [ "$left_value" = "$right_value" ]
+}
+
+strict_checkpoint_recovery_generation_is_valid() {
+  local session="$1"
+  local meta="$2"
+  local checkpoint_dir
+  local id
+  local transcript
+  local backup
+  local db
+  local id_sql
+  local stored_provider
+  local inferred_id=0
+  local source
+
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ "$meta" = "$checkpoint_dir/meta.json" ] || return 1
+  owned_plain_checkpoint_directory "$checkpoint_dir" || return 1
+  [ -f "$meta" ] && [ ! -L "$meta" ] && \
+    "$STATE_BIN" meta snapshot "$meta" "$session" >/dev/null 2>&1 || \
+      return 1
+  saved_resume_args_path "$session" "$meta" >/dev/null || return 1
+  recovery_request_is_valid "$session" "$meta" direct || return 1
+  id="$(
+    "$STATE_BIN" meta get "$meta" agent_session_id codex_session_id \
+      2>/dev/null
+  )" || return 1
+  transcript="$(
+    "$STATE_BIN" meta get "$meta" transcript_path rollout_path 2>/dev/null
+  )" || return 1
+  stored_provider="$(
+    "$STATE_BIN" meta get "$meta" provider 2>/dev/null
+  )" || return 1
+  case "$PROVIDER:$stored_provider" in
+    codex:|codex:codex|claude:claude) ;;
+    *) return 1 ;;
+  esac
+  if [ -z "$id" ] || [ "$id" = "-" ]; then
+    inferred_id=1
+    if [ "$PROVIDER" = "claude" ]; then
+      backup="$checkpoint_dir/transcript.jsonl"
+      safe_owned_plain_file "$backup" || return 1
+      id="$(
+        "$STATE_BIN" jsonl first "$backup" sessionId 2>/dev/null
+      )" || return 1
+      if [ -z "$transcript" ]; then
+        transcript="$(claude_transcript_for_id "$id" 2>/dev/null)" || return 1
+      fi
+    else
+      backup="$checkpoint_dir/rollout.jsonl"
+      safe_owned_plain_file "$backup" || return 1
+      id="$(
+        "$STATE_BIN" jsonl first \
+          "$backup" payload.id payload.session_id 2>/dev/null
+      )" || return 1
+      if [ -z "$transcript" ]; then
+        db="$(codex_state_db)"
+        [ -n "$db" ] && [ -f "$db" ] || return 1
+        id_sql="$(sql_escape "$id")"
+        transcript="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+          "SELECT rollout_path FROM threads WHERE id = '$id_sql' LIMIT 1;" \
+          2>/dev/null)" || return 1
+      fi
+    fi
+  fi
+  [ -n "$id" ] && [ "$id" != "-" ] || return 1
+  if [ "$inferred_id" -eq 0 ]; then
+    "$STATE_BIN" meta matches "$meta" "$PROVIDER" "$id" \
+      >/dev/null 2>&1 || return 1
+  fi
+
+  if [ "$PROVIDER" = "codex" ]; then
+    [ -n "$transcript" ] && \
+      safe_codex_rollout_path "$transcript" || return 1
+    safe_owned_plain_file "$checkpoint_dir/rollout.jsonl" && \
+      valid_jsonl "$checkpoint_dir/rollout.jsonl" "$id"
+    return
+  fi
+  [ "$PROVIDER" = "claude" ] || return 1
+  if [ -z "$transcript" ]; then
+    for source in \
+      "$checkpoint_dir/claude-session.tar" \
+      "$checkpoint_dir/transcript.jsonl" \
+      "$checkpoint_dir/claude-session" \
+      "$checkpoint_dir/claude-file-history" \
+      "$checkpoint_dir/claude-session-env"; do
+      [ ! -e "$source" ] && [ ! -L "$source" ] || return 1
+    done
+    claude_metadata_only_recovery_source_is_valid \
+      "$session" "$meta" "$id"
+    return
+  fi
+  if [ ! -e "$checkpoint_dir/claude-session.tar" ] && \
+     [ ! -L "$checkpoint_dir/claude-session.tar" ] && \
+     [ ! -e "$checkpoint_dir/transcript.jsonl" ] && \
+     [ ! -L "$checkpoint_dir/transcript.jsonl" ]; then
+    return 1
+  fi
+  claude_recovery_payload_is_valid "$session" "$id" "$transcript"
+}
+
+selected_live_payload_matches_checkpoint() {
+  local session="$1"
+  local id="$2"
+  local transcript="$3"
+  local checkpoint_dir
+  local backup
+
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  if [ "$PROVIDER" = "codex" ]; then
+    backup="$checkpoint_dir/rollout.jsonl"
+    safe_codex_rollout_path "$transcript" && \
+      valid_jsonl "$transcript" "$id" && \
+      safe_owned_plain_file "$backup" && \
+      cmp -s "$transcript" "$backup"
+    return
+  fi
+  [ "$PROVIDER" = "claude" ] || return 1
+  if [ -z "$transcript" ]; then
+    claude_metadata_only_recovery_source_is_valid \
+      "$session" "$(session_meta "$session")" "$id"
+    return
+  fi
+  # The transcript is only one part of a Claude recovery bundle. Defer this
+  # comparison until the complete live bundle has been staged.
+  return 1
+}
+
+plain_directory_trees_match() {
+  local left="$1"
+  local right="$2"
+  local entry
+  local relative
+  local peer
+  local left_mode
+  local right_mode
+
+  safe_plain_directory_tree "$left" && \
+    safe_plain_directory_tree "$right" || return 1
+  while IFS= read -r -d '' entry; do
+    relative="${entry#"$left"/}"
+    peer="$right/$relative"
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      [ -d "$peer" ] && [ ! -L "$peer" ] || return 1
+    elif safe_plain_file "$entry"; then
+      safe_plain_file "$peer" && cmp -s "$entry" "$peer" || return 1
+    else
+      return 1
+    fi
+    left_mode="$(stat -f '%HT:%Lp' "$entry" 2>/dev/null)" || return 1
+    right_mode="$(stat -f '%HT:%Lp' "$peer" 2>/dev/null)" || return 1
+    [ "$left_mode" = "$right_mode" ] || return 1
+  done < <(find "$left" -mindepth 1 -print0 2>/dev/null)
+  while IFS= read -r -d '' entry; do
+    relative="${entry#"$right"/}"
+    peer="$left/$relative"
+    [ -e "$peer" ] && [ ! -L "$peer" ] || return 1
+  done < <(find "$right" -mindepth 1 -print0 2>/dev/null)
+}
+
+claude_checkpoint_archives_have_same_payload() (
+  local left="$1"
+  local right="$2"
+  local id="$3"
+  local comparison_root
+  local cleanup_command
+  local left_tree
+  local right_tree
+
+  valid_claude_checkpoint_archive "$left" "$id" && \
+    valid_claude_checkpoint_archive "$right" "$id" || exit 1
+  comparison_root="$(/usr/bin/mktemp -d \
+    "${TMPDIR:-/tmp}/detach-claude-comparison.XXXXXX")" || exit 1
+  printf -v cleanup_command 'rm -rf -- %q' "$comparison_root"
+  trap "$cleanup_command" EXIT
+  left_tree="$comparison_root/left"
+  right_tree="$comparison_root/right"
+  mkdir -m 0700 "$left_tree" "$right_tree" || exit 1
+  "$TAR_BIN" -xf "$left" -C "$left_tree" >/dev/null 2>&1 || exit 1
+  "$TAR_BIN" -xf "$right" -C "$right_tree" >/dev/null 2>&1 || exit 1
+  plain_directory_trees_match "$left_tree" "$right_tree"
+)
+
+materialize_selected_recovery_checkpoint() (
+  local session="$1"
+  local source_meta="$2"
+  local stage_token="$3"
+  local session_path
+  local checkpoint_dir
+  local checkpoint_meta
+  local checkpoint_id
+  local comparison_status=0
+  local source_binding
+  local current_binding
+  local id
+  local transcript
+  local backup
+  local db
+  local id_sql
+  local resolved_transcript
+  local restore_transcript
+  local resolved_status=0
+  local metadata_only=0
+  local stage_name
+  local stage
+  local stage_meta
+  local stage_cleanup_armed=0
+  local rollback_status=0
+  local source
+  local -a stage_binding_patch=()
+
+  session_path="$(session_dir "$session")"
+  checkpoint_dir="$session_path/checkpoint"
+  checkpoint_meta="$checkpoint_dir/meta.json"
+  [ -f "$source_meta" ] && [ ! -L "$source_meta" ] && \
+    "$STATE_BIN" meta snapshot "$source_meta" "$session" \
+      >/dev/null 2>&1 || return 1
+  owned_plain_checkpoint_directory "$checkpoint_dir" || return 1
+  saved_resume_args_path "$session" "$source_meta" >/dev/null || return 1
+  recovery_request_is_valid "$session" "$source_meta" direct || return 1
+
+  if metadata_snapshots_have_same_recovery_binding \
+       "$session" "$checkpoint_meta" "$source_meta"; then
+    if strict_checkpoint_recovery_generation_is_valid \
+         "$session" "$checkpoint_meta"; then
+      checkpoint_id="$(
+        "$STATE_BIN" meta get \
+          "$checkpoint_meta" agent_session_id codex_session_id 2>/dev/null
+      )" || return 1
+      if [ -n "$checkpoint_id" ] && [ "$checkpoint_id" != "-" ]; then
+        if [ "$source_meta" = "$checkpoint_meta" ] || \
+           selected_live_payload_matches_checkpoint \
+             "$session" "$checkpoint_id" "$(
+               "$STATE_BIN" meta get \
+                 "$source_meta" transcript_path rollout_path 2>/dev/null
+             )"; then
+          return 0
+        fi
+      fi
+    fi
+  else
+    comparison_status=$?
+    [ "$comparison_status" -eq 1 ] || return 1
+  fi
+
+  source_binding="$(
+    "$STATE_BIN" meta recovery-binding "$source_meta" "$session" 2>/dev/null
+  )" || return 1
+  id="$(
+    "$STATE_BIN" meta get "$source_meta" agent_session_id codex_session_id \
+      2>/dev/null
+  )" || return 1
+  transcript="$(
+    "$STATE_BIN" meta get "$source_meta" transcript_path rollout_path \
+      2>/dev/null
+  )" || return 1
+  if [ -z "$id" ] || [ "$id" = "-" ]; then
+    if [ "$PROVIDER" = "claude" ]; then
+      backup="$checkpoint_dir/transcript.jsonl"
+      [ -f "$backup" ] && [ ! -L "$backup" ] || return 1
+      id="$(
+        "$STATE_BIN" jsonl first "$backup" sessionId 2>/dev/null
+      )" || return 1
+    elif [ "$PROVIDER" = "codex" ]; then
+      backup="$checkpoint_dir/rollout.jsonl"
+      [ -f "$backup" ] && [ ! -L "$backup" ] || return 1
+      id="$(
+        "$STATE_BIN" jsonl first \
+          "$backup" payload.id payload.session_id 2>/dev/null
+      )" || return 1
+      db="$(codex_state_db)"
+      [ -n "$db" ] && [ -f "$db" ] || return 1
+      id_sql="$(sql_escape "$id")"
+      transcript="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+        "SELECT rollout_path FROM threads WHERE id = '$id_sql' LIMIT 1;" \
+        2>/dev/null)" || return 1
+    fi
+  fi
+  [ -n "$id" ] && [ "$id" != "-" ] || return 1
+
+  if [ "$PROVIDER" = "claude" ] && [ -z "$transcript" ]; then
+    resolved_transcript="$(claude_transcript_for_id "$id" 2>/dev/null)" || \
+      resolved_status=$?
+    case "$resolved_status" in
+      0) transcript="$resolved_transcript" ;;
+      1)
+        claude_metadata_only_recovery_source_is_valid \
+          "$session" "$source_meta" "$id" || return 1
+        metadata_only=1
+        ;;
+      *) return 1 ;;
+    esac
+  fi
+
+  scavenge_checkpoint_stages "$session" "$session_path" || return 1
+  stage_name=".checkpoint-stage-preserve-$stage_token-$$"
+  checkpoint_stage_name_is_safe "$stage_name" || return 1
+  stage="$session_path/$stage_name"
+  [ ! -e "$stage" ] && [ ! -L "$stage" ] || return 1
+  mkdir -m 0700 "$stage" || return 1
+  stage_cleanup_armed=1
+  trap checkpoint_stage_cleanup_on_exit EXIT
+  trap 'exit 1' HUP INT TERM
+
+  if [ "$PROVIDER" = "codex" ]; then
+    [ -n "$transcript" ] && \
+      checkpoint_rollout "$session" "$transcript" "$id" "$stage" || \
+        return 1
+  elif [ "$PROVIDER" = "claude" ]; then
+    if [ "$metadata_only" -eq 0 ]; then
+      checkpoint_claude_artifacts \
+        "$session" "$transcript" "$id" "$stage" || return 1
+    fi
+  else
+    return 1
+  fi
+
+  stage_meta="$stage/meta.json"
+  cp -p "$source_meta" "$stage_meta" || return 1
+  stage_binding_patch=( --string agent_session_id "$id" )
+  if [ -n "$transcript" ]; then
+    stage_binding_patch+=( --string transcript_path "$transcript" )
+  else
+    stage_binding_patch+=( --null transcript_path )
+  fi
+  if [ "$PROVIDER" = "codex" ]; then
+    stage_binding_patch+=(
+      --string codex_session_id "$id"
+      --string rollout_path "$transcript"
+    )
+  fi
+  "$STATE_BIN" meta patch "$stage_meta" \
+    "${stage_binding_patch[@]}" || return 1
+  if [ -e "$stage/.meta-patch.lock" ] || [ -L "$stage/.meta-patch.lock" ]; then
+    [ -f "$stage/.meta-patch.lock" ] && [ ! -L "$stage/.meta-patch.lock" ] && \
+      rm -f -- "$stage/.meta-patch.lock" || return 1
+  fi
+  "$STATE_BIN" meta snapshot "$stage_meta" "$session" >/dev/null 2>&1 || \
+    return 1
+  "$STATE_BIN" meta matches "$stage_meta" "$PROVIDER" "$id" \
+    >/dev/null 2>&1 || return 1
+  [ "$("$STATE_BIN" meta get "$stage_meta" transcript_path rollout_path \
+      2>/dev/null)" = "$transcript" ] || return 1
+  saved_resume_args_path "$session" "$stage_meta" >/dev/null || return 1
+  if [ "$PROVIDER" = "codex" ]; then
+    safe_owned_plain_file "$stage/rollout.jsonl" && \
+      valid_jsonl_cached "$stage/rollout.jsonl" "$id" || return 1
+  elif [ "$metadata_only" -eq 0 ]; then
+    restore_transcript="$(
+      canonical_claude_transcript_path "$transcript" "$id"
+    )" || return 1
+    valid_claude_checkpoint_archive "$stage/claude-session.tar" "$id" && \
+      preflight_claude_archive_restore \
+        "$stage/claude-session.tar" "$id" "$restore_transcript" \
+        "$(canonical_claude_home)" || return 1
+  else
+    for source in \
+      "$stage/claude-session.tar" \
+      "$stage/transcript.jsonl" \
+      "$stage/claude-session" \
+      "$stage/claude-file-history" \
+      "$stage/claude-session-env"; do
+      [ ! -e "$source" ] && [ ! -L "$source" ] || return 1
+    done
+  fi
+
+  current_binding="$(
+    "$STATE_BIN" meta recovery-binding "$source_meta" "$session" 2>/dev/null
+  )" || return 1
+  [ "$current_binding" = "$source_binding" ] || return 1
+  saved_resume_args_path "$session" "$source_meta" >/dev/null || return 1
+  recovery_request_is_valid "$session" "$source_meta" direct || return 1
+
+  # A transcript-bound Claude session can reuse canonical A only when its
+  # complete provider bundle is unchanged. Comparing the validated staged
+  # trees catches project, history, environment, task, and team changes that
+  # do not append a transcript record.
+  if [ "$PROVIDER" = "claude" ] && [ "$metadata_only" -eq 0 ]; then
+    if metadata_snapshots_have_same_recovery_binding \
+         "$session" "$checkpoint_meta" "$source_meta"; then
+      if strict_checkpoint_recovery_generation_is_valid \
+           "$session" "$checkpoint_meta" && \
+         [ -f "$checkpoint_dir/claude-session.tar" ] && \
+         [ ! -L "$checkpoint_dir/claude-session.tar" ] && \
+         claude_checkpoint_archives_have_same_payload \
+           "$checkpoint_dir/claude-session.tar" \
+           "$stage/claude-session.tar" "$id"; then
+        return 0
+      fi
+    else
+      comparison_status=$?
+      [ "$comparison_status" -eq 1 ] || return 1
+    fi
+  fi
+
+  # Once exchange starts, either directory name can hold the previous durable
+  # generation. The EXIT trap must not guess which one is disposable.
+  stage_cleanup_armed=0
+  "$STATE_BIN" checkpoint exchange "$session_path" "$stage_name" || return 1
+  checkpoint_test_barrier \
+    "${DETACH_TEST_CHECKPOINT_POSTEXCHANGE_READY:-}" \
+    "${DETACH_TEST_CHECKPOINT_POSTEXCHANGE_RELEASE:-}" || return 1
+  if [ "$SYNC_ENABLED" != "0" ] && ! checkpoint_publish_sync; then
+    restore_checkpoint_after_failed_publish_sync \
+      "$session_path" "$stage_name" || rollback_status=$?
+    if [ "$rollback_status" -eq 0 ]; then
+      remove_checkpoint_stage "$session_path" "$stage" && \
+        /bin/sync 2>/dev/null || true
+    fi
+    return 1
+  fi
+  remove_checkpoint_stage "$session_path" "$stage" || return 1
+  [ "$SYNC_ENABLED" = "0" ] || /bin/sync
+)
+
+reset_checkpoint_generation() (
+  local session="$1"
+  local stage_token="$2"
+  local session_path
+  local stage_name
+  local stage
+  local reset_marker_name=.detach-checkpoint-reset
+  local stage_cleanup_armed=0
+  local rollback_status=0
+
+  session_path="$(session_dir "$session")"
+  owned_plain_checkpoint_directory "$session_path/checkpoint" || return 1
+  scavenge_checkpoint_stages "$session" "$session_path" || return 1
+  stage_name=".checkpoint-stage-reset-$stage_token-$$"
+  checkpoint_stage_name_is_safe "$stage_name" || return 1
+  stage="$session_path/$stage_name"
+  [ ! -e "$stage" ] && [ ! -L "$stage" ] || return 1
+  mkdir -m 0700 "$stage" || return 1
+  printf '%s\n' "$stage_name" >"$stage/$reset_marker_name" || return 1
+  safe_owned_plain_file "$stage/$reset_marker_name" || return 1
+  stage_cleanup_armed=1
+  trap checkpoint_stage_cleanup_on_exit EXIT
+  trap 'exit 1' HUP INT TERM
+
+  # From this point onward, retain both names on interruption or uncertainty.
+  stage_cleanup_armed=0
+  "$STATE_BIN" checkpoint exchange "$session_path" "$stage_name" || return 1
+  checkpoint_test_barrier \
+    "${DETACH_TEST_CHECKPOINT_POSTEXCHANGE_READY:-}" \
+    "${DETACH_TEST_CHECKPOINT_POSTEXCHANGE_RELEASE:-}" || return 1
+  if [ "$SYNC_ENABLED" != "0" ] && ! checkpoint_publish_sync; then
+    restore_checkpoint_after_failed_publish_sync \
+      "$session_path" "$stage_name" || rollback_status=$?
+    if [ "$rollback_status" -eq 0 ]; then
+      remove_checkpoint_stage "$session_path" "$stage" && \
+        /bin/sync 2>/dev/null || true
+    fi
+    return 1
+  fi
+  remove_checkpoint_stage "$session_path" "$stage" || return 1
+  [ ! -e "$stage" ] && [ ! -L "$stage" ] || return 1
+  [ "$SYNC_ENABLED" = "0" ] || /bin/sync || return 1
+  remove_checkpoint_reset_marker \
+    "$session_path/checkpoint" "$stage_name" || return 1
+  [ "$SYNC_ENABLED" = "0" ] || /bin/sync
+)
+
 write_initial_meta() {
   local session="$1"
   local cwd="$2"
@@ -1917,33 +2522,56 @@ write_initial_meta() {
   local lifecycle_id
   local create_args
   local default_base
+  local previous_meta
+  local preserve_until_ready=false
+  local stale_resume_args
 
   dir="$(session_dir "$session")"
   meta="$dir/meta.json"
-  tmp="$meta.tmp.$$"
-  mkdir -p "$dir/checkpoint"
-  if [ "$preserve_checkpoint" != "1" ]; then
-    rm -f \
-      "$dir/checkpoint/meta.json" \
-      "$dir/checkpoint/rollout.jsonl" \
-      "$dir/checkpoint/transcript.jsonl" \
-      "$dir/checkpoint/.detach-jsonl-validation.json" \
-      "$dir/checkpoint/claude-session.tar" \
-      "$dir/checkpoint/codex-state.sqlite" \
-      "$dir/checkpoint/pane.txt" \
-      "$dir/checkpoint/pane-ansi.txt" \
-      "$dir/checkpoint/worktree-status.txt" \
-      "$dir/exit-status"
-    rm -rf \
-      "$dir/checkpoint/claude-session" \
-      "$dir/checkpoint/claude-file-history" \
-      "$dir/checkpoint/claude-session-env"
-    : >"$dir/checkpoint.log"
+  ensure_owned_checkpoint_directory "$dir" || return 1
+  lifecycle_id="$(new_run_token)" || return 1
+  tmp="$dir/.meta-$lifecycle_id.tmp"
+  session_file_is_safe_or_absent "$meta" || return 1
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
+  session_file_is_safe_or_absent "$dir/checkpoint.log" || return 1
+  session_file_is_safe_or_absent "$dir/known-thread-ids.txt" || return 1
+  session_file_is_safe_or_absent "$dir/exit-status" || return 1
+  if [ "$preserve_checkpoint" = "1" ]; then
+    preserve_until_ready=true
+    select_recovery_meta_for_mutation "$session" 1 || return 1
+    previous_meta="$SELECTED_RECOVERY_META"
+    if [ -n "$previous_meta" ]; then
+      # A selected generation includes its saved provider options. Validate
+      # that binding before staging its immutable provider payload.
+      saved_resume_args_path "$session" "$previous_meta" >/dev/null || return 1
+      materialize_selected_recovery_checkpoint \
+        "$session" "$previous_meta" "$run_token" || return 1
+    fi
+  else
+    for stale_resume_args in \
+      "$dir/resume-args.bin" "$dir"/resume-args-*.bin; do
+      if [ -e "$stale_resume_args" ] || [ -L "$stale_resume_args" ]; then
+        [ -f "$stale_resume_args" ] && [ ! -L "$stale_resume_args" ] || return 1
+      fi
+    done
+    reset_checkpoint_generation "$session" "$run_token" || return 1
+    rm -f -- "$dir/exit-status" || return 1
+    for stale_resume_args in \
+      "$dir/resume-args.bin" "$dir"/resume-args-*.bin; do
+      if [ -e "$stale_resume_args" ] || [ -L "$stale_resume_args" ]; then
+        [ -f "$stale_resume_args" ] && [ ! -L "$stale_resume_args" ] || return 1
+        rm -f -- "$stale_resume_args" || return 1
+      fi
+    done
+    replace_session_file_with_empty "$dir/checkpoint.log" || return 1
+  fi
+  if [ "$preserve_checkpoint" = "1" ] && [ "$SYNC_ENABLED" != "0" ]; then
+    # Request writeback for the complete A recovery bundle before primary
+    # metadata can identify replacement B.
+    /bin/sync
   fi
   agent_version="$("$agent_bin" --version 2>/dev/null || printf 'unknown')"
   session_color="$(allocate_session_color "$PROVIDER" "$cwd" "$session")" || return 1
-  lifecycle_id="$(new_run_token)" || return 1
-
   create_args=(
     --integer schema 1
     --string session_name "$session"
@@ -1953,6 +2581,9 @@ write_initial_meta() {
     --string status starting
     --string lifecycle_phase initializing
     --string run_token "$run_token"
+    --bool preserve_recovery_until_ready "$preserve_until_ready"
+    --null runtime_ready_at
+    --null resume_args_file
     --string lifecycle_id "$lifecycle_id"
     --string provider "$PROVIDER"
     --string session_color "$session_color"
@@ -1964,6 +2595,7 @@ write_initial_meta() {
     --null last_checkpoint_epoch
     --null worker_pid
     --null provider_pid
+    --null runtime_shutdown_observed_at
     --null worker_heartbeat_at
     --null worker_heartbeat_epoch
     --null exit_status
@@ -2005,9 +2637,22 @@ write_initial_meta() {
   else
     create_args+=( --null codex_bin --null codex_version --null codex_session_id --null rollout_path )
   fi
-  rm -f "$tmp"
   "$STATE_BIN" meta create "$tmp" "${create_args[@]}" || return 1
-  mv -f "$tmp" "$meta"
+  safe_owned_plain_file "$tmp" && \
+    "$STATE_BIN" meta snapshot "$tmp" "$session" >/dev/null 2>&1 || {
+      rm -f -- "$tmp"
+      return 1
+    }
+  session_file_is_safe_or_absent "$meta" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  mv -f -- "$tmp" "$meta" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  safe_owned_plain_file "$meta" && \
+    "$STATE_BIN" meta snapshot "$meta" "$session" >/dev/null 2>&1
 }
 
 claude_home() {
@@ -2094,6 +2739,74 @@ safe_plain_directory_tree() {
   safe_plain_source_tree "$root" || return 1
   unsafe="$(find "$root" -type f -links +1 -print -quit 2>/dev/null)" || return 1
   [ -z "$unsafe" ]
+}
+
+claude_archive_identity_is_valid() {
+  local root="$1"
+  local id="$2"
+  local short_id="${id:0:8}"
+  local entry
+  local name
+  local lead_id
+
+  safe_plain_directory_tree "$root" || return 1
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    case "$name" in
+      transcript.jsonl)
+        safe_plain_file "$entry" || return 1
+        ;;
+      project-session|file-history|session-env|tasks|teams)
+        [ -d "$entry" ] && [ ! -L "$entry" ] || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+
+  if [ -d "$root/tasks" ]; then
+    while IFS= read -r -d '' entry; do
+      [ -d "$entry" ] && [ ! -L "$entry" ] || return 1
+      name="${entry##*/}"
+      case "$name" in
+        "$id"|"session-$short_id") ;;
+        *) return 1 ;;
+      esac
+    done < <(find "$root/tasks" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  fi
+
+  if [ -d "$root/teams" ]; then
+    while IFS= read -r -d '' entry; do
+      [ -d "$entry" ] && [ ! -L "$entry" ] || return 1
+      safe_plain_file "$entry/config.json" || return 1
+      lead_id="$($STATE_BIN meta get \
+        "$entry/config.json" leadSessionId 2>/dev/null)" || return 1
+      [ "$(printf '%s' "$lead_id" | tr '[:upper:]' '[:lower:]')" = \
+        "$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')" ] || return 1
+    done < <(find "$root/teams" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  fi
+}
+
+claude_team_destination_matches_id() {
+  local destination="$1"
+  local id="$2"
+  local config="$destination/config.json"
+  local lead_id
+  local entry
+
+  if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+    return 0
+  fi
+  [ -d "$destination" ] && [ ! -L "$destination" ] || return 1
+  if [ ! -e "$config" ] && [ ! -L "$config" ]; then
+    entry="$(find "$destination" -mindepth 1 -print -quit 2>/dev/null)" || \
+      return 1
+    [ -z "$entry" ]
+    return
+  fi
+  safe_plain_file "$config" || return 1
+  lead_id="$($STATE_BIN meta get "$config" leadSessionId 2>/dev/null)" || return 1
+  [ "$(printf '%s' "$lead_id" | tr '[:upper:]' '[:lower:]')" = \
+    "$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')" ]
 }
 
 safe_plain_file() {
@@ -2196,9 +2909,245 @@ valid_claude_checkpoint_archive() {
   local archive="$1"
   local expected_id="$2"
 
-  [ -s "$archive" ] || return 1
+  safe_plain_file "$archive" || return 1
+  "$TAR_BIN" -tf "$archive" 2>/dev/null | \
+    awk '
+      /^\// { unsafe = 1 }
+      /(^|\/)\.\.($|\/)/ { unsafe = 1 }
+      /\\/ { unsafe = 1 }
+      END { exit(unsafe ? 1 : 0) }
+    ' || return 1
+  "$TAR_BIN" -tvf "$archive" 2>/dev/null | \
+    awk '
+      NF && substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" { unsafe = 1 }
+      END { exit(unsafe ? 1 : 0) }
+    ' || return 1
   "$TAR_BIN" -xOf "$archive" ./transcript.jsonl 2>/dev/null | \
     valid_claude_transcript_stream "$expected_id"
+}
+
+claude_recovery_source_is_valid() {
+  local session="$1"
+  local id="$2"
+  local transcript="$3"
+
+  claude_recovery_preflight "$session" "$id" "$transcript"
+}
+
+preflight_claude_archive_restore() (
+  local archive="$1"
+  local id="$2"
+  local transcript="$3"
+  local home="$4"
+  local validate_destinations="${5:-1}"
+  local stage
+  local cleanup_command
+  local source
+  local destination
+  local index
+  local -a restore_sources=()
+  local -a restore_destinations=()
+
+  stage="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/detach-claude-recovery.XXXXXX")" || \
+    exit 1
+  printf -v cleanup_command 'rm -rf -- %q' "$stage"
+  trap "$cleanup_command" EXIT
+  "$TAR_BIN" -xf "$archive" -C "$stage" >/dev/null 2>&1 || exit 1
+  safe_plain_directory_tree "$stage" && \
+    claude_archive_identity_is_valid "$stage" "$id" || exit 1
+  safe_plain_file "$stage/transcript.jsonl" && \
+    valid_claude_transcript "$stage/transcript.jsonl" "$id" || exit 1
+  [ "$validate_destinations" = "1" ] || exit 0
+
+  for source in \
+    "$stage/project-session" \
+    "$stage/file-history" \
+    "$stage/session-env"; do
+    case "$source" in
+      "$stage/project-session") destination="${transcript%.jsonl}" ;;
+      "$stage/file-history") destination="$home/file-history/$id" ;;
+      *) destination="$home/session-env/$id" ;;
+    esac
+    [ -d "$source" ] || continue
+    restore_sources+=( "$source" )
+    restore_destinations+=( "$destination" )
+  done
+  for source in "$stage"/tasks/*; do
+    [ -d "$source" ] || continue
+    restore_sources+=( "$source" )
+    restore_destinations+=( "$home/tasks/$(basename "$source")" )
+  done
+  for source in "$stage"/teams/*; do
+    [ -d "$source" ] || continue
+    restore_sources+=( "$source" )
+    restore_destinations+=( "$home/teams/$(basename "$source")" )
+  done
+  if [ "${#restore_sources[@]}" -gt 0 ]; then
+    for ((index = 0; index < ${#restore_sources[@]}; index++)); do
+      safe_plain_directory_tree "${restore_sources[$index]}" && \
+        preflight_claude_restore_publish_state \
+          "${restore_destinations[$index]}" "$home" || exit 1
+      case "${restore_sources[$index]}" in
+        "$stage"/teams/*)
+          claude_team_destination_matches_id \
+            "${restore_destinations[$index]}" "$id" || exit 1
+          ;;
+      esac
+    done
+  fi
+)
+
+claude_recovery_preflight() {
+  local session="$1"
+  local id="$2"
+  local transcript="$3"
+  local checkpoint_dir
+  local checkpoint_meta
+  local live_valid=0
+
+  safe_claude_transcript_path "$transcript" "$id" || return 1
+  if valid_claude_transcript "$transcript" "$id"; then
+    live_valid=1
+  fi
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  checkpoint_meta="$checkpoint_dir/meta.json"
+  if [ -e "$checkpoint_meta" ] || [ -L "$checkpoint_meta" ]; then
+    [ -f "$checkpoint_meta" ] && [ ! -L "$checkpoint_meta" ] && \
+      "$STATE_BIN" meta usable "$checkpoint_meta" "$session" \
+        >/dev/null 2>&1 || return 1
+    if ! "$STATE_BIN" meta matches "$checkpoint_meta" "$PROVIDER" "$id" \
+         >/dev/null 2>&1; then
+      [ "$live_valid" -eq 1 ]
+      return
+    fi
+  fi
+  claude_recovery_payload_is_valid "$session" "$id" "$transcript"
+}
+
+claude_recovery_payload_source_is_valid() {
+  local session="$1"
+  local id="$2"
+  local transcript="$3"
+  local checkpoint_dir
+  local archive
+  local backup
+  local candidate
+  local source
+  local live_valid=0
+
+  safe_claude_transcript_path "$transcript" "$id" || return 1
+  if valid_claude_transcript "$transcript" "$id"; then
+    live_valid=1
+  fi
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  archive="$checkpoint_dir/claude-session.tar"
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    valid_claude_checkpoint_archive "$archive" "$id" && \
+      preflight_claude_archive_restore "$archive" "$id" "" "" 0
+    return
+  fi
+
+  backup="$checkpoint_dir/transcript.jsonl"
+  if [ -e "$backup" ] || [ -L "$backup" ]; then
+    safe_plain_file "$backup" && \
+      valid_claude_transcript "$backup" "$id" || return 1
+  else
+    [ "$live_valid" -eq 1 ]
+    return
+  fi
+
+  for candidate in claude-session claude-file-history claude-session-env; do
+    source="$checkpoint_dir/$candidate"
+    if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+      continue
+    fi
+    [ -d "$source" ] && [ ! -L "$source" ] || return 1
+    safe_plain_directory_tree "$source" || return 1
+  done
+}
+
+claude_transcript_restore_destination_is_valid() {
+  local id="$1"
+  local transcript="$2"
+  local home
+  local tmp
+
+  safe_claude_transcript_path "$transcript" "$id" || return 1
+  home="$(canonical_claude_home)" || return 1
+  transcript="$(canonical_claude_transcript_path "$transcript" "$id")" || \
+    return 1
+  [ ! -L "$transcript" ] && \
+    { [ ! -e "$transcript" ] || safe_plain_file "$transcript"; } || return 1
+  tmp="$transcript.detach.tmp"
+  if [ -e "$tmp" ] || [ -L "$tmp" ]; then
+    safe_plain_file "$tmp" || return 1
+  fi
+  [ -n "$home" ]
+}
+
+claude_recovery_payload_is_valid() {
+  local session="$1"
+  local id="$2"
+  local transcript="$3"
+  local checkpoint_dir
+  local archive
+  local backup
+  local home
+  local tmp
+  local candidate
+  local destination
+  local source
+  local live_valid=0
+  local -a restore_destinations=()
+
+  safe_claude_transcript_path "$transcript" "$id" || return 1
+  if valid_claude_transcript "$transcript" "$id"; then
+    live_valid=1
+  fi
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  archive="$checkpoint_dir/claude-session.tar"
+  backup="$checkpoint_dir/transcript.jsonl"
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    valid_claude_checkpoint_archive "$archive" "$id" || return 1
+  elif [ -e "$backup" ] || [ -L "$backup" ]; then
+    safe_plain_file "$backup" && \
+      valid_claude_transcript "$backup" "$id" || return 1
+  else
+    [ "$live_valid" -eq 1 ]
+    return
+  fi
+
+  home="$(canonical_claude_home)" || return 1
+  transcript="$(canonical_claude_transcript_path "$transcript" "$id")" || return 1
+  [ ! -L "$transcript" ] && \
+    { [ ! -e "$transcript" ] || safe_plain_file "$transcript"; } || return 1
+  tmp="$transcript.detach.tmp"
+  if [ -e "$tmp" ] || [ -L "$tmp" ]; then
+    safe_plain_file "$tmp" || return 1
+  fi
+
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    preflight_claude_archive_restore "$archive" "$id" "$transcript" "$home"
+    return
+  else
+    for candidate in \
+      "claude-session|${transcript%.jsonl}" \
+      "claude-file-history|$home/file-history/$id" \
+      "claude-session-env|$home/session-env/$id"; do
+      source="$checkpoint_dir/${candidate%%|*}"
+      if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+        continue
+      fi
+      [ -d "$source" ] && [ ! -L "$source" ] || return 1
+      safe_plain_directory_tree "$source" || return 1
+      restore_destinations+=( "${candidate#*|}" )
+    done
+  fi
+  if [ "${#restore_destinations[@]}" -gt 0 ]; then
+    for destination in "${restore_destinations[@]}"; do
+      preflight_claude_restore_publish_state "$destination" "$home" || return 1
+    done
+  fi
 }
 
 claude_matching_checkpoint_exists() {
@@ -2217,6 +3166,115 @@ claude_matching_checkpoint_exists() {
   return 1
 }
 
+claude_provider_entry_for_id_exists() {
+  local id="$1"
+  local configured_home
+  local home
+  local projects
+  local short_id
+  local candidate
+  local config
+
+  configured_home="$(claude_home)"
+  if [ ! -e "$configured_home" ] && [ ! -L "$configured_home" ]; then
+    return 1
+  fi
+  home="$(canonical_claude_home)" || return 2
+  projects="$home/projects"
+  if [ -e "$projects" ] || [ -L "$projects" ]; then
+    [ -d "$projects" ] && [ ! -L "$projects" ] || return 2
+  fi
+  short_id="${id:0:8}"
+  for candidate in \
+    "$projects"/*/"$id.jsonl" \
+    "$projects"/*/"$id" \
+    "$home/file-history/$id" \
+    "$home/session-env/$id" \
+    "$home/tasks/$id" \
+    "$home/tasks/session-$short_id" \
+    "$home/teams/session-$short_id"; do
+    if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+      return 0
+    fi
+  done
+  for config in "$home"/teams/*/config.json; do
+    if [ ! -e "$config" ] && [ ! -L "$config" ]; then
+      continue
+    fi
+    [ -f "$config" ] && [ ! -L "$config" ] || return 2
+    [ "$("$STATE_BIN" meta get "$config" leadSessionId 2>/dev/null || true)" = \
+      "$id" ] && return 0
+  done
+  return 1
+}
+
+claude_metadata_only_recovery_source_is_valid() {
+  local session="$1"
+  local meta="$2"
+  local id="$3"
+  local transcript
+  local source
+  local entry_status=0
+  local checkpoint_dir
+  local checkpoint_meta
+  local checkpoint_id
+  local checkpoint_transcript
+  local payload_present=0
+
+  [[ "$id" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
+    return 1
+  "$STATE_BIN" meta matches "$meta" claude "$id" >/dev/null 2>&1 || \
+    return 1
+  transcript="$(
+    "$STATE_BIN" meta get "$meta" transcript_path 2>/dev/null
+  )" || return 1
+  [ -z "$transcript" ] || return 1
+  claude_provider_entry_for_id_exists "$id" || entry_status=$?
+  [ "$entry_status" -eq 1 ] || return 1
+
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  if [ -e "$checkpoint_dir" ] || [ -L "$checkpoint_dir" ]; then
+    owned_plain_checkpoint_directory "$checkpoint_dir" || return 1
+  else
+    return 0
+  fi
+  # A metadata-only checkpoint represents the interval before Claude creates
+  # its first transcript. It cannot carry a partial provider bundle for the
+  # same UUID. A complete older generation may still be canonical while a
+  # ready primary generation awaits materialization into its own checkpoint.
+  for source in \
+    "$checkpoint_dir/claude-session.tar" \
+    "$checkpoint_dir/transcript.jsonl" \
+    "$checkpoint_dir/claude-session" \
+    "$checkpoint_dir/claude-file-history" \
+    "$checkpoint_dir/claude-session-env"; do
+    if [ -e "$source" ] || [ -L "$source" ]; then
+      payload_present=1
+      break
+    fi
+  done
+  [ "$payload_present" -eq 1 ] || return 0
+
+  checkpoint_meta="$checkpoint_dir/meta.json"
+  [ "$meta" != "$checkpoint_meta" ] || return 1
+  [ -f "$checkpoint_meta" ] && [ ! -L "$checkpoint_meta" ] && \
+    "$STATE_BIN" meta usable "$checkpoint_meta" "$session" \
+      >/dev/null 2>&1 || return 1
+  if "$STATE_BIN" meta matches "$checkpoint_meta" claude "$id" \
+       >/dev/null 2>&1; then
+    return 1
+  fi
+  checkpoint_id="$(
+    "$STATE_BIN" meta get "$checkpoint_meta" agent_session_id 2>/dev/null
+  )" || return 1
+  checkpoint_transcript="$(
+    "$STATE_BIN" meta get "$checkpoint_meta" transcript_path 2>/dev/null
+  )" || return 1
+  [ -n "$checkpoint_id" ] && [ -n "$checkpoint_transcript" ] || return 1
+  claude_recovery_payload_source_is_valid \
+    "$session" "$checkpoint_id" "$checkpoint_transcript"
+}
+
 codex_home() {
   printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"
 }
@@ -2228,9 +3286,16 @@ safe_codex_rollout_path() {
   local parent_real
   local relative
   local ancestor
+  local parent_relative
+  local remaining
+  local component
+  local current
 
   sessions="$(codex_home)/sessions"
-  [ -d "$sessions" ] && [ ! -L "$path" ] || return 1
+  [ -d "$sessions" ] && [ ! -L "$sessions" ] && [ ! -L "$path" ] || return 1
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    safe_owned_plain_file "$path" || return 1
+  fi
   case "$path" in
     "$sessions"/*) ;;
     *) return 1 ;;
@@ -2239,6 +3304,26 @@ safe_codex_rollout_path() {
   case "/$relative/" in
     */../*|*/./*) return 1 ;;
   esac
+  parent_relative="${relative%/*}"
+  [ "$parent_relative" != "$relative" ] || parent_relative=""
+  remaining="$parent_relative"
+  current="$sessions"
+  while [ -n "$remaining" ]; do
+    component="${remaining%%/*}"
+    if [ "$remaining" = "$component" ]; then
+      remaining=""
+    else
+      remaining="${remaining#*/}"
+    fi
+    case "$component" in ''|.|..) return 1 ;; esac
+    current="$current/$component"
+    [ ! -L "$current" ] || return 1
+    if [ -e "$current" ]; then
+      [ -d "$current" ] || return 1
+    else
+      break
+    fi
+  done
   sessions_real="$(cd -P "$sessions" >/dev/null 2>&1 && pwd)" || return 1
   ancestor="$(dirname "$path")"
   while [ ! -e "$ancestor" ]; do
@@ -2282,36 +3367,46 @@ snapshot_known_threads() {
   local db
   local cwd_sql
   local output
+  local tmp
 
   output="$(session_dir "$session")/known-thread-ids.txt"
+  session_file_is_safe_or_absent "$output" || return 1
   if [ "$PROVIDER" = "claude" ]; then
-    : >"$output"
-    return 0
+    replace_session_file_with_empty "$output"
+    return
   fi
   db="$(codex_state_db)"
   if [ -z "$db" ] || [ ! -f "$db" ]; then
-    : >"$output"
-    return 0
+    replace_session_file_with_empty "$output"
+    return
   fi
+  tmp="$output.tmp.$$"
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
   cwd_sql="$(sql_escape "$cwd")"
-  "$SQLITE_BIN" -noheader -cmd '.timeout 5000' "$db" \
+  if ! "$SQLITE_BIN" -noheader -cmd '.timeout 5000' "$db" \
     "SELECT id FROM threads
      WHERE source = 'cli'
        AND COALESCE(thread_source, 'user') = 'user'
        AND cwd = '$cwd_sql'
-     ORDER BY id;" >"$output"
+     ORDER BY id;" >"$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  safe_owned_plain_file "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  mv -f -- "$tmp" "$output"
 }
 
 write_resume_args() {
-  local session="$1"
+  local output="$1"
   shift
-  local output
   local tmp
   local arg
 
-  output="$(session_dir "$session")/resume-args.bin"
   tmp="$output.tmp.$$"
-  : >"$tmp"
+  : >"$tmp" || { rm -f "$tmp"; return 1; }
   if [ "$PROVIDER" = "claude" ]; then
     while [ "$#" -gt 0 ]; do
       arg="$1"
@@ -2324,10 +3419,10 @@ write_resume_args() {
           ;;
         --allowedTools|--allowed-tools|--betas|--disallowedTools|--disallowed-tools|\
         --file|--mcp-config|--tools|--add-dir)
-          printf '%s\0' "$arg" >>"$tmp"
+          printf '%s\0' "$arg" >>"$tmp" || { rm -f "$tmp"; return 1; }
           while [ "$#" -gt 0 ]; do
             case "$1" in -*) break ;; esac
-            printf '%s\0' "$1" >>"$tmp"
+            printf '%s\0' "$1" >>"$tmp" || { rm -f "$tmp"; return 1; }
             shift
           done
           ;;
@@ -2336,7 +3431,7 @@ write_resume_args() {
         --plugin-url|--remote-control-session-name-prefix|--setting-sources|\
         --settings|--system-prompt)
           [ "$#" -gt 0 ] || continue
-          printf '%s\0%s\0' "$arg" "$1" >>"$tmp"
+          printf '%s\0%s\0' "$arg" "$1" >>"$tmp" || { rm -f "$tmp"; return 1; }
           shift
           ;;
         --agent=*|--agents=*|--allowedTools=*|--allowed-tools=*|--betas=*|\
@@ -2346,17 +3441,17 @@ write_resume_args() {
         --plugin-dir=*|--plugin-url=*|--prompt-suggestions=*|--remote-control=*|\
         --remote-control-session-name-prefix=*|--setting-sources=*|--settings=*|\
         --system-prompt=*|--tools=*|--add-dir=*)
-          printf '%s\0' "$arg" >>"$tmp"
+          printf '%s\0' "$arg" >>"$tmp" || { rm -f "$tmp"; return 1; }
           ;;
         --allow-dangerously-skip-permissions|--dangerously-skip-permissions|\
         --bare|--brief|--chrome|--no-chrome|--disable-slash-commands|\
         --exclude-dynamic-system-prompt-sections|--ide|--safe-mode|\
         --strict-mcp-config|--verbose)
-          printf '%s\0' "$arg" >>"$tmp"
+          printf '%s\0' "$arg" >>"$tmp" || { rm -f "$tmp"; return 1; }
           ;;
       esac
     done
-    mv -f "$tmp" "$output"
+    mv -f "$tmp" "$output" || { rm -f "$tmp"; return 1; }
     return
   fi
   while [ "$#" -gt 0 ]; do
@@ -2367,21 +3462,84 @@ write_resume_args() {
       --add-dir|--enable|--disable|--local-provider|--remote|--remote-auth-token-env|\
       -i|--image)
         [ "$#" -gt 0 ] || continue
-        printf '%s\0%s\0' "$arg" "$1" >>"$tmp"
+        printf '%s\0%s\0' "$arg" "$1" >>"$tmp" || { rm -f "$tmp"; return 1; }
         shift
         ;;
       --config=*|--model=*|--profile=*|--sandbox=*|--ask-for-approval=*|\
       --add-dir=*|--enable=*|--disable=*|--local-provider=*|--remote=*|\
       --remote-auth-token-env=*|--image=*)
-        printf '%s\0' "$arg" >>"$tmp"
+        printf '%s\0' "$arg" >>"$tmp" || { rm -f "$tmp"; return 1; }
         ;;
       --search|--oss|--strict-config|--no-alt-screen|\
       --dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust)
-        printf '%s\0' "$arg" >>"$tmp"
+        printf '%s\0' "$arg" >>"$tmp" || { rm -f "$tmp"; return 1; }
         ;;
     esac
   done
-  mv -f "$tmp" "$output"
+  mv -f "$tmp" "$output" || { rm -f "$tmp"; return 1; }
+}
+
+valid_resume_args_file() {
+  local path="$1"
+  local final_byte
+
+  safe_owned_plain_file "$path" || return 1
+  [ ! -s "$path" ] && return 0
+  final_byte="$(
+    LC_ALL=C /usr/bin/tail -c 1 "$path" 2>/dev/null | \
+      /usr/bin/od -An -t u1 2>/dev/null | tr -d '[:space:]'
+  )"
+  [ "$final_byte" = "0" ]
+}
+
+saved_resume_args_path() {
+  local session="$1"
+  local meta="$2"
+  local name
+  local token
+  local expected_token
+  local path
+
+  name="$("$STATE_BIN" meta get "$meta" resume_args_file 2>/dev/null)" || return 1
+  if [ -n "$name" ]; then
+    case "$name" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+    case "$name" in resume-args-*.bin) ;; *) return 1 ;; esac
+    token="${name#resume-args-}"
+    token="${token%.bin}"
+    [ -n "$token" ] || return 1
+    expected_token="$("$STATE_BIN" meta get "$meta" run_token 2>/dev/null)" || return 1
+    [ -n "$expected_token" ] && [ "$token" = "$expected_token" ] || return 1
+    path="$(session_dir "$session")/$name"
+    valid_resume_args_file "$path" || return 1
+    printf '%s\n' "$path"
+    return 0
+  fi
+
+  path="$(session_dir "$session")/resume-args.bin"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    valid_resume_args_file "$path" || return 1
+    printf '%s\n' "$path"
+  fi
+}
+
+prune_superseded_resume_args() {
+  local session="$1"
+  local meta="$2"
+  local keep
+  local candidate
+
+  keep="$(saved_resume_args_path "$session" "$meta")" || return 1
+  [ -n "$keep" ] || return 0
+  [ "$keep" != "$(session_dir "$session")/resume-args.bin" ] || return 0
+  for candidate in \
+    "$(session_dir "$session")/resume-args.bin" \
+    "$(session_dir "$session")"/resume-args-*.bin; do
+    [ "$candidate" != "$keep" ] || continue
+    if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+      [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+      rm -f -- "$candidate" || return 1
+    fi
+  done
 }
 
 codex_thread_created_ms() {
@@ -2540,7 +3698,7 @@ valid_jsonl() {
   local path="$1"
   local expected_id="$2"
 
-  [ -s "$path" ] && \
+  [ -f "$path" ] && [ ! -L "$path" ] && [ -s "$path" ] && \
     "$STATE_BIN" jsonl validate codex "$path" "$expected_id" >/dev/null 2>&1
 }
 
@@ -2548,8 +3706,94 @@ valid_jsonl_cached() {
   local path="$1"
   local expected_id="$2"
 
-  [ -s "$path" ] && \
+  [ -f "$path" ] && [ ! -L "$path" ] && [ -s "$path" ] && \
     "$STATE_BIN" jsonl validate-cached codex "$path" "$expected_id" >/dev/null 2>&1
+}
+
+codex_rollout_destination_matches_id() {
+  local path="$1"
+  local expected_id="$2"
+  local db
+  local id_sql
+  local path_sql
+  local conflicting_id
+  local selected_path
+  local embedded_id
+  local db_present=0
+  local db_matches=0
+
+  safe_codex_rollout_path "$path" || return 1
+  [ -n "$expected_id" ] || return 1
+
+  # Prefer Codex's own thread index when it is available. A recovery for one
+  # thread must never overwrite a path already assigned to another thread,
+  # even when the destination JSONL is damaged and cannot identify itself.
+  db="$(codex_state_db)"
+  if [ -n "$db" ]; then
+    db_present=1
+    safe_owned_plain_file "$db" || return 1
+    id_sql="$(sql_escape "$expected_id")"
+    path_sql="$(sql_escape "$path")"
+    conflicting_id="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+      "SELECT id FROM threads
+         WHERE rollout_path = '$path_sql'
+           AND lower(id) <> lower('$id_sql')
+         LIMIT 1;" 2>/dev/null)" || return 1
+    [ -z "$conflicting_id" ] || return 1
+    selected_path="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+      "SELECT rollout_path FROM threads
+         WHERE lower(id) = lower('$id_sql')
+         LIMIT 1;" 2>/dev/null)" || return 1
+    if [ -n "$selected_path" ]; then
+      [ "$selected_path" = "$path" ] || return 1
+      db_matches=1
+    fi
+  fi
+
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    embedded_id="$($STATE_BIN jsonl first \
+      "$path" payload.id payload.session_id 2>/dev/null)" || embedded_id=""
+    if [ -n "$embedded_id" ]; then
+      [ "$(printf '%s' "$embedded_id" | tr '[:upper:]' '[:lower:]')" = \
+        "$(printf '%s' "$expected_id" | tr '[:upper:]' '[:lower:]')" ] || \
+        return 1
+      return 0
+    fi
+    [ "$db_matches" -eq 1 ] || return 1
+  elif [ "$db_present" -eq 1 ]; then
+    [ "$db_matches" -eq 1 ] || return 1
+  fi
+}
+
+publish_codex_rollout_checkpoint() {
+  local backup="$1"
+  local rollout="$2"
+  local id="$3"
+  local parent
+  local tmp
+
+  safe_owned_plain_file "$backup" || return 1
+  codex_rollout_destination_matches_id "$rollout" "$id" || return 1
+  parent="$(dirname "$rollout")"
+  mkdir -p "$parent" || return 1
+  codex_rollout_destination_matches_id "$rollout" "$id" || return 1
+  tmp="$(/usr/bin/mktemp "$parent/.detach-rollout.XXXXXX")" || return 1
+  safe_owned_plain_file "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  cp -p -- "$backup" "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  safe_owned_plain_file "$tmp" && valid_jsonl "$tmp" "$id" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  mv -f -- "$tmp" "$rollout" || {
+    rm -f -- "$tmp"
+    return 1
+  }
 }
 
 restore_matching_rollout_checkpoint() {
@@ -2557,12 +3801,14 @@ restore_matching_rollout_checkpoint() {
   local id="$2"
   local rollout="$3"
   local backup
-  local tmp
   local restore=0
 
-  safe_codex_rollout_path "$rollout" || return 1
+  codex_rollout_destination_matches_id "$rollout" "$id" || return 1
   backup="$(session_dir "$session")/checkpoint/rollout.jsonl"
-  [ -f "$backup" ] || return 0
+  if [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
+    return 0
+  fi
+  [ -f "$backup" ] && [ ! -L "$backup" ] || return 1
   valid_jsonl "$backup" "$id" || return 0
   if ! valid_jsonl "$rollout" "$id"; then
     restore=1
@@ -2571,14 +3817,7 @@ restore_matching_rollout_checkpoint() {
   fi
   [ "$restore" -eq 1 ] || return 0
 
-  mkdir -p "$(dirname "$rollout")"
-  tmp="$rollout.detach.tmp.$$"
-  cp -p "$backup" "$tmp" || return 1
-  valid_jsonl "$tmp" "$id" || {
-    rm -f "$tmp"
-    return 1
-  }
-  mv -f "$tmp" "$rollout" || return 1
+  publish_codex_rollout_checkpoint "$backup" "$rollout" "$id" || return 1
   [ "$SYNC_ENABLED" = "0" ] || /bin/sync
   error "restored Codex rollout from the matching checkpoint before resume"
 }
@@ -2640,6 +3879,7 @@ restore_missing_checkpoint_files() {
   local source
   local relative
   local target
+  local tmp
 
   RESTORE_MISSING_CHANGED=0
   [ -d "$backup" ] || return 0
@@ -2663,7 +3903,17 @@ restore_missing_checkpoint_files() {
       else
         mkdir -p "$(dirname "$target")" || return 1
         [ ! -L "$(dirname "$target")" ] || return 1
-        cp -p "$source" "$target" || return 1
+        tmp="$target.detach.tmp"
+        if [ -e "$tmp" ] || [ -L "$tmp" ]; then
+          safe_plain_file "$tmp" || return 1
+          rm -f "$tmp" || return 1
+        fi
+        cp -p "$source" "$tmp" || {
+          [ ! -L "$tmp" ] && rm -f "$tmp"
+          return 1
+        }
+        safe_plain_file "$tmp" || return 1
+        mv -f "$tmp" "$target" || return 1
         RESTORE_MISSING_CHANGED=1
       fi
     fi
@@ -2677,6 +3927,7 @@ restore_matching_claude_checkpoint() {
   local transcript="$3"
   local force_checkpoint="${4:-0}"
   local checkpoint_dir
+  local checkpoint_meta
   local backup
   local tmp
   local restore=0
@@ -2698,9 +3949,22 @@ restore_matching_claude_checkpoint() {
   if [ -n "$transcript" ] && valid_claude_transcript "$transcript" "$id"; then
     live_valid=1
   fi
+  checkpoint_meta="$checkpoint_dir/meta.json"
+  if [ -e "$checkpoint_meta" ] || [ -L "$checkpoint_meta" ]; then
+    [ -f "$checkpoint_meta" ] && [ ! -L "$checkpoint_meta" ] && \
+      "$STATE_BIN" meta usable "$checkpoint_meta" "$session" \
+        >/dev/null 2>&1 || return 1
+    if ! "$STATE_BIN" meta matches "$checkpoint_meta" "$PROVIDER" "$id" \
+         >/dev/null 2>&1; then
+      [ "$live_valid" -eq 1 ] || return 1
+      checkpoint_log "$session" \
+        "ignored stale Claude checkpoint for valid live session $id"
+      return 0
+    fi
+  fi
   archive="$checkpoint_dir/claude-session.tar"
   if [ -e "$archive" ] || [ -L "$archive" ]; then
-    safe_plain_file "$archive" || return 1
+    valid_claude_checkpoint_archive "$archive" "$id" || return 1
     stage="$checkpoint_dir/claude-restore.$$"
     rm -rf "$stage"
     mkdir -p "$stage" || return 1
@@ -2723,13 +3987,10 @@ restore_matching_claude_checkpoint() {
       }
     "$TAR_BIN" -xf "$archive" -C "$stage" >/dev/null 2>&1 || {
       rm -rf "$stage"
-      if [ "$live_valid" -eq 1 ]; then
-        checkpoint_log "$session" "ignored unreadable Claude checkpoint for valid live session $id"
-        return 0
-      fi
       return 1
     }
-    if ! safe_plain_directory_tree "$stage"; then
+    if ! safe_plain_directory_tree "$stage" || \
+       ! claude_archive_identity_is_valid "$stage" "$id"; then
       rm -rf "$stage"
       return 1
     fi
@@ -2748,10 +4009,6 @@ restore_matching_claude_checkpoint() {
   }
   valid_claude_transcript "$backup" "$id" || {
     [ -z "$stage" ] || rm -rf "$stage"
-    if [ "$live_valid" -eq 1 ]; then
-      checkpoint_log "$session" "ignored stale or mismatched Claude checkpoint for valid live session $id"
-      return 0
-    fi
     return 1
   }
   [ -n "$transcript" ] || {
@@ -2806,7 +4063,13 @@ restore_matching_claude_checkpoint() {
       "claude-file-history|$home/file-history/$id" \
       "claude-session-env|$home/session-env/$id"; do
       source="$checkpoint_dir/${item%%|*}"
-      [ -d "$source" ] || continue
+      if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+        continue
+      fi
+      [ -d "$source" ] && [ ! -L "$source" ] || {
+        [ -z "$stage" ] || rm -rf "$stage"
+        return 1
+      }
       restore_sources+=( "$source" )
       restore_destinations+=( "${item#*|}" )
     done
@@ -2818,6 +4081,15 @@ restore_matching_claude_checkpoint() {
         [ -z "$stage" ] || rm -rf "$stage"
         return 1
       }
+    case "${restore_sources[$index]}" in
+      "$stage"/teams/*)
+        claude_team_destination_matches_id \
+          "${restore_destinations[$index]}" "$id" || {
+            [ -z "$stage" ] || rm -rf "$stage"
+            return 1
+          }
+        ;;
+    esac
   done
 
   if ! valid_claude_transcript "$transcript" "$id"; then
@@ -2908,7 +4180,12 @@ restore_matching_claude_checkpoint() {
     for source in "$stage"/teams/*; do
       [ -d "$source" ] || continue
       destination="$home/teams/$(basename "$source")"
-      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
+      claude_team_destination_matches_id "$destination" "$id" || {
+        rm -rf "$stage"
+        return 1
+      }
+      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || \
+         [ -L "$destination" ] || [ ! -f "$destination/config.json" ]; then
         restore_directory_checkpoint "$source" "$destination" "$home" || {
           rm -rf "$stage"
           return 1
@@ -2929,7 +4206,10 @@ restore_matching_claude_checkpoint() {
       "claude-session-env|$home/session-env/$id"; do
       source="$checkpoint_dir/${item%%|*}"
       destination="${item#*|}"
-      [ -d "$source" ] || continue
+      if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+        continue
+      fi
+      [ -d "$source" ] && [ ! -L "$source" ] || return 1
       if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
         restore_directory_checkpoint "$source" "$destination" "$home" || return 1
         changed=1
@@ -2946,22 +4226,101 @@ restore_matching_claude_checkpoint() {
   fi
 }
 
+resume_runtime_is_quiescent_locked() {
+  local session="$1"
+
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || return 1
+    tmux_session_running "$session" && return 1
+    require_dead_tmux_primary_run_match "$session" || return 1
+  fi
+  refuse_runtime_without_managed_tmux "$session"
+}
+
+prepare_codex_resume_locked() {
+  local session="$1"
+  local id="$2"
+  local rollout="$3"
+
+  resume_runtime_is_quiescent_locked "$session" || return 1
+  restore_matching_rollout_checkpoint "$session" "$id" "$rollout" || return 1
+  valid_jsonl "$rollout" "$id"
+}
+
+prepare_claude_resume_locked() {
+  local session="$1"
+  local id="$2"
+  local transcript="$3"
+  local mode="$4"
+  local meta
+  local saved_id
+  local saved_transcript
+
+  resume_runtime_is_quiescent_locked "$session" || return 1
+  case "$mode" in
+    transcript)
+      restore_matching_claude_checkpoint "$session" "$id" "$transcript" || \
+        return 1
+      valid_claude_transcript "$transcript" "$id"
+      ;;
+    metadata-only)
+      meta="$(usable_meta_path "$session" 2>/dev/null)" || return 1
+      saved_id="$(
+        "$STATE_BIN" meta get "$meta" agent_session_id 2>/dev/null
+      )" || return 1
+      [ "$(printf '%s' "$saved_id" | tr '[:upper:]' '[:lower:]')" = "$id" ] || \
+        return 1
+      saved_transcript="$(
+        "$STATE_BIN" meta get "$meta" transcript_path 2>/dev/null
+      )" || return 1
+      [ -z "$saved_transcript" ] || return 1
+      claude_metadata_only_recovery_source_is_valid \
+        "$session" "$meta" "$id"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 checkpoint_log() {
   local session="$1"
   shift
-  printf '%s %s\n' "$(now_iso)" "$*" >>"$(session_dir "$session")/checkpoint.log"
+  local path="$(session_dir "$session")/checkpoint.log"
+  local parent
+  local tmp
+
+  session_file_is_safe_or_absent "$path" || return 1
+  parent="$(dirname "$path")"
+  tmp="$(/usr/bin/mktemp "$parent/.detach-checkpoint-log.XXXXXX")" || return 1
+  if [ -e "$path" ]; then
+    cp -p -- "$path" "$tmp" || {
+      rm -f -- "$tmp"
+      return 1
+    }
+  else
+    : >"$tmp" || return 1
+  fi
+  printf '%s %s\n' "$(now_iso)" "$*" >>"$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  safe_owned_plain_file "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  mv -f -- "$tmp" "$path"
 }
 
 checkpoint_rollout() {
   local session="$1"
   local rollout="$2"
   local expected_id="$3"
-  local checkpoint_dir
+  local checkpoint_dir="${4:-}"
   local tmp
   local attempt
 
   [ -f "$rollout" ] && safe_codex_rollout_path "$rollout" || return 1
-  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -n "$checkpoint_dir" ] || checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -d "$checkpoint_dir" ] && [ ! -L "$checkpoint_dir" ] || return 1
   tmp="$checkpoint_dir/rollout.jsonl.tmp.$$"
 
   for attempt in 1 2 3; do
@@ -2982,7 +4341,10 @@ copy_checkpoint_directory() {
   local source="$1"
   local destination="$2"
 
-  [ -d "$source" ] || return 0
+  if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+    return 0
+  fi
+  [ -d "$source" ] && [ ! -L "$source" ] || return 1
   # Claude can hard-link tool results into a session companion directory.
   # The private staging copy must contain independent regular files so the
   # checkpoint archive and every later restore keep rejecting hard links.
@@ -2996,7 +4358,7 @@ checkpoint_claude_artifacts() {
   local session="$1"
   local transcript="$2"
   local id="$3"
-  local checkpoint_dir
+  local checkpoint_dir="${4:-}"
   local tmp
   local home
   local stage
@@ -3007,7 +4369,8 @@ checkpoint_claude_artifacts() {
   local short_id
 
   [ -f "$transcript" ] && safe_claude_transcript_path "$transcript" "$id" || return 1
-  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -n "$checkpoint_dir" ] || checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -d "$checkpoint_dir" ] && [ ! -L "$checkpoint_dir" ] || return 1
   stage="$checkpoint_dir/claude-stage.$$"
   archive_tmp="$checkpoint_dir/claude-session.tar.tmp.$$"
   rm -rf "$stage"
@@ -3045,7 +4408,9 @@ checkpoint_claude_artifacts() {
     return 1
   }
   for task in "$home/tasks/$id" "$home/tasks/session-$short_id"; do
-    [ -d "$task" ] || continue
+    if [ ! -e "$task" ] && [ ! -L "$task" ]; then
+      continue
+    fi
     copy_checkpoint_directory "$task" "$stage/tasks/$(basename "$task")" || {
       rm -rf "$stage"
       checkpoint_log "$session" "Claude checkpoint skipped because task artifacts could not be copied safely"
@@ -3053,7 +4418,15 @@ checkpoint_claude_artifacts() {
     }
   done
   for config in "$home"/teams/*/config.json; do
-    [ -f "$config" ] || continue
+    if [ ! -e "$config" ] && [ ! -L "$config" ]; then
+      continue
+    fi
+    if [ ! -f "$config" ] || [ -L "$config" ]; then
+      rm -rf "$stage"
+      checkpoint_log "$session" \
+        "Claude checkpoint skipped because a team config is unsafe"
+      return 1
+    fi
     [ "$("$STATE_BIN" meta get "$config" leadSessionId 2>/dev/null || true)" = "$id" ] || continue
     team="$(dirname "$config")"
     copy_checkpoint_directory "$team" "$stage/teams/$(basename "$team")" || {
@@ -3074,11 +4447,15 @@ checkpoint_claude_artifacts() {
     rm -f "$archive_tmp"
     return 1
   }
-  "$TAR_BIN" -tf "$archive_tmp" >/dev/null 2>&1 || {
+  if ! valid_claude_checkpoint_archive "$archive_tmp" "$id" || \
+     ! preflight_claude_archive_restore \
+         "$archive_tmp" "$id" "$transcript" "$home" 0; then
     rm -rf "$stage"
     rm -f "$archive_tmp"
+    checkpoint_log "$session" \
+      "Claude checkpoint skipped because the archive is not safely recoverable"
     return 1
-  }
+  fi
   mv -f "$archive_tmp" "$checkpoint_dir/claude-session.tar" || {
     rm -rf "$stage"
     return 1
@@ -3099,8 +4476,8 @@ checkpoint_claude_artifacts() {
 
 checkpoint_database() {
   local session="$1"
+  local checkpoint_dir="${2:-}"
   local db
-  local checkpoint_dir
   local tmp
   local tmp_shm
   local tmp_wal
@@ -3109,7 +4486,8 @@ checkpoint_database() {
   [ "$PROVIDER" = "codex" ] || return 0
   db="$(codex_state_db)"
   [ -n "$db" ] && [ -f "$db" ] || return 1
-  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -n "$checkpoint_dir" ] || checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -d "$checkpoint_dir" ] && [ ! -L "$checkpoint_dir" ] || return 1
   for stale_sidecar in \
     "$checkpoint_dir"/codex-state.sqlite.tmp.*-shm \
     "$checkpoint_dir"/codex-state.sqlite.tmp.*-wal; do
@@ -3143,43 +4521,53 @@ checkpoint_database() {
 
 checkpoint_pane() {
   local session="$1"
-  local checkpoint_dir
+  local checkpoint_dir="${2:-}"
   local tmp
   local pane
 
   tmux_has_session "$session" || return 1
+  [ -n "$checkpoint_dir" ] || checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -d "$checkpoint_dir" ] && [ ! -L "$checkpoint_dir" ] || return 1
   pane="$(tmux_pane_id "$session" 2>/dev/null || true)"
   [ -n "$pane" ] || {
     checkpoint_log "$session" "pane snapshot failed: pane id is unavailable (socket=$TMUX_SOCKET_PATH)"
-    "${TMUX_CMD[@]}" list-sessions -F 'tmux session: #{session_name}' >>"$(session_dir "$session")/checkpoint.log" 2>&1 || true
     return 1
   }
-  checkpoint_dir="$(session_dir "$session")/checkpoint"
-  tmp="$checkpoint_dir/pane.txt.tmp.$$"
-  "${TMUX_CMD[@]}" capture-pane -p -J -S "-$HISTORY_LIMIT" -t "$pane" >"$tmp" 2>>"$(session_dir "$session")/checkpoint.log" || {
+  tmp="$(/usr/bin/mktemp "$checkpoint_dir/.pane.XXXXXX")" || return 1
+  "${TMUX_CMD[@]}" capture-pane -p -J -S "-$HISTORY_LIMIT" -t "$pane" \
+    >"$tmp" 2>/dev/null || {
     checkpoint_log "$session" "pane snapshot failed for $pane"
-    rm -f "$tmp"
+    rm -f -- "$tmp"
     return 1
   }
-  mv -f "$tmp" "$checkpoint_dir/pane.txt"
+  safe_owned_plain_file "$tmp" && \
+    mv -f -- "$tmp" "$checkpoint_dir/pane.txt" || {
+      rm -f -- "$tmp"
+      return 1
+    }
 
-  tmp="$checkpoint_dir/pane-ansi.txt.tmp.$$"
+  tmp="$(/usr/bin/mktemp "$checkpoint_dir/.pane-ansi.XXXXXX")" || return 1
   if "${TMUX_CMD[@]}" capture-pane -p -e -J -S "-$HISTORY_LIMIT" -t "$pane" >"$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$checkpoint_dir/pane-ansi.txt"
+    safe_owned_plain_file "$tmp" && \
+      mv -f -- "$tmp" "$checkpoint_dir/pane-ansi.txt" || {
+        rm -f -- "$tmp"
+        return 1
+      }
   else
-    rm -f "$tmp"
+    rm -f -- "$tmp"
   fi
 }
 
 checkpoint_worktree() {
   local session="$1"
   local cwd="$2"
-  local checkpoint_dir
+  local checkpoint_dir="${3:-}"
   local tmp
   local repository_root
   local marker_type="absent"
 
-  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -n "$checkpoint_dir" ] || checkpoint_dir="$(session_dir "$session")/checkpoint"
+  [ -d "$checkpoint_dir" ] && [ ! -L "$checkpoint_dir" ] || return 1
   tmp="$checkpoint_dir/worktree-status.txt.tmp.$$"
   repository_root="$(canonical_project_dir_for "$cwd")" || repository_root="$cwd"
   [ ! -d "$repository_root/.git" ] || marker_type="directory"
@@ -3187,6 +4575,227 @@ checkpoint_worktree() {
   printf 'repository-root: %s\nrepository-marker: %s\n' \
     "$repository_root" "$marker_type" >"$tmp"
   mv -f "$tmp" "$checkpoint_dir/worktree-status.txt"
+}
+
+checkpoint_test_barrier() {
+  local ready_file="${1:-}"
+  local release_file="${2:-}"
+  local pid_file="${DETACH_TEST_CHECKPOINT_BARRIER_PID_FILE:-}"
+  local attempts=0
+
+  [ -z "$ready_file" ] && [ -z "$release_file" ] && return 0
+  [ -n "$ready_file" ] && [ -n "$release_file" ] || return 1
+  [ ! -e "$ready_file" ] && [ ! -L "$ready_file" ] || return 1
+  if [ -n "$pid_file" ]; then
+    [ ! -e "$pid_file" ] && [ ! -L "$pid_file" ] || return 1
+    printf '%s\n' "${BASHPID:-$$}" >"$pid_file" || return 1
+  fi
+  printf 'ready\n' >"$ready_file" || return 1
+  while [ "$attempts" -lt 300 ]; do
+    [ -f "$release_file" ] && [ ! -L "$release_file" ] && return 0
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+  return 1
+}
+
+checkpoint_stage_name_is_safe() {
+  local name="$1"
+
+  [ "${#name}" -le 255 ] && \
+    [[ "$name" =~ ^\.checkpoint-stage-[A-Za-z0-9._-]+$ ]]
+}
+
+owned_plain_checkpoint_directory() {
+  local path="$1"
+  local foreign
+
+  [ -d "$path" ] && [ ! -L "$path" ] && \
+    [ "$(stat -f '%u' "$path" 2>/dev/null)" = "$UID" ] || return 1
+  safe_plain_source_tree "$path" || return 1
+  foreign="$(find "$path" -mindepth 1 ! -user "$UID" -print -quit 2>/dev/null)" || \
+    return 1
+  [ -z "$foreign" ]
+}
+
+ensure_owned_checkpoint_directory() {
+  local session_path="$1"
+  local checkpoint_path="$session_path/checkpoint"
+
+  if [ ! -e "$session_path" ] && [ ! -L "$session_path" ]; then
+    mkdir -m 0700 -- "$session_path" || return 1
+  fi
+  [ -d "$session_path" ] && [ ! -L "$session_path" ] && \
+    [ "$(stat -f '%u' "$session_path" 2>/dev/null)" = "$UID" ] || return 1
+  if [ ! -e "$checkpoint_path" ] && [ ! -L "$checkpoint_path" ]; then
+    mkdir -m 0700 -- "$checkpoint_path" || return 1
+  fi
+  owned_plain_checkpoint_directory "$checkpoint_path"
+}
+
+remove_checkpoint_stage() {
+  local session_path="$1"
+  local stage="$2"
+  local stage_name="${stage##*/}"
+
+  [ "$stage" = "$session_path/$stage_name" ] && \
+    checkpoint_stage_name_is_safe "$stage_name" || return 1
+  if [ -e "$stage" ] || [ -L "$stage" ]; then
+    owned_plain_checkpoint_directory "$stage" || return 1
+    rm -rf -- "$stage"
+  fi
+}
+
+checkpoint_reset_stage_name() {
+  local checkpoint_dir="$1"
+  local marker_name=.detach-checkpoint-reset
+  local marker="$checkpoint_dir/$marker_name"
+  local recorded_stage
+  local marker_size
+  local extra_entry
+
+  owned_plain_checkpoint_directory "$checkpoint_dir" || return 1
+  safe_owned_plain_file "$marker" || return 1
+  IFS= read -r recorded_stage <"$marker" || return 1
+  marker_size="$(stat -f '%z' "$marker" 2>/dev/null)" || return 1
+  [ "$marker_size" = "$(( ${#recorded_stage} + 1 ))" ] || return 1
+  checkpoint_stage_name_is_safe "$recorded_stage" || return 1
+  case "$recorded_stage" in .checkpoint-stage-reset-*) ;; *) return 1 ;; esac
+  extra_entry="$(find "$checkpoint_dir" -mindepth 1 -maxdepth 1 \
+    ! -name "$marker_name" -print -quit 2>/dev/null)" || return 1
+  [ -z "$extra_entry" ] || return 1
+  printf '%s\n' "$recorded_stage"
+}
+
+remove_checkpoint_reset_marker() {
+  local checkpoint_dir="$1"
+  local expected_stage="$2"
+  local recorded_stage
+  local marker="$checkpoint_dir/.detach-checkpoint-reset"
+
+  recorded_stage="$(checkpoint_reset_stage_name "$checkpoint_dir")" || return 1
+  [ "$recorded_stage" = "$expected_stage" ] || return 1
+  rm -f -- "$marker"
+}
+
+scavenge_checkpoint_stages() {
+  local session="$1"
+  local session_path="$2"
+  local stale_stage
+  local found=0
+  local canonical_mode=""
+  local reset_stage=""
+
+  for stale_stage in "$session_path"/.checkpoint-stage-*; do
+    [ -e "$stale_stage" ] || [ -L "$stale_stage" ] || continue
+    if [ "$found" -eq 0 ]; then
+      if strict_checkpoint_recovery_generation_is_valid \
+           "$session" "$session_path/checkpoint/meta.json"; then
+        canonical_mode=recovery
+      elif reset_stage="$(
+        checkpoint_reset_stage_name "$session_path/checkpoint"
+      )"; then
+        canonical_mode=reset
+      else
+        checkpoint_log "$session" \
+          "stale checkpoint stage retained because canonical recovery is invalid"
+        return 1
+      fi
+      found=1
+    fi
+    owned_plain_checkpoint_directory "$stale_stage" || {
+      checkpoint_log "$session" \
+        "unsafe stale checkpoint stage requires manual inspection: ${stale_stage##*/}"
+      return 1
+    }
+    if [ "$canonical_mode" = reset ]; then
+      [ "${stale_stage##*/}" = "$reset_stage" ] || {
+        checkpoint_log "$session" \
+          "unrelated checkpoint stage retained beside a reset generation"
+        return 1
+      }
+    fi
+  done
+  if [ "$found" -eq 1 ] && [ "$SYNC_ENABLED" != "0" ]; then
+    /bin/sync || return 1
+  fi
+  for stale_stage in "$session_path"/.checkpoint-stage-*; do
+    [ -e "$stale_stage" ] || [ -L "$stale_stage" ] || continue
+    if ! remove_checkpoint_stage "$session_path" "$stale_stage"; then
+      checkpoint_log "$session" \
+        "unsafe stale checkpoint stage requires manual inspection: ${stale_stage##*/}"
+      return 1
+    fi
+  done
+  if [ "$found" -eq 1 ] && [ "$SYNC_ENABLED" != "0" ]; then
+    /bin/sync || return 1
+  fi
+  if [ "$canonical_mode" = reset ]; then
+    remove_checkpoint_reset_marker \
+      "$session_path/checkpoint" "$reset_stage" || return 1
+    [ "$SYNC_ENABLED" = "0" ] || /bin/sync || return 1
+  fi
+}
+
+safe_owned_plain_file() {
+  local path="$1"
+
+  safe_plain_file "$path" && \
+    [ "$(stat -f '%u' "$path" 2>/dev/null)" = "$UID" ]
+}
+
+copy_checkpoint_optional_file() {
+  local source="$1"
+  local destination="$2"
+
+  if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+    return 0
+  fi
+  safe_owned_plain_file "$source" || return 1
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || return 1
+  cp -p "$source" "$destination" || return 1
+  safe_owned_plain_file "$destination" && cmp -s "$source" "$destination"
+}
+
+seed_checkpoint_optional_artifacts() {
+  local checkpoint_dir="$1"
+  local stage="$2"
+  local name
+  local database
+  local sidecar
+
+  if [ ! -e "$checkpoint_dir" ] && [ ! -L "$checkpoint_dir" ]; then
+    return 0
+  fi
+  owned_plain_checkpoint_directory "$checkpoint_dir" || return 1
+  for name in pane.txt pane-ansi.txt worktree-status.txt; do
+    copy_checkpoint_optional_file \
+      "$checkpoint_dir/$name" "$stage/$name" || return 1
+  done
+  [ "$PROVIDER" = "codex" ] || return 0
+
+  database="$stage/codex-state.sqlite"
+  copy_checkpoint_optional_file \
+    "$checkpoint_dir/codex-state.sqlite" "$database" || return 1
+  [ -e "$database" ] || return 0
+  [ -n "$SQLITE_BIN" ] && \
+    [ "$("$SQLITE_BIN" "$database" 'PRAGMA quick_check;' 2>/dev/null)" = "ok" ] || \
+      return 1
+  for sidecar in "$database-shm" "$database-wal"; do
+    if [ -e "$sidecar" ] || [ -L "$sidecar" ]; then
+      safe_owned_plain_file "$sidecar" || return 1
+      rm -f -- "$sidecar" || return 1
+    fi
+  done
+}
+
+checkpoint_stage_cleanup_on_exit() {
+  [ "${stage_cleanup_armed:-0}" = "1" ] || return 0
+  stage_cleanup_armed=0
+  remove_checkpoint_stage "$session_path" "$stage" || {
+    checkpoint_log "$session" "checkpoint stage cleanup deferred: ${stage##*/}" \
+      2>/dev/null || true
+  }
 }
 
 checkpoint_lock_path() {
@@ -3221,6 +4830,38 @@ session_operation_locked() {
   esac
 }
 
+runtime_writer_matches_live_worker() {
+  local session="$1"
+  local run_token="$2"
+  local worker_pid="$3"
+  local meta
+  local recorded_worker_pid
+  local pane
+  local pane_pid
+
+  case "$worker_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$worker_pid" -gt 1 ] 2>/dev/null || return 1
+  meta="$(session_meta "$session")"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  "$STATE_BIN" meta usable "$meta" "$session" >/dev/null 2>&1 || return 1
+  [ "$("$STATE_BIN" meta get "$meta" run_token 2>/dev/null || true)" = "$run_token" ] || \
+    return 1
+  recorded_worker_pid="$(
+    "$STATE_BIN" meta get "$meta" worker_pid 2>/dev/null || true
+  )"
+  [ "$recorded_worker_pid" = "$worker_pid" ] || return 1
+  tmux_has_session "$session" && tmux_is_managed "$session" || return 1
+  [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ] || return 1
+  [ "$(tmux_pane_dead "$session")" = "0" ] || return 1
+  pane="$(tmux_pane_id "$session" 2>/dev/null || true)"
+  [ -n "$pane" ] || return 1
+  pane_pid="$(
+    "${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' \
+      2>/dev/null || true
+  )"
+  [ "$pane_pid" = "$worker_pid" ] && process_is_owned_alive "$worker_pid"
+}
+
 checkpoint_once() {
   local session="$1"
 
@@ -3229,63 +4870,267 @@ checkpoint_once() {
     "$SELF" __checkpoint_once_locked "$@"
 }
 
-checkpoint_once_locked() {
+checkpoint_stop_edge_locked() {
+  local session="$1"
+  local run_token="$2"
+  local worker_pid="$3"
+
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
+  checkpoint_run_may_publish "$session" "$run_token" || return 1
+  checkpoint_pane "$session"
+}
+
+checkpoint_publish_sync() {
+  [ "${DETACH_TEST_CHECKPOINT_SYNC_FAIL:-0}" != "1" ] || return 1
+  /bin/sync
+}
+
+checkpoint_rollback_sync() {
+  [ "${DETACH_TEST_CHECKPOINT_ROLLBACK_SYNC_FAIL:-0}" != "1" ] || return 1
+  /bin/sync
+}
+
+restore_checkpoint_after_failed_publish_sync() {
+  local session_path="$1"
+  local stage_name="$2"
+
+  "$STATE_BIN" checkpoint exchange "$session_path" "$stage_name" || \
+    return 2
+  checkpoint_rollback_sync || return 1
+}
+
+checkpoint_once_locked() (
   local session="$1"
   local run_token="${2:-}"
+  local worker_pid="${3:-}"
+  local session_path
   local meta
   local cwd
   local id
   local rollout
   local checkpoint_dir
+  local stage_name
+  local stage
+  local stage_meta
+  local staged_id
+  local staged_rollout
   local checkpoint_time
   local checkpoint_epoch
-  local tmp
   local publish=0
+  local stage_cleanup_armed=0
+  local rollback_status=0
 
+  [ -n "$run_token" ] && [ -n "$worker_pid" ] || return 1
   meta="$(session_meta "$session")"
-  [ -f "$meta" ] || return 1
-  if [ -n "$run_token" ] && [ "$("$STATE_BIN" meta get "$meta" run_token)" != "$run_token" ]; then
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
     return 1
-  fi
-  mkdir -p "$(session_dir "$session")/checkpoint"
+  checkpoint_run_may_publish "$session" "$run_token" || return 1
+
+  session_path="$(session_dir "$session")"
+  [ -d "$session_path" ] && [ ! -L "$session_path" ] && \
+    [ "$(stat -f '%u' "$session_path" 2>/dev/null)" = "$UID" ] || return 1
+  checkpoint_dir="$session_path/checkpoint"
+  scavenge_checkpoint_stages "$session" "$session_path" || return 1
+  stage_name=".checkpoint-stage-$run_token-$$"
+  stage="$session_path/$stage_name"
+  [ ! -e "$stage" ] && [ ! -L "$stage" ] || return 1
+  mkdir -m 0700 "$stage" || return 1
+  stage_cleanup_armed=1
+  trap checkpoint_stage_cleanup_on_exit EXIT
+  trap 'exit 1' HUP INT TERM
+  seed_checkpoint_optional_artifacts "$checkpoint_dir" "$stage" || return 1
 
   discover_codex_session "$session" "$run_token" >/dev/null 2>&1 || true
-  cwd="$("$STATE_BIN" meta get "$meta" project_dir)"
-  id="$("$STATE_BIN" meta get "$meta" agent_session_id codex_session_id)"
-  rollout="$("$STATE_BIN" meta get "$meta" transcript_path rollout_path)"
+  cwd="$("$STATE_BIN" meta get "$meta" project_dir 2>/dev/null)" || {
+    return 1
+  }
+  id="$(
+    "$STATE_BIN" meta get "$meta" agent_session_id codex_session_id 2>/dev/null
+  )" || {
+    return 1
+  }
+  rollout="$(
+    "$STATE_BIN" meta get "$meta" transcript_path rollout_path 2>/dev/null
+  )" || {
+    return 1
+  }
 
   if [ -n "$id" ] && [ -n "$rollout" ]; then
     if [ "$PROVIDER" = "claude" ]; then
-      checkpoint_claude_artifacts "$session" "$rollout" "$id" && publish=1
-    elif checkpoint_rollout "$session" "$rollout" "$id"; then
+      checkpoint_claude_artifacts "$session" "$rollout" "$id" "$stage" && \
+        publish=1
+    elif checkpoint_rollout "$session" "$rollout" "$id" "$stage"; then
       publish=1
     fi
   fi
-  checkpoint_database "$session" || true
-  checkpoint_pane "$session" || true
-  checkpoint_worktree "$session" "$cwd"
+  [ "$publish" -eq 1 ] || {
+    return 1
+  }
+  checkpoint_database "$session" "$stage" || true
+  checkpoint_pane "$session" "$stage" || true
+  checkpoint_worktree "$session" "$cwd" "$stage" || true
 
-  if [ "$publish" -eq 1 ]; then
-    checkpoint_time="$(now_iso)"
-    checkpoint_epoch="$(date '+%s')"
-    if [ -n "$run_token" ]; then
-      state_update_meta_for_run "$session" "$run_token" \
-        --string last_checkpoint_at "$checkpoint_time" \
-        --integer last_checkpoint_epoch "$checkpoint_epoch" || true
-    else
-      state_update_meta "$session" \
-        --string last_checkpoint_at "$checkpoint_time" \
-        --integer last_checkpoint_epoch "$checkpoint_epoch" || true
-    fi
-    checkpoint_dir="$(session_dir "$session")/checkpoint"
-    tmp="$checkpoint_dir/meta.json.tmp.$$"
-    cp -p "$meta" "$tmp" && mv -f "$tmp" "$checkpoint_dir/meta.json"
-    rm -f "$tmp"
+  checkpoint_time="$(now_iso)"
+  checkpoint_epoch="$(date '+%s')"
+  stage_meta="$stage/meta.json"
+  cp -p "$meta" "$stage_meta" || {
+    return 1
+  }
+  "$STATE_BIN" meta patch "$stage_meta" --run-token "$run_token" \
+    --string last_checkpoint_at "$checkpoint_time" \
+    --integer last_checkpoint_epoch "$checkpoint_epoch" || {
+      return 1
+    }
+  if [ -e "$stage/.meta-patch.lock" ] || [ -L "$stage/.meta-patch.lock" ]; then
+    [ -f "$stage/.meta-patch.lock" ] && [ ! -L "$stage/.meta-patch.lock" ] && \
+      rm -f -- "$stage/.meta-patch.lock" || {
+        return 1
+      }
+  fi
+  "$STATE_BIN" meta snapshot "$stage_meta" "$session" >/dev/null 2>&1 || {
+    return 1
+  }
+  staged_id="$(
+    "$STATE_BIN" meta get "$stage_meta" agent_session_id codex_session_id \
+      2>/dev/null
+  )" || {
+    return 1
+  }
+  staged_rollout="$(
+    "$STATE_BIN" meta get "$stage_meta" transcript_path rollout_path \
+      2>/dev/null
+  )" || {
+    return 1
+  }
+  [ "$staged_id" = "$id" ] && [ "$staged_rollout" = "$rollout" ] || {
+    return 1
+  }
+  "$STATE_BIN" meta matches "$stage_meta" "$PROVIDER" "$id" \
+    >/dev/null 2>&1 || {
+      return 1
+    }
+  if [ "$PROVIDER" = "claude" ]; then
+    valid_claude_checkpoint_archive "$stage/claude-session.tar" "$id" || {
+      return 1
+    }
+  else
+    valid_jsonl_cached "$stage/rollout.jsonl" "$id" || {
+      return 1
+    }
   fi
 
+  checkpoint_test_barrier \
+    "${DETACH_TEST_CHECKPOINT_PREPUBLISH_READY:-}" \
+    "${DETACH_TEST_CHECKPOINT_PREPUBLISH_RELEASE:-}" || {
+      return 1
+    }
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || {
+    return 1
+  }
+  checkpoint_run_may_publish "$session" "$run_token" || {
+    return 1
+  }
+  metadata_snapshots_have_same_recovery_binding \
+    "$session" "$stage_meta" "$meta" || {
+      return 1
+    }
+  saved_resume_args_path "$session" "$stage_meta" >/dev/null || {
+    return 1
+  }
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || {
+    return 1
+  }
+  checkpoint_test_barrier \
+    "${DETACH_TEST_CHECKPOINT_PREEXCHANGE_READY:-}" \
+    "${DETACH_TEST_CHECKPOINT_PREEXCHANGE_RELEASE:-}" || {
+      return 1
+    }
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || {
+    return 1
+  }
+
+  # Exchange transfers the old canonical generation to $stage. Disarm the
+  # pre-exchange cleanup before the atomic operation so a signal can never
+  # delete a generation whose durability is still uncertain.
+  stage_cleanup_armed=0
+  "$STATE_BIN" checkpoint exchange "$session_path" "$stage_name" || {
+    return 1
+  }
+  checkpoint_test_barrier \
+    "${DETACH_TEST_CHECKPOINT_POSTEXCHANGE_READY:-}" \
+    "${DETACH_TEST_CHECKPOINT_POSTEXCHANGE_RELEASE:-}" || {
+      return 1
+    }
+  if [ "$SYNC_ENABLED" != "0" ]; then
+    if ! checkpoint_publish_sync; then
+      restore_checkpoint_after_failed_publish_sync \
+        "$session_path" "$stage_name" || rollback_status=$?
+      if [ "$rollback_status" -eq 0 ]; then
+        # The rollback sync made canonical A durable. Removing alternate B is
+        # now optional cleanup and cannot destroy the last durable recovery.
+        remove_checkpoint_stage "$session_path" "$stage" && \
+          /bin/sync 2>/dev/null || true
+      else
+        # Keep both directory entries when either the swap-back or its sync
+        # is uncertain. A later operator or validated scavenger can choose a
+        # generation without guessing what reached durable storage.
+        :
+      fi
+      checkpoint_test_barrier \
+        "${DETACH_TEST_CHECKPOINT_ROLLBACK_READY:-}" \
+        "${DETACH_TEST_CHECKPOINT_ROLLBACK_RELEASE:-}" || true
+      return 1
+    fi
+  fi
+  state_update_meta_for_run "$session" "$run_token" \
+    --string last_checkpoint_at "$checkpoint_time" \
+    --integer last_checkpoint_epoch "$checkpoint_epoch" || \
+      checkpoint_log "$session" "primary checkpoint timestamp update failed"
+  prune_superseded_resume_args "$session" "$checkpoint_dir/meta.json" || true
+  remove_checkpoint_stage "$session_path" "$stage" || return 1
   if [ "$SYNC_ENABLED" != "0" ]; then
     /bin/sync
   fi
+)
+
+runtime_readiness_is_committed() {
+  local session="$1"
+  local run_token="$2"
+  local meta
+  local primary_run_token
+  local ready_at
+
+  meta="$(session_meta "$session")"
+
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 2
+  load_meta_snapshot_path "$meta" "$session" || return 2
+  primary_run_token="$META_RUN_TOKEN"
+  [ "$primary_run_token" = "$run_token" ] || return 2
+  ready_at="$META_RUNTIME_READY_AT"
+  [ -n "$ready_at" ] && return 0
+  return 1
+}
+
+checkpoint_run_may_publish() {
+  local session="$1"
+  local requested_run_token="${2:-}"
+  local meta
+  local primary_run_token
+  local preserve_until_ready
+
+  meta="$(session_meta "$session")"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  load_meta_snapshot_path "$meta" "$session" || return 1
+  primary_run_token="$META_RUN_TOKEN"
+  if [ -n "$requested_run_token" ]; then
+    [ "$primary_run_token" = "$requested_run_token" ] || return 1
+  fi
+  preserve_until_ready="$META_PRESERVE_RECOVERY_UNTIL_READY"
+  [ "$preserve_until_ready" != "true" ] || \
+    { [ -n "$primary_run_token" ] && \
+      runtime_readiness_is_committed "$session" "$primary_run_token"; }
 }
 
 checkpoint_loop() {
@@ -3304,22 +5149,36 @@ checkpoint_loop() {
   trap checkpoint_loop_cleanup EXIT
   trap 'exit 0' HUP INT TERM
 
+  # A replacement run must not publish over the last recovery point until the
+  # command-side starter commits both readiness proofs. If that starter exits,
+  # keeping the previous checkpoint is safer than inferring readiness here.
+  while kill -0 "$worker_pid" 2>/dev/null && \
+        ! checkpoint_run_may_publish "$session" "$run_token"; do
+    sleep 1 &
+    sleep_pid=$!
+    wait "$sleep_pid" || exit 0
+    sleep_pid=""
+  done
+  checkpoint_run_may_publish "$session" "$run_token" || return 0
+
   while kill -0 "$worker_pid" 2>/dev/null && [ "$attempts" -lt 60 ]; do
-    if discover_codex_session "$session" "$run_token" >/dev/null 2>&1; then
+    if "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+         "$SELF" __discover_live_worker_locked \
+           "$session" "$run_token" "$worker_pid" >/dev/null 2>&1; then
       break
     fi
     attempts=$((attempts + 1))
     sleep 1
   done
 
-  checkpoint_once "$session" "$run_token" || true
+  checkpoint_once "$session" "$run_token" "$worker_pid" || true
   while kill -0 "$worker_pid" 2>/dev/null; do
     sleep "$CHECKPOINT_INTERVAL" &
     sleep_pid=$!
     wait "$sleep_pid" || exit 0
     sleep_pid=""
     kill -0 "$worker_pid" 2>/dev/null || break
-    checkpoint_once "$session" "$run_token" || true
+    checkpoint_once "$session" "$run_token" "$worker_pid" || true
   done
 }
 
@@ -3336,18 +5195,58 @@ runtime_heartbeat_locked() {
     --string worker_heartbeat_at "$heartbeat_time"
   )
 
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
+  checkpoint_test_barrier \
+    "${DETACH_TEST_HEARTBEAT_POSTGUARD_READY:-}" \
+    "${DETACH_TEST_HEARTBEAT_POSTGUARD_RELEASE:-}" || return 1
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
+
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" \
+    @detach_worker_pid "$worker_pid" 2>/dev/null || return 1
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
+  "${TMUX_CMD[@]}" set-option -q -t "=$session:" \
+    @detach_heartbeat_epoch "$heartbeat_epoch" 2>/dev/null || return 1
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
   if [ -n "$provider_pid" ]; then
     update_args+=( --integer provider_pid "$provider_pid" )
+    "${TMUX_CMD[@]}" set-option -q -t "=$session:" \
+      @detach_provider_pid "$provider_pid" 2>/dev/null || return 1
   else
     update_args+=( --null provider_pid )
+    "${TMUX_CMD[@]}" set-option -qu -t "=$session:" \
+      @detach_provider_pid 2>/dev/null || return 1
   fi
   # A provider thread switch (for example /clear) should surface in list
   # output within one heartbeat, not only on the next checkpoint tick.
   if [ "$PROVIDER" = "codex" ]; then
+    runtime_writer_matches_live_worker \
+      "$session" "$run_token" "$worker_pid" || return 1
     discover_codex_session "$session" "$run_token" >/dev/null 2>&1 || true
   fi
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
   state_update_meta_for_run_without_event \
-    "$session" "$run_token" "${update_args[@]}"
+    "$session" "$run_token" "${update_args[@]}" || return 1
+  # Keep session-wide tmux presentation behind the same exact-worker proof.
+  # An orphan status loop must not restyle a same-name replacement after a
+  # Recover barrier rejects its heartbeat.
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
+  power_refresh_session_status "$session" 2>/dev/null || true
+}
+
+discover_live_worker_locked() {
+  local session="$1"
+  local run_token="$2"
+  local worker_pid="$3"
+
+  runtime_writer_matches_live_worker "$session" "$run_token" "$worker_pid" || \
+    return 1
+  discover_codex_session "$session" "$run_token"
 }
 
 runtime_heartbeat_once() {
@@ -3355,6 +5254,7 @@ runtime_heartbeat_once() {
   local run_token="$2"
   local worker_pid="$3"
   local provider_pid_file="$4"
+  local lock_timeout="${5:-2}"
   local provider_pid=""
   local heartbeat_epoch
   local heartbeat_time
@@ -3366,24 +5266,12 @@ runtime_heartbeat_once() {
   heartbeat_epoch="$(date '+%s')"
   heartbeat_time="$(now_iso)"
 
-  if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
-    "${TMUX_CMD[@]}" set-option -q -t "=$session:" \
-      @detach_worker_pid "$worker_pid" 2>/dev/null || true
-    "${TMUX_CMD[@]}" set-option -q -t "=$session:" \
-      @detach_heartbeat_epoch "$heartbeat_epoch" 2>/dev/null || true
-    if [ -n "$provider_pid" ]; then
-      "${TMUX_CMD[@]}" set-option -q -t "=$session:" \
-        @detach_provider_pid "$provider_pid" 2>/dev/null || true
-    else
-      "${TMUX_CMD[@]}" set-option -qu -t "=$session:" \
-        @detach_provider_pid 2>/dev/null || true
-    fi
-  fi
-
-  "$LOCKF_BIN" -k -t 2 "$(checkpoint_lock_path "$session")" \
+  case "$lock_timeout" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$lock_timeout" -gt 0 ] || return 1
+  "$LOCKF_BIN" -k -t "$lock_timeout" "$(checkpoint_lock_path "$session")" \
     "$SELF" __runtime_heartbeat_locked \
       "$session" "$run_token" "$worker_pid" "$provider_pid" \
-      "$heartbeat_epoch" "$heartbeat_time" >/dev/null 2>&1 || true
+      "$heartbeat_epoch" "$heartbeat_time" >/dev/null 2>&1
 }
 
 power_protection_state() {
@@ -3591,12 +5479,12 @@ runtime_status_loop() {
   trap 'exit 0' HUP INT TERM
   while kill -0 "$worker_pid" 2>/dev/null && \
         [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; do
-    runtime_heartbeat_once \
-      "$session" "$run_token" "$worker_pid" "$provider_pid_file"
-    refresh_power_activity_state \
-      "$session" "$activity_file" "$activity_source_file" 2>/dev/null || \
-      write_power_activity_state "$activity_file" working 2>/dev/null || true
-    power_refresh_session_status "$session" 2>/dev/null || true
+    if runtime_heartbeat_once \
+         "$session" "$run_token" "$worker_pid" "$provider_pid_file"; then
+      refresh_power_activity_state \
+        "$session" "$activity_file" "$activity_source_file" 2>/dev/null || \
+        write_power_activity_state "$activity_file" working 2>/dev/null || true
+    fi
     sleep_interval="$HEALTH_HEARTBEAT_INTERVAL"
     [ "$POWER_ACTIVITY_STATE" != "waiting" ] || \
       sleep_interval="$IDLE_HEALTH_HEARTBEAT_INTERVAL"
@@ -3633,14 +5521,29 @@ worker_main() {
   local provider_pid_file
   local power_activity_file
   local power_activity_source_file
+  local run_resume_args_file
+  local stop_requested_at
 
   power_ready_file="$(session_dir "$session")/power-ready-$run_token"
   provider_pid_file="$(session_dir "$session")/provider-pid-$run_token"
   power_activity_file="$(session_dir "$session")/power-activity-$run_token"
   power_activity_source_file="$(session_dir "$session")/power-activity-source-$run_token"
+  run_resume_args_file="$(session_dir "$session")/resume-args-$run_token.bin"
 
   worker_cleanup() {
     local cleanup_status=$?
+    local cleanup_provider_pid=""
+    local file_provider_pid=""
+    local metadata_provider_pid=""
+    local closing_committed=0
+    local finished_at
+    local provider_artifact_present=0
+    local provider_identity_conflict=0
+    local provider_identity_safe=1
+    local provider_identity_recorded=0
+    local runtime_readiness_status=0
+    local shutdown_observed=0
+    local closing_args=()
     [ "$cleanup_done" -eq 0 ] || return 0
     cleanup_done=1
     trap - EXIT HUP INT TERM
@@ -3660,36 +5563,144 @@ worker_main() {
       exit_status="$cleanup_status"
     fi
 
+    metadata_provider_pid="$(
+      "$STATE_BIN" meta get "$(session_meta "$session")" provider_pid \
+        2>/dev/null || true
+    )"
+    case "$metadata_provider_pid" in
+      ''|*[!0-9]*) metadata_provider_pid="" ;;
+      *)
+        [ "$metadata_provider_pid" -gt 1 ] 2>/dev/null || metadata_provider_pid=""
+        ;;
+    esac
+    cleanup_provider_pid="$metadata_provider_pid"
+    if [ -e "$provider_pid_file" ] || [ -L "$provider_pid_file" ]; then
+      provider_artifact_present=1
+      if [ -f "$provider_pid_file" ] && [ ! -L "$provider_pid_file" ]; then
+        IFS= read -r file_provider_pid <"$provider_pid_file" || file_provider_pid=""
+        case "$file_provider_pid" in
+          ''|*[!0-9]*) file_provider_pid=""; provider_identity_safe=0 ;;
+          *)
+            [ "$file_provider_pid" -gt 1 ] 2>/dev/null || {
+              file_provider_pid=""
+              provider_identity_safe=0
+            }
+            ;;
+        esac
+      else
+        provider_identity_safe=0
+      fi
+      if [ -n "$metadata_provider_pid" ] && [ -n "$file_provider_pid" ] && \
+         [ "$metadata_provider_pid" != "$file_provider_pid" ]; then
+        provider_identity_conflict=1
+      elif [ -n "$file_provider_pid" ]; then
+        cleanup_provider_pid="$file_provider_pid"
+      fi
+    fi
+    if [ "$provider_identity_safe" -eq 1 ] && \
+       [ "$provider_identity_conflict" -eq 0 ] && \
+       [ -n "$cleanup_provider_pid" ]; then
+      provider_identity_recorded=1
+      process_is_confirmed_dead "$cleanup_provider_pid" && shutdown_observed=1
+    elif [ "$provider_identity_safe" -eq 1 ] && \
+         [ "$provider_identity_conflict" -eq 0 ] && \
+         [ "$provider_artifact_present" -eq 0 ]; then
+      if [ ! -e "$power_ready_file" ] && [ ! -L "$power_ready_file" ]; then
+        # detach-power publishes the ready marker before it attempts to launch
+        # the provider. Its completed foreground command and an absent marker
+        # therefore prove that no provider process existed for this run.
+        shutdown_observed=1
+      elif [ "$exit_status" -lt 128 ]; then
+        # A normal detach-power return after readiness but before PID-file
+        # publication means its launcher killed and waited for the child. A
+        # signal exit remains unknown because it can orphan that child.
+        shutdown_observed=1
+      fi
+    fi
+
     # Stop owns its terminal outcome from the moment its exact-run intent is
     # recorded. Other exits first publish their intended outcome as finalizing.
     # Health keeps both phases actionless while the final checkpoint completes.
-    if [ -n "$(read_meta_field "$session" stop_requested_at 2>/dev/null || true)" ]; then
+    stop_requested_at="$(
+      "$STATE_BIN" meta get "$(session_meta "$session")" stop_requested_at \
+        2>/dev/null || true
+    )"
+    if [ -n "$stop_requested_at" ]; then
       status_label="stopped"
-      state_update_meta_for_run_without_event "$session" "$run_token" \
+    fi
+    finished_at="$(now_iso)"
+    closing_args=(
+      --string status "$status_label"
+      --integer exit_status "$exit_status"
+      --string finished_at "$finished_at"
+    )
+    if [ "$provider_identity_recorded" -eq 1 ]; then
+      closing_args+=( --integer provider_pid "$cleanup_provider_pid" )
+    fi
+    if [ "$shutdown_observed" -eq 1 ]; then
+      closing_args+=( --string runtime_shutdown_observed_at "$finished_at" )
+    fi
+    if [ -n "$stop_requested_at" ]; then
+      if state_update_meta_for_run_without_event "$session" "$run_token" \
         --string lifecycle_phase stopping \
-        --string status "$status_label" \
-        --integer exit_status "$exit_status" \
-        --string finished_at "$(now_iso)" || true
+        "${closing_args[@]}"; then
+        closing_committed=1
+      fi
     else
-      state_update_meta_for_run "$session" "$run_token" \
+      if state_update_meta_for_run "$session" "$run_token" \
         --string lifecycle_phase finalizing \
-        --string status "$status_label" \
-        --integer exit_status "$exit_status" \
-        --string finished_at "$(now_iso)" || true
+        "${closing_args[@]}"; then
+        closing_committed=1
+      fi
+    fi
+    if [ "$closing_committed" -eq 0 ] && \
+       state_update_meta_for_run "$session" "$run_token" \
+         --string lifecycle_phase terminal \
+         "${closing_args[@]}"; then
+      # The starter can close an unready run before the worker observes its
+      # signal. A terminal-to-terminal patch still preserves the worker's
+      # provider identity or its safe pre-launch shutdown proof.
+      closing_committed=1
     fi
 
     # The phase write above is the lifecycle hint. The checkpoint itself does
     # not need to wake the app before the terminal phase is committed.
-    DETACH_SUPPRESS_SESSION_EVENT=1 checkpoint_once "$session" "$run_token" || true
-    rm -f "$provider_pid_file" "$power_activity_file" \
-      "$power_activity_source_file"
+    if checkpoint_run_may_publish "$session" "$run_token"; then
+      DETACH_SUPPRESS_SESSION_EVENT=1 \
+        checkpoint_once "$session" "$run_token" "$$" || true
+    else
+      # Close the lifecycle before discarding staged options. A concurrent
+      # readiness patch can otherwise win after the check above.
+      if [ "$closing_committed" -eq 1 ] && \
+         state_update_meta_for_run "$session" "$run_token" \
+           --string lifecycle_phase terminal \
+           --string status "$status_label" \
+           --integer exit_status "$exit_status" \
+           --string finished_at "$finished_at"; then
+        runtime_readiness_status=0
+        runtime_readiness_is_committed "$session" "$run_token" || \
+          runtime_readiness_status=$?
+        if [ "$runtime_readiness_status" -eq 1 ]; then
+          rm -f "$run_resume_args_file"
+        fi
+      fi
+    fi
+    if [ "$closing_committed" -eq 1 ] && \
+       [ "$provider_identity_safe" -eq 1 ] && \
+       [ "$provider_identity_conflict" -eq 0 ] && \
+       { [ "$provider_identity_recorded" -eq 1 ] || [ "$shutdown_observed" -eq 1 ]; }; then
+      rm -f "$power_ready_file" "$provider_pid_file"
+    fi
+    rm -f "$power_activity_file" "$power_activity_source_file"
 
     state_update_meta_for_run "$session" "$run_token" \
       --string lifecycle_phase terminal \
       --string status "$status_label" \
       --integer exit_status "$exit_status" \
       --string finished_at "$(now_iso)" || true
-    printf '%s\n' "$exit_status" >"$(session_dir "$session")/exit-status"
+    replace_session_file_with_line \
+      "$(session_dir "$session")/exit-status" "$exit_status" || \
+      checkpoint_log "$session" "exit status publication failed" || true
     if [ "$(tmux_option "$session" '@detach_run_token')" = "$run_token" ]; then
       "${TMUX_CMD[@]}" set-option -q -t "=$session:" @detach_running 0 2>/dev/null || true
       power_refresh_session_status "$session" 2>/dev/null || true
@@ -3869,9 +5880,13 @@ start_tmux_session() {
   local provider_pid_file
   local power_activity_file
   local power_activity_source_file
+  local resume_args_name
+  local run_resume_args_file
+  local runtime_ready_at
   local worker_pid
   local provider_pid
   local readiness_attempts=0
+  local worker_launch_attempted=0
 
   start_ms="$(now_ms)"
   run_token="$(new_run_token)"
@@ -3879,6 +5894,8 @@ start_tmux_session() {
   provider_pid_file="$(session_dir "$session")/provider-pid-$run_token"
   power_activity_file="$(session_dir "$session")/power-activity-$run_token"
   power_activity_source_file="$(session_dir "$session")/power-activity-source-$run_token"
+  resume_args_name="resume-args-$run_token.bin"
+  run_resume_args_file="$(session_dir "$session")/$resume_args_name"
   if [ "$PROVIDER" = "claude" ] && [ -z "$recovery_id" ]; then
     recovery_id="$(new_run_token)"
   fi
@@ -3894,16 +5911,98 @@ start_tmux_session() {
 
   partial_cleanup() {
     local cleanup_status=$?
+    local cleanup_worker_pid=""
+    local cleanup_provider_pid=""
+    local file_provider_pid=""
+    local metadata_provider_pid=""
+    local cleanup_attempts=0
+    local runtime_readiness_status=0
+    local terminal_committed=0
+    local close_args=()
     trap - EXIT HUP INT TERM
     if [ "$started" -eq 0 ]; then
+      cleanup_worker_pid="$(
+        "$STATE_BIN" meta get "$(session_meta "$session")" worker_pid \
+          2>/dev/null || true
+      )"
+      case "$cleanup_worker_pid" in
+        ''|*[!0-9]*) cleanup_worker_pid="$(tmux_option "$session" '@detach_worker_pid')" ;;
+      esac
+      metadata_provider_pid="$(
+        "$STATE_BIN" meta get "$(session_meta "$session")" provider_pid \
+          2>/dev/null || true
+      )"
+      case "$metadata_provider_pid" in
+        ''|*[!0-9]*) metadata_provider_pid="" ;;
+        *)
+          [ "$metadata_provider_pid" -gt 1 ] 2>/dev/null || metadata_provider_pid=""
+          ;;
+      esac
+      cleanup_provider_pid="$metadata_provider_pid"
+      if [ -f "$provider_pid_file" ] && [ ! -L "$provider_pid_file" ]; then
+        IFS= read -r file_provider_pid <"$provider_pid_file" || file_provider_pid=""
+        case "$file_provider_pid" in
+          ''|*[!0-9]*) file_provider_pid="" ;;
+          *)
+            [ "$file_provider_pid" -gt 1 ] 2>/dev/null || file_provider_pid=""
+            ;;
+        esac
+        if [ -z "$metadata_provider_pid" ] || \
+           [ "$metadata_provider_pid" = "$file_provider_pid" ]; then
+          cleanup_provider_pid="$file_provider_pid"
+        fi
+      fi
+      close_args=(
+        --string lifecycle_phase terminal
+        --string status start_failed
+        --string finished_at "$(now_iso)"
+      )
+      case "$cleanup_worker_pid" in
+        ''|*[!0-9]*) ;;
+        *) close_args+=( --integer worker_pid "$cleanup_worker_pid" ) ;;
+      esac
+      case "$cleanup_provider_pid" in
+        ''|*[!0-9]*) ;;
+        *) close_args+=( --integer provider_pid "$cleanup_provider_pid" ) ;;
+      esac
+      if state_update_meta_for_run \
+           "$session" "$run_token" "${close_args[@]}"; then
+        terminal_committed=1
+      fi
       [ "$created" -eq 0 ] || "${TMUX_CMD[@]}" kill-session -t "=$session" 2>/dev/null || true
       "$POWER_BIN" release --session "$session" --run-token "$run_token" \
         >/dev/null 2>&1 || true
-      rm -f "$power_ready_file" "$provider_pid_file" "$power_activity_file" \
-        "$power_activity_source_file" "$legacy_env_file"
-      state_update_meta_for_run "$session" "$run_token" \
-        --string lifecycle_phase terminal \
-        --string status start_failed --string finished_at "$(now_iso)" || true
+      rm -f "$power_activity_file" "$power_activity_source_file" "$legacy_env_file"
+      if [ "$worker_launch_attempted" -eq 0 ] && \
+         [ "$terminal_committed" -eq 1 ] && \
+         ! tmux_has_session "$session"; then
+        # respawn-pane was never invoked, and the placeholder pane is gone.
+        # No replacement worker or provider can exist, so this starter owns a
+        # complete local shutdown observation for B.
+        state_update_meta_for_run "$session" "$run_token" \
+          --string runtime_shutdown_observed_at "$(now_iso)" || true
+      fi
+      while [ "$terminal_committed" -eq 1 ] && \
+            [ "$cleanup_attempts" -lt 40 ] && \
+            ! replacement_runtime_is_quiescent "$session"; do
+        cleanup_attempts=$((cleanup_attempts + 1))
+        sleep 0.05
+      done
+      if [ "$terminal_committed" -eq 1 ] && \
+         replacement_runtime_is_quiescent "$session"; then
+        state_update_meta_for_run "$session" "$run_token" \
+          --string runtime_shutdown_observed_at "$(now_iso)" || true
+        rm -f "$power_ready_file" "$provider_pid_file"
+      fi
+      if [ "$preserve_checkpoint" = "1" ] && \
+         [ "$terminal_committed" -eq 1 ]; then
+        runtime_readiness_status=0
+        runtime_readiness_is_committed "$session" "$run_token" || \
+          runtime_readiness_status=$?
+        if [ "$runtime_readiness_status" -eq 1 ]; then
+          rm -f "$run_resume_args_file"
+        fi
+      fi
     fi
     exit "$cleanup_status"
   }
@@ -3923,7 +6022,16 @@ start_tmux_session() {
       "$recovery_id" "$recovery_rollout" "$run_token" "$preserve_checkpoint" || \
     die "could not initialize session metadata"
   snapshot_known_threads "$session" "$cwd" || die "could not snapshot existing $PROVIDER_LABEL sessions"
-  write_resume_args "$session" "$@" || die "could not save $PROVIDER_LABEL resume options"
+  write_resume_args "$run_resume_args_file" "$@" || \
+    die "could not stage $PROVIDER_LABEL resume options"
+  # The readiness commit publishes this run-token-bound file by name. Request
+  # writeback before any metadata can make that pointer authoritative.
+  [ "$SYNC_ENABLED" = "0" ] || /bin/sync
+  if [ "$preserve_checkpoint" != "1" ]; then
+    state_update_meta_for_run_without_event "$session" "$run_token" \
+      --string resume_args_file "$resume_args_name" || \
+        die "could not save $PROVIDER_LABEL resume options"
+  fi
   rm -f "$power_ready_file" "$provider_pid_file" "$power_activity_file" \
     "$power_activity_source_file"
   session_color="$(read_meta_field "$session" session_color)"
@@ -3965,6 +6073,9 @@ start_tmux_session() {
     env_args+=( "$arg" )
   done < <(tmux_environment_args)
 
+  # Once respawn is attempted, a nonzero tmux result cannot prove that no
+  # child appeared. Every later failure needs process or wrapper evidence.
+  worker_launch_attempted=1
   "${TMUX_CMD[@]}" respawn-pane -k \
     -t "$pane_id" \
     -c "$cwd" \
@@ -3992,19 +6103,22 @@ start_tmux_session() {
     process_is_descendant "$provider_pid" "$worker_pid" || \
       die "$PROVIDER_LABEL exited before its managed runtime was confirmed"
   runtime_heartbeat_once "$session" "$run_token" "$worker_pid" "$provider_pid_file"
+  runtime_ready_at="$(now_iso)"
   state_update_meta_for_run "$session" "$run_token" \
     --string lifecycle_phase running \
     --string status running \
+    --string runtime_ready_at "$runtime_ready_at" \
+    --string resume_args_file "$resume_args_name" \
     --integer worker_pid "$worker_pid" \
     --integer provider_pid "$provider_pid" \
     --string worker_heartbeat_at "$(now_iso)" \
     --integer worker_heartbeat_epoch "$(date '+%s')" || \
       die "could not publish confirmed runtime readiness"
+  started=1
   tmux_update_session_status "$session" running || \
     error "warning: could not publish confirmed runtime style"
   rm -f "$power_ready_file"
 
-  started=1
   trap - EXIT HUP INT TERM
   printf 'Started %s in %s\n' "$session" "$cwd"
   printf 'Checkpoint interval: %s seconds\n' "$CHECKPOINT_INTERVAL"
@@ -4058,6 +6172,7 @@ start_tmux_session_locked() {
     die "default history '$session' was allocated by another start; retry to create the next history"
   fi
   if tmux_has_session "$session"; then
+    require_dead_tmux_primary_run_match "$session"
     "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove completed tmux session '$session'"
   fi
   existing="$(running_session_for_project "$cwd" "$session" || true)"
@@ -4135,6 +6250,7 @@ provider_session_context() {
   local id="$1"
   local dir
   local meta
+  local recovery_meta
   local session=""
   local project=""
   local live=false
@@ -4156,7 +6272,16 @@ provider_session_context() {
     session="$(basename "$dir")"
     meta="$(usable_meta_path "$session" 2>/dev/null || true)"
     [ -n "$meta" ] || continue
-    "$STATE_BIN" meta matches "$meta" "$PROVIDER" "$id" >/dev/null 2>&1 || continue
+    if ! "$STATE_BIN" meta matches "$meta" "$PROVIDER" "$id" >/dev/null 2>&1; then
+      recovery_meta="$(
+        uncommitted_recovery_meta_path "$session" 2>/dev/null || true
+      )"
+      [ -n "$recovery_meta" ] && \
+        replacement_runtime_is_quiescent "$session" && \
+        "$STATE_BIN" meta matches "$recovery_meta" "$PROVIDER" "$id" \
+          >/dev/null 2>&1 || continue
+      meta="$recovery_meta"
+    fi
     project="$("$STATE_BIN" meta get "$meta" project_dir)"
     live=false
     if tmux_has_session "$session" && tmux_is_managed "$session" && tmux_session_running "$session"; then
@@ -4205,17 +6330,62 @@ resume_agent_session() {
   local session="$1"
   local cwd="$2"
   local detach="$3"
-  local id="$4"
-  local display_name="$5"
-  shift 5
+  shift 3
+
+  mkdir -p "$INSTALL_STATE_ROOT" || \
+    die "cannot create install lock directory"
+  "$LOCKF_BIN" -k -t "$INSTALL_LOCK_TIMEOUT" "$INSTALL_LOCK" \
+    "$SELF" __resume_under_install_lock "$session" "$cwd" "$@" || \
+      return 1
+  [ "$detach" -eq 1 ] || attach_session "$session"
+}
+
+resume_under_install_lock() {
+  local session="$1"
+  local cwd="$2"
+  shift 2
+  local lock
+
+  lock="$(project_lock_path "$cwd")"
+  "$LOCKF_BIN" -k -t 30 "$lock" \
+    "$SELF" __resume_under_project_lock "$session" "$cwd" "$@"
+}
+
+resume_under_project_lock() {
+  local session="$1"
+  local cwd="$2"
+  shift 2
+  local existing
+
+  existing="$(running_session_for_project "$cwd" "$session" || true)"
+  [ -z "$existing" ] || \
+    die "project already has a running detached session: $existing"
+  resume_agent_session_locked "$session" "$cwd" "$@"
+}
+
+resume_agent_session_locked() {
+  local session="$1"
+  local cwd="$2"
+  local id="$3"
+  local display_name="$4"
+  shift 4
   local db
   local id_sql
   local rows
   local rollout
+  local preserve_checkpoint=1
 
   [[ "$id" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
     die "resume requires an exact session UUID"
   id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  refuse_runtime_without_managed_tmux "$session"
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || \
+      die "refusing to resume over unmanaged tmux session '$session'"
+    tmux_session_running "$session" && \
+      die "a detached task is already running; use '$PROGRAM attach $session' or '$PROGRAM stop $session' first"
+    require_dead_tmux_primary_run_match "$session"
+  fi
   if [ "$PROVIDER" = "claude" ]; then
     local saved_id
     local resolved_status
@@ -4225,17 +6395,14 @@ resume_agent_session() {
     if [ "$saved_id" = "$id" ]; then
       rollout="$(read_meta_field "$session" transcript_path 2>/dev/null || true)"
     fi
-    if [ -z "$rollout" ] || \
-       ! safe_claude_transcript_path "$rollout" "$id" || \
-       ! valid_claude_transcript "$rollout" "$id"; then
-      local saved_rollout="$rollout"
+    if [ -z "$rollout" ]; then
       rollout="$(claude_transcript_for_id "$id" 2>/dev/null)"
       resolved_status=$?
       if [ "$resolved_status" -eq 2 ]; then
         die "multiple valid Claude transcripts were found for session '$id'"
       fi
       if [ "$resolved_status" -ne 0 ]; then
-        rollout="$saved_rollout"
+        rollout=""
       fi
     fi
     transcript_present=0
@@ -4247,31 +6414,36 @@ resume_agent_session() {
         die "Claude transcript for '$id' is missing or invalid"
       valid_claude_transcript "$rollout" "$id" || \
         die "Claude transcript for '$id' is missing or invalid"
-      restore_matching_claude_checkpoint "$session" "$id" "$rollout" || \
+      "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+        "$SELF" __prepare_claude_resume_locked \
+          "$session" "$id" "$rollout" transcript || \
         die "could not restore the matching Claude checkpoint"
-      start_under_project_lock "$session" "$cwd" "$display_name" \
-        "$id" "$rollout" 0 resume "$id" "$@" || \
+      start_tmux_session_locked "$session" "$cwd" "$display_name" \
+        "$id" "$rollout" "$preserve_checkpoint" resume "$id" "$@" || \
         die "could not start Claude resume session"
     elif claude_matching_checkpoint_exists "$session" "$id"; then
       [ -n "$rollout" ] && safe_claude_transcript_path "$rollout" "$id" || \
         die "Claude session '$id' was not found"
-      restore_matching_claude_checkpoint "$session" "$id" "$rollout" || \
+      "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+        "$SELF" __prepare_claude_resume_locked \
+          "$session" "$id" "$rollout" transcript || \
         die "could not restore the matching Claude checkpoint"
-      valid_claude_transcript "$rollout" "$id" || \
-        die "Claude transcript for '$id' is missing or invalid"
-      start_under_project_lock "$session" "$cwd" "$display_name" \
-        "$id" "$rollout" 0 resume "$id" "$@" || \
+      start_tmux_session_locked "$session" "$cwd" "$display_name" \
+        "$id" "$rollout" "$preserve_checkpoint" resume "$id" "$@" || \
         die "could not start Claude resume session"
     elif [ "$saved_id" = "$id" ]; then
       # Detach owns this UUID. Claude never wrote a transcript, and no
       # matching checkpoint can recreate one, so --resume would fail.
-      start_under_project_lock "$session" "$cwd" "$display_name" \
-        "$id" "" 0 "$@" || \
+      "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+        "$SELF" __prepare_claude_resume_locked \
+          "$session" "$id" "" metadata-only || \
+        die "Claude session '$id' changed while preparing resume"
+      start_tmux_session_locked "$session" "$cwd" "$display_name" \
+        "$id" "" "$preserve_checkpoint" "$@" || \
         die "could not start Claude resume session"
     else
       die "Claude session '$id' was not found"
     fi
-    [ "$detach" -eq 1 ] || attach_session "$session"
     return
   fi
   db="$(codex_state_db)"
@@ -4283,14 +6455,13 @@ resume_agent_session() {
   [ -n "$rows" ] || die "Codex session '$id' was not found"
   rollout="$rows"
   [ -n "$rollout" ] || die "Codex session '$id' has no rollout path"
-  restore_matching_rollout_checkpoint "$session" "$id" "$rollout" || \
+  "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+    "$SELF" __prepare_codex_resume_locked "$session" "$id" "$rollout" || \
     die "could not restore the matching rollout checkpoint"
-  valid_jsonl "$rollout" "$id" || die "Codex rollout for '$id' is missing or invalid"
 
-  start_under_project_lock "$session" "$cwd" "$display_name" \
-    "$id" "$rollout" 0 resume "$id" "$@" || \
+  start_tmux_session_locked "$session" "$cwd" "$display_name" \
+    "$id" "$rollout" "$preserve_checkpoint" resume "$id" "$@" || \
     die "could not start Codex resume session"
-  [ "$detach" -eq 1 ] || attach_session "$session"
 }
 
 transcript_model_context() {
@@ -4334,6 +6505,16 @@ process_is_owned_alive() {
   [ "$process_uid" = "$owner_uid" ]
 }
 
+process_is_confirmed_dead() {
+  local pid="$1"
+  local state
+
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pid" -gt 1 ] 2>/dev/null || return 1
+  state="$("$STATE_BIN" process state "$pid" 2>/dev/null || true)"
+  [ "$state" = "dead" ]
+}
+
 process_is_descendant() {
   local child="$1"
   local ancestor="$2"
@@ -4352,6 +6533,67 @@ process_is_descendant() {
     depth=$((depth + 1))
   done
   return 1
+}
+
+replacement_runtime_is_quiescent() {
+  local session="$1"
+  local meta
+  local run_token
+  local worker_pid
+  local provider_pid
+  local provider_pid_file
+  local provider_pid_from_file=""
+  local runtime_shutdown_observed_at
+  local provider_identity_known=0
+
+  meta="$(session_meta "$session")"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  tmux_session_running "$session" && return 1
+  "$STATE_BIN" meta usable "$meta" "$session" >/dev/null 2>&1 || return 1
+  run_token="$("$STATE_BIN" meta get "$meta" run_token 2>/dev/null)" || return 1
+  [[ "$run_token" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
+    return 1
+  worker_pid="$("$STATE_BIN" meta get "$meta" worker_pid 2>/dev/null)" || return 1
+  provider_pid="$("$STATE_BIN" meta get "$meta" provider_pid 2>/dev/null)" || return 1
+  runtime_shutdown_observed_at="$(
+    "$STATE_BIN" meta get "$meta" runtime_shutdown_observed_at 2>/dev/null
+  )" || return 1
+
+  case "$worker_pid" in
+    '')
+      [ -n "$runtime_shutdown_observed_at" ] || return 1
+      ;;
+    *[!0-9]*) return 1 ;;
+    *)
+      [ "$worker_pid" -gt 1 ] 2>/dev/null || return 1
+      process_is_confirmed_dead "$worker_pid" || return 1
+      ;;
+  esac
+
+  case "$provider_pid" in
+    '') ;;
+    *[!0-9]*) return 1 ;;
+    *)
+      [ "$provider_pid" -gt 1 ] 2>/dev/null || return 1
+      provider_identity_known=1
+      process_is_confirmed_dead "$provider_pid" || return 1
+      ;;
+  esac
+  provider_pid_file="$(session_dir "$session")/provider-pid-$run_token"
+  if [ -e "$provider_pid_file" ] || [ -L "$provider_pid_file" ]; then
+    [ -f "$provider_pid_file" ] && [ ! -L "$provider_pid_file" ] || return 1
+    IFS= read -r provider_pid_from_file <"$provider_pid_file" || \
+      provider_pid_from_file=""
+    case "$provider_pid_from_file" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$provider_pid_from_file" -gt 1 ] 2>/dev/null || return 1
+    provider_identity_known=1
+    process_is_confirmed_dead "$provider_pid_from_file" || return 1
+  fi
+  if [ "$provider_identity_known" -eq 0 ] && \
+     [ -z "$runtime_shutdown_observed_at" ]; then
+    return 1
+  fi
+  return 0
 }
 
 signal_managed_pane_group() {
@@ -4385,25 +6627,128 @@ signal_managed_pane_group() {
   kill "-$signal" -- "-$pgid"
 }
 
-checkpoint_is_recoverable() {
+codex_recovery_source_is_valid() {
   local session="$1"
-  local id="$2"
-  local transcript_path
+  local meta="$2"
+  local id="$3"
+  local transcript_path="$4"
+  local validation_mode="${5:-cached}"
   local dir
+  local backup
+  local checkpoint_meta
 
-  [ -n "$id" ] && [ "$id" != "-" ] || return 1
   dir="$(session_dir "$session")"
-  transcript_path="$(read_meta_field "$session" transcript_path rollout_path 2>/dev/null || true)"
-  if [ "$PROVIDER" = "claude" ] && \
-     safe_claude_transcript_path "$transcript_path" "$id"; then
-    valid_claude_checkpoint_archive "$dir/checkpoint/claude-session.tar" "$id" || \
-      valid_claude_transcript "$dir/checkpoint/transcript.jsonl" "$id"
-  elif [ "$PROVIDER" = "codex" ] && \
-       safe_codex_rollout_path "$transcript_path"; then
-    valid_jsonl_cached "$dir/checkpoint/rollout.jsonl" "$id"
+  codex_rollout_destination_matches_id "$transcript_path" "$id" || return 1
+  backup="$dir/checkpoint/rollout.jsonl"
+  if [ -e "$backup" ] || [ -L "$backup" ]; then
+    [ -f "$backup" ] && [ ! -L "$backup" ] || return 1
+    case "$validation_mode" in
+      cached) valid_jsonl_cached "$backup" "$id" && return 0 ;;
+      direct) valid_jsonl "$backup" "$id" && return 0 ;;
+      *) return 1 ;;
+    esac
+    checkpoint_meta="$dir/checkpoint/meta.json"
+    if [ -e "$checkpoint_meta" ] || [ -L "$checkpoint_meta" ]; then
+      [ -f "$checkpoint_meta" ] && [ ! -L "$checkpoint_meta" ] || return 1
+      if "$STATE_BIN" meta matches "$checkpoint_meta" "$PROVIDER" "$id" \
+           >/dev/null 2>&1; then
+        return 1
+      fi
+    fi
+    valid_jsonl "$transcript_path" "$id"
+  else
+    valid_jsonl "$transcript_path" "$id"
+  fi
+}
+
+recovery_request_is_valid() {
+  local session="$1"
+  local meta="$2"
+  local validation_mode="${3:-cached}"
+  local id
+  local transcript_path
+  local backup
+  local db
+  local id_sql
+  local resolved_status
+  local resolved_transcript
+  local checkpoint_dir
+
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  if [ -e "$checkpoint_dir" ] || [ -L "$checkpoint_dir" ]; then
+    owned_plain_checkpoint_directory "$checkpoint_dir" || return 1
+  fi
+
+  id="$(
+    "$STATE_BIN" meta get "$meta" agent_session_id codex_session_id \
+      2>/dev/null
+  )" || return 1
+  transcript_path="$(
+    "$STATE_BIN" meta get "$meta" transcript_path rollout_path \
+      2>/dev/null
+  )" || return 1
+  if [ -z "$id" ]; then
+    if [ "$PROVIDER" = "claude" ]; then
+      backup="$(session_dir "$session")/checkpoint/transcript.jsonl"
+    else
+      backup="$(session_dir "$session")/checkpoint/rollout.jsonl"
+    fi
+    if [ -f "$backup" ] && [ ! -L "$backup" ]; then
+      if [ "$PROVIDER" = "claude" ]; then
+        id="$("$STATE_BIN" jsonl first "$backup" sessionId 2>/dev/null || true)"
+      else
+        id="$(
+          "$STATE_BIN" jsonl first "$backup" payload.id payload.session_id \
+            2>/dev/null || true
+        )"
+        db="$(codex_state_db)"
+        if [ -n "$id" ] && [ -n "$db" ] && [ -f "$db" ]; then
+          id_sql="$(sql_escape "$id")"
+          transcript_path="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+            "SELECT rollout_path FROM threads WHERE id = '$id_sql' LIMIT 1;" \
+            2>/dev/null || true)"
+        fi
+      fi
+    fi
+  fi
+  [ -n "$id" ] && [ "$id" != "-" ] || return 1
+  saved_resume_args_path "$session" "$meta" >/dev/null || return 1
+  if [ "$PROVIDER" = "claude" ]; then
+    if [ -z "$transcript_path" ]; then
+      resolved_transcript="$(claude_transcript_for_id "$id" 2>/dev/null)"
+      resolved_status=$?
+      case "$resolved_status" in
+        0)
+          claude_recovery_source_is_valid \
+            "$session" "$id" "$resolved_transcript"
+          ;;
+        1)
+          claude_metadata_only_recovery_source_is_valid \
+            "$session" "$meta" "$id"
+          ;;
+        *) return 1 ;;
+      esac
+      return
+    fi
+    claude_recovery_source_is_valid "$session" "$id" "$transcript_path"
+  elif [ "$PROVIDER" = "codex" ]; then
+    [ -n "$transcript_path" ] || return 1
+    codex_recovery_source_is_valid \
+      "$session" "$meta" "$id" "$transcript_path" "$validation_mode"
   else
     return 1
   fi
+}
+
+checkpoint_is_recoverable() {
+  local session="$1"
+  local meta="${2:-}"
+
+  if [ -z "$meta" ]; then
+    meta="$(usable_meta_path "$session" 2>/dev/null || true)"
+  fi
+  [ -n "$meta" ] || return 1
+  recovery_request_is_valid "$session" "$meta"
 }
 
 freshness_for_epoch() {
@@ -4445,12 +6790,18 @@ session_health_envelope() {
   local output_mode="${11:-assessment}"
   local stop_requested_at="${12:-}"
   local lifecycle_phase="${13:-}"
+  local preserve_recovery_until_ready="${14:-}"
+  local runtime_ready_at="${15:-}"
   local stop_requested=false
+  local uncommitted_replacement=false
+  local runtime_quiescent=false
+  local recovery_meta=""
+  local active_meta=""
   local now
   local checkpoint_threshold
 
-  if [ "$#" -ge 13 ]; then
-    shift 13
+  if [ "$#" -ge 15 ]; then
+    shift 15
   else
     set --
   fi
@@ -4475,6 +6826,10 @@ session_health_envelope() {
     [ "$health_schema" = "1" ] && runtime_identity_expected=true
     [ -n "$id" ] && [ "$id" != "-" ] && agent_session_known=true
     [ -z "$stop_requested_at" ] || stop_requested=true
+    if [ "$preserve_recovery_until_ready" = "true" ] && \
+       [ -z "$runtime_ready_at" ]; then
+      uncommitted_replacement=true
+    fi
   fi
 
   tmux_health_snapshot "$session"
@@ -4483,13 +6838,33 @@ session_health_envelope() {
   tmux_heartbeat_epoch="$TMUX_HEALTH_HEARTBEAT_EPOCH"
   pane_pid="$TMUX_HEALTH_PANE_PID"
 
-  # Full provider checkpoint validation can be expensive. It affects the
-  # transition only after an active runtime disappears, never a healthy live
-  # poll or a session whose terminal status is already recorded.
-  case "$tmux_state:$meta_status" in
-    missing:starting|missing:running|missing:recovering|missing:hung|\
-    dead:starting|dead:running|dead:recovering|dead:hung)
-      checkpoint_is_recoverable "$session" "$id" && checkpoint_recoverable=true
+  # Full provider checkpoint validation can be expensive. It affects only a
+  # disappeared runtime. An uncommitted replacement validates the preserved
+  # checkpoint generation, never its operational primary metadata.
+  case "$tmux_state" in
+    missing|dead)
+      if [ "$uncommitted_replacement" = "true" ]; then
+        if replacement_runtime_is_quiescent "$session"; then
+          runtime_quiescent=true
+          recovery_meta="$(
+            uncommitted_recovery_meta_path "$session" 2>/dev/null || true
+          )"
+          if [ -n "$recovery_meta" ] && \
+             checkpoint_is_recoverable "$session" "$recovery_meta"; then
+            checkpoint_recoverable=true
+          fi
+        fi
+      else
+        case "$meta_status" in
+          starting|running|recovering|hung)
+            active_meta="$(usable_meta_path "$session" 2>/dev/null || true)"
+            if [ -n "$active_meta" ] && \
+               checkpoint_is_recoverable "$session" "$active_meta"; then
+              checkpoint_recoverable=true
+            fi
+            ;;
+        esac
+      fi
       ;;
   esac
 
@@ -4572,6 +6947,8 @@ session_health_envelope() {
     --checkpoint "$checkpoint_freshness" \
     --checkpoint-recoverable "$checkpoint_recoverable" \
     --agent-session-known "$agent_session_known" \
+    --uncommitted-replacement "$uncommitted_replacement" \
+    --runtime-quiescent "$runtime_quiescent" \
     --stop-requested "$stop_requested"
     --lifecycle-phase "$lifecycle_phase"
   )
@@ -4605,8 +6982,18 @@ refuse_runtime_without_managed_tmux() {
   local health_output
   local health_json
   local reason
+  local primary
+  local checkpoint
 
-  load_usable_meta_snapshot "$session" || return 0
+  if ! load_usable_meta_snapshot "$session"; then
+    primary="$(session_meta "$session")"
+    checkpoint="$(session_dir "$session")/checkpoint/meta.json"
+    if [ ! -e "$primary" ] && [ ! -L "$primary" ] && \
+       [ ! -e "$checkpoint" ] && [ ! -L "$checkpoint" ]; then
+      return 0
+    fi
+    die "no valid operational metadata for '$session'; refusing to change saved state"
+  fi
   status="$META_STATUS"
   id="$META_AGENT_SESSION_ID"
   [ -n "$status" ] || status="unknown"
@@ -4615,15 +7002,62 @@ refuse_runtime_without_managed_tmux() {
     "$session" true "$status" "$id" "$META_RUN_TOKEN" \
     "$META_WORKER_PID" "$META_PROVIDER_PID" "$META_WORKER_HEARTBEAT_EPOCH" \
     "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" assessment \
-    "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE")" || \
+    "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE" \
+    "$META_PRESERVE_RECOVERY_UNTIL_READY" "$META_RUNTIME_READY_AT")" || \
     die "could not safely evaluate runtime ownership for '$session'"
   health_json="${health_output#*$'\n'}"
   [ "$health_json" != "$health_output" ] || \
     die "could not decode runtime ownership for '$session'"
   reason="$(printf '%s' "$health_json" | \
     "$STATE_BIN" meta get /dev/stdin reason 2>/dev/null || true)"
-  [ "$reason" != "runtime_process_without_tmux" ] || \
-    die "recorded runtime process for '$session' is still alive without managed tmux; refusing to signal it or change saved state"
+  case "$reason" in
+    runtime_process_without_tmux)
+      die "recorded runtime process for '$session' is still alive without managed tmux; refusing to signal it or change saved state"
+      ;;
+    runtime_quiescence_unproven)
+      die "replacement runtime shutdown for '$session' is not proven; refusing to signal it or change saved state"
+      ;;
+  esac
+}
+
+require_dead_tmux_primary_run_match() {
+  local session="$1"
+  local expected_tmux_run_token="${2:-}"
+  local require_primary="${3:-0}"
+  local primary
+  local primary_run_token
+  local tmux_run_token
+
+  tmux_has_session "$session" || return 0
+  tmux_is_managed "$session" || \
+    die "refusing to remove unmanaged tmux session '$session'"
+  [ "$(tmux_pane_dead "$session")" = "1" ] || \
+    die "refusing to remove live tmux session '$session'"
+  tmux_run_token="$(tmux_option "$session" '@detach_run_token')"
+  if [ -n "$expected_tmux_run_token" ] && \
+     [ "$tmux_run_token" != "$expected_tmux_run_token" ]; then
+    die "refusing to remove a replacement tmux run for '$session'"
+  fi
+
+  primary="$(session_meta "$session")"
+  if [ ! -e "$primary" ] && [ ! -L "$primary" ]; then
+    if [ "$require_primary" -eq 0 ] && \
+       [ ! -e "$(session_dir "$session")" ] && \
+       [ ! -L "$(session_dir "$session")" ]; then
+      return 0
+    fi
+    die "no valid operational metadata for retained tmux session '$session'"
+  fi
+  [ -f "$primary" ] && [ ! -L "$primary" ] && \
+    "$STATE_BIN" meta usable "$primary" "$session" >/dev/null 2>&1 || \
+      die "no valid operational metadata for retained tmux session '$session'"
+  primary_run_token="$(
+    "$STATE_BIN" meta get "$primary" run_token 2>/dev/null || true
+  )"
+  if [ -z "$primary_run_token" ] || [ -z "$tmux_run_token" ] || \
+     [ "$primary_run_token" != "$tmux_run_token" ]; then
+    die "retained tmux run does not match operational metadata for '$session'"
+  fi
 }
 
 prepare_list_json_args() {
@@ -4678,6 +7112,7 @@ list_session_records() {
   local json_mode="${1:-0}"
   local session
   local metadata_valid
+  local metadata_source
   local snapshots_complete=0
   local completion_marker
   local status
@@ -4698,6 +7133,20 @@ list_session_records() {
   local worker_pid
   local provider_pid
   local worker_heartbeat_at
+  local health_status
+  local health_id
+  local health_run_token
+  local health_worker_pid
+  local health_provider_pid
+  local health_worker_heartbeat_at
+  local health_worker_heartbeat_epoch
+  local health_last_checkpoint_epoch
+  local health_schema
+  local health_stop_requested_at
+  local health_lifecycle_phase
+  local health_preserve_recovery_until_ready
+  local health_runtime_ready_at
+  local recovery_meta
   local LIST_HEALTH_NOW
 
   ensure_state_dirs
@@ -4755,6 +7204,9 @@ list_session_records() {
       IFS= read -r -d '' META_HEALTH_SCHEMA && \
       IFS= read -r -d '' META_STOP_REQUESTED_AT && \
       IFS= read -r -d '' META_LIFECYCLE_PHASE && \
+      IFS= read -r -d '' META_PRESERVE_RECOVERY_UNTIL_READY && \
+      IFS= read -r -d '' META_RUNTIME_READY_AT && \
+      IFS= read -r -d '' metadata_source && \
       IFS= read -r -d '' TRANSCRIPT_MODEL && \
       IFS= read -r -d '' TRANSCRIPT_CTX_USED && \
       IFS= read -r -d '' TRANSCRIPT_CTX_WINDOW && \
@@ -4778,12 +7230,12 @@ list_session_records() {
           "" "" "" "" "" ""
         session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          request "" "" "${LIST_JSON_ARGS[@]}" || \
+          request "" "" "" "" "${LIST_JSON_ARGS[@]}" || \
           die "could not evaluate health for '$session'"
       else
         health_output="$(session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          assessment "" "")" || \
+          assessment "" "" "" "")" || \
           die "could not evaluate health for '$session'"
       fi
       if [ "$json_mode" = "1" ]; then
@@ -4801,7 +7253,46 @@ list_session_records() {
     # `initializing` metadata exists only so the worker and starter can share
     # one typed document. It is not a coherent list record until the worker has
     # published its exact PID against the configured tmux run token.
-    [ "$META_LIFECYCLE_PHASE" != "initializing" ] || continue
+    if [ "$META_LIFECYCLE_PHASE" = "initializing" ] && \
+       [ "$META_PRESERVE_RECOVERY_UNTIL_READY" != "true" ]; then
+      continue
+    fi
+    health_status="$META_STATUS"
+    health_id="$META_AGENT_SESSION_ID"
+    health_run_token="$META_RUN_TOKEN"
+    # Checkpoint metadata is a recovery source, not operational authority for
+    # a retained tmux pane. Without a usable primary generation, health must
+    # keep a dead pane actionless instead of treating A's token as ownership
+    # proof for an unknown operational run.
+    [ "$metadata_source" = "primary" ] || health_run_token=""
+    health_worker_pid="$META_WORKER_PID"
+    health_provider_pid="$META_PROVIDER_PID"
+    health_worker_heartbeat_at="$META_WORKER_HEARTBEAT_AT"
+    health_worker_heartbeat_epoch="$META_WORKER_HEARTBEAT_EPOCH"
+    health_last_checkpoint_epoch="$META_LAST_CHECKPOINT_EPOCH"
+    health_schema="$META_HEALTH_SCHEMA"
+    health_stop_requested_at="$META_STOP_REQUESTED_AT"
+    health_lifecycle_phase="$META_LIFECYCLE_PHASE"
+    health_preserve_recovery_until_ready="$META_PRESERVE_RECOVERY_UNTIL_READY"
+    health_runtime_ready_at="$META_RUNTIME_READY_AT"
+
+    # Once the replacement runtime is positively quiescent, present the
+    # recovery generation while retaining its replacement PID/token evidence
+    # for the typed health decision below.
+    recovery_meta=""
+    if [ "$health_preserve_recovery_until_ready" = "true" ] && \
+       [ -z "$health_runtime_ready_at" ] && \
+       replacement_runtime_is_quiescent "$session"; then
+      recovery_meta="$(
+        uncommitted_recovery_meta_path "$session" 2>/dev/null || true
+      )"
+      if [ -n "$recovery_meta" ] && \
+         checkpoint_is_recoverable "$session" "$recovery_meta"; then
+        load_meta_snapshot_path "$recovery_meta" "$session" || \
+          die "could not decode recovery metadata for '$session'"
+        transcript_model_context "$META_TRANSCRIPT_PATH"
+      fi
+    fi
     status="$META_STATUS"
     display_name="$META_DISPLAY_NAME"
     cwd="$META_PROJECT_DIR"
@@ -4814,9 +7305,9 @@ list_session_records() {
     created="$META_CREATED_AT"
     finished="$META_FINISHED_AT"
     exit_json="$META_EXIT_STATUS"
-    worker_pid="$META_WORKER_PID"
-    provider_pid="$META_PROVIDER_PID"
-    worker_heartbeat_at="$META_WORKER_HEARTBEAT_AT"
+    worker_pid="$health_worker_pid"
+    provider_pid="$health_provider_pid"
+    worker_heartbeat_at="$health_worker_heartbeat_at"
     session_color="$META_SESSION_COLOR"
     if [ -z "$session_color" ] && [ -n "$cwd" ] && [ "$cwd" != "?" ]; then
       session_color="$(session_color_for "$PROVIDER" "$cwd")" || session_color=''
@@ -4835,18 +7326,20 @@ list_session_records() {
         "$worker_pid" "$provider_pid" "$worker_heartbeat_at" "$display_name" \
         "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_ID"
       session_health_envelope \
-        "$session" true "$status" "$id" "$META_RUN_TOKEN" \
-        "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
-        "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" \
-        request "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE" \
+        "$session" true "$health_status" "$health_id" "$health_run_token" \
+        "$worker_pid" "$provider_pid" "$health_worker_heartbeat_epoch" \
+        "$health_last_checkpoint_epoch" "$health_schema" \
+        request "$health_stop_requested_at" "$health_lifecycle_phase" \
+        "$health_preserve_recovery_until_ready" "$health_runtime_ready_at" \
         "${LIST_JSON_ARGS[@]}" || \
         die "could not evaluate health for '$session'"
     else
       health_output="$(session_health_envelope \
-        "$session" true "$status" "$id" "$META_RUN_TOKEN" \
-        "$worker_pid" "$provider_pid" "$META_WORKER_HEARTBEAT_EPOCH" \
-        "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" assessment \
-        "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE")" || \
+        "$session" true "$health_status" "$health_id" "$health_run_token" \
+        "$worker_pid" "$provider_pid" "$health_worker_heartbeat_epoch" \
+        "$health_last_checkpoint_epoch" "$health_schema" assessment \
+        "$health_stop_requested_at" "$health_lifecycle_phase" \
+        "$health_preserve_recovery_until_ready" "$health_runtime_ready_at")" || \
         die "could not evaluate health for '$session'"
     fi
     if [ "$json_mode" = "1" ]; then
@@ -4978,6 +7471,7 @@ stop_session() {
     if [ -n "$pane" ] && [ "$(tmux_pane_dead "$session")" = "0" ]; then
       [ "$tmux_run_token_proven" -eq 1 ] || \
         die "refusing to stop a live session without an exact run token"
+      pane_pid="$("${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
       # Record intent only for the exact managed run immediately before its
       # first signal. A failed write aborts Stop; a fresh start clears intent.
       stop_requested_at="$(now_iso)"
@@ -4988,9 +7482,14 @@ stop_session() {
           die "could not record Stop intent for the exact managed run"
       stop_intent_recorded=1
       # Preserve the stop-edge screen before the first signal. A bounded Stop
-      # may later terminate a worker stuck in a slow database checkpoint.
-      checkpoint_pane "$session" || true
-      pane_pid="$("${TMUX_CMD[@]}" display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
+      # may later terminate a worker stuck in a slow database checkpoint. A
+      # replacement that has not committed readiness must leave the previous
+      # generation's pane checkpoint unchanged.
+      if checkpoint_run_may_publish "$session" "$run_token"; then
+        "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+          "$SELF" __checkpoint_stop_edge_locked \
+            "$session" "$run_token" "$pane_pid" || true
+      fi
       provider_pid="$(read_meta_field "$session" provider_pid 2>/dev/null || true)"
       case "$provider_pid" in ''|*[!0-9]*) provider_pid="" ;; esac
       if [ -n "$pane_pid" ]; then
@@ -5101,6 +7600,7 @@ delete_session() {
     if [ "$(tmux_pane_dead "$session")" = "0" ]; then
       die "session '$session' is still running; stop it first"
     fi
+    require_dead_tmux_primary_run_match "$session"
   fi
   if [ "$force" -ne 1 ]; then
     [ -t 0 ] || die "refusing to delete without --force when stdin is not a terminal"
@@ -5142,6 +7642,7 @@ delete_locked() {
     if [ "$(tmux_pane_dead "$session")" = "0" ]; then
       die "session '$session' is running again; aborting delete"
     fi
+    require_dead_tmux_primary_run_match "$session"
   fi
   if tmux_has_session "$session"; then
     "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove tmux session '$session'"
@@ -5153,16 +7654,24 @@ delete_locked() {
 
 restore_rollout_if_needed() {
   local session="$1"
-  local meta
+  local meta="${2:-}"
+  local selected_id="${3:-}"
+  local selected_rollout="${4:-}"
   local rollout
   local backup
   local id
+  local checkpoint_meta
   local restore=0
-  local tmp
 
-  meta="$(usable_meta_path "$session")" || die "no valid saved state for '$session'"
-  rollout="$("$STATE_BIN" meta get "$meta" transcript_path rollout_path)"
-  id="$("$STATE_BIN" meta get "$meta" agent_session_id codex_session_id)"
+  if [ -z "$meta" ]; then
+    meta="$(usable_meta_path "$session")" || die "no valid saved state for '$session'"
+  fi
+  rollout="$selected_rollout"
+  [ -n "$rollout" ] || \
+    rollout="$("$STATE_BIN" meta get "$meta" transcript_path rollout_path)"
+  id="$selected_id"
+  [ -n "$id" ] || \
+    id="$("$STATE_BIN" meta get "$meta" agent_session_id codex_session_id)"
   if [ "$PROVIDER" = "claude" ]; then
     [ -n "$id" ] || die "no Claude session UUID was checkpointed"
     if [ -z "$rollout" ]; then
@@ -5175,9 +7684,32 @@ restore_rollout_if_needed() {
     return
   fi
   backup="$(session_dir "$session")/checkpoint/rollout.jsonl"
-  safe_codex_rollout_path "$rollout" || die "refusing unsafe Codex rollout path"
-  [ -n "$rollout" ] && [ -n "$id" ] && [ -f "$backup" ] || return 0
-  valid_jsonl "$backup" "$id" || die "saved rollout checkpoint is invalid"
+  codex_rollout_destination_matches_id "$rollout" "$id" || \
+    die "refusing Codex rollout path owned by another session"
+  [ -n "$rollout" ] && [ -n "$id" ] || return 0
+  if [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
+    valid_jsonl "$rollout" "$id" || \
+      die "Codex rollout is missing or invalid and no checkpoint is available"
+    return 0
+  fi
+  [ -f "$backup" ] && [ ! -L "$backup" ] || \
+    die "saved rollout checkpoint is not a safe regular file"
+  if ! valid_jsonl "$backup" "$id"; then
+    checkpoint_meta="$(session_dir "$session")/checkpoint/meta.json"
+    if [ -e "$checkpoint_meta" ] || [ -L "$checkpoint_meta" ]; then
+      [ -f "$checkpoint_meta" ] && [ ! -L "$checkpoint_meta" ] || \
+        die "saved checkpoint metadata is not a safe regular file"
+      if "$STATE_BIN" meta matches "$checkpoint_meta" "$PROVIDER" "$id" \
+           >/dev/null 2>&1; then
+        die "saved rollout checkpoint is invalid"
+      fi
+    fi
+    valid_jsonl "$rollout" "$id" || \
+      die "Codex rollout and its saved checkpoint do not match the selected session"
+    checkpoint_log "$session" \
+      "ignored stale Codex checkpoint for valid live session $id" || true
+    return 0
+  fi
 
   if ! valid_jsonl "$rollout" "$id"; then
     restore=1
@@ -5186,57 +7718,84 @@ restore_rollout_if_needed() {
   fi
 
   if [ "$restore" -eq 1 ]; then
-    mkdir -p "$(dirname "$rollout")"
-    tmp="$rollout.detach.tmp.$$"
-    cp -p "$backup" "$tmp" || die "could not copy rollout checkpoint"
-    valid_jsonl "$tmp" "$id" || {
-      rm -f "$tmp"
-      die "copied rollout checkpoint failed validation"
-    }
-    mv -f "$tmp" "$rollout" || die "could not restore rollout from checkpoint"
+    publish_codex_rollout_checkpoint "$backup" "$rollout" "$id" || \
+      die "could not safely restore rollout from checkpoint"
     [ "$SYNC_ENABLED" = "0" ] || /bin/sync
     error "restored damaged Codex rollout from the last checkpoint"
   fi
 }
 
-recover_session() {
+recover_session_prepare_locked() {
   local session="$1"
-  local detach="$2"
+  local locked_cwd="$2"
   local meta
-  local cwd
-  local display_name
   local id
   local rollout
   local backup
   local db
   local id_sql
-  local primary
-  local tmp
-  local resume_args=()
-  local arg
-
-  refuse_runtime_without_managed_tmux "$session"
-  meta="$(usable_meta_path "$session")" || die "no valid saved state for '$session'"
-  primary="$(session_meta "$session")"
-  if [ "$meta" != "$primary" ]; then
-    tmp="$primary.recover.tmp.$$"
-    cp -p "$meta" "$tmp" && mv -f "$tmp" "$primary" || die "could not restore checkpoint metadata"
-    meta="$primary"
-  fi
+  local preflight_meta
+  local retained_dead_tmux=0
+  local retained_run_token=""
+  local resolved_status
+  local selected_cwd
 
   if tmux_has_session "$session"; then
     tmux_is_managed "$session" || die "refusing to recover over unmanaged tmux session '$session'"
-    if tmux_session_running "$session"; then
-      [ "$detach" -eq 1 ] && return 0
-      attach_session "$session"
-    fi
-    "${TMUX_CMD[@]}" kill-session -t "=$session" >/dev/null 2>&1 || true
+    tmux_session_running "$session" && \
+      die "session '$session' is running again; refusing recovery"
+    retained_dead_tmux=1
+    retained_run_token="$(tmux_option "$session" '@detach_run_token')"
+  fi
+  refuse_runtime_without_managed_tmux "$session"
+  if [ "$retained_dead_tmux" -eq 1 ]; then
+    require_dead_tmux_primary_run_match "$session" "$retained_run_token" 1
+  fi
+  select_recovery_meta_for_mutation "$session" || \
+    die "no valid saved state for '$session'"
+  preflight_meta="$SELECTED_RECOVERY_META"
+  selected_cwd="$(
+    "$STATE_BIN" meta get "$preflight_meta" project_dir 2>/dev/null
+  )" || die "could not read saved project directory"
+  [ "$selected_cwd" = "$locked_cwd" ] || \
+    die "saved project changed while recovery locks were acquired"
+  if [ "$SELECTED_RECOVERY_IS_UNCOMMITTED" -eq 1 ]; then
+    replacement_runtime_is_quiescent "$session" || \
+      die "replacement runtime shutdown is not proven; refusing to recover over it"
+  fi
+  # Validate the selected generation, saved arguments, and every provider
+  # restore destination before removing a retained pane. A deterministic
+  # recovery refusal must leave that evidence intact.
+  recovery_request_is_valid "$session" "$preflight_meta" direct || \
+    die "saved $PROVIDER_LABEL recovery data is missing, unsafe, or invalid"
+  if [ "$retained_dead_tmux" -eq 1 ] && tmux_has_session "$session"; then
+    require_dead_tmux_primary_run_match "$session" "$retained_run_token" 1
+    "${TMUX_CMD[@]}" kill-session -t "=$session" >/dev/null 2>&1 || \
+      die "could not remove retained tmux session '$session'"
   fi
 
-  cwd="$("$STATE_BIN" meta get "$meta" project_dir)"
-  display_name="$("$STATE_BIN" meta get "$meta" display_name 2>/dev/null || true)"
-  id="$("$STATE_BIN" meta get "$meta" agent_session_id codex_session_id)"
-  rollout="$("$STATE_BIN" meta get "$meta" transcript_path rollout_path)"
+  # Removing a retained pane changes the health evidence. Repeat the exact
+  # process proof and generation selection before restoring provider data.
+  refuse_runtime_without_managed_tmux "$session"
+  select_recovery_meta_for_mutation "$session" || \
+    die "no valid saved state for '$session'"
+  meta="$SELECTED_RECOVERY_META"
+  selected_cwd="$(
+    "$STATE_BIN" meta get "$meta" project_dir 2>/dev/null
+  )" || die "could not read saved project directory"
+  [ "$selected_cwd" = "$locked_cwd" ] || \
+    die "saved project changed while recovery locks were acquired"
+  if [ "$SELECTED_RECOVERY_IS_UNCOMMITTED" -eq 1 ]; then
+    replacement_runtime_is_quiescent "$session" || \
+      die "replacement runtime shutdown is not proven; refusing to recover over it"
+  fi
+
+  id="$(
+    "$STATE_BIN" meta get "$meta" agent_session_id codex_session_id
+  )" || die "could not read saved $PROVIDER_LABEL session identity"
+  rollout="$(
+    "$STATE_BIN" meta get "$meta" transcript_path rollout_path
+  )" || die "could not read saved $PROVIDER_LABEL transcript path"
 
   if [ -z "$id" ]; then
     if [ "$PROVIDER" = "claude" ]; then
@@ -5258,34 +7817,199 @@ recover_session() {
       fi
     fi
   fi
-  [ -n "$id" ] && [ -n "$rollout" ] || die "no unambiguous $PROVIDER_LABEL session UUID was checkpointed"
-  if [ "$PROVIDER" = "claude" ]; then
-    state_update_meta "$session" \
-      --string agent_session_id "$id" --string transcript_path "$rollout" || \
-      die "could not repair recovery metadata"
-  else
-    state_update_meta "$session" \
-      --string agent_session_id "$id" --string transcript_path "$rollout" \
-      --string codex_session_id "$id" --string rollout_path "$rollout" || \
-      die "could not repair recovery metadata"
+  [ -n "$id" ] || \
+    die "no unambiguous $PROVIDER_LABEL session UUID was checkpointed"
+  if [ "$PROVIDER" = "claude" ] && [ -z "$rollout" ]; then
+    rollout="$(claude_transcript_for_id "$id" 2>/dev/null)"
+    resolved_status=$?
+    case "$resolved_status" in
+      0) ;;
+      1)
+        claude_metadata_only_recovery_source_is_valid \
+          "$session" "$meta" "$id" || \
+            die "saved Claude metadata-only recovery data is invalid"
+        return 0
+        ;;
+      *) die "multiple valid Claude transcripts were found for session '$id'" ;;
+    esac
   fi
-  restore_rollout_if_needed "$session"
-  if [ -f "$(session_dir "$session")/resume-args.bin" ]; then
+  [ -n "$rollout" ] || \
+    die "no unambiguous $PROVIDER_LABEL transcript was checkpointed"
+  restore_rollout_if_needed "$session" "$meta" "$id" "$rollout"
+}
+
+recover_session() {
+  local session="$1"
+  local detach="$2"
+  local meta
+  local cwd
+
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || \
+      die "refusing to recover over unmanaged tmux session '$session'"
+    if tmux_session_running "$session"; then
+      [ "$detach" -eq 1 ] && return 0
+      attach_session "$session"
+      return 0
+    fi
+  fi
+  select_recovery_meta_for_mutation "$session" || \
+    die "no valid saved state for '$session'"
+  meta="$SELECTED_RECOVERY_META"
+  cwd="$("$STATE_BIN" meta get "$meta" project_dir 2>/dev/null)" || \
+    die "could not read saved project directory"
+  [ -n "$cwd" ] || die "saved project directory is missing"
+
+  mkdir -p "$INSTALL_STATE_ROOT" || \
+    die "cannot create install lock directory"
+  "$LOCKF_BIN" -k -t "$INSTALL_LOCK_TIMEOUT" "$INSTALL_LOCK" \
+    "$SELF" __recover_under_install_lock "$session" "$cwd" || return 1
+  [ "$detach" -eq 1 ] || attach_session "$session"
+}
+
+recover_under_install_lock() {
+  local session="$1"
+  local cwd="$2"
+  local lock
+
+  lock="$(project_lock_path "$cwd")"
+  "$LOCKF_BIN" -k -t 30 "$lock" \
+    "$SELF" __recover_under_project_lock "$session" "$cwd"
+}
+
+recover_under_project_lock() {
+  local session="$1"
+  local cwd="$2"
+  local existing
+
+  existing="$(running_session_for_project "$cwd" "$session" || true)"
+  [ -z "$existing" ] || \
+    die "project already has a running detached session: $existing"
+  recover_session_project_locked "$session" "$cwd"
+}
+
+recover_session_project_locked() {
+  local session="$1"
+  local locked_cwd="$2"
+  local meta
+  local cwd
+  local display_name
+  local id
+  local rollout
+  local backup
+  local db
+  local id_sql
+  local resume_args=()
+  local resume_args_file
+  local arg
+  local resolved_status
+  local metadata_only=0
+
+  if tmux_has_session "$session"; then
+    tmux_is_managed "$session" || \
+      die "refusing to recover over unmanaged tmux session '$session'"
+    tmux_session_running "$session" && \
+      die "session '$session' is running again; refusing recovery"
+  fi
+
+  # Checkpoint and heartbeat children can outlive a killed worker. Serialize
+  # generation selection, retained-pane removal, and provider restore against
+  # every writer. Their locked handlers recheck the exact live worker, so a
+  # queued orphan cannot mutate the selected generation after this barrier.
+  "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
+    "$SELF" __recover_session_prepare_locked \
+      "$session" "$locked_cwd" || return 1
+
+  refuse_runtime_without_managed_tmux "$session"
+  select_recovery_meta_for_mutation "$session" || \
+    die "no valid saved state for '$session'"
+  meta="$SELECTED_RECOVERY_META"
+  if [ "$SELECTED_RECOVERY_IS_UNCOMMITTED" -eq 1 ]; then
+    replacement_runtime_is_quiescent "$session" || \
+      die "replacement runtime shutdown is not proven; refusing to recover over it"
+  fi
+  recovery_request_is_valid "$session" "$meta" direct || \
+    die "saved $PROVIDER_LABEL recovery data is missing, unsafe, or invalid"
+
+  cwd="$("$STATE_BIN" meta get "$meta" project_dir)" || \
+    die "could not read saved project directory"
+  [ "$cwd" = "$locked_cwd" ] || \
+    die "saved project changed while recovery locks were acquired"
+  display_name="$("$STATE_BIN" meta get "$meta" display_name 2>/dev/null)" || \
+    die "could not read saved display name"
+  id="$(
+    "$STATE_BIN" meta get "$meta" agent_session_id codex_session_id
+  )" || die "could not read saved $PROVIDER_LABEL session identity"
+  rollout="$(
+    "$STATE_BIN" meta get "$meta" transcript_path rollout_path
+  )" || die "could not read saved $PROVIDER_LABEL transcript path"
+
+  if [ -z "$id" ]; then
+    if [ "$PROVIDER" = "claude" ]; then
+      backup="$(session_dir "$session")/checkpoint/transcript.jsonl"
+    else
+      backup="$(session_dir "$session")/checkpoint/rollout.jsonl"
+    fi
+    if [ -f "$backup" ]; then
+      if [ "$PROVIDER" = "claude" ]; then
+        id="$("$STATE_BIN" jsonl first "$backup" sessionId 2>/dev/null || true)"
+      else
+        id="$("$STATE_BIN" jsonl first "$backup" payload.id payload.session_id 2>/dev/null || true)"
+        db="$(codex_state_db)"
+        if [ -n "$id" ] && [ -n "$db" ] && [ -f "$db" ]; then
+          id_sql="$(sql_escape "$id")"
+          rollout="$($SQLITE_BIN -noheader -cmd '.timeout 5000' "$db" \
+            "SELECT rollout_path FROM threads WHERE id = '$id_sql' LIMIT 1;" 2>/dev/null || true)"
+        fi
+      fi
+    fi
+  fi
+  [ -n "$id" ] || \
+    die "no unambiguous $PROVIDER_LABEL session UUID was checkpointed"
+  if [ "$PROVIDER" = "claude" ] && [ -z "$rollout" ]; then
+    rollout="$(claude_transcript_for_id "$id" 2>/dev/null)"
+    resolved_status=$?
+    case "$resolved_status" in
+      0) ;;
+      1)
+        claude_metadata_only_recovery_source_is_valid \
+          "$session" "$meta" "$id" || \
+            die "saved Claude metadata-only recovery data is invalid"
+        metadata_only=1
+        ;;
+      *) die "multiple valid Claude transcripts were found for session '$id'" ;;
+    esac
+  fi
+  if [ "$metadata_only" -eq 0 ]; then
+    [ -n "$rollout" ] || \
+      die "no unambiguous $PROVIDER_LABEL transcript was checkpointed"
+  fi
+  resume_args_file="$(saved_resume_args_path "$session" "$meta")" || \
+    die "saved $PROVIDER_LABEL resume options are missing or invalid"
+  if [ -n "$resume_args_file" ]; then
     while IFS= read -r -d '' arg; do
       resume_args+=( "$arg" )
-    done <"$(session_dir "$session")/resume-args.bin"
+    done <"$resume_args_file"
   fi
-  if [ "${#resume_args[@]}" -gt 0 ]; then
-    start_under_project_lock "$session" "$cwd" "$display_name" \
+  if [ "$metadata_only" -eq 1 ]; then
+    if [ "${#resume_args[@]}" -gt 0 ]; then
+      start_tmux_session_locked "$session" "$cwd" "$display_name" \
+        "$id" "" 1 "${resume_args[@]}" || \
+        die "could not start metadata-only checkpoint recovery"
+    else
+      start_tmux_session_locked "$session" "$cwd" "$display_name" \
+        "$id" "" 1 || \
+        die "could not start metadata-only checkpoint recovery"
+    fi
+  elif [ "${#resume_args[@]}" -gt 0 ]; then
+    start_tmux_session_locked "$session" "$cwd" "$display_name" \
       "$id" "$rollout" 1 resume "$id" "${resume_args[@]}" || \
       die "could not start checkpoint recovery"
   else
-    start_under_project_lock "$session" "$cwd" "$display_name" \
+    start_tmux_session_locked "$session" "$cwd" "$display_name" \
       "$id" "$rollout" 1 resume "$id" || \
       die "could not start checkpoint recovery"
   fi
-  [ "$detach" -eq 1 ] || attach_session "$session"
-  return 0
 }
 
 main() {
@@ -5496,10 +8220,35 @@ case "${1:-}" in
     shift
     checkpoint_once_locked "$@"
     ;;
+  __checkpoint_stop_edge_locked)
+    shift
+    [ "$#" -eq 3 ] || exit 1
+    checkpoint_stop_edge_locked "$@"
+    ;;
   __runtime_heartbeat_locked)
     shift
     [ "$#" -eq 6 ] || exit 1
     runtime_heartbeat_locked "$@"
+    ;;
+  __runtime_heartbeat_once)
+    shift
+    [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || exit 1
+    runtime_heartbeat_once "$@"
+    ;;
+  __prepare_codex_resume_locked)
+    shift
+    [ "$#" -eq 3 ] || exit 1
+    prepare_codex_resume_locked "$@"
+    ;;
+  __prepare_claude_resume_locked)
+    shift
+    [ "$#" -eq 4 ] || exit 1
+    prepare_claude_resume_locked "$@"
+    ;;
+  __discover_live_worker_locked)
+    shift
+    [ "$#" -eq 3 ] || exit 1
+    discover_live_worker_locked "$@"
     ;;
   __delete_locked)
     shift
@@ -5508,6 +8257,31 @@ case "${1:-}" in
   __session_operation_locked)
     shift
     session_operation_locked "$@"
+    ;;
+  __recover_session_prepare_locked)
+    shift
+    [ "$#" -eq 2 ] || exit 1
+    recover_session_prepare_locked "$@"
+    ;;
+  __resume_under_install_lock)
+    shift
+    [ "$#" -ge 4 ] || exit 1
+    resume_under_install_lock "$@"
+    ;;
+  __resume_under_project_lock)
+    shift
+    [ "$#" -ge 4 ] || exit 1
+    resume_under_project_lock "$@"
+    ;;
+  __recover_under_install_lock)
+    shift
+    [ "$#" -eq 2 ] || exit 1
+    recover_under_install_lock "$@"
+    ;;
+  __recover_under_project_lock)
+    shift
+    [ "$#" -eq 2 ] || exit 1
+    recover_under_project_lock "$@"
     ;;
   __write_initial_meta)
     shift

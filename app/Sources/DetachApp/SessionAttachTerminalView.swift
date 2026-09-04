@@ -483,12 +483,14 @@ enum SessionAttachKeyboard {
     static func providerInput(for event: NSEvent) -> [UInt8]? {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.contains(.control),
-              flags.intersection([.command, .option, .shift, .function]).isEmpty,
-              (event.keyCode == 9
-                  || event.charactersIgnoringModifiers?.lowercased() == "v") else {
+              flags.intersection([.command, .option, .shift, .function]).isEmpty else {
             return nil
         }
-        return [0x16]
+        switch event.keyCode {
+        case 8: return [0x03] // Control-C
+        case 9: return [0x16] // Control-V
+        default: return nil
+        }
     }
 
     @discardableResult

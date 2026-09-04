@@ -54,8 +54,8 @@ not be the weak link.
   fails, or becomes recoverable.
 - **Use actions that match proven state.** Stop is for a live owned process.
   Resume continues a provider conversation. Recover restarts an interrupted
-  managed run from a validated checkpoint. Delete stays blocked until state is
-  safe to remove.
+  managed run from a validated recovery source. Delete stays blocked until
+  state is safe to remove.
 - **Get updates when state changes.** Native filesystem events trigger a
   dashboard refresh for lifecycle and provider turn changes. There is no
   repeating session-list timer while nothing changes.
@@ -134,6 +134,7 @@ The embedded terminal keeps the shortcuts that matter:
 | Switch to a numbered Working or Answer ready session | `Cmd-1` … `Cmd-9` |
 | Paste text | `Cmd-V` |
 | Give Codex or Claude Code an image from the clipboard | `Ctrl-V` |
+| Interrupt a command or close a provider overlay | `Ctrl-C` |
 | Find terminal output | `Cmd-F` |
 | Replace an exited terminal client without restarting the agent | **Reconnect** |
 
@@ -241,7 +242,7 @@ These actions solve different problems:
 |---|---|---|
 | The managed worker is still alive | **Attach** | Open a client for the existing tmux session. Do not start another agent. |
 | The provider conversation exists | **Resume** | Continue the conversation by UUID in its saved project. |
-| A Detach-managed run was interrupted | **Recover** | Validate saved context and a checkpoint, then restart the exact conversation under Detach. |
+| A Detach-managed run was interrupted | **Recover** | Validate saved context and its recovery source, then restart the exact conversation under Detach. |
 
 **Attach = live process. Resume = provider conversation. Recover = interrupted
 managed run.**
@@ -284,14 +285,14 @@ Detach evaluates health from independent facts:
 - the exact worker PID and provider PID, user ownership, and process relation;
 - valid metadata and provider conversation identity;
 - worker heartbeat and checkpoint freshness;
-- a checkpoint that is valid enough for conservative recovery.
+- a provider source that is valid enough for conservative recovery.
 
 | State | Meaning | Safe actions |
 |---|---|---|
 | **Running** | The pane, worker, provider, and run token agree. | Attach, Stop |
 | **Hung** | A required runtime identity is missing or inconsistent, or a recorded process survived tmux. | Attach or Stop only when tmux ownership is proven. Otherwise, no mutation. |
-| **Recoverable** | The live runtime is gone and a matching validated checkpoint exists. | Recover, Delete |
-| **Orphaned** | The live runtime is gone and no safe recovery checkpoint exists. | Delete |
+| **Recoverable** | The live runtime is gone and a matching validated recovery source exists. | Recover, Delete |
+| **Orphaned** | The live runtime is gone and no safe recovery source exists. | Delete |
 | **Finished / stopped** | The worker reached a terminal state. | Resume or Delete, according to provider identity. |
 | **Collision / corrupt** | tmux ownership or metadata cannot be trusted. | Conservative, state-specific actions only. |
 
@@ -324,6 +325,8 @@ then refer to the conversation that is in use.
 - **Codex:** Detach saves the session UUID and rollout JSONL. It keeps a valid
   live rollout when that file is at least as large as the checkpoint. It
   restores only when the matching live rollout is missing, invalid, or smaller.
+  If the backup is absent or belongs to an older generation, List and Recover
+  require the selected live rollout to be valid and match the session UUID.
   A separately validated SQLite backup is an emergency artifact. Detach never
   restores it over the shared Codex database automatically.
 - **Claude Code:** Detach saves the preassigned session UUID, transcript,
@@ -332,6 +335,12 @@ then refer to the conversation that is in use.
   matching checkpoint and its companion artifacts before resume.
 - **Both:** Detach rejects unsafe paths, ambiguous or mismatched UUIDs,
   malformed JSONL, and invalid checkpoint contents.
+
+Resume and Recover keep the last valid checkpoint and saved provider options
+until the replacement run is ready. If the readiness check fails, that recovery
+data stays available. A fresh Start with the same session name clears the prior
+checkpoint. Recover stays unavailable until Detach confirms that the failed
+replacement runtime stopped.
 
 Checkpoint state lives here:
 

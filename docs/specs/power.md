@@ -22,7 +22,23 @@ it does not wait for the idle runtime heartbeat. A transcript event belongs to
 the watch generation that delivered it: an event from a cancelled watch must
 not cancel its replacement or change the reported state. Missing, changed, or
 malformed handoff state stays `working`. Transition failures are surfaced and
-must not claim that sleep is safe. The provider continues while waiting.
+must not claim that sleep is safe. A Claude `AskUserQuestion` record with a
+`tool_use` stop reason and its matching user tool-result response provide the
+structured waiting and working transitions. The provider continues while
+waiting.
+
+When requested, the wrapper writes the run-token ready marker after both power
+layers are active and before provider launch. It writes the provider PID
+atomically after a successful spawn. A ready marker without a provider PID is
+an unknown launch state while wrapper completion is not known. Runtime recovery
+must not treat the marker as proof that the provider stopped. A dead worker
+with neither file is also unknown because the foreground wrapper can outlive
+that worker. Exact provider death proves shutdown. A normal wrapper error after
+spawn or PID publication failure also proves shutdown because the launcher
+kills and waits for the child. Before the starter invokes `respawn-pane`, it can
+record that no wrapper or provider exists after it removes the placeholder tmux
+session. A `respawn-pane` attempt ends this local proof. A signal exit does not
+provide shutdown proof.
 
 Each working session owns a separate helper lease. Outside the low-battery and
 thermal fail-safe states, the helper keeps the machine-wide closed-lid setting
