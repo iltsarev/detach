@@ -48,7 +48,7 @@ public struct FilePowerRunActivityReader: PowerRunActivityReading {
     }
 
     static func openValidated(path: String, flags: Int32) -> Int32? {
-        let descriptor = Darwin.open(path, flags | O_NOFOLLOW)
+        let descriptor = Darwin.open(path, flags | O_NONBLOCK | O_NOFOLLOW)
         guard descriptor >= 0 else { return nil }
 
         var information = stat()

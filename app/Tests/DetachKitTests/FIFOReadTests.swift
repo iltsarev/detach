@@ -76,6 +76,36 @@ final class FIFOReadTests: XCTestCase {
         }
     }
 
+    func testActivityReaderRejectsFIFOWithoutWaitingForAWriter() throws {
+        let fifo = root.appendingPathComponent("activity")
+        try checkWithoutWriter(fifo) {
+            XCTAssertEqual(FilePowerRunActivityReader().state(atPath: fifo.path), .working)
+        }
+    }
+
+    func testActivityWatcherRejectsFIFOHandoffWithoutWaitingForAWriter() throws {
+        let activity = root.appendingPathComponent("activity")
+        try Data("waiting\n".utf8).write(to: activity)
+        let fifo = root.appendingPathComponent("activity-source")
+        try checkWithoutWriter(fifo) {
+            let result = try FilePowerRunActivityWatcher().run(
+                activityFile: activity.path,
+                activitySourceFile: fifo.path,
+                onStateChange: { XCTAssertEqual($0, .working) },
+                operation: { ChildCommandResult(exitCode: 17) })
+            XCTAssertEqual(result.exitCode, 17)
+        }
+    }
+
+    func testHeartbeatReaderRejectsFIFOWithoutWaitingForAWriter() throws {
+        let fifo = root.appendingPathComponent("watchdog-status.json")
+        try checkWithoutWriter(fifo) {
+            let snapshot = PowerHeartbeatReader(statusURL: fifo).read()
+            XCTAssertFalse(snapshot.isFresh)
+            XCTAssertEqual(snapshot.effectivePowerState, .unknown)
+        }
+    }
+
     func testLifetimeProbeRejectsFIFOWithoutWaitingForAWriter() throws {
         let fifo = root.appendingPathComponent("lifetime.lock")
         let barrier = PowerHelperLifetimeBarrier(fileURL: fifo, expectedOwner: geteuid())
@@ -116,7 +146,7 @@ final class FIFOReadTests: XCTestCase {
         XCTAssertEqual(result, .success, "File validation waited for a FIFO writer", file: file, line: line)
         if result == .timedOut {
             let rescue = open(fifo.path, O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
-            defer { if rescue >= 0 { close(rescue) } }
+            if rescue >= 0 { close(rescue) }
             XCTAssertGreaterThanOrEqual(rescue, 0, file: file, line: line)
             XCTAssertEqual(completed.wait(timeout: .now() + 1), .success, file: file, line: line)
         }
