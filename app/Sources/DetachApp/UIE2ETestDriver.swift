@@ -975,6 +975,8 @@ enum UIE2ETestDriver {
         guard visible.insetBy(dx: -2, dy: -2).contains(frame) else {
             throw Failure(message: "Settings window is off the hosting screen")
         }
+        try await verifySettingsTextGrowth(in: settingsWindow, visible: visible)
+        checks.append("settings-text-growth-stays-on-screen")
         checks.append("settings-window-stays-on-screen")
         let systemTab = try await buttonLabeled(
             L10n.string("System"), attempts: 40)
@@ -984,6 +986,47 @@ enum UIE2ETestDriver {
             identifier: "settings-installation", name: "Installation")
         checks.append("settings-system-reveals-storage-and-installation")
         return checks
+    }
+
+    private static func verifySettingsTextGrowth(
+        in window: NSWindow,
+        visible: CGRect
+    ) async throws {
+        let originalPreference = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        let originalFont = originalPreference as? Double ?? AppFontSize.defaultValue
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        let originalFrame = window.frame
+        defer {
+            AppSettings.defaults.set(originalPreference, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        window.setFrameOrigin(CGPoint(
+            x: visible.maxX - window.frame.width, y: visible.minY))
+        let slider = try await element(role: .slider)
+        try requireGeometry(slider, name: "settings text size slider")
+        let sliderFrame = frame(slider)
+        try await click(
+            frame: CGRect(x: sliderFrame.maxX - 3, y: sliderFrame.midY - 1,
+                          width: 2, height: 2),
+            name: "maximum settings text size", owningWindow: window)
+        let apply = try await buttonLabeled(L10n.string("Apply"))
+        try await waitUntil("text size draft can be applied") { isEnabled(apply) }
+        guard AppSettings.defaults.double(forKey: AppFontSize.storageKey) == originalFont,
+              abs(window.frame.width - originalFrame.width) < 1 else {
+            throw Failure(message: "text size draft resized Settings before Apply")
+        }
+        try await click(apply, name: "apply maximum text size")
+        try await waitUntil("Settings grows within the hosting screen") {
+            AppSettings.defaults.double(forKey: AppFontSize.storageKey)
+                == AppFontSize.allowedRange.upperBound
+                && window.frame.width > originalFrame.width + 100
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings restores its original text size") {
+            abs(window.frame.width - originalFrame.width) < 1
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
     }
 
     private static func runOnboardingFirstRun(
