@@ -44,8 +44,10 @@ done
 required=(
   docs/specs/README.md
   docs/specs/runtime.md
+  docs/specs/state.md
   docs/specs/power.md
   docs/specs/app.md
+  docs/specs/app-setup.md
   docs/specs/release.md
   docs/specs/documentation.md
   docs/testing.md
@@ -57,13 +59,25 @@ for file in "${required[@]}"; do
   [ -f "$ROOT/$file" ] || fail "missing $file"
 done
 
+spec_warning="$(awk -F '\t' '$1 == "limit" && $2 == "routed_spec_warning_bytes" {print $3}' \
+  "$ROOT/quality/policy.tsv")"
+spec_limit="$(awk -F '\t' '$1 == "limit" && $2 == "routed_spec_limit_bytes" {print $3}' \
+  "$ROOT/quality/policy.tsv")"
+[[ "$spec_warning" =~ ^[1-9][0-9]*$ ]] || fail 'routed spec warning is missing or invalid'
+[[ "$spec_limit" =~ ^[1-9][0-9]*$ ]] || fail 'routed spec limit is missing or invalid'
+[ "$spec_warning" -lt "$spec_limit" ] || fail 'routed spec warning must be below the hard limit'
+
 for spec in "$ROOT"/docs/specs/*.md; do
   bytes="$(wc -c <"$spec" | tr -d ' ')"
-  [ "$bytes" -le 16384 ] ||
-    fail "${spec#"$ROOT/"} is ${bytes} bytes; routed spec limit is 16384"
+  [ "$bytes" -le "$spec_limit" ] ||
+    fail "${spec#"$ROOT/"} is ${bytes} bytes; routed spec limit is ${spec_limit}"
+  if [ "$bytes" -gt "$spec_warning" ]; then
+    printf 'docs-contract: warning: %s is %s bytes; plan a split before %s\n' \
+      "${spec#"$ROOT/"}" "$bytes" "$spec_limit" >&2
+  fi
 done
 
-for spec in runtime power app release documentation; do
+for spec in runtime state power app app-setup release documentation; do
   [ "$(grep -Fc "docs/specs/$spec.md" "$ROOT/AGENTS.md")" -eq 1 ] ||
     fail "context map must reference $spec.md exactly once"
 done

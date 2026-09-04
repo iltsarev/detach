@@ -20,9 +20,9 @@ then update every affected durable artifact in the same change.
 
 ## Choosing context
 
-Use the five-row context map in `AGENTS.md`. The filenames are deliberately
-literal: runtime, power, app, release, and documentation. Read one by default
-and another only when the change crosses a real subsystem boundary. Use
+Use the context map in `AGENTS.md`. The filenames are deliberately literal.
+Read one spec by default and another only when the change crosses a real
+subsystem boundary. Use
 `../testing.md` only when the focused command or gate semantics are unclear.
 Do not load every document preemptively.
 

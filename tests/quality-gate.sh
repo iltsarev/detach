@@ -196,7 +196,8 @@ fi
 prepare_template() {
   local stage
   mkdir -p "$TEMPLATE_REPO/scripts" "$TEMPLATE_REPO/tests/quality-gate-fixtures" \
-    "$TEMPLATE_REPO/app/build" "$TEMPLATE_REPO/quality/generated" "$TEMPLATE_REPO/tools"
+    "$TEMPLATE_REPO/app/build" "$TEMPLATE_REPO/docs/specs" \
+    "$TEMPLATE_REPO/quality/generated" "$TEMPLATE_REPO/tools"
   install -m 0755 "$ROOT/scripts/quality-gate" "$TEMPLATE_REPO/scripts/quality-gate"
   install -m 0755 "$ROOT/scripts/quality-shard" "$TEMPLATE_REPO/scripts/quality-shard"
   install -m 0755 "$ROOT/scripts/quality-policy" "$TEMPLATE_REPO/scripts/quality-policy"
@@ -214,6 +215,7 @@ prepare_template() {
   install -m 0644 "$ROOT/quality/policy.tsv" "$TEMPLATE_REPO/quality/policy.tsv"
   install -m 0644 "$ROOT/quality/generated/policy.json" \
     "$TEMPLATE_REPO/quality/generated/policy.json"
+  install -m 0644 "$ROOT"/docs/specs/*.md "$TEMPLATE_REPO/docs/specs/"
   install -m 0755 "$ROOT/tests/release-budget-ratchet.sh" \
     "$ROOT/tests/shell-safety.sh" "$ROOT/tests/quality-policy.sh" \
     "$ROOT/tests/quality-dashboard.sh" "$TEMPLATE_REPO/tests/"
@@ -1221,6 +1223,7 @@ grep -F $'architecture\t' "$run_dir/environment.tsv" >/dev/null
 grep -F $'xcode\t' "$run_dir/environment.tsv" >/dev/null
 grep -F $'swift\t' "$run_dir/environment.tsv" >/dev/null
 grep -F $'schema\t1' "$run_dir/artifacts.tsv" >/dev/null
+grep -F $'file\tspec-sizes.json\t' "$run_dir/artifacts.tsv" >/dev/null
 grep -F $'scenarios.jsonl\t' "$run_dir/artifacts.tsv" >/dev/null
 grep -F $'scenarios.junit.xml\t' "$run_dir/artifacts.tsv" >/dev/null
 grep -F '"id":"SC-DOCS-CONTRACT"' "$run_dir/scenarios.jsonl" >/dev/null
@@ -1231,6 +1234,60 @@ grep -F -- '- Specifications: `documentation`' "$run_dir/summary.md" >/dev/null
 grep -F '| `static` | passed |' "$run_dir/summary.md" >/dev/null
 grep -F '| `SC-DOCS-CONTRACT` | `static` | passed |' "$run_dir/summary.md" >/dev/null
 grep -F 'markdown=' "$REPO/evidence.out" >/dev/null
+python3 - "$run_dir/spec-sizes.json" "$run_dir/manifest.tsv" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+manifest = dict(
+    line.rstrip("\n").split("\t", 1)
+    for line in open(sys.argv[2], encoding="utf-8")
+)
+assert document["schema"] == 1
+assert document["policy"] == int(manifest["policy"])
+assert document["source_commit"] == manifest["source_commit"]
+assert document["input_fingerprint"] == manifest["input_fingerprint"]
+assert document["warning_bytes"] < document["limit_bytes"]
+assert [record["id"] for record in document["specifications"]] == [
+    "documentation", "runtime", "state", "power", "app", "app-setup", "release",
+]
+for record in document["specifications"]:
+    size = record["bytes"]
+    expected = (
+        "over-limit" if size > document["limit_bytes"]
+        else "warning" if size > document["warning_bytes"]
+        else "healthy"
+    )
+    assert record["status"] == expected
+    assert record["headroom_bytes"] == max(0, document["limit_bytes"] - size)
+PY
+cp "$run_dir/spec-sizes.json" "$TMP_ROOT/first-spec-sizes.json"
+gate >"$REPO/evidence-repeat.out"
+repeat_run="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d \
+  ! -path "$run_dir" -print | head -1)"
+cmp "$TMP_ROOT/first-spec-sizes.json" "$repeat_run/spec-sizes.json" >/dev/null || {
+  printf 'quality gate specification-size evidence is not deterministic\n' >&2
+  exit 1
+}
+
+setup_fixture spec-size-missing
+rm "$REPO/docs/specs/runtime.md"
+if gate --stage static >"$REPO/spec-size-missing.out" 2>&1; then
+  printf 'quality gate accepted a missing routed specification\n' >&2
+  exit 1
+fi
+grep -F 'routed specification is missing or unsafe: docs/specs/runtime.md' \
+  "$REPO/spec-size-missing.out" >/dev/null
+
+setup_fixture spec-size-symlink
+mv "$REPO/docs/specs/runtime.md" "$REPO/docs/specs/runtime-target.md"
+ln -s runtime-target.md "$REPO/docs/specs/runtime.md"
+if gate --stage static >"$REPO/spec-size-symlink.out" 2>&1; then
+  printf 'quality gate accepted a symlinked routed specification\n' >&2
+  exit 1
+fi
+grep -F 'routed specification is missing or unsafe: docs/specs/runtime.md' \
+  "$REPO/spec-size-symlink.out" >/dev/null
 
 setup_fixture result-symlink
 mkdir -p "$REPO/real-results"

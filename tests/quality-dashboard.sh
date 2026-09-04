@@ -99,10 +99,31 @@ cat >"$RUN_DIR/coverage-opportunities.json" <<JSON
   "suite": "ui"
 }
 JSON
+cat >"$RUN_DIR/spec-sizes.json" <<JSON
+{
+  "input_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "limit_bytes": 16384,
+  "policy": $POLICY_VERSION,
+  "schema": 1,
+  "source_commit": "0123456789abcdef0123456789abcdef01234567",
+  "specifications": [
+    {"bytes": 1, "headroom_bytes": 16383, "id": "documentation", "path": "docs/specs/documentation.md", "status": "healthy"},
+    {"bytes": 12288, "headroom_bytes": 4096, "id": "runtime", "path": "docs/specs/runtime.md", "status": "healthy"},
+    {"bytes": 12289, "headroom_bytes": 4095, "id": "state", "path": "docs/specs/state.md", "status": "warning"},
+    {"bytes": 16384, "headroom_bytes": 0, "id": "power", "path": "docs/specs/power.md", "status": "warning"},
+    {"bytes": 256, "headroom_bytes": 16128, "id": "app", "path": "docs/specs/app.md", "status": "healthy"},
+    {"bytes": 512, "headroom_bytes": 15872, "id": "app-setup", "path": "docs/specs/app-setup.md", "status": "healthy"},
+    {"bytes": 1024, "headroom_bytes": 15360, "id": "release", "path": "docs/specs/release.md", "status": "healthy"}
+  ],
+  "status": "warning",
+  "warning_bytes": 12288
+}
+JSON
 metrics_digest="$(shasum -a 256 "$RUN_DIR/quality-metrics.json" | awk '{print $1}')"
 opportunities_digest="$(shasum -a 256 "$RUN_DIR/coverage-opportunities.json" | awk '{print $1}')"
-printf 'schema\t1\nfile\tcoverage-opportunities.json\t%s\nfile\tquality-metrics.json\t%s\n' \
-  "$opportunities_digest" "$metrics_digest" \
+spec_sizes_digest="$(shasum -a 256 "$RUN_DIR/spec-sizes.json" | awk '{print $1}')"
+printf 'schema\t1\nfile\tcoverage-opportunities.json\t%s\nfile\tquality-metrics.json\t%s\nfile\tspec-sizes.json\t%s\n' \
+  "$opportunities_digest" "$metrics_digest" "$spec_sizes_digest" \
   >"$RUN_DIR/artifacts.tsv"
 artifacts_digest="$(shasum -a 256 "$RUN_DIR/artifacts.tsv" | awk '{print $1}')"
 cat >"$RUN_DIR/manifest.tsv" <<EOF
@@ -130,10 +151,25 @@ summary_sha256	$summary_digest
 result	passed
 EOF
 
+refresh_spec_size_bindings() {
+  local run_dir="$1" artifact_digest inventory_digest
+  artifact_digest="$(shasum -a 256 "$run_dir/spec-sizes.json" | awk '{print $1}')"
+  awk -F '\t' -v OFS='\t' -v digest="$artifact_digest" \
+    '$1 == "file" && $2 == "spec-sizes.json" {$3=digest} {print}' \
+    "$run_dir/artifacts.tsv" >"$run_dir/artifacts.tsv.tmp"
+  mv "$run_dir/artifacts.tsv.tmp" "$run_dir/artifacts.tsv"
+  inventory_digest="$(shasum -a 256 "$run_dir/artifacts.tsv" | awk '{print $1}')"
+  awk -F '\t' -v OFS='\t' -v digest="$inventory_digest" \
+    '$1 == "artifacts_sha256" {$2=digest} {print}' \
+    "$run_dir/manifest.tsv" >"$run_dir/manifest.tsv.tmp"
+  mv "$run_dir/manifest.tsv.tmp" "$run_dir/manifest.tsv"
+}
+
 PRIOR_RUN="$RESULT_ROOT/20260810T100000Z-1"
 mkdir -p "$PRIOR_RUN"
 awk -F '\t' -v OFS='\t' \
-  '$1 == "policy" {$2=21} {print}' \
+  '$1 == "input_fingerprint" || $1 == "artifacts_sha256" || $1 == "specs" {next}
+   $1 == "policy" {$2=21} {print}' \
   "$RUN_DIR/manifest.tsv" >"$PRIOR_RUN/manifest.tsv"
 
 cat >"$MUTATION_SUMMARY" <<JSON
@@ -256,14 +292,19 @@ grep -F '8/8 passed · passed · 1 repaired failure retained · source' "$OUTPUT
   fail 'workflow-eval summary is missing'
 grep -F 'p95 285s · alert 480s · SLO 600s · healthy' "$OUTPUT/index.html" >/dev/null || \
   fail 'feedback latency summary is missing'
+grep -F 'Routed specification sizes' "$OUTPUT/index.html" >/dev/null || \
+  fail 'routed specification size table is missing'
+grep -F 'Warn above 12,288 bytes. Hard limit: 16,384 bytes.' \
+  "$OUTPUT/index.html" >/dev/null || fail 'routed specification thresholds are missing'
 grep -F "CodeQL actions passed + swift passed · passed · weekly-and-manual · source ${SOURCE_COMMIT:0:10} · " \
   "$OUTPUT/index.html" >/dev/null || fail 'security result is missing'
 grep -F 'href="https://github.com/owner/repository/actions/runs/901">run 901</a>' \
   "$OUTPUT/index.html" >/dev/null || fail 'security run link is missing'
 ! grep -F '<svg' "$OUTPUT/index.html" >/dev/null || fail 'dashboard contains hand-drawn SVG'
 
-python3 - "$OUTPUT/data.json" "$SECURITY_SUMMARY" <<'PY'
+python3 - "$OUTPUT/data.json" "$SECURITY_SUMMARY" "$ROOT" <<'PY'
 import json
+from pathlib import Path
 import sys
 with open(sys.argv[1], encoding="utf-8") as source:
     data = json.load(source)
@@ -279,6 +320,30 @@ assert data["quality"]["coverage_opportunities"]["opportunities"][0]["path"].end
 )
 assert data["quality"]["mutation"]["score_percent"] == 100
 assert data["quality"]["merge"] == "not-yet-emitted"
+specification_sizes = data["quality"]["specification_sizes"]
+assert specification_sizes["warning_bytes"] == 12_288
+assert specification_sizes["limit_bytes"] == 16_384
+size_by_id = {
+    record["id"]: record for record in specification_sizes["specifications"]
+}
+assert set(size_by_id) == {
+    "documentation", "runtime", "state", "power", "app", "app-setup", "release"
+}
+assert size_by_id["documentation"] == {
+    "bytes": 1,
+    "headroom_bytes": 16_383,
+    "id": "documentation",
+    "path": "docs/specs/documentation.md",
+    "status": "healthy",
+}
+assert (Path(sys.argv[3]) / "docs/specs/documentation.md").stat().st_size != 1
+assert size_by_id["runtime"]["bytes"] == 12_288
+assert size_by_id["runtime"]["status"] == "healthy"
+assert size_by_id["state"]["bytes"] == 12_289
+assert size_by_id["state"]["status"] == "warning"
+assert size_by_id["power"]["bytes"] == 16_384
+assert size_by_id["power"]["status"] == "warning"
+assert all(record["status"] != "over-limit" for record in size_by_id.values())
 with open(sys.argv[2], encoding="utf-8") as source:
     security = json.load(source)
 assert data["quality"]["security"] == {
@@ -301,7 +366,13 @@ assert [journey["id"] for journey in data["journeys"]] == [
 ]
 
 sys.path.insert(0, "tools")
-from quality_dashboard import DashboardError, parse_merge_evidence
+from quality_dashboard import (
+    DashboardError, parse_merge_evidence, specification_size_status,
+)
+assert specification_size_status(12_288, 12_288, 16_384) == "healthy"
+assert specification_size_status(12_289, 12_288, 16_384) == "warning"
+assert specification_size_status(16_384, 12_288, 16_384) == "warning"
+assert specification_size_status(16_385, 12_288, 16_384) == "over-limit"
 assert parse_merge_evidence(
     "Merge change\n\nQuality-Policy: %s\nQuality-Repair-Attempt: 1\n" % data["run"]["policy"],
     data["run"]["policy"], 2,
@@ -453,6 +524,122 @@ fi
 grep -F 'manifest is missing: specs' "$TMP_ROOT/missing-specs.out" >/dev/null || \
   fail 'missing affected-spec failure is unclear'
 mv "$TMP_ROOT/current-manifest.tsv" "$RUN_DIR/manifest.tsv"
+
+mv "$RUN_DIR/promotion.tsv" "$TMP_ROOT/current-promotion.tsv"
+cp "$RUN_DIR/spec-sizes.json" "$TMP_ROOT/spec-sizes.original.json"
+cp "$RUN_DIR/artifacts.tsv" "$TMP_ROOT/artifacts.original.tsv"
+cp "$RUN_DIR/manifest.tsv" "$TMP_ROOT/manifest.original.tsv"
+
+restore_spec_size_evidence() {
+  rm -f "$RUN_DIR/spec-sizes.json" "$RUN_DIR/artifacts.tsv" "$RUN_DIR/manifest.tsv"
+  cp "$TMP_ROOT/spec-sizes.original.json" "$RUN_DIR/spec-sizes.json"
+  cp "$TMP_ROOT/artifacts.original.tsv" "$RUN_DIR/artifacts.tsv"
+  cp "$TMP_ROOT/manifest.original.tsv" "$RUN_DIR/manifest.tsv"
+}
+
+rm "$RUN_DIR/spec-sizes.json"
+if "$ROOT/scripts/quality-dashboard" generate --result-root "$RESULT_ROOT" \
+    --output "$TMP_ROOT/missing-spec-sizes" >"$TMP_ROOT/missing-spec-sizes.out" 2>&1; then
+  fail 'dashboard accepted missing routed specification size evidence'
+fi
+grep -F 'routed specification sizes is missing or unsafe' \
+  "$TMP_ROOT/missing-spec-sizes.out" >/dev/null || \
+  fail 'missing routed specification size failure is unclear'
+restore_spec_size_evidence
+
+rm "$RUN_DIR/spec-sizes.json"
+ln -s "$TMP_ROOT/spec-sizes.original.json" "$RUN_DIR/spec-sizes.json"
+if "$ROOT/scripts/quality-dashboard" generate --result-root "$RESULT_ROOT" \
+    --output "$TMP_ROOT/symlink-spec-sizes" >"$TMP_ROOT/symlink-spec-sizes.out" 2>&1; then
+  fail 'dashboard accepted symlinked routed specification size evidence'
+fi
+grep -F 'routed specification sizes is missing or unsafe' \
+  "$TMP_ROOT/symlink-spec-sizes.out" >/dev/null || \
+  fail 'symlinked routed specification size failure is unclear'
+restore_spec_size_evidence
+
+printf 'tampered\n' >>"$RUN_DIR/spec-sizes.json"
+if "$ROOT/scripts/quality-dashboard" generate --result-root "$RESULT_ROOT" \
+    --output "$TMP_ROOT/tampered-spec-sizes" >"$TMP_ROOT/tampered-spec-sizes.out" 2>&1; then
+  fail 'dashboard accepted routed specification sizes with a stale digest'
+fi
+grep -F 'routed specification sizes digest does not match the artifact inventory' \
+  "$TMP_ROOT/tampered-spec-sizes.out" >/dev/null || \
+  fail 'routed specification size digest failure is unclear'
+restore_spec_size_evidence
+
+python3 - "$RUN_DIR/spec-sizes.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+document = json.load(open(path, encoding="utf-8"))
+document["schema"] = 2
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(document, target)
+PY
+refresh_spec_size_bindings "$RUN_DIR"
+if "$ROOT/scripts/quality-dashboard" generate --result-root "$RESULT_ROOT" \
+    --output "$TMP_ROOT/schema-spec-sizes" >"$TMP_ROOT/schema-spec-sizes.out" 2>&1; then
+  fail 'dashboard accepted an unsupported routed specification size schema'
+fi
+grep -F 'routed specification sizes schema is unsupported' \
+  "$TMP_ROOT/schema-spec-sizes.out" >/dev/null || \
+  fail 'routed specification size schema failure is unclear'
+restore_spec_size_evidence
+
+python3 - "$RUN_DIR/spec-sizes.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+document = json.load(open(path, encoding="utf-8"))
+document["policy"] += 1
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(document, target)
+PY
+refresh_spec_size_bindings "$RUN_DIR"
+if "$ROOT/scripts/quality-dashboard" generate --result-root "$RESULT_ROOT" \
+    --output "$TMP_ROOT/policy-spec-sizes" >"$TMP_ROOT/policy-spec-sizes.out" 2>&1; then
+  fail 'dashboard accepted routed specification sizes from another policy'
+fi
+grep -F 'routed specification sizes policy does not match the run' \
+  "$TMP_ROOT/policy-spec-sizes.out" >/dev/null || \
+  fail 'routed specification size policy failure is unclear'
+restore_spec_size_evidence
+
+python3 - "$RUN_DIR/spec-sizes.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+document = json.load(open(path, encoding="utf-8"))
+document["source_commit"] = "f" * 40
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(document, target)
+PY
+refresh_spec_size_bindings "$RUN_DIR"
+if "$ROOT/scripts/quality-dashboard" generate --result-root "$RESULT_ROOT" \
+    --output "$TMP_ROOT/source-spec-sizes" >"$TMP_ROOT/source-spec-sizes.out" 2>&1; then
+  fail 'dashboard accepted routed specification sizes from another source'
+fi
+grep -F 'routed specification sizes source identity does not match the run' \
+  "$TMP_ROOT/source-spec-sizes.out" >/dev/null || \
+  fail 'routed specification size source failure is unclear'
+restore_spec_size_evidence
+
+python3 - "$RUN_DIR/spec-sizes.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+document = json.load(open(path, encoding="utf-8"))
+document["specifications"][0]["path"] = "../escape.md"
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(document, target)
+PY
+refresh_spec_size_bindings "$RUN_DIR"
+if "$ROOT/scripts/quality-dashboard" generate --result-root "$RESULT_ROOT" \
+    --output "$TMP_ROOT/path-spec-sizes" >"$TMP_ROOT/path-spec-sizes.out" 2>&1; then
+  fail 'dashboard accepted an escaping routed specification path'
+fi
+grep -F 'routed specification path is unsafe: ../escape.md' \
+  "$TMP_ROOT/path-spec-sizes.out" >/dev/null || \
+  fail 'routed specification path failure is unclear'
+restore_spec_size_evidence
+mv "$TMP_ROOT/current-promotion.tsv" "$RUN_DIR/promotion.tsv"
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/tools/quality_dashboard.py" "$OUTPUT" <<'PY'
 import importlib.util

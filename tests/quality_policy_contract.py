@@ -38,11 +38,123 @@ def main() -> None:
     policy = Policy(POLICY)
     specs = policy.specification_document()
 
-    require(len(specs) == 5, "expected five current specifications")
+    require(len(specs) == 7, "expected seven current specifications")
     require(
         {spec["id"] for spec in specs}
-        == {"documentation", "runtime", "power", "app", "release"},
+        == {
+            "documentation", "runtime", "state", "power", "app",
+            "app-setup", "release",
+        },
         "specification identities changed unexpectedly",
+    )
+    require(
+        policy.limits["routed_spec_warning_bytes"] == 12_288
+        and policy.limits["routed_spec_limit_bytes"] == 16_384,
+        "routed specification size limits changed unexpectedly",
+    )
+    route_cases = (
+        (
+            "app/Sources/DetachKit/DetachStateCommand.swift",
+            "state-source", "safe", "docs/specs/state.md",
+            "app/Sources/DetachKit/DetachState*.swift",
+            "session-state",
+        ),
+        (
+            "app/Sources/DetachKit/Session.swift",
+            "state-source", "safe", "docs/specs/state.md",
+            "app/Sources/DetachKit/Session.swift",
+            "session-state",
+        ),
+        (
+            "app/Sources/DetachKit/SessionEvents.swift",
+            "state-source", "safe", "docs/specs/state.md",
+            "app/Sources/DetachKit/SessionEvents.swift",
+            "session-state",
+        ),
+        (
+            "app/Sources/DetachKit/SessionHealth.swift",
+            "session-health-source", "safe", "docs/specs/app.md",
+            "app/Sources/DetachKit/SessionHealth.swift",
+            "session-lifecycle,session-state,app-experience",
+        ),
+        (
+            "app/Sources/DetachKit/SessionMaintenance.swift",
+            "state-source", "safe", "docs/specs/state.md",
+            "app/Sources/DetachKit/SessionMaintenance.swift",
+            "session-state",
+        ),
+        (
+            "app/Sources/DetachKit/SessionStore.swift",
+            "state-runtime", "safe", "docs/specs/runtime.md",
+            "app/Sources/DetachKit/Session*.swift",
+            "session-lifecycle,session-state",
+        ),
+        (
+            "app/Sources/DetachKit/BoundedProcessRunner.swift",
+            "bounded-process-source", "both", "docs/specs/runtime.md",
+            "app/Sources/DetachKit/BoundedProcessRunner.swift",
+            "session-lifecycle,session-state,power-protection",
+        ),
+        (
+            "app/Sources/DetachApp/DetachApp.swift",
+            "app-shell-source", "install", "docs/specs/app.md",
+            "app/Sources/DetachApp/DetachApp.swift",
+            "app-experience,onboarding,settings,update",
+        ),
+        (
+            "app/Sources/DetachApp/InstallationStore.swift",
+            "installation-store-source", "both", "docs/specs/power.md",
+            "app/Sources/DetachApp/InstallationStore.swift",
+            "power-protection,onboarding,settings,update,diagnostics,installation",
+        ),
+        (
+            "app/Sources/DetachApp/PowerHelperService.swift",
+            "power", "both", "docs/specs/power.md",
+            "app/Sources/DetachApp/PowerHelper*.swift",
+            "power-protection",
+        ),
+        (
+            "app/Sources/DetachApp/OnboardingView.swift",
+            "onboarding-source", "install", "docs/specs/app-setup.md",
+            "app/Sources/DetachApp/Onboarding*.swift",
+            "onboarding",
+        ),
+        (
+            "app/Sources/DetachApp/RootView.swift",
+            "root-view-source", "safe", "docs/specs/app.md",
+            "app/Sources/DetachApp/RootView.swift",
+            "app-experience,onboarding",
+        ),
+        (
+            "app/Sources/DetachKit/DetachCLI.swift",
+            "runtime-source", "safe", "docs/specs/runtime.md",
+            "app/Sources/DetachKit/DetachCLI.swift",
+            "session-lifecycle,session-state",
+        ),
+        (
+            "app/Sources/DetachApp/UIE2ETestDriver.swift",
+            "ui-e2e-source", "safe", "docs/specs/app.md",
+            "app/Sources/DetachApp/UIE2E*.swift",
+            "app-experience,onboarding,settings",
+        ),
+    )
+    for path, test_domain, release_domain, spec, pattern, capabilities in route_cases:
+        classification = policy.classify(path)
+        require(
+            (
+                classification.test_domain,
+                classification.release_domain,
+                classification.spec,
+                classification.pattern,
+                classification.capabilities,
+            ) == (test_domain, release_domain, spec, pattern, capabilities),
+            f"source route changed unexpectedly: {path}",
+        )
+    health_impact = policy.impact(["app/Sources/DetachKit/SessionHealth.swift"])
+    require(
+        {"swift", "app", "codex", "claude", "distribution", "tmux-runtime"}
+        <= set(health_impact.stages),
+        "session health changes omit runtime ownership evidence",
     )
     require(
         all("status" not in spec for spec in specs),
@@ -62,6 +174,16 @@ def main() -> None:
         set(requirements) == set(policy.requirements),
         "the specification view omits a requirement",
     )
+    require(
+        requirements["QC-RUNTIME-STATE"]["journeys"]
+        == ["J-SESSION-PERSIST", "J-STATE-CLEANUP"],
+        "typed state evidence does not cover persistence and safe cleanup",
+    )
+    require(
+        requirements["QC-RUNTIME-STORAGE"]["journeys"]
+        == ["J-STATE-RECOVER"],
+        "validated restore evidence is not owned by the state recovery journey",
+    )
     for identifier, requirement in requirements.items():
         require(requirement["journeys"], f"{identifier} has no user journey")
         automated = [
@@ -71,6 +193,14 @@ def main() -> None:
         ]
         require(automated, f"{identifier} has no automated scenario")
 
+    expect_error(
+        source.replace(
+            "limit\trouted_spec_warning_bytes\t12288",
+            "limit\trouted_spec_warning_bytes\t16384",
+            1,
+        ),
+        "routed spec warning must be below the hard limit",
+    )
     expect_error(
         source.replace(
             "spec\tdocumentation\tdocs/specs/documentation.md\t",
@@ -100,7 +230,7 @@ def main() -> None:
     )
     expect_error(
         source.replace(
-            "requirement\tQC-APP-SETTINGS\tdocs/specs/app.md\t",
+            "requirement\tQC-APP-SETTINGS\tdocs/specs/app-setup.md\t",
             "requirement\tQC-APP-SETTINGS\tdocs/specs/runtime.md\t",
             1,
         ),

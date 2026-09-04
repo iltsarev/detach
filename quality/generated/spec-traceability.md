@@ -83,21 +83,20 @@ It lists current specification ownership and verification links.
 ## `runtime`
 
 - Path: `docs/specs/runtime.md`
-- Summary: Runtime state and session operations preserve exact ownership.
+- Summary: Runtime and session operations preserve exact ownership.
 - Capabilities: `session-lifecycle`
 
 ### Owned path patterns
 
 - `app/Sources/DetachKit/*.swift`
 - `app/Sources/DetachKit/ANSIText.swift`
-- `app/Sources/DetachKit/DetachState*.swift`
+- `app/Sources/DetachKit/BoundedProcessRunner.swift`
+- `app/Sources/DetachKit/DetachCLI.swift`
 - `app/Sources/DetachKit/LogPoller.swift`
 - `app/Sources/DetachKit/Session*.swift`
-- `app/Sources/DetachKit/Storage*.swift`
 - `app/Sources/DetachKit/Terminal*.swift`
 - `app/Sources/DetachKit/Tip.swift`
 - `app/Sources/DetachKit/Tmux*.swift`
-- `app/Sources/DetachState/*.swift`
 - `bin/*`
 - `bin/detach`
 - `bin/detach-core`
@@ -115,10 +114,30 @@ It lists current specification ownership and verification links.
 
 | Requirement | Journeys | Scenarios | Outcome |
 | --- | --- | --- | --- |
-| `QC-RUNTIME-STATE` | `J-SESSION-CREATE`<br>`J-SESSION-PERSIST` | `SC-SESSION-CREATE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-CREATE-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-PERSIST-CODEX` (instrumented, `codex`)<br>`SC-SESSION-PERSIST-CLAUDE` (instrumented, `claude`) | Typed state is the only shared state mutation boundary. |
 | `QC-RUNTIME-OWNERSHIP` | `J-SESSION-CREATE`<br>`J-SESSION-RECOVER`<br>`J-SESSION-STOP`<br>`J-SESSION-DELETE` | `SC-SESSION-CREATE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-CREATE-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-STOP-CODEX` (instrumented, `codex`)<br>`SC-SESSION-STOP-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-STOP` (instrumented, `ui-e2e`)<br>`SC-SESSION-DELETE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-DELETE-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-DELETE` (instrumented, `ui-e2e`) | Session operations prove the exact run token and process ownership. |
-| `QC-RUNTIME-STORAGE` | `J-SESSION-PERSIST`<br>`J-SESSION-RECOVER`<br>`J-SESSION-DELETE` | `SC-SESSION-PERSIST-CODEX` (instrumented, `codex`)<br>`SC-SESSION-PERSIST-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-DELETE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-DELETE-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-DELETE` (instrumented, `ui-e2e`) | Restores validate path, symlink, identity, and JSONL data before replacement. |
 | `QC-RUNTIME-TRANSITION` | `J-SESSION-RECOVER` | `SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`) | Session transitions preserve exact process identity. |
+
+## `state`
+
+- Path: `docs/specs/state.md`
+- Summary: Typed state, storage, and change events remain safe and coherent.
+- Capabilities: `session-state`
+
+### Owned path patterns
+
+- `app/Sources/DetachKit/DetachState*.swift`
+- `app/Sources/DetachKit/Session.swift`
+- `app/Sources/DetachKit/SessionEvents.swift`
+- `app/Sources/DetachKit/SessionMaintenance.swift`
+- `app/Sources/DetachKit/Storage*.swift`
+- `app/Sources/DetachState/*.swift`
+
+### Requirement verification
+
+| Requirement | Journeys | Scenarios | Outcome |
+| --- | --- | --- | --- |
+| `QC-RUNTIME-STATE` | `J-SESSION-PERSIST`<br>`J-STATE-CLEANUP` | `SC-SESSION-PERSIST-CODEX` (instrumented, `codex`)<br>`SC-SESSION-PERSIST-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-DELETE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-DELETE-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-DELETE` (instrumented, `ui-e2e`) | Typed state is the only shared state mutation boundary. |
+| `QC-RUNTIME-STORAGE` | `J-STATE-RECOVER` | `SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`) | Restores validate path, symlink, identity, and JSONL data before replacement. |
 
 ## `power`
 
@@ -133,7 +152,6 @@ It lists current specification ownership and verification links.
 - `app/Sources/DetachApp/InstallationStore.swift`
 - `app/Sources/DetachApp/PowerHelper*.swift`
 - `app/Sources/DetachApp/Watchdog*.swift`
-- `app/Sources/DetachKit/BoundedProcessRunner.swift`
 - `app/Sources/DetachKit/ClamshellLockRunner.swift`
 - `app/Sources/DetachKit/DetachPower*.swift`
 - `app/Sources/DetachKit/Power*.swift`
@@ -158,7 +176,7 @@ It lists current specification ownership and verification links.
 
 - Path: `docs/specs/app.md`
 - Summary: The app presents and changes only typed product state.
-- Capabilities: `app-experience`, `onboarding`, `settings`, `update`, `diagnostics`
+- Capabilities: `app-experience`
 
 ### Owned path patterns
 
@@ -178,12 +196,9 @@ It lists current specification ownership and verification links.
 - `app/Sources/DetachApp/LogTextView.swift`
 - `app/Sources/DetachApp/MenuBar*.swift`
 - `app/Sources/DetachApp/NewSessionSheet.swift`
-- `app/Sources/DetachApp/Onboarding*.swift`
 - `app/Sources/DetachApp/QuickChat.swift`
 - `app/Sources/DetachApp/RootView.swift`
 - `app/Sources/DetachApp/Session*.swift`
-- `app/Sources/DetachApp/Settings*.swift`
-- `app/Sources/DetachApp/SetupGuidance.swift`
 - `app/Sources/DetachApp/SidebarView.swift`
 - `app/Sources/DetachApp/TerminalPreferencePicker.swift`
 - `app/Sources/DetachApp/TextSize.swift`
@@ -191,11 +206,7 @@ It lists current specification ownership and verification links.
 - `app/Sources/DetachApp/TipsBar.swift`
 - `app/Sources/DetachApp/TmuxExtendedKeysSettingsController.swift`
 - `app/Sources/DetachApp/UIE2E*.swift`
-- `app/Sources/DetachApp/UpdaterService.swift`
-- `app/Sources/DetachKit/DetachCLI.swift`
-- `app/Sources/DetachKit/DoctorReport.swift`
-- `app/Sources/DetachKit/Localization.swift`
-- `app/Sources/DetachKit/UpdateConfiguration.swift`
+- `app/Sources/DetachKit/SessionHealth.swift`
 - `app/Tests/*`
 - `tests/fake-ui-cli`
 - `tests/ui-e2e-contract.sh`
@@ -208,6 +219,27 @@ It lists current specification ownership and verification links.
 | `QC-HEALTH-FRESHNESS` | `J-APP-DASHBOARD` | `SC-UI-DASHBOARD` (instrumented, `ui-e2e`) | Health claims use typed fresh state. |
 | `QC-HEALTH-PRESENTATION` | `J-APP-DASHBOARD`<br>`J-APP-DETAIL`<br>`J-APP-EMPTY`<br>`J-APP-FAILURE`<br>`J-APP-FOCUS`<br>`J-APP-NEW-SESSION` | `SC-UI-DASHBOARD` (instrumented, `ui-e2e`)<br>`SC-UI-SESSION-DETAIL` (instrumented, `ui-e2e`)<br>`SC-UI-EMPTY` (instrumented, `ui-e2e`)<br>`SC-UI-FAILURE` (instrumented, `ui-e2e`)<br>`SC-UI-FOCUS` (instrumented, `ui-e2e`)<br>`SC-UI-NEW-SESSION` (instrumented, `ui-e2e`) | The app presents typed health state without parsing terminal text. |
 | `QC-APP-TIPS` | `J-APP-EMPTY` | `SC-UI-EMPTY` (instrumented, `ui-e2e`) | Session tips remain deterministic and user visible. |
+
+## `app-setup`
+
+- Path: `docs/specs/app-setup.md`
+- Summary: App setup, settings, diagnostics, and updates fail closed.
+- Capabilities: `onboarding`, `settings`, `update`, `diagnostics`
+
+### Owned path patterns
+
+- `app/Sources/DetachApp/Onboarding*.swift`
+- `app/Sources/DetachApp/Settings*.swift`
+- `app/Sources/DetachApp/SetupGuidance.swift`
+- `app/Sources/DetachApp/UpdaterService.swift`
+- `app/Sources/DetachKit/DoctorReport.swift`
+- `app/Sources/DetachKit/Localization.swift`
+- `app/Sources/DetachKit/UpdateConfiguration.swift`
+
+### Requirement verification
+
+| Requirement | Journeys | Scenarios | Outcome |
+| --- | --- | --- | --- |
 | `QC-APP-DOCTOR` | `J-DOCTOR-REPORT` | `SC-DOCTOR-REPORT` (instrumented, `distribution`) | Doctor output derives from typed runtime state. |
 | `QC-APP-ONBOARDING` | `J-ONBOARD-FIRST-RUN`<br>`J-ONBOARD-PROVIDER`<br>`J-ONBOARD-APPROVAL` | `SC-APP-ONBOARDING-UNIT` (legacy-stage, `swift`)<br>`SC-UI-ONBOARD-FIRST-RUN` (instrumented, `ui-e2e`)<br>`SC-UI-ONBOARD-PROVIDER` (instrumented, `ui-e2e`)<br>`SC-UI-ONBOARD-APPROVAL` (instrumented, `ui-e2e`) | Onboarding leads a new user through supported provider and approval setup. |
 | `QC-APP-SETTINGS` | `J-SETTINGS-CHANGE` | `SC-APP-SETTINGS-UNIT` (legacy-stage, `swift`)<br>`SC-UI-SETTINGS` (instrumented, `ui-e2e`) | Settings changes persist and affect only their declared behavior. |

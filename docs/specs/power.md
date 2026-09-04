@@ -83,6 +83,35 @@ bundle is replaced with the same version. For a legacy watchdog without a
 lifetime lock, the exact bundled executable may prove that the old
 registration is still live.
 
+Helper replacement is a durable fail-closed transaction. One versioned journal
+records the phase, goal, target digest, boot UUID, and lifetime-barrier contract.
+Each transition uses atomic rename and file/directory fsync before its side
+effect. A per-user `flock` protects the journal. The root helper also creates a
+stable root-owned `0644` inode under `/var/run`; every app user opens it read-only and holds one exclusive
+kernel `flock` across the complete asynchronous SMAppService transaction. This
+is the machine-wide single-writer barrier across Fast User Switching, and the
+kernel releases it if the app crashes. Only the current non-root console user's
+app may perform register or unregister mutations, checked again immediately
+before each mutation. Root persists `unregistration_pending`, blocks
+acquire/renew without a wall-clock expiry, and restores and reads back only the
+setting Detach owns.
+
+The helper takes a root-owned lifetime `flock` before its listener answers and
+holds it until exit. An enabled job without this boot's lock is dead. The app
+writes `unregisterSubmitted` only after it observes that lock. Registration
+needs the fresh unregister callback, or exact `notRegistered` status plus the
+released lock or a changed boot UUID; `unavailable` is insufficient. Errors
+keep the journal and root gate closed. After an app crash, another console user
+uses the root-created files to resume at `unregisterSubmitted`, never as a
+pristine install.
+
+Before registering a replacement the app fsyncs `registering` with the target
+digest. After macOS reports the new helper enabled, a successful cancel XPC
+reply proves launch readiness and reopens the gate; only then is the definition
+recorded and the journal cleared. Approval and retry failures remain pending for
+the next launch. An ordinary helper SIGTERM/SIGINT uses only the process-local
+termination gate and must not create persistent update state.
+
 Before it creates the listener or changes power state, the helper must pass a
 strict check of its own signature with Security network access enabled. This
 check lets macOS refresh the system trust result that the listener needs for
@@ -136,6 +165,20 @@ directories appear. Each document replaces one freshness deadline; the
 deadline publishes `unknown` if the watchdog stops. Menu bar, Settings, and
 temperature notifications share this state and run no repeating heartbeat
 reader.
+
+The watchdog heartbeat carries the effective power state and typed raw
+thermal state/latch. With notifications enabled, the app emits one
+localized temperature-safety warning on each inactive-to-active latch
+transition, including when borrowed external protection makes the effective
+power state unavailable; repeated documents never duplicate the warning.
+
+The watchdog is a signed per-user LaunchAgent with an embedded
+`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` at runtime, calls
+`detach power status --json` through the same process-group runner with a
+five-second deadline, and writes private health state. The privileged
+daemon is a distinct demand-launched LaunchDaemon. Neither plist may contain a
+user-specific path. Native power protection requires no Apple Events or
+Automation entitlement.
 
 The default initial acquire carries an eight-second absolute server deadline.
 If protection is not confirmed before it, root rolls back only that request's

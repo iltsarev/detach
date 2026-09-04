@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -752,6 +753,7 @@ class QualityGate:
         write_private(self.summary, RESULT_HEADER)
         write_private(self.environment, self.environment_document())
         write_private(self.artifacts, "schema\t1\n")
+        self.write_specification_sizes()
         (self.run_dir / "scenario-events").mkdir(mode=0o700)
         (self.run_dir / "stage-scenarios").mkdir(mode=0o700)
         self.write_static_files()
@@ -815,12 +817,93 @@ class QualityGate:
         raw = b"".join(os.fsencode(path) + b"\0" for path in self.static_paths())
         write_private_bytes(self.run_dir / "static-files.z", raw)
 
+    def write_specification_sizes(self) -> None:
+        warning = self.policy.limits["routed_spec_warning_bytes"]
+        limit = self.policy.limits["routed_spec_limit_bytes"]
+        specification_root = ROOT / "docs/specs"
+        try:
+            root_mode = specification_root.lstat().st_mode
+        except OSError as error:
+            raise GateError(
+                f"routed specification root is missing or unsafe: {error}"
+            ) from error
+        if not stat.S_ISDIR(root_mode):
+            raise GateError("routed specification root is missing or unsafe")
+        resolved_root = specification_root.resolve()
+        if resolved_root != ROOT / "docs/specs":
+            raise GateError("routed specification root is missing or unsafe")
+        records: list[dict[str, object]] = []
+        for identifier, (raw_path, _) in self.policy.specs.items():
+            relative = Path(raw_path)
+            path = ROOT / relative
+            try:
+                if (
+                    relative.is_absolute()
+                    or relative.parts != ("docs", "specs", f"{identifier}.md")
+                    or path.parent.resolve() != resolved_root
+                ):
+                    raise GateError(
+                        f"routed specification path is unsafe: {raw_path}"
+                    )
+                try:
+                    file_status = path.lstat()
+                except FileNotFoundError as error:
+                    raise GateError(
+                        f"routed specification is missing or unsafe: {raw_path}"
+                    ) from error
+                if not stat.S_ISREG(file_status.st_mode):
+                    raise GateError(
+                        f"routed specification is missing or unsafe: {raw_path}"
+                    )
+                size = file_status.st_size
+            except OSError as error:
+                raise GateError(
+                    f"cannot measure routed specification {identifier}: {error}"
+                ) from error
+            status = (
+                "over-limit" if size > limit
+                else "warning" if size > warning
+                else "healthy"
+            )
+            records.append(
+                {
+                    "bytes": size,
+                    "headroom_bytes": max(0, limit - size),
+                    "id": identifier,
+                    "path": raw_path,
+                    "status": status,
+                }
+            )
+        statuses = {record["status"] for record in records}
+        overall = (
+            "over-limit" if "over-limit" in statuses
+            else "warning" if "warning" in statuses
+            else "healthy"
+        )
+        document = {
+            "input_fingerprint": self.input_fingerprint,
+            "limit_bytes": limit,
+            "policy": self.policy_version,
+            "schema": 1,
+            "source_commit": self.source_commit,
+            "specifications": records,
+            "status": overall,
+            "warning_bytes": warning,
+        }
+        write_private(
+            self.run_dir / "spec-sizes.json",
+            json.dumps(
+                document, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ) + "\n",
+        )
+
     def artifact_inventory(self) -> None:
         files: list[Path] = []
         for name in (
             "quality-metrics.json",
             "quality-metrics-swift.json",
             "coverage-opportunities.json",
+            "spec-sizes.json",
             "shards.tsv",
         ):
             evidence = self.run_dir / name
@@ -1074,6 +1157,7 @@ class QualityGate:
                 relative == "quality-metrics.json"
                 or relative == "quality-metrics-swift.json"
                 or relative == "coverage-opportunities.json"
+                or relative == "spec-sizes.json"
                 or relative == "scenarios.jsonl"
                 or relative == "scenarios.junit.xml"
                 or relative == "repair-bundle.json"

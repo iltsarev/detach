@@ -33,6 +33,7 @@
           "quality-system",
           "documentation",
           "session-lifecycle",
+          "session-state",
           "power-protection",
           "app-experience",
           "onboarding",
@@ -47,6 +48,8 @@
           "J-DOCS-CONSISTENCY",
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE",
@@ -94,11 +97,14 @@
           "runtime"
         ],
         "capabilities": [
-          "session-lifecycle"
+          "session-lifecycle",
+          "session-state"
         ],
         "journeys": [
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE"
@@ -130,11 +136,14 @@
           "runtime"
         ],
         "capabilities": [
-          "session-lifecycle"
+          "session-lifecycle",
+          "session-state"
         ],
         "journeys": [
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE"
@@ -167,11 +176,14 @@
         ],
         "capabilities": [
           "session-lifecycle",
+          "session-state",
           "app-experience"
         ],
         "journeys": [
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE",
@@ -292,14 +304,17 @@
         "specs": [
           "documentation",
           "runtime",
+          "state",
           "power",
           "app",
+          "app-setup",
           "release"
         ],
         "capabilities": [
           "quality-system",
           "documentation",
           "session-lifecycle",
+          "session-state",
           "power-protection",
           "app-experience",
           "onboarding",
@@ -314,6 +329,8 @@
           "J-DOCS-CONSISTENCY",
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE",

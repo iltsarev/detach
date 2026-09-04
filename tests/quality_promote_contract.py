@@ -99,7 +99,36 @@ def opportunities_document() -> dict[str, object]:
     }
 
 
-def create_evidence(root: Path, paths: list[str] | None = None) -> Path:
+def spec_sizes_document() -> dict[str, object]:
+    warning = POLICY.limits["routed_spec_warning_bytes"]
+    limit = POLICY.limits["routed_spec_limit_bytes"]
+    return {
+        "input_fingerprint": "1" * 64,
+        "limit_bytes": limit,
+        "policy": POLICY.version,
+        "schema": 1,
+        "source_commit": TESTED,
+        "specifications": [
+            {
+                "bytes": 1,
+                "headroom_bytes": limit - 1,
+                "id": identifier,
+                "path": path,
+                "status": "healthy",
+            }
+            for identifier, (path, _) in POLICY.specs.items()
+        ],
+        "status": "healthy",
+        "warning_bytes": warning,
+    }
+
+
+def create_evidence(
+    root: Path,
+    paths: list[str] | None = None,
+    *,
+    include_spec_sizes: bool = True,
+) -> Path:
     paths = paths or ["tools/quality_gate.py"]
     impact = POLICY.impact(paths)
     run_dir = root / "20260812T120000Z-1"
@@ -128,12 +157,17 @@ def create_evidence(root: Path, paths: list[str] | None = None) -> Path:
     (run_dir / "scenarios.junit.xml").write_text(
         '<testsuite name="quality" tests="0"/>\n', encoding="utf-8"
     )
+    if include_spec_sizes:
+        write_json(run_dir / "spec-sizes.json", spec_sizes_document())
+    required_names = ["scenarios.jsonl", "scenarios.junit.xml"]
+    if include_spec_sizes:
+        required_names.append("spec-sizes.json")
     artifacts = run_dir / "artifacts.tsv"
     artifacts.write_text(
         "schema\t1\n"
         + "".join(
             f"file\t{name}\t{digest(run_dir / name)}\n"
-            for name in (*metric_names, "scenarios.jsonl", "scenarios.junit.xml")
+            for name in (*metric_names, *required_names)
         ),
         encoding="utf-8",
     )
@@ -345,6 +379,52 @@ def main() -> None:
             docs_run, read_tsv(docs_run / "manifest.tsv", "docs manifest")
         ) is None:
             raise AssertionError("documentation impact was not promoted")
+
+        missing_spec_sizes = create_evidence(
+            root / "missing-spec-sizes-source", include_spec_sizes=False
+        )
+        missing_output = root / "missing-spec-sizes"
+        missing = invoke(
+            fake_gh,
+            fake_git,
+            missing_spec_sizes,
+            missing_output,
+            expected=2,
+        )
+        require(missing, "required evidence artifact is missing: spec-sizes.json")
+
+        for field, value, diagnostic in (
+            ("source_commit", "f" * 40, "source identity does not match"),
+            ("input_fingerprint", "f" * 64, "source identity does not match"),
+            ("limit_bytes", 16385, "limits do not match"),
+            ("specifications", [], "identities do not match"),
+            ("status", "over-limit", "size status is invalid"),
+        ):
+            invalid = create_evidence(root / f"invalid-spec-{field}")
+            document = spec_sizes_document()
+            document[field] = value
+            write_json(invalid / "spec-sizes.json", document)
+            inventory = invalid / "artifacts.tsv"
+            inventory.write_text(
+                "\n".join(
+                    f"file\tspec-sizes.json\t{digest(invalid / 'spec-sizes.json')}"
+                    if line.startswith("file\tspec-sizes.json\t") else line
+                    for line in inventory.read_text(encoding="utf-8").splitlines()
+                ) + "\n", encoding="utf-8",
+            )
+            invalid_manifest = invalid / "manifest.tsv"
+            invalid_manifest.write_text(
+                "\n".join(
+                    f"artifacts_sha256\t{digest(inventory)}"
+                    if line.startswith("artifacts_sha256\t") else line
+                    for line in invalid_manifest.read_text(encoding="utf-8").splitlines()
+                ) + "\n", encoding="utf-8",
+            )
+            rejected = invoke(
+                fake_gh, fake_git, invalid, root / f"rejected-spec-{field}",
+                expected=2,
+            )
+            require(rejected, diagnostic)
 
         eventual = root / "eventual-pr"
         invoke(fake_gh, fake_git, evidence, eventual, mode="eventual-pr")

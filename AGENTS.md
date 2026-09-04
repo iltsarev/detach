@@ -38,15 +38,14 @@ claim verified compliance without review against the official standard.
 ## Context and specification policy
 
 - Keep this file under 200 lines and limited to common rules.
-- Do not add architecture tutorials or file inventories here. Put a
-  durable invariant in the narrowest file under `docs/specs/`; put a
-  temporary task plan under ignored `docs/work/`.
+- Put durable invariants in the narrowest `docs/specs/` file and temporary plans
+  in `docs/work/`. Keep tutorials and inventories out.
 - `CLAUDE.md` must contain only `@AGENTS.md`. Never copy this content
   into it or create a second lowercase agent-instruction file.
 - Do not import detailed specs: Claude loads imports eagerly. Use the context
   map below.
 - Specs state observable outcomes, non-goals, invariants, owning paths, and
-  verification. Avoid implementation narration that code already makes clear.
+  verification. Avoid code narration.
 - Complex plans are living, self-contained handoff artifacts. Record decisions,
   discoveries, progress, and end-to-end evidence; delete or archive obsolete
   local plans when the task ends.
@@ -55,16 +54,18 @@ claim verified compliance without review against the official standard.
 
 ## Context map
 
-| Change area | Read | Fast feedback |
+| Change | Read | Fast feedback |
 | --- | --- | --- |
-| CLI, session lifecycle, state, storage, install, tmux | `docs/specs/runtime.md` | one Swift filter, `tests/run.sh`, `tests/run-claude.sh`, or `tests/distribution.sh` |
-| Power wrapper/helper, watchdog, clamshell | `docs/specs/power.md` | `cd app && swift test --filter Power` (or the named suite) |
-| App UI, onboarding, presentation, Sparkle | `docs/specs/app.md` | `cd app && swift test --filter <Suite>` |
-| Packaging, release, publication | `docs/specs/release.md` | one of `tests/{release,publish}-*.sh` |
-| Agent docs, specs, test workflow | `docs/specs/documentation.md` | `tests/docs-contract.sh` |
+| Runtime CLI, lifecycle, install, tmux | `docs/specs/runtime.md` | `tests/{run,run-claude,distribution}.sh` |
+| State, storage, events | `docs/specs/state.md` | one Swift state filter |
+| Power, helper, watchdog | `docs/specs/power.md` | one Swift Power filter |
+| App UI, terminal, UI smoke | `docs/specs/app.md` | one Swift app filter |
+| Setup, settings, diagnostics, updates | `docs/specs/app-setup.md` | one Swift app filter |
+| Package, release, publication | `docs/specs/release.md` | `tests/{release,publish}-*.sh` |
+| Docs, specs, test workflow | `docs/specs/documentation.md` | `tests/docs-contract.sh` |
 
-For an unfamiliar or cross-cutting path, start at `docs/specs/README.md`. Do not
-read every spec preemptively.
+For unfamiliar or cross-cutting work, start at `docs/specs/README.md`. Do not
+read every spec.
 
 ## Verification loop
 

@@ -13,8 +13,9 @@ Hosted CI is the merge-readiness authority.
   instructions or additional imports.
 - Root instructions stay below 200 lines and 8 KiB. Detailed architecture does
   not return to the automatic startup context.
-- No individual spec exceeds 16 KiB. Read more than one only when a change
-  crosses real subsystem boundaries.
+- No individual spec exceeds 16 KiB. The static check and dashboard warn above
+  12 KiB so a split is planned first. Read a second spec only for a real
+  cross-subsystem change.
 - `AGENTS.md` contains one small human-readable context map. There is no second
   routing DSL or tool for an agent to learn.
 - New or changed English text in `README.md` and `docs/` uses
@@ -119,10 +120,11 @@ Hosted CI is the merge-readiness authority.
   `main` run with direct or promoted evidence, or a green scheduled mutation
   run. Bounded quality care can also deploy its validated result before it
   marks an attention run as failed. Care evidence binds the source commit and
-  SHA-256 digests of its eval and history inputs. The dashboard shows measured
-  coverage, ranked UI coverage opportunities, mutation score, workflow evals,
-  feedback p95 and SLO, and security state when they exist. The security state
-  comes from a typed current-policy
+  SHA-256 digests of its eval and history inputs. A digest-bound gate artifact
+  supplies routed-spec sizes. The dashboard also shows measured coverage,
+  ranked UI coverage opportunities, mutation score, workflow evals, feedback
+  p95 and SLO, and security state when they exist. The security state comes
+  from a typed current-policy
   artifact. It includes both CodeQL job results, the analyzed commit, an
   identity fingerprint, and the exact workflow link. A later main, care, or
   mutation deploy restores the newest valid current-policy security and care
