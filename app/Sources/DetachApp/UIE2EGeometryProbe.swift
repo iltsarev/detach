@@ -83,7 +83,8 @@ final class UIE2EGeometryView: NSView {
     }
     override func accessibilityLabel() -> String? { semanticLabel }
     override func accessibilityFrame() -> NSRect {
-        UIE2EGeometryRegistry.frame(for: identifierValue) ?? .zero
+        publishFrame()
+        return UIE2EGeometryRegistry.frame(for: identifierValue) ?? .zero
     }
     override func isAccessibilityEnabled() -> Bool { semanticEnabled }
 

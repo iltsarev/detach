@@ -362,6 +362,11 @@ enum UIE2ETestDriver {
             guard label(reconnectButton) == L10n.string("Reconnect") else {
                 throw Failure(message: "exited attach client does not offer Reconnect")
             }
+            try await waitUntil("disconnected session log is readable") {
+                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else { return false }
+                return textView.string.contains("UI fixture log for \(recoverableID)")
+            }
             try await clickUntil(
                 reconnectButton,
                 name: "in-app reconnect action",
@@ -851,6 +856,21 @@ enum UIE2ETestDriver {
                 find(identifier: "session-detail-detach-codex-ui-quick") != nil
             }
             checks.append("quick-chat-command-starts-session")
+
+            guard let shortcutID = shortcuts.sessionID(for: 1) else {
+                throw Failure(message: "no session has the first window-reopen shortcut")
+            }
+            mainWindow.close()
+            try await waitUntil("main window closes") { !mainWindow.isVisible }
+            NSApp.activate(ignoringOtherApps: true)
+            try await keyPress("1", keyCode: 18, modifiers: [.command])
+            _ = try await element(identifier: "session-detail-\(shortcutID)")
+            guard NSApp.windows.contains(where: {
+                $0.identifier?.rawValue == "main" && $0.isVisible
+            }) else {
+                throw Failure(message: "session shortcut did not reopen the main window")
+            }
+            checks.append("session-shortcut-reopens-closed-main-window")
 
             try await restoreFocus(
                 to: previousFrontmost, policy: previousActivationPolicy)
@@ -1353,11 +1373,21 @@ enum UIE2ETestDriver {
         }
         for font in [AppFontSize.defaultValue, AppFontSize.allowedRange.upperBound] {
             AppSettings.defaults.set(font, forKey: AppFontSize.storageKey)
-            // Allow the preference change to update the split view minimum.
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await waitUntil("session title uses font \(font)") {
+                guard let title = UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                else { return false }
+                let pointSize = AppFontRole.title2.pointSize(base: font)
+                return title.height >= pointSize && title.height < pointSize + 12
+            }
             window.setContentSize(AppFontSize.minimumWindowSize(for: font))
             window.contentView?.layoutSubtreeIfNeeded()
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await waitUntil("session title is inside the resized window") {
+                elements().compactMap { $0 as? UIE2EGeometryView }
+                    .filter { $0.identifierValue == "session-detail-title" }
+                    .forEach { $0.publishFrame() }
+                return UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                    .map { window.frame.contains($0) } == true
+            }
             let title = try await measuredFrame(
                 identifier: "session-detail-title", name: "session title")
             guard title.width >= font * 5, title.height >= font,
@@ -1459,6 +1489,9 @@ enum UIE2ETestDriver {
     ) async throws -> CGRect {
         var result: CGRect?
         try await waitUntil("real control geometry for \(name)") {
+            elements().compactMap { $0 as? UIE2EGeometryView }
+                .filter { $0.identifierValue == identifier }
+                .forEach { $0.publishFrame() }
             result = UIE2EGeometryRegistry.frame(for: identifier)
             return result?.isEmpty == false
         }
