@@ -135,6 +135,8 @@ Hosted CI is the merge-readiness authority.
   attention issue.
 - `main` promotes a successful pull-request artifact only when its stages equal
   a fresh impact plan and both merges have the same tree and ordered parents.
+  Spec, capability, and journey identities must match without duplicates;
+  their record order can differ. Promotion does not rewrite the manifest.
   Promotion keeps identities and digests. Ambiguity runs a full `ci-main` gate.
 - The active GitHub ruleset for `main` has no bypass actors. It requires a pull
   request, a current strict GitHub Actions `quality-gates` job, merge commits,
