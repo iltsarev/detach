@@ -138,8 +138,9 @@
   The smoke uses a stripped background-only copy, a fake CLI, and private
   HOME/preferences/state below `/private/tmp`; it cannot use the installed
   Detach or user session state. It temporarily activates the isolated app,
-  posts AppKit mouse events to measured SwiftUI controls, and restores the
-  prior application. The locator bridge has no application actions. Run the
+  posts AppKit mouse events to measured SwiftUI controls, uses native slider
+  increment actions, and restores the prior application. The locator bridge
+  has no application actions. Run the
   app build first. The UI smoke needs a logged-in WindowServer session but no
   Accessibility approval. Do not grant it broader filesystem or production
   payload access. Its fake CLI allowlist covers only the exact status and stop
