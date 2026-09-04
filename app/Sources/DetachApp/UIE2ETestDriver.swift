@@ -330,6 +330,8 @@ enum UIE2ETestDriver {
                     "UI fixture log for \(recoverableID)")
             }
             checks.append("non-live-session-switch-uses-warm-cache")
+            try await verifySessionTitleAtMinimumWindowSize(mainWindow)
+            checks.append("session-title-survives-narrow-window-and-large-text")
             let recoverButton = try await element(
                 identifier: "session-action-recover-in-app")
             let recoverFallback = try await element(
@@ -1338,6 +1340,32 @@ enum UIE2ETestDriver {
             }
         }
         throw Failure(message: "\(name) did not produce \(resultIdentifier)")
+    }
+
+    private static func verifySessionTitleAtMinimumWindowSize(
+        _ window: NSWindow
+    ) async throws {
+        let originalFrame = window.frame
+        let originalFont = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        defer {
+            AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        for font in [AppFontSize.defaultValue, AppFontSize.allowedRange.upperBound] {
+            AppSettings.defaults.set(font, forKey: AppFontSize.storageKey)
+            // Allow the preference change to update the split view minimum.
+            try await Task.sleep(nanoseconds: 50_000_000)
+            window.setContentSize(AppFontSize.minimumWindowSize(for: font))
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 50_000_000)
+            let title = try await measuredFrame(
+                identifier: "session-detail-title", name: "session title")
+            guard title.width >= font * 5, title.height >= font,
+                  window.frame.contains(title) else {
+                throw Failure(message:
+                    "session title disappeared or collapsed at font \(font): \(title)")
+            }
+        }
     }
 
     private static func clickUntil(

@@ -63,7 +63,9 @@ Detached live logs reread every 2 s. Cold attach uses one passive SwiftTerm
 overlay; cached bytes never enter the live buffer. Live switching keeps its PTY.
 tmux holds the frame until a synchronized redraw.
 Metadata stays in one scrolling row. Selection keeps header, terminal, and
-action geometry. A cold passive screen leaves within one second.
+action geometry. The model and context gauge stay in the metadata row. They
+cannot reduce the title to zero width in a narrow window or with large text.
+A cold passive screen leaves within one second.
 New session accepts an optional printable UTF-8 name up to 100 bytes and
 rejects invalid input. Launch runs in Detach. Advanced holds the prompt
 below a fixed top. Titles use `display_name`, then the project or internal name.

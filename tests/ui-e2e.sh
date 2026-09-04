@@ -318,6 +318,7 @@ run_app_scenario() {
       live-terminal-routes-control-v|\
       live-session-switch-reuses-synchronized-client|\
       non-live-session-switch-uses-warm-cache|\
+      session-title-survives-narrow-window-and-large-text|\
       recover-and-reconnect-run-in-app-with-terminal-fallback|\
       resume-runs-in-app-with-terminal-fallback|\
       session-shortcut-selects-assigned-session|\
@@ -364,6 +365,7 @@ run_app_scenario main sessions 32 \
   dashboard-accessible \
   sidebar-shortcut-guide-visible \
   non-live-session-switch-uses-warm-cache \
+  session-title-survives-narrow-window-and-large-text \
   recover-and-reconnect-run-in-app-with-terminal-fallback \
   sidebar-selects-completed-session \
   session-uuid-copies-from-text-side \

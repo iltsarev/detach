@@ -51,7 +51,7 @@ if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
   if [ -f "$ROOT/fake/resumed" ]; then
     completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","effective_status":"running","created_at":"2026-07-22T07:00:00Z","agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"protected","health_actions":["attach","stop"]}'
   fi
-  recoverable='{"schema":1,"provider":"codex","session_name":"detach-codex-ui-recoverable","name":"UI Recoverable","effective_status":"recoverable","created_at":"2026-07-22T07:40:00Z","finished_at":"2026-07-22T07:50:00Z","exit_status":1,"session_color":"#F97316","power_protection_state":"allowed","health_actions":["recover","delete"]}'
+  recoverable='{"schema":1,"provider":"codex","session_name":"detach-codex-ui-recoverable","name":"UI Recoverable","model":"gpt-ui-fixture-long-model-name","context_used_tokens":185000,"context_window":200000,"effective_status":"recoverable","created_at":"2026-07-22T07:40:00Z","finished_at":"2026-07-22T07:50:00Z","exit_status":1,"session_color":"#F97316","power_protection_state":"allowed","health_actions":["recover","delete"]}'
   if [ -f "$ROOT/fake/recovered" ]; then
     recoverable='{"schema":1,"provider":"codex","session_name":"detach-codex-ui-recoverable","name":"UI Recoverable","effective_status":"running","created_at":"2026-07-22T07:40:00Z","session_color":"#F97316","power_protection_state":"protected","health_actions":["attach","stop"]}'
   fi
