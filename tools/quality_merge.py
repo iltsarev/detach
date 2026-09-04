@@ -373,12 +373,16 @@ def wait_for_merge(
         sleep_until_next_poll(deadline, poll_seconds)
 
 
-def write_summary(path: Path, value: dict[str, Any], test_mode: bool) -> None:
+def prepare_summary_path(path: Path, test_mode: bool) -> None:
     if not test_mode and path.resolve() != DEFAULT_OUTPUT.resolve():
         raise MergeError("merge evidence must use app/build/quality-merge.json")
-    if path.exists() and (not path.is_file() or path.is_symlink()):
+    if path.is_symlink() or (path.exists() and not path.is_file()):
         raise MergeError("merge evidence output is unsafe")
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def write_summary(path: Path, value: dict[str, Any], test_mode: bool) -> None:
+    prepare_summary_path(path, test_mode)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         temporary.write_text(
@@ -468,6 +472,8 @@ def main() -> int:
     args = parser().parse_args()
     try:
         policy = Policy(POLICY_FILE)
+        prepare_summary_path(
+            args.output, os.environ.get("DETACH_QUALITY_MERGE_TEST_MODE") == "1")
         summary = execute(args, policy)
         write_summary(
             args.output,
