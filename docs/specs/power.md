@@ -12,6 +12,12 @@ Power protection has two required layers and one observable combined state:
    It manages only the machine-wide closed-lid setting through absolute
    `/usr/bin/pmset` invocations and a renewable lease registry.
 
+Root commands use the same bounded process-group runner as CLI reads. Each
+command has a two-second default deadline and a one-second TERM grace.
+Dedicated readers bound each output stream. An inherited pipe cannot keep the
+helper waiting after command exit. Incomplete output cannot prove power state.
+The command environment keeps a fixed system PATH and the C locale.
+
 The wrapper must acquire both layers before provider launch. It watches a
 private, run-token-scoped activity file. Before it accepts `waiting`, it also
 validates a recorded inode/mtime/size snapshot and starts an event watcher on the
