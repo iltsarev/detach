@@ -87,7 +87,9 @@ Notifications are opt-in and deduplicated. Stop intent is not failure;
 `interrupted` and `hung` get one 350 ms recheck. Snapshot bursts do not restart
 that deadline. A new transition waits for the pending recheck, then gets its
 own deadline. Stable state cancels an obsolete recheck. Each observation
-lifetime confirms its own transitions. Ordered detection never waits for delivery.
+lifetime confirms its own transitions. Status and session lifecycle changes
+require a new confirmation, even when the session name stays the same.
+Ordered detection never waits for delivery.
 
 SwiftTerm 1.19.0 is pinned. The exact SwiftTerm shader bundle is shipped and
 verified.

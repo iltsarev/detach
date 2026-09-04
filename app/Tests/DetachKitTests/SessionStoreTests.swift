@@ -1086,6 +1086,100 @@ final class SessionStoreTests: XCTestCase {
         await probe.resumeSleepers()
     }
 
+    func testHungToInterruptedGetsARecheckAndFailureNotification() async {
+        let cli = FakeCLI()
+        let hung = line.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"hung""#)
+        let interrupted = hung.replacingOccurrences(of: "hung", with: "interrupted")
+        let probe = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in await probe.sleep() },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in })
+        defer { store.stopObserving() }
+        var detector = SessionTransitionDetector()
+        var transitions: [SessionTransition] = []
+        var snapshots = 0
+        let hungConfirmed = expectation(description: "hung rechecked")
+        let interruptionConfirmed = expectation(description: "interruption rechecked")
+        store.onSnapshot = { sessions in
+            transitions += detector.observe(sessions)
+            snapshots += 1
+            if snapshots == 3 { hungConfirmed.fulfill() }
+            if snapshots == 5 { interruptionConfirmed.fulfill() }
+        }
+        cli.responses["list --json"] = ok(line)
+        await store.refresh()
+        cli.responses["list --json"] = ok(hung)
+        await store.refresh()
+        await probe.waitForCallCount(1)
+        await probe.resumeSleepers()
+        await fulfillment(of: [hungConfirmed], timeout: 1)
+
+        cli.responses["list --json"] = ok(interrupted)
+        await store.refresh()
+        await Task { @MainActor in }.value
+        let calls = await probe.calls()
+        XCTAssertEqual(calls, 2)
+        await probe.resumeSleepers()
+        await fulfillment(of: [interruptionConfirmed], timeout: 1)
+        XCTAssertEqual(transitions.map(\.kind), [.failed])
+    }
+
+    func testReusedNameWithNewLifecycleGetsItsOwnTransientConfirmation() async {
+        let first = line.replacingOccurrences(
+            of: #""schema":1"#, with: #""schema":1,"lifecycle_id":"first""#)
+        let replacement = first.replacingOccurrences(
+            of: #""lifecycle_id":"first""#,
+            with: #""lifecycle_id":"replacement""#)
+        await assertReplacementGetsTransientConfirmation(first, replacement)
+    }
+
+    func testLegacyReusedNameWithNewCreationDateGetsTransientConfirmation() async {
+        let replacement = line.replacingOccurrences(
+            of: "2026-07-10T10:00:00Z", with: "2026-07-10T10:00:01Z")
+        await assertReplacementGetsTransientConfirmation(line, replacement)
+    }
+
+    private func assertReplacementGetsTransientConfirmation(
+        _ first: String, _ replacement: String
+    ) async {
+        let cli = FakeCLI()
+        let probe = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in await probe.sleep() },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in })
+        defer { store.stopObserving() }
+        var snapshots = 0
+        let firstConfirmed = expectation(description: "first lifecycle rechecked")
+        let replacementConfirmed = expectation(description: "replacement rechecked")
+        store.onSnapshot = { _ in
+            snapshots += 1
+            if snapshots == 2 { firstConfirmed.fulfill() }
+            if snapshots == 4 { replacementConfirmed.fulfill() }
+        }
+        cli.responses["list --json"] = ok(first.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"interrupted""#))
+        await store.refresh()
+        await probe.waitForCallCount(1)
+        await probe.resumeSleepers()
+        await fulfillment(of: [firstConfirmed], timeout: 1)
+        cli.responses["list --json"] = ok(replacement.replacingOccurrences(
+            of: #""effective_status":"running""#,
+            with: #""effective_status":"interrupted""#))
+        await store.refresh()
+        await Task { @MainActor in }.value
+        let calls = await probe.calls()
+        XCTAssertEqual(calls, 2)
+        await probe.resumeSleepers()
+        await fulfillment(of: [replacementConfirmed], timeout: 1)
+    }
+
     func testDefaultConfirmationDelayPublishesTheFollowUpSnapshot() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line.replacingOccurrences(

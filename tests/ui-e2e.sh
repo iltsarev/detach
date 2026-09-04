@@ -57,7 +57,7 @@ preserve_failure_diagnostics() {
   mkdir -p "$ARTIFACT_DIR"
   chmod 0700 "$ARTIFACT_DIR"
   for source in "$TEST_ROOT"/app-*.log "$TEST_ROOT"/result-*.json \
-      "$FAKE_DIR/invocations.log"; do
+      "$TEST_ROOT"/window-*.png "$FAKE_DIR/invocations.log"; do
     [ -f "$source" ] && [ ! -L "$source" ] || continue
     destination="$ARTIFACT_DIR/$(basename "$source")"
     install -m 0600 "$source" "$destination"

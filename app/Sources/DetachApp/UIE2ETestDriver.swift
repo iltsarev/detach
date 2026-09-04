@@ -10,16 +10,19 @@ enum UIE2EControlFault {
     static var stopActionAttempts = 0
 }
 
-private final class UIE2EDeferredMouseUp: @unchecked Sendable {
+private final class UIE2EDeferredMouseEvent: @unchecked Sendable {
     private let application: NSApplication
     private let event: NSEvent
+    private let cursorPosition: CGPoint?
 
-    init(application: NSApplication, event: NSEvent) {
+    init(application: NSApplication, event: NSEvent, cursorPosition: CGPoint? = nil) {
         self.application = application
         self.event = event
+        self.cursorPosition = cursorPosition
     }
 
     func post() {
+        if let cursorPosition { CGWarpMouseCursorPosition(cursorPosition) }
         application.postEvent(event, atStart: false)
     }
 }
@@ -996,20 +999,29 @@ enum UIE2ETestDriver {
         let originalFont = originalPreference as? Double ?? AppFontSize.defaultValue
         AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
         let originalFrame = window.frame
+        var completed = false
         defer {
+            if !completed { captureSettingsFailure(window) }
             AppSettings.defaults.set(originalPreference, forKey: AppFontSize.storageKey)
             window.setFrame(originalFrame, display: true)
         }
         window.setFrameOrigin(CGPoint(
             x: visible.maxX - window.frame.width, y: visible.minY))
+        try await activate(window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
         try await revealGeometry(
             identifier: "settings-text-size", name: "settings text size slider")
         let sliderFrame = try await measuredFrame(
             identifier: "settings-text-size", name: "settings text size slider")
-        try await clickMeasuredControl(
-            identifier: "settings-text-size", name: "maximum settings text size",
-            offset: CGSize(width: sliderFrame.width - 4, height: 0),
-            size: CGSize(width: 2, height: sliderFrame.height))
+        let range = AppFontSize.allowedRange
+        let fraction = (originalFont - range.lowerBound)
+            / (range.upperBound - range.lowerBound)
+        try await drag(
+            from: CGPoint(x: sliderFrame.minX + 8 + (sliderFrame.width - 16) * fraction,
+                          y: sliderFrame.midY),
+            to: CGPoint(x: sliderFrame.maxX - 8, y: sliderFrame.midY),
+            in: window, name: "maximum settings text size")
         let apply = try await element(identifier: "settings-apply-text-size")
         try await waitUntil("text size draft can be applied") { isEnabled(apply) }
         guard AppSettings.defaults.double(forKey: AppFontSize.storageKey) == originalFont,
@@ -1031,6 +1043,18 @@ enum UIE2ETestDriver {
             abs(window.frame.width - originalFrame.width) < 1
                 && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
         }
+        completed = true
+    }
+
+    private static func captureSettingsFailure(_ window: NSWindow) {
+        guard let configuration = AppSettings.uiE2E,
+              let view = window.contentView,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+        else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? data.write(to: configuration.root.appendingPathComponent(
+            "window-settings-failure.png"), options: .atomic)
     }
 
     private static func runOnboardingFirstRun(
@@ -1616,7 +1640,7 @@ enum UIE2ETestDriver {
         // receives a physical-duration click even inside a tracking loop. Put
         // mouseUp at the queue tail so a busy main thread cannot process it
         // before the mouseDown event at the queue head.
-        let mouseUp = UIE2EDeferredMouseUp(application: NSApp, event: events[1])
+        let mouseUp = UIE2EDeferredMouseEvent(application: NSApp, event: events[1])
         DispatchQueue.global(qos: .userInitiated).asyncAfter(
             deadline: .now() + clickInterval
         ) {
@@ -1626,10 +1650,56 @@ enum UIE2ETestDriver {
         try await Task.sleep(nanoseconds: 60_000_000)
     }
 
+    private static func drag(
+        from start: CGPoint,
+        to end: CGPoint,
+        in window: NSWindow,
+        name: String
+    ) async throws {
+        trace("dragging \(name) from \(start) to \(end), key=\(window.isKeyWindow)")
+        try moveCursor(to: start, name: name)
+        let endCursor = try cursorPoint(for: end, name: name)
+        let sequence: [(NSEvent.EventType, CGPoint)] = [
+            (.leftMouseDown, start), (.leftMouseDragged, end), (.leftMouseUp, end),
+        ]
+        var events: [NSEvent] = []
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        for (index, item) in sequence.enumerated() {
+            nextMouseEventNumber += 1
+            guard let event = NSEvent.mouseEvent(
+                with: item.0, location: window.convertPoint(fromScreen: item.1),
+                modifierFlags: [], timestamp: timestamp + Double(index) * 0.05,
+                windowNumber: window.windowNumber, context: nil,
+                eventNumber: nextMouseEventNumber, clickCount: 1,
+                pressure: item.0 == .leftMouseUp ? 0 : 1)
+            else { throw Failure(message: "cannot create drag event for \(name)") }
+            events.append(event)
+        }
+        for index in 1..<events.count {
+            let delivery = UIE2EDeferredMouseEvent(
+                application: NSApp, event: events[index], cursorPosition: endCursor)
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + Double(index) * 0.05
+            ) { delivery.post() }
+        }
+        NSApp.postEvent(events[0], atStart: true)
+        try await Task.sleep(nanoseconds: 150_000_000)
+    }
+
     private static func moveCursor(
         to screenPoint: CGPoint,
         name: String
     ) throws {
+        let point = try cursorPoint(for: screenPoint, name: name)
+        guard CGWarpMouseCursorPosition(point) == .success else {
+            throw Failure(message: "cannot position the pointer for \(name)")
+        }
+    }
+
+    private static func cursorPoint(
+        for screenPoint: CGPoint,
+        name: String
+    ) throws -> CGPoint {
         guard cursorRestorePoint != nil else {
             throw Failure(message: "cannot preserve pointer position for \(name)")
         }
@@ -1642,13 +1712,10 @@ enum UIE2ETestDriver {
         else {
             throw Failure(message: "cannot resolve the display for \(name)")
         }
-        let quartzPoint = UIE2ECursorPositionResolver.quartzPoint(
+        return UIE2ECursorPositionResolver.quartzPoint(
             for: screenPoint,
             screenFrame: screen.frame,
             displayBounds: CGDisplayBounds(CGDirectDisplayID(screenNumber.uint32Value)))
-        guard CGWarpMouseCursorPosition(quartzPoint) == .success else {
-            throw Failure(message: "cannot position the pointer for \(name)")
-        }
     }
 
     private static func keyPress(
