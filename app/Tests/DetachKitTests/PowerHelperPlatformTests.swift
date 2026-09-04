@@ -32,6 +32,35 @@ final class PowerHelperPlatformTests: XCTestCase {
         }
     }
 
+    func testRootCommandRunnerBoundsInheritedPipesAfterLeaderExit() throws {
+        let started = Date()
+        let result = try RootProcessCommandRunner(
+            timeout: 0.2, terminationGrace: 0.05
+        ).run(RootCommand(
+            executable: "/bin/sh",
+            arguments: ["-c", "(/bin/sleep 3; printf late) & printf ready"]))
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.standardOutput, "ready")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
+    }
+
+    func testRootCommandRunnerTimeoutIncludesPipeDescendants() {
+        let started = Date()
+        let runner = RootProcessCommandRunner(
+            timeout: 0.2, terminationGrace: 0.05)
+
+        XCTAssertThrowsError(try runner.run(RootCommand(
+            executable: "/bin/sh",
+            arguments: ["-c", "trap '' TERM; /bin/sleep 3 & wait"]))) { error in
+            XCTAssertEqual(error as? PowerHelperPlatformError,
+                           .commandTimedOut(executable: "/bin/sh"))
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+    }
+
     func testRootCommandRunnerDrainsButBoundsCapturedOutput() throws {
         let runner = RootProcessCommandRunner(
             timeout: 2, maximumOutputBytes: 1_024)
