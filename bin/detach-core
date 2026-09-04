@@ -3358,7 +3358,8 @@ codex_state_db() {
 }
 
 sql_escape() {
-  printf '%s' "${1//\'/\'\'}"
+  local quote="'"
+  printf '%s' "${1//$quote/$quote$quote}"
 }
 
 snapshot_known_threads() {
@@ -7147,11 +7148,15 @@ list_session_records() {
   local health_preserve_recovery_until_ready
   local health_runtime_ready_at
   local recovery_meta
+  local model_database=""
   local LIST_HEALTH_NOW
 
   ensure_state_dirs
   prepare_list_tmux_health_snapshot
   LIST_HEALTH_NOW="$(date '+%s')"
+  if [ "$PROVIDER" = codex ] && [ "$json_mode" = 1 ]; then
+    model_database="$(codex_state_db 2>/dev/null || true)"
+  fi
   if [ "$json_mode" = "1" ] && [ -x "$POWER_BIN" ]; then
     reported_power_state="${DETACH_LIST_POWER_STATE:-}"
     case "$reported_power_state" in
@@ -7318,6 +7323,18 @@ list_session_records() {
     esac
     [ -n "$TRANSCRIPT_AGENT_TURN_ID" ] || TRANSCRIPT_AGENT_TURN_STATE=""
     if [ "$json_mode" = "1" ]; then
+      # A long Codex turn can push its model record outside the bounded tail.
+      # Older databases have no model column; retain the transcript fallback.
+      if [ -z "$TRANSCRIPT_MODEL" ] && [ -n "$model_database" ] && \
+         [ -n "$META_AGENT_SESSION_ID" ] && [ -n "$META_TRANSCRIPT_PATH" ]; then
+        TRANSCRIPT_MODEL="$(
+          "$SQLITE_BIN" -readonly -noheader -cmd '.timeout 100' "$model_database" \
+            "SELECT model FROM threads
+             WHERE id = '$(sql_escape "$META_AGENT_SESSION_ID")'
+               AND rollout_path = '$(sql_escape "$META_TRANSCRIPT_PATH")'
+             LIMIT 1;" 2>/dev/null || true
+        )"
+      fi
       prepare_list_json_args \
         "$session" "$status" "$id" "$checkpoint" "$cwd" "$created" \
         "$exit_json" "$finished" "$TRANSCRIPT_MODEL" "$TRANSCRIPT_CTX_USED" \
