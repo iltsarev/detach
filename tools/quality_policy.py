@@ -396,6 +396,14 @@ class Policy:
         if not self.specs:
             raise PolicyError("at least one current specification is required")
         registered_specs = {path for path, _ in self.specs.values()}
+        for required_limit in (
+            "routed_spec_warning_bytes",
+            "routed_spec_limit_bytes",
+        ):
+            if required_limit not in self.limits:
+                raise PolicyError(f"quality policy limit is missing: {required_limit}")
+        if self.limits["routed_spec_warning_bytes"] >= self.limits["routed_spec_limit_bytes"]:
+            raise PolicyError("routed spec warning must be below the hard limit")
         if "static" not in self.stages_by_name:
             raise PolicyError("static stage is required")
         if "unknown" not in self.test_domains or "unknown" not in self.release_domains:

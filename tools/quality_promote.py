@@ -254,7 +254,11 @@ def artifact_inventory(
         if sha256(artifact) != fields[2]:
             raise PromotionError(f"evidence artifact digest does not match: {fields[1]}")
         values[fields[1]] = fields[2]
-    required_artifacts = ["scenarios.jsonl", "scenarios.junit.xml"]
+    required_artifacts = [
+        "scenarios.jsonl",
+        "scenarios.junit.xml",
+        "spec-sizes.json",
+    ]
     if require_metrics:
         required_artifacts.extend(
             ("coverage-opportunities.json", "quality-metrics.json")
@@ -336,6 +340,134 @@ def changed_paths(executable: str, base_commit: str, head_commit: str) -> list[s
     return paths
 
 
+def specification_size_status(size: int, warning: int, limit: int) -> str:
+    if size > limit:
+        return "over-limit"
+    if size > warning:
+        return "warning"
+    return "healthy"
+
+
+def validate_specification_sizes(
+    document: Any, manifest: dict[str, str], policy: dict[str, Any]
+) -> dict[str, Any]:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema")) is not int
+        or document.get("schema") != 1
+    ):
+        raise PromotionError("routed specification sizes schema is unsupported")
+    expected_keys = {
+        "input_fingerprint",
+        "limit_bytes",
+        "policy",
+        "schema",
+        "source_commit",
+        "specifications",
+        "status",
+        "warning_bytes",
+    }
+    if set(document) != expected_keys:
+        raise PromotionError("routed specification sizes schema is invalid")
+    if (
+        type(document["policy"]) is not int
+        or document["policy"] != int(manifest["policy"])
+    ):
+        raise PromotionError("routed specification sizes policy does not match the run")
+    if (
+        document["source_commit"] != manifest["source_commit"]
+        or document["input_fingerprint"] != manifest["input_fingerprint"]
+    ):
+        raise PromotionError(
+            "routed specification sizes source identity does not match the run"
+        )
+    limits = policy.get("limits")
+    if not isinstance(limits, dict):
+        raise PromotionError("generated policy limits are invalid")
+    warning = limits.get("routed_spec_warning_bytes")
+    limit = limits.get("routed_spec_limit_bytes")
+    if (
+        not isinstance(warning, int)
+        or isinstance(warning, bool)
+        or not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or warning < 1
+        or warning >= limit
+    ):
+        raise PromotionError("routed specification size limits are invalid")
+    if (
+        type(document["warning_bytes"]) is not int
+        or type(document["limit_bytes"]) is not int
+        or document["warning_bytes"] != warning
+        or document["limit_bytes"] != limit
+    ):
+        raise PromotionError(
+            "routed specification size limits do not match the policy"
+        )
+    policy_specifications = policy.get("specifications")
+    if not isinstance(policy_specifications, list) or not policy_specifications:
+        raise PromotionError("generated policy specifications are invalid")
+    expected_identities: list[tuple[str, str]] = []
+    for specification in policy_specifications:
+        if not isinstance(specification, dict):
+            raise PromotionError("generated policy specification is invalid")
+        identifier = specification.get("id")
+        raw_path = specification.get("path")
+        if not isinstance(identifier, str) or not isinstance(raw_path, str):
+            raise PromotionError("generated policy specification identity is invalid")
+        relative = Path(raw_path)
+        if relative.parts != ("docs", "specs", f"{identifier}.md"):
+            raise PromotionError(
+                f"generated policy specification path is unsafe: {raw_path}"
+            )
+        expected_identities.append((identifier, raw_path))
+    records = document["specifications"]
+    if not isinstance(records, list) or len(records) != len(expected_identities):
+        raise PromotionError("routed specification identities do not match the policy")
+    actual_identities: list[tuple[str, str]] = []
+    record_keys = {"bytes", "headroom_bytes", "id", "path", "status"}
+    for record in records:
+        if not isinstance(record, dict) or set(record) != record_keys:
+            raise PromotionError("routed specification size record is invalid")
+        identifier = record["id"]
+        raw_path = record["path"]
+        if not isinstance(identifier, str) or not isinstance(raw_path, str):
+            raise PromotionError("routed specification identity is invalid")
+        relative = Path(raw_path)
+        if relative.parts != ("docs", "specs", f"{identifier}.md"):
+            raise PromotionError(
+                f"routed specification path is unsafe: {raw_path}"
+            )
+        actual_identities.append((identifier, raw_path))
+        size = record["bytes"]
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise PromotionError(
+                f"routed specification size is invalid: {identifier}"
+            )
+        status = specification_size_status(size, warning, limit)
+        headroom = record["headroom_bytes"]
+        if (
+            type(headroom) is not int
+            or headroom != max(0, limit - size)
+            or not isinstance(record["status"], str)
+            or record["status"] != status
+        ):
+            raise PromotionError(
+                f"routed specification size derivation is invalid: {identifier}"
+            )
+    if actual_identities != expected_identities:
+        raise PromotionError("routed specification identities do not match the policy")
+    statuses = {record["status"] for record in records}
+    overall = (
+        "over-limit" if "over-limit" in statuses
+        else "warning" if "warning" in statuses
+        else "healthy"
+    )
+    if document["status"] != overall:
+        raise PromotionError("routed specification size status is invalid")
+    return document
+
+
 def validate_evidence(
     run_dir: Path,
     policy: Policy,
@@ -376,6 +508,18 @@ def validate_evidence(
     validate_summary(run_dir, manifest, policy, expected_stages)
     require_metrics = "quality-contracts" in expected_stages
     artifact_inventory(run_dir, manifest, require_metrics=require_metrics)
+    if not DIGEST.fullmatch(manifest.get("input_fingerprint", "")):
+        raise PromotionError("quality manifest input fingerprint is invalid")
+    try:
+        specification_sizes = json.loads(
+            (run_dir / "spec-sizes.json").read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise PromotionError("routed specification sizes JSON is invalid") from error
+    validate_specification_sizes(
+        specification_sizes, manifest,
+        {"limits": policy.limits, "specifications": policy.specification_document()},
+    )
     if not require_metrics:
         return manifest, sha256(manifest_path)
     from quality_metrics import read_json, validate_metrics, validate_opportunities

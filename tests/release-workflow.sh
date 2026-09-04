@@ -47,7 +47,8 @@ setup_fixture() {
     return
   fi
   mkdir -p "$REPO/scripts" "$REPO/tests/quality-gate-fixtures" "$REPO/app/scripts" \
-    "$REPO/app/.build/artifacts/sparkle/Sparkle/bin" "$REPO/quality" "$REPO/tools" \
+    "$REPO/app/.build/artifacts/sparkle/Sparkle/bin" "$REPO/docs/specs" \
+    "$REPO/quality" "$REPO/tools" \
     "$BIN" "$APPS" "$FIXTURE/hooks" \
     "$REMOTE_ASSETS"
 
@@ -63,6 +64,7 @@ setup_fixture() {
   install -m 0644 "$ROOT/tools/quality_policy.py" "$REPO/tools/quality_policy.py"
   install -m 0644 "$ROOT/tools/release_sbom.py" "$REPO/tools/release_sbom.py"
   install -m 0644 "$ROOT/app/Package.resolved" "$REPO/app/Package.resolved"
+  install -m 0644 "$ROOT"/docs/specs/*.md "$REPO/docs/specs/"
   install -m 0644 "$ROOT/quality/policy.tsv" "$REPO/quality/policy.tsv"
   install -m 0755 "$ROOT/app/scripts/verify-appcast.sh" \
     "$REPO/app/scripts/verify-appcast.sh"

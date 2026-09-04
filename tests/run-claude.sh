@@ -1093,6 +1093,19 @@ grep -Fx -- "$TMP_ROOT/extra-b" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 [ -s "$CLAUDE_CONFIG_DIR/teams/session-${session_id:0:8}/config.json" ]
 claude_scenario_event pass SC-SESSION-RECOVER-CLAUDE
 
+# The byte-preservation check below needs an up-to-date A generation. Resume
+# may legitimately materialize newer A data before it starts replacement B.
+# Do not depend on the background or bounded Stop checkpoint finishing first.
+preserved_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
+preserved_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$session:" @detach_pane_id)"
+preserved_worker_pid="$(tmux -L "$SOCKET" display-message -p \
+  -t "$preserved_pane" '#{pane_pid}')"
+[ "$("$STATE_HELPER" meta get "$meta" worker_pid)" = "$preserved_worker_pid" ]
+[ "$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$session:" @detach_run_token)" = "$preserved_run_token" ]
+"$SCRIPT" claude __checkpoint_once \
+  "$session" "$preserved_run_token" "$preserved_worker_pid"
 "$SCRIPT" claude stop "$human_label"
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
 

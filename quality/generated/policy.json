@@ -25,18 +25,28 @@
       "id": "session-lifecycle",
       "journeys": [
         "J-SESSION-CREATE",
-        "J-SESSION-PERSIST",
         "J-SESSION-RECOVER",
         "J-SESSION-STOP",
         "J-SESSION-DELETE"
       ],
       "requirements": [
-        "QC-RUNTIME-STATE",
         "QC-RUNTIME-OWNERSHIP",
-        "QC-RUNTIME-STORAGE",
         "QC-RUNTIME-TRANSITION"
       ],
       "spec": "docs/specs/runtime.md"
+    },
+    {
+      "id": "session-state",
+      "journeys": [
+        "J-SESSION-PERSIST",
+        "J-STATE-CLEANUP",
+        "J-STATE-RECOVER"
+      ],
+      "requirements": [
+        "QC-RUNTIME-STATE",
+        "QC-RUNTIME-STORAGE"
+      ],
+      "spec": "docs/specs/state.md"
     },
     {
       "id": "power-protection",
@@ -84,7 +94,7 @@
       "requirements": [
         "QC-APP-ONBOARDING"
       ],
-      "spec": "docs/specs/app.md"
+      "spec": "docs/specs/app-setup.md"
     },
     {
       "id": "settings",
@@ -94,7 +104,7 @@
       "requirements": [
         "QC-APP-SETTINGS"
       ],
-      "spec": "docs/specs/app.md"
+      "spec": "docs/specs/app-setup.md"
     },
     {
       "id": "update",
@@ -105,7 +115,7 @@
       "requirements": [
         "QC-APP-UPDATE"
       ],
-      "spec": "docs/specs/app.md"
+      "spec": "docs/specs/app-setup.md"
     },
     {
       "id": "diagnostics",
@@ -115,7 +125,7 @@
       "requirements": [
         "QC-APP-DOCTOR"
       ],
-      "spec": "docs/specs/app.md"
+      "spec": "docs/specs/app-setup.md"
     },
     {
       "id": "installation",
@@ -397,7 +407,6 @@
       "capability": "session-lifecycle",
       "id": "J-SESSION-CREATE",
       "requirements": [
-        "QC-RUNTIME-STATE",
         "QC-RUNTIME-OWNERSHIP"
       ],
       "scenarios": [
@@ -407,11 +416,10 @@
       "summary": "A user creates a managed provider session."
     },
     {
-      "capability": "session-lifecycle",
+      "capability": "session-state",
       "id": "J-SESSION-PERSIST",
       "requirements": [
-        "QC-RUNTIME-STATE",
-        "QC-RUNTIME-STORAGE"
+        "QC-RUNTIME-STATE"
       ],
       "scenarios": [
         "SC-SESSION-PERSIST-CODEX",
@@ -420,11 +428,35 @@
       "summary": "A live session remains available after the app exits."
     },
     {
+      "capability": "session-state",
+      "id": "J-STATE-CLEANUP",
+      "requirements": [
+        "QC-RUNTIME-STATE"
+      ],
+      "scenarios": [
+        "SC-SESSION-DELETE-CODEX",
+        "SC-SESSION-DELETE-CLAUDE",
+        "SC-UI-SESSION-DELETE"
+      ],
+      "summary": "A user removes only typed state that a complete scan marks eligible."
+    },
+    {
+      "capability": "session-state",
+      "id": "J-STATE-RECOVER",
+      "requirements": [
+        "QC-RUNTIME-STORAGE"
+      ],
+      "scenarios": [
+        "SC-SESSION-RECOVER-CODEX",
+        "SC-SESSION-RECOVER-CLAUDE"
+      ],
+      "summary": "A user restores recovery state only after complete validation."
+    },
+    {
       "capability": "session-lifecycle",
       "id": "J-SESSION-RECOVER",
       "requirements": [
         "QC-RUNTIME-OWNERSHIP",
-        "QC-RUNTIME-STORAGE",
         "QC-RUNTIME-TRANSITION"
       ],
       "scenarios": [
@@ -450,8 +482,7 @@
       "capability": "session-lifecycle",
       "id": "J-SESSION-DELETE",
       "requirements": [
-        "QC-RUNTIME-OWNERSHIP",
-        "QC-RUNTIME-STORAGE"
+        "QC-RUNTIME-OWNERSHIP"
       ],
       "scenarios": [
         "SC-SESSION-DELETE-CODEX",
@@ -712,9 +743,11 @@
     "merge_wait_seconds": 300,
     "mutation_score_percent": 100,
     "mutation_timeout_seconds": 240,
-    "pr_feedback_seconds": 600
+    "pr_feedback_seconds": 600,
+    "routed_spec_limit_bytes": 16384,
+    "routed_spec_warning_bytes": 12288
   },
-  "policy": 54,
+  "policy": 55,
   "release_domains": [
     {
       "gates": "-",
@@ -759,7 +792,7 @@
   "requirements": [
     {
       "id": "QC-RUNTIME-STATE",
-      "spec": "docs/specs/runtime.md",
+      "spec": "docs/specs/state.md",
       "summary": "Typed state is the only shared state mutation boundary."
     },
     {
@@ -769,7 +802,7 @@
     },
     {
       "id": "QC-RUNTIME-STORAGE",
-      "spec": "docs/specs/runtime.md",
+      "spec": "docs/specs/state.md",
       "summary": "Restores validate path, symlink, identity, and JSONL data before replacement."
     },
     {
@@ -829,22 +862,22 @@
     },
     {
       "id": "QC-APP-DOCTOR",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "summary": "Doctor output derives from typed runtime state."
     },
     {
       "id": "QC-APP-ONBOARDING",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "summary": "Onboarding leads a new user through supported provider and approval setup."
     },
     {
       "id": "QC-APP-SETTINGS",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "summary": "Settings changes persist and affect only their declared behavior."
     },
     {
       "id": "QC-APP-UPDATE",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "summary": "Update state and application preserve the signed arm64 contract."
     },
     {
@@ -1270,8 +1303,8 @@
       "pattern": "app/Sources/DetachKit/DetachState*.swift",
       "priority": 900,
       "release_domain": "safe",
-      "spec": "docs/specs/runtime.md",
-      "test_domain": "state-runtime"
+      "spec": "docs/specs/state.md",
+      "test_domain": "state-source"
     },
     {
       "pattern": "app/Sources/DetachKit/Session*.swift",
@@ -1281,18 +1314,46 @@
       "test_domain": "state-runtime"
     },
     {
+      "pattern": "app/Sources/DetachKit/Session.swift",
+      "priority": 910,
+      "release_domain": "safe",
+      "spec": "docs/specs/state.md",
+      "test_domain": "state-source"
+    },
+    {
+      "pattern": "app/Sources/DetachKit/SessionEvents.swift",
+      "priority": 910,
+      "release_domain": "safe",
+      "spec": "docs/specs/state.md",
+      "test_domain": "state-source"
+    },
+    {
+      "pattern": "app/Sources/DetachKit/SessionHealth.swift",
+      "priority": 910,
+      "release_domain": "safe",
+      "spec": "docs/specs/app.md",
+      "test_domain": "session-health-source"
+    },
+    {
+      "pattern": "app/Sources/DetachKit/SessionMaintenance.swift",
+      "priority": 910,
+      "release_domain": "safe",
+      "spec": "docs/specs/state.md",
+      "test_domain": "state-source"
+    },
+    {
       "pattern": "app/Sources/DetachKit/Storage*.swift",
       "priority": 900,
       "release_domain": "safe",
-      "spec": "docs/specs/runtime.md",
-      "test_domain": "state-runtime"
+      "spec": "docs/specs/state.md",
+      "test_domain": "state-source"
     },
     {
       "pattern": "app/Sources/DetachState/*.swift",
       "priority": 900,
       "release_domain": "safe",
-      "spec": "docs/specs/runtime.md",
-      "test_domain": "state-runtime"
+      "spec": "docs/specs/state.md",
+      "test_domain": "state-source"
     },
     {
       "pattern": "app/Sources/DetachKit/DetachPower*.swift",
@@ -1319,8 +1380,8 @@
       "pattern": "app/Sources/DetachKit/BoundedProcessRunner.swift",
       "priority": 900,
       "release_domain": "both",
-      "spec": "docs/specs/power.md",
-      "test_domain": "power"
+      "spec": "docs/specs/runtime.md",
+      "test_domain": "bounded-process-source"
     },
     {
       "pattern": "app/Sources/DetachPower/*.swift",
@@ -1348,7 +1409,7 @@
       "priority": 900,
       "release_domain": "both",
       "spec": "docs/specs/power.md",
-      "test_domain": "power"
+      "test_domain": "installation-store-source"
     },
     {
       "pattern": "app/Sources/DetachApp/PowerHelper*.swift",
@@ -1369,69 +1430,69 @@
       "priority": 880,
       "release_domain": "install",
       "spec": "docs/specs/app.md",
-      "test_domain": "onboarding-source"
+      "test_domain": "app-shell-source"
     },
     {
       "pattern": "app/Sources/DetachApp/Onboarding*.swift",
       "priority": 880,
       "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "test_domain": "onboarding-source"
     },
     {
       "pattern": "app/Sources/DetachApp/RootView.swift",
       "priority": 880,
-      "release_domain": "install",
+      "release_domain": "safe",
       "spec": "docs/specs/app.md",
-      "test_domain": "onboarding-source"
+      "test_domain": "root-view-source"
     },
     {
       "pattern": "app/Sources/DetachApp/SetupGuidance.swift",
       "priority": 880,
       "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "test_domain": "onboarding-source"
     },
     {
       "pattern": "app/Sources/DetachApp/Settings*.swift",
       "priority": 880,
       "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "test_domain": "settings-source"
     },
     {
       "pattern": "app/Sources/DetachApp/UpdaterService.swift",
       "priority": 880,
       "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "test_domain": "update-source"
     },
     {
       "pattern": "app/Sources/DetachKit/DetachCLI.swift",
       "priority": 880,
-      "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "release_domain": "safe",
+      "spec": "docs/specs/runtime.md",
       "test_domain": "runtime-source"
     },
     {
       "pattern": "app/Sources/DetachKit/DoctorReport.swift",
       "priority": 880,
       "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "test_domain": "diagnostics-source"
     },
     {
       "pattern": "app/Sources/DetachKit/Localization.swift",
       "priority": 880,
       "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "test_domain": "onboarding-source"
     },
     {
       "pattern": "app/Sources/DetachKit/UpdateConfiguration.swift",
       "priority": 880,
       "release_domain": "install",
-      "spec": "docs/specs/app.md",
+      "spec": "docs/specs/app-setup.md",
       "test_domain": "update-source"
     },
     {
@@ -1523,7 +1584,7 @@
       "priority": 870,
       "release_domain": "safe",
       "spec": "docs/specs/app.md",
-      "test_domain": "swift-source"
+      "test_domain": "ui-e2e-source"
     },
     {
       "pattern": "app/Sources/DetachApp/*.swift",
@@ -2414,7 +2475,6 @@
       "id": "runtime",
       "journeys": [
         "J-SESSION-CREATE",
-        "J-SESSION-PERSIST",
         "J-SESSION-RECOVER",
         "J-SESSION-STOP",
         "J-SESSION-DELETE"
@@ -2422,14 +2482,13 @@
       "owned_patterns": [
         "app/Sources/DetachKit/*.swift",
         "app/Sources/DetachKit/ANSIText.swift",
-        "app/Sources/DetachKit/DetachState*.swift",
+        "app/Sources/DetachKit/BoundedProcessRunner.swift",
+        "app/Sources/DetachKit/DetachCLI.swift",
         "app/Sources/DetachKit/LogPoller.swift",
         "app/Sources/DetachKit/Session*.swift",
-        "app/Sources/DetachKit/Storage*.swift",
         "app/Sources/DetachKit/Terminal*.swift",
         "app/Sources/DetachKit/Tip.swift",
         "app/Sources/DetachKit/Tmux*.swift",
-        "app/Sources/DetachState/*.swift",
         "bin/*",
         "bin/detach",
         "bin/detach-core",
@@ -2445,40 +2504,6 @@
       ],
       "path": "docs/specs/runtime.md",
       "requirements": [
-        {
-          "id": "QC-RUNTIME-STATE",
-          "journeys": [
-            "J-SESSION-CREATE",
-            "J-SESSION-PERSIST"
-          ],
-          "scenarios": [
-            {
-              "command": "tests/run.sh",
-              "id": "SC-SESSION-CREATE-CODEX",
-              "stage": "codex",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run-claude.sh",
-              "id": "SC-SESSION-CREATE-CLAUDE",
-              "stage": "claude",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run.sh",
-              "id": "SC-SESSION-PERSIST-CODEX",
-              "stage": "codex",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run-claude.sh",
-              "id": "SC-SESSION-PERSIST-CLAUDE",
-              "stage": "claude",
-              "status": "instrumented"
-            }
-          ],
-          "summary": "Typed state is the only shared state mutation boundary."
-        },
         {
           "id": "QC-RUNTIME-OWNERSHIP",
           "journeys": [
@@ -2552,11 +2577,54 @@
           "summary": "Session operations prove the exact run token and process ownership."
         },
         {
-          "id": "QC-RUNTIME-STORAGE",
+          "id": "QC-RUNTIME-TRANSITION",
+          "journeys": [
+            "J-SESSION-RECOVER"
+          ],
+          "scenarios": [
+            {
+              "command": "tests/run.sh",
+              "id": "SC-SESSION-RECOVER-CODEX",
+              "stage": "codex",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/run-claude.sh",
+              "id": "SC-SESSION-RECOVER-CLAUDE",
+              "stage": "claude",
+              "status": "instrumented"
+            }
+          ],
+          "summary": "Session transitions preserve exact process identity."
+        }
+      ],
+      "summary": "Runtime and session operations preserve exact ownership."
+    },
+    {
+      "capabilities": [
+        "session-state"
+      ],
+      "id": "state",
+      "journeys": [
+        "J-SESSION-PERSIST",
+        "J-STATE-CLEANUP",
+        "J-STATE-RECOVER"
+      ],
+      "owned_patterns": [
+        "app/Sources/DetachKit/DetachState*.swift",
+        "app/Sources/DetachKit/Session.swift",
+        "app/Sources/DetachKit/SessionEvents.swift",
+        "app/Sources/DetachKit/SessionMaintenance.swift",
+        "app/Sources/DetachKit/Storage*.swift",
+        "app/Sources/DetachState/*.swift"
+      ],
+      "path": "docs/specs/state.md",
+      "requirements": [
+        {
+          "id": "QC-RUNTIME-STATE",
           "journeys": [
             "J-SESSION-PERSIST",
-            "J-SESSION-RECOVER",
-            "J-SESSION-DELETE"
+            "J-STATE-CLEANUP"
           ],
           "scenarios": [
             {
@@ -2568,18 +2636,6 @@
             {
               "command": "tests/run-claude.sh",
               "id": "SC-SESSION-PERSIST-CLAUDE",
-              "stage": "claude",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run.sh",
-              "id": "SC-SESSION-RECOVER-CODEX",
-              "stage": "codex",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run-claude.sh",
-              "id": "SC-SESSION-RECOVER-CLAUDE",
               "stage": "claude",
               "status": "instrumented"
             },
@@ -2602,12 +2658,12 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Restores validate path, symlink, identity, and JSONL data before replacement."
+          "summary": "Typed state is the only shared state mutation boundary."
         },
         {
-          "id": "QC-RUNTIME-TRANSITION",
+          "id": "QC-RUNTIME-STORAGE",
           "journeys": [
-            "J-SESSION-RECOVER"
+            "J-STATE-RECOVER"
           ],
           "scenarios": [
             {
@@ -2623,10 +2679,10 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Session transitions preserve exact process identity."
+          "summary": "Restores validate path, symlink, identity, and JSONL data before replacement."
         }
       ],
-      "summary": "Runtime state and session operations preserve exact ownership."
+      "summary": "Typed state, storage, and change events remain safe and coherent."
     },
     {
       "capabilities": [
@@ -2645,7 +2701,6 @@
         "app/Sources/DetachApp/InstallationStore.swift",
         "app/Sources/DetachApp/PowerHelper*.swift",
         "app/Sources/DetachApp/Watchdog*.swift",
-        "app/Sources/DetachKit/BoundedProcessRunner.swift",
         "app/Sources/DetachKit/ClamshellLockRunner.swift",
         "app/Sources/DetachKit/DetachPower*.swift",
         "app/Sources/DetachKit/Power*.swift",
@@ -2780,11 +2835,7 @@
     },
     {
       "capabilities": [
-        "app-experience",
-        "onboarding",
-        "settings",
-        "update",
-        "diagnostics"
+        "app-experience"
       ],
       "id": "app",
       "journeys": [
@@ -2793,14 +2844,7 @@
         "J-APP-EMPTY",
         "J-APP-FAILURE",
         "J-APP-FOCUS",
-        "J-APP-NEW-SESSION",
-        "J-ONBOARD-FIRST-RUN",
-        "J-ONBOARD-PROVIDER",
-        "J-ONBOARD-APPROVAL",
-        "J-SETTINGS-CHANGE",
-        "J-UPDATE-CHECK",
-        "J-UPDATE-APPLY",
-        "J-DOCTOR-REPORT"
+        "J-APP-NEW-SESSION"
       ],
       "owned_patterns": [
         "app/Package.resolved",
@@ -2819,12 +2863,9 @@
         "app/Sources/DetachApp/LogTextView.swift",
         "app/Sources/DetachApp/MenuBar*.swift",
         "app/Sources/DetachApp/NewSessionSheet.swift",
-        "app/Sources/DetachApp/Onboarding*.swift",
         "app/Sources/DetachApp/QuickChat.swift",
         "app/Sources/DetachApp/RootView.swift",
         "app/Sources/DetachApp/Session*.swift",
-        "app/Sources/DetachApp/Settings*.swift",
-        "app/Sources/DetachApp/SetupGuidance.swift",
         "app/Sources/DetachApp/SidebarView.swift",
         "app/Sources/DetachApp/TerminalPreferencePicker.swift",
         "app/Sources/DetachApp/TextSize.swift",
@@ -2832,11 +2873,7 @@
         "app/Sources/DetachApp/TipsBar.swift",
         "app/Sources/DetachApp/TmuxExtendedKeysSettingsController.swift",
         "app/Sources/DetachApp/UIE2E*.swift",
-        "app/Sources/DetachApp/UpdaterService.swift",
-        "app/Sources/DetachKit/DetachCLI.swift",
-        "app/Sources/DetachKit/DoctorReport.swift",
-        "app/Sources/DetachKit/Localization.swift",
-        "app/Sources/DetachKit/UpdateConfiguration.swift",
+        "app/Sources/DetachKit/SessionHealth.swift",
         "app/Tests/*",
         "tests/fake-ui-cli",
         "tests/ui-e2e-contract.sh",
@@ -2923,7 +2960,38 @@
             }
           ],
           "summary": "Session tips remain deterministic and user visible."
-        },
+        }
+      ],
+      "summary": "The app presents and changes only typed product state."
+    },
+    {
+      "capabilities": [
+        "onboarding",
+        "settings",
+        "update",
+        "diagnostics"
+      ],
+      "id": "app-setup",
+      "journeys": [
+        "J-ONBOARD-FIRST-RUN",
+        "J-ONBOARD-PROVIDER",
+        "J-ONBOARD-APPROVAL",
+        "J-SETTINGS-CHANGE",
+        "J-UPDATE-CHECK",
+        "J-UPDATE-APPLY",
+        "J-DOCTOR-REPORT"
+      ],
+      "owned_patterns": [
+        "app/Sources/DetachApp/Onboarding*.swift",
+        "app/Sources/DetachApp/Settings*.swift",
+        "app/Sources/DetachApp/SetupGuidance.swift",
+        "app/Sources/DetachApp/UpdaterService.swift",
+        "app/Sources/DetachKit/DoctorReport.swift",
+        "app/Sources/DetachKit/Localization.swift",
+        "app/Sources/DetachKit/UpdateConfiguration.swift"
+      ],
+      "path": "docs/specs/app-setup.md",
+      "requirements": [
         {
           "id": "QC-APP-DOCTOR",
           "journeys": [
@@ -3024,7 +3092,7 @@
           "summary": "Update state and application preserve the signed arm64 contract."
         }
       ],
-      "summary": "The app presents and changes only typed product state."
+      "summary": "App setup, settings, diagnostics, and updates fail closed."
     },
     {
       "capabilities": [
@@ -3236,8 +3304,18 @@
       "stages": "static"
     },
     {
-      "capabilities": "session-lifecycle",
+      "capabilities": "session-lifecycle,session-state",
       "id": "state-runtime",
+      "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
+    },
+    {
+      "capabilities": "session-state",
+      "id": "state-source",
+      "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
+    },
+    {
+      "capabilities": "session-lifecycle,session-state,app-experience",
+      "id": "session-health-source",
       "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
     },
     {
@@ -3246,8 +3324,33 @@
       "stages": "static,swift,quality-contracts,app,distribution,tmux-runtime,release-budget"
     },
     {
+      "capabilities": "session-lifecycle,session-state,power-protection",
+      "id": "bounded-process-source",
+      "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
+    },
+    {
       "capabilities": "app-experience",
       "id": "swift-source",
+      "stages": "static,swift,quality-contracts,app,release-budget"
+    },
+    {
+      "capabilities": "app-experience,onboarding",
+      "id": "root-view-source",
+      "stages": "static,swift,quality-contracts,app,release-budget"
+    },
+    {
+      "capabilities": "power-protection,onboarding,settings,update,diagnostics,installation",
+      "id": "installation-store-source",
+      "stages": "static,swift,quality-contracts,app,distribution,tmux-runtime,release-budget"
+    },
+    {
+      "capabilities": "app-experience,onboarding,settings,update",
+      "id": "app-shell-source",
+      "stages": "static,swift,quality-contracts,app,release-budget"
+    },
+    {
+      "capabilities": "app-experience,onboarding,settings",
+      "id": "ui-e2e-source",
       "stages": "static,swift,quality-contracts,app,release-budget"
     },
     {
@@ -3271,12 +3374,12 @@
       "stages": "static,swift,quality-contracts,app,release-budget"
     },
     {
-      "capabilities": "session-lifecycle",
+      "capabilities": "session-lifecycle,session-state",
       "id": "runtime-source",
       "stages": "static,swift,quality-contracts,app,release-budget"
     },
     {
-      "capabilities": "session-lifecycle,app-experience",
+      "capabilities": "session-lifecycle,session-state,app-experience",
       "id": "session-ui-source",
       "stages": "static,swift,quality-contracts,app,release-budget"
     },
@@ -3291,7 +3394,7 @@
       "stages": "static,swift,quality-contracts,app,tmux-runtime,release-budget"
     },
     {
-      "capabilities": "session-lifecycle",
+      "capabilities": "session-lifecycle,session-state",
       "id": "cli",
       "stages": "static,app,codex,claude,distribution,tmux-runtime,release-budget"
     },
@@ -3316,12 +3419,12 @@
       "stages": "static,app,tmux-runtime,release-preflight,release-budget"
     },
     {
-      "capabilities": "session-lifecycle",
+      "capabilities": "session-lifecycle,session-state",
       "id": "codex-test",
       "stages": "static,codex,release-budget"
     },
     {
-      "capabilities": "session-lifecycle",
+      "capabilities": "session-lifecycle,session-state",
       "id": "claude-test",
       "stages": "static,claude,release-budget"
     },

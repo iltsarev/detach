@@ -11,43 +11,6 @@ underline, strikethrough, and reverse video. Reverse swaps colors against
 `ANSIParser.terminalBackground`, also the `LogTextView` background. Font
 scaling changes only the font.
 
-Onboarding uses `SetupGuidance.step(for:)`; failure outranks provider discovery.
-An `.enabled` service alone never completes permissions. The live poller reads
-without side effects and reconciles once after enablement. Only a finished
-helper journal and an open root gate advance the step. `requiresApproval` is
-not enabled. Done, Repair, and first-run sync reread the watchdog heartbeat.
-Success needs a fresh heartbeat and records completion once. A long wait offers
-monitor retry, never a bypass. A failed doctor refresh or a different runtime
-identity withdraws earlier helper readiness.
-
-After onboarding, bootstrap, refresh, power or provider regressions, and an
-update held by active leases keep the dashboard. Settings shows errors; new
-starts still require both power layers. Only an invalid app location or runtime
-payload mismatch restores setup guidance. Provider installation uses the
-official command in the user's terminal through the private `.command`
-mechanism. Without an outcome channel it reports only that the CLI is not
-detected. When helper/plist bytes change after an
-app update, unregister, await completion, then use the bounded retry for the
-transient SMAppService Code=1 race. Do not replace a helper with active leases:
-defer the update. Report a normal outcome; retry on the next activation.
-
-Each readiness build puts one `detach-app-build:<UUID>` in its executable and
-signed marker. UI smoke uses a stripped private copy below
-`/private/tmp/detach-ui-e2e.*` without production payloads. An escaped path,
-unsafe identity, build mismatch, or payload fails closed.
-
-Smoke restores focus and the pointer, then sends ordered AppKit events to
-controls. It covers all main surfaces, focus, session actions, and
-onboarding. Stop disconnects first. Stages have deadlines. Coverage isolates
-the normal bundle, instrumented copy, tests, binary, and profiles. The driver
-detects clipped controls before an action.
-
-The per-user watchdog adds a launch-readiness rule: macOS can report an approved
-agent as enabled while no launchd job loaded after approval. During first
-onboarding or Repair, an enabled watchdog without a fresh heartbeat uses the
-durable unregister/barrier/register transaction. Ordinary activation does not
-replace it for a temporarily stale heartbeat.
-
 The menu bar is display-only. Its prompt mark is filled for protected, dim for
 sleep allowed, badged for attention, and outlined for unknown. Starting,
 running, and recovering sessions are active; hung sessions are not. Green means
@@ -65,10 +28,6 @@ trailing read. No list timer runs. Dead or unready watchers and failed lists ret
 with 2–60 s backoff. Cold start waits 1 s for `ready`; a late `ready` repeats the
 snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
 checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
-Settings → General owns both menu bar toggles. Settings → System keeps the only
-Mac Power status and approval controls. Settings follows the hosting screen;
-System scrolls. Temperature safety has its own warning shape and the
-text **Mac can sleep: temperature**.
 
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
@@ -78,66 +37,6 @@ and semantic color. Clicking the UUID chip copies the full UUID and shows
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
 
-Bounded CLI calls drain outputs on dedicated threads and use process-group
-TERM then KILL. Parallel calls cannot starve drains. Truncation makes typed
-consumers keep the last valid state. Pipe descendants cannot extend deadlines.
-The event process uses `exec` and ends on cancellation. GUI PATH sorts
-NVM/mise Node directories by semantic version.
-
-Helper replacement is a durable fail-closed transaction. One versioned journal
-records the phase, goal, target digest, boot UUID, and lifetime-barrier contract.
-Each transition uses atomic rename and file/directory fsync before its side
-effect. A per-user `flock` protects the journal. The root helper also creates a
-stable root-owned `0644` inode under `/var/run`; every app user opens it read-only and holds one exclusive
-kernel `flock` across the complete asynchronous SMAppService transaction. This
-is the machine-wide single-writer barrier across Fast User Switching, and the
-kernel releases it if the app crashes. Only the current non-root console user's
-app may perform register or unregister mutations, checked again immediately
-before each mutation. Root persists `unregistration_pending`, blocks
-acquire/renew without a wall-clock expiry, and restores and reads back only the
-setting Detach owns.
-
-The helper takes a root-owned lifetime `flock` before its listener answers and
-holds it until exit. An enabled job without this boot's lock is dead. The app
-writes `unregisterSubmitted` only after it observes that lock. Registration
-needs the fresh unregister callback, or exact `notRegistered` status plus the
-released lock or a changed boot UUID; `unavailable` is insufficient. Errors
-keep the journal and root gate closed. After an app crash, another console user
-uses the root-created files to resume at `unregisterSubmitted`, never as a
-pristine install.
-
-Before registering a replacement the app fsyncs `registering` with the target
-digest. After macOS reports the new helper enabled, a successful cancel XPC
-reply proves launch readiness and reopens the gate; only then is the definition
-recorded and the journal cleared. Approval and retry failures remain pending for
-the next launch. An ordinary helper SIGTERM/SIGINT uses only the process-local
-termination gate and must not create persistent update state.
-
-Settings → System owns the only **Mac Power** status and approval block. Helper
-Ready requires a doctor live XPC check. Registration alone is Needs attention.
-During doctor or reconciliation, show Checking, not failure. Power
-requires a healthy watchdog heartbeat no older than three minutes; otherwise it
-is `unknown`. A vnode source reads atomic changes at once; one wall-clock
-deadline marks silence stale. A timestamp-only write moves it and redraws the
-age silently. Settings open and activation resync. No app-level
-heartbeat timer runs. The first monitor read and explicit refreshes share one
-sequence. A stale constructor snapshot cannot arrive after a newer document.
-
-The watchdog heartbeat carries the effective power state and typed raw
-thermal state/latch. With notifications enabled, the app emits one
-localized temperature-safety warning on each inactive-to-active latch
-transition, including when borrowed external protection makes the effective
-power state unavailable; repeated documents never duplicate the warning.
-
-The watchdog is a signed per-user LaunchAgent with an embedded
-`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` at runtime, calls
-`detach power status --json` through the same process-group runner with a
-five-second deadline, and writes private health state. The privileged
-daemon is a distinct demand-launched LaunchDaemon. Neither plist may contain a
-user-specific path. Native power protection requires no Apple Events or
-Automation entitlement.
-
-Bootstrap runs only from `/Applications`, not a DMG or App Translocation path.
 A first-run setup card stays mounted during retry. App Start uses `--detach`,
 keeps sheet errors, and selects the new session. Start, Resume, and Recover open
 `detach <provider> attach --terminal-features sync <session>` in one visible
@@ -182,21 +81,16 @@ Notifications are opt-in and deduplicated. Stop intent is not failure;
 `interrupted` and `hung` get one 350 ms recheck. Ordered detection never waits
 for delivery.
 
-Sparkle 2 and SwiftTerm 1.19.0 are pinned. The exact SwiftTerm shader bundle is
-shipped and verified. Sparkle keeps its symlink layout and is signed inside-out.
-Only ad-hoc builds disable library validation.
-`UpdaterService` starts only in `/Applications` with a valid HTTPS feed URL and
-32-byte Ed25519 public key.
-A generated or published appcast must contain exactly one arm64 hardware
-requirement, so Intel clients never see the update.
-A Sparkle update replaces the app. Bootstrap activates the new
-immutable CLI payload before the watcher and first fresh list start. It does
-not rewrite live-session binaries. Sparkle errors
-for a disk image or App Translocation say to move Detach to
-`/Applications`. Temporary-directory and download errors say to check the
-network and free disk space, then retry. Archive, signature,
-validation, and installation errors provide the manual DMG path and the
-Settings > System Repair path, and state that the active CLI did not
-change. If replacement completes but CLI or helper sync fails, the prior CLI
-stays active and Repair remains available. Background sync keeps
-the dashboard; a later activation retries it.
+SwiftTerm 1.19.0 is pinned. The exact SwiftTerm shader bundle is shipped and
+verified.
+
+Each readiness build puts one `detach-app-build:<UUID>` in its executable and
+signed marker. UI smoke uses a stripped private copy below
+`/private/tmp/detach-ui-e2e.*` without production payloads. An escaped path,
+unsafe identity, build mismatch, or payload fails closed.
+
+Smoke restores focus and the pointer, then sends ordered AppKit events to
+controls. It covers all main surfaces, focus, session actions, and
+onboarding. Stop disconnects first. Stages have deadlines. Coverage isolates
+the normal bundle, instrumented copy, tests, binary, and profiles. The driver
+detects clipped controls before an action.

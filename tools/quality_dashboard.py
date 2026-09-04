@@ -29,7 +29,10 @@ from quality_metrics import (
     validate_opportunities,
 )
 from quality_mutation import MutationError, validate_summary
-from quality_promote import PromotionError, validate_promotion
+from quality_promote import (
+    PromotionError, specification_size_status, validate_promotion,
+    validate_specification_sizes,
+)
 from quality_security import SecurityError, validate_summary as validate_security_summary
 
 
@@ -53,6 +56,7 @@ FAILURE_STATUSES = {"failed", "environment-failed", "timeout", "interrupted"}
 PASS_STATUSES = {"passed", "reused"}
 MERGE_POLICY = re.compile(r"^Quality-Policy: ([1-9][0-9]*)$", re.MULTILINE)
 MERGE_REPAIR = re.compile(r"^Quality-Repair-Attempt: ([0-9]+)$", re.MULTILINE)
+DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 class DashboardError(Exception):
@@ -97,6 +101,8 @@ def read_manifest(
         "summary_sha256",
         "result",
     }
+    if require_dashboard_fields:
+        required.update(("input_fingerprint", "artifacts_sha256", "specs"))
     missing = required - values.keys()
     if missing:
         raise DashboardError(f"manifest is missing: {sorted(missing)[0]}")
@@ -104,8 +110,13 @@ def read_manifest(
         raise DashboardError("manifest schema is unsupported")
     if not values["policy"].isdigit():
         raise DashboardError("manifest policy is invalid")
-    if require_dashboard_fields and not values.get("specs"):
-        raise DashboardError("manifest is missing: specs")
+    if require_dashboard_fields:
+        if not DIGEST.fullmatch(values["input_fingerprint"]):
+            raise DashboardError("manifest input fingerprint is invalid")
+        if not DIGEST.fullmatch(values["artifacts_sha256"]):
+            raise DashboardError("manifest artifact inventory digest is invalid")
+        if not values["specs"]:
+            raise DashboardError("manifest is missing: specs")
     if values["authority"] not in ("local-diagnostic", "ci-merge", "ci-main", "release"):
         raise DashboardError("manifest authority is invalid")
     if values["result"] not in ("passed", "failed", "interrupted", "diagnostic"):
@@ -116,6 +127,56 @@ def read_manifest(
     if not values["finished_at"]:
         raise DashboardError("manifest describes an unfinished run")
     return values
+
+
+def read_artifact_inventory(
+    run_dir: Path, manifest: dict[str, str]
+) -> dict[str, str]:
+    inventory = safe_file(run_dir / "artifacts.tsv", "artifact inventory")
+    if hashlib.sha256(inventory.read_bytes()).hexdigest() != manifest["artifacts_sha256"]:
+        raise DashboardError("artifact inventory digest does not match the manifest")
+    lines = inventory.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != "schema\t1":
+        raise DashboardError("artifact inventory schema is invalid")
+    records: dict[str, str] = {}
+    for line_number, line in enumerate(lines[1:], 2):
+        fields = line.split("\t")
+        if len(fields) != 3 or fields[0] != "file" or fields[1] in records:
+            raise DashboardError(
+                f"artifact inventory line {line_number} is malformed or duplicate"
+            )
+        relative, digest = fields[1], fields[2]
+        relative_path = Path(relative)
+        if (
+            not relative
+            or relative_path.is_absolute()
+            or relative_path.parts in ((), (".",))
+            or ".." in relative_path.parts
+            or "\n" in relative
+            or "\t" in relative
+            or not DIGEST.fullmatch(digest)
+        ):
+            raise DashboardError(
+                f"artifact inventory line {line_number} is unsafe or invalid"
+            )
+        records[relative] = digest
+    return records
+
+
+def read_bound_artifact(
+    run_dir: Path,
+    manifest: dict[str, str],
+    relative: str,
+    label: str,
+) -> Path:
+    records = read_artifact_inventory(run_dir, manifest)
+    expected_digest = records.get(relative)
+    if expected_digest is None:
+        raise DashboardError(f"{label} digest is missing from the artifact inventory")
+    artifact = safe_file(run_dir / relative, label)
+    if hashlib.sha256(artifact.read_bytes()).hexdigest() != expected_digest:
+        raise DashboardError(f"{label} digest does not match the artifact inventory")
+    return artifact
 
 
 def read_summary(run_dir: Path, manifest: dict[str, str]) -> list[dict[str, Any]]:
@@ -149,26 +210,9 @@ def read_metrics(run_dir: Path, manifest: dict[str, str]) -> Optional[dict[str, 
     metrics_path = run_dir / "quality-metrics.json"
     if not metrics_path.exists():
         return None
-    artifacts_path = safe_file(run_dir / "artifacts.tsv", "artifact inventory")
-    artifacts_digest = hashlib.sha256(artifacts_path.read_bytes()).hexdigest()
-    if artifacts_digest != manifest["artifacts_sha256"]:
-        raise DashboardError("artifact inventory digest does not match the manifest")
-    metric_digests: list[str] = []
-    for line_number, line in enumerate(
-        artifacts_path.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        fields = line.split("\t")
-        if fields == ["schema", "1"]:
-            continue
-        if len(fields) != 3 or fields[0] != "file":
-            raise DashboardError(f"artifact inventory line {line_number} is malformed")
-        if fields[1] == "quality-metrics.json":
-            metric_digests.append(fields[2])
-    if len(metric_digests) != 1:
-        raise DashboardError("quality metrics digest is missing or duplicated")
-    actual_digest = hashlib.sha256(safe_file(metrics_path, "quality metrics").read_bytes()).hexdigest()
-    if actual_digest != metric_digests[0]:
-        raise DashboardError("quality metrics digest does not match the inventory")
+    metrics_path = read_bound_artifact(
+        run_dir, manifest, "quality-metrics.json", "quality metrics"
+    )
     try:
         metrics = validate_metrics(json.loads(metrics_path.read_text(encoding="utf-8")))
     except (MetricsError, json.JSONDecodeError, UnicodeError) as error:
@@ -185,27 +229,9 @@ def read_coverage_opportunities(
 ) -> Optional[dict[str, Any]]:
     if metrics is None:
         return None
-    opportunities_path = safe_file(
-        run_dir / "coverage-opportunities.json", "coverage opportunities"
+    opportunities_path = read_bound_artifact(
+        run_dir, manifest, "coverage-opportunities.json", "coverage opportunities"
     )
-    artifacts_path = safe_file(run_dir / "artifacts.tsv", "artifact inventory")
-    if hashlib.sha256(artifacts_path.read_bytes()).hexdigest() != manifest["artifacts_sha256"]:
-        raise DashboardError("artifact inventory digest does not match the manifest")
-    expected_digests: list[str] = []
-    for line_number, line in enumerate(
-        artifacts_path.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        fields = line.split("\t")
-        if fields == ["schema", "1"]:
-            continue
-        if len(fields) != 3 or fields[0] != "file":
-            raise DashboardError(f"artifact inventory line {line_number} is malformed")
-        if fields[1] == "coverage-opportunities.json":
-            expected_digests.append(fields[2])
-    if len(expected_digests) != 1:
-        raise DashboardError("coverage opportunities digest is missing or duplicated")
-    if hashlib.sha256(opportunities_path.read_bytes()).hexdigest() != expected_digests[0]:
-        raise DashboardError("coverage opportunities digest does not match the inventory")
     try:
         opportunities = validate_opportunities(
             json.loads(opportunities_path.read_text(encoding="utf-8"))
@@ -230,6 +256,19 @@ def read_policy() -> dict[str, Any]:
     if policy.get("schema") != 1 or not isinstance(policy.get("policy"), int):
         raise DashboardError("generated policy schema is invalid")
     return policy
+
+
+def read_specification_sizes(
+    run_dir: Path, manifest: dict[str, str], policy: dict[str, Any]
+) -> dict[str, Any]:
+    artifact = read_bound_artifact(
+        run_dir, manifest, "spec-sizes.json", "routed specification sizes"
+    )
+    try:
+        document = json.loads(artifact.read_text(encoding="utf-8"))
+        return validate_specification_sizes(document, manifest, policy)
+    except (json.JSONDecodeError, UnicodeError, PromotionError) as error:
+        raise DashboardError(str(error)) from error
 
 
 def read_mutation_summary(
@@ -307,7 +346,7 @@ def collect_trends(result_root: Path, current: Path) -> list[dict[str, Any]]:
         if not candidate.is_dir() or candidate.is_symlink():
             continue
         try:
-            manifest = read_manifest(candidate)
+            manifest = read_manifest(candidate, require_dashboard_fields=False)
             commit, authority, _ = effective_identity(candidate, manifest)
         except DashboardError:
             continue
@@ -501,6 +540,7 @@ def build_data(
     security = read_security_summary(
         security_summary, int(manifest["policy"])
     )
+    specification_sizes = read_specification_sizes(run_dir, manifest, policy)
     return {
         "schema": 4,
         "run": {
@@ -550,16 +590,18 @@ def build_data(
                 int(policy["limits"]["max_repair_loops"]),
             ),
             "security": security_automation(security),
+            "specification_sizes": specification_sizes,
         },
         "trends": trends,
     }
 
 
 def status_class(status: str) -> str:
-    if status in ("passed", "reused"):
+    if status in ("passed", "reused", "healthy"):
         return "good"
     if status in (
-        "planned", "not-selected", "incomplete", "manual-release", "blocked", "diagnostic"
+        "planned", "not-selected", "incomplete", "manual-release", "blocked", "diagnostic",
+        "warning",
     ):
         return "warn"
     return "bad"
@@ -706,6 +748,20 @@ def render_html(data: dict[str, Any]) -> str:
             f'CodeQL {" + ".join(security["codeql_languages"])} · '
             f'{security["status"]} · {security["cadence"]} · outside PR feedback'
         )
+    specification_sizes = quality["specification_sizes"]
+    specification_rows = "\n".join(
+        f'<tr><td><code>{html.escape(record["id"])}</code></td>'
+        f'<td><code>{html.escape(record["path"])}</code></td>'
+        f'<td class="number">{record["bytes"]:,}</td>'
+        f'<td class="number">{record["headroom_bytes"]:,}</td>'
+        f'<td><span class="status {status_class(record["status"])}">'
+        f'{html.escape(record["status"])}</span></td></tr>'
+        for record in specification_sizes["specifications"]
+    )
+    specification_note = (
+        f'Warn above {specification_sizes["warning_bytes"]:,} bytes. '
+        f'Hard limit: {specification_sizes["limit_bytes"]:,} bytes.'
+    )
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -780,6 +836,7 @@ def render_html(data: dict[str, Any]) -> str:
       <div class="gap"><span class="eyebrow">Bounded merge</span><p>{html.escape(merge_text)}</p></div>
       <div class="gap"><span class="eyebrow">Security</span><p>{security_html}</p></div>
     </div></section>
+    <section><h2>Routed specification sizes</h2><p class="section-note">{html.escape(specification_note)}</p><div class="table-wrap"><table><thead><tr><th>Specification</th><th>Path</th><th class="number">Bytes</th><th class="number">Headroom</th><th>Status</th></tr></thead><tbody>{specification_rows}</tbody></table></div></section>
     {opportunity_section}
     <section><h2>Recent runs</h2><div class="table-wrap"><table><thead><tr><th>Commit</th><th>Authority</th><th>Result</th><th class="number">Wall</th><th>Finished</th></tr></thead><tbody>{trend_rows}</tbody></table></div></section>
   </main>
