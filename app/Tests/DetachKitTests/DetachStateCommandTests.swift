@@ -214,10 +214,16 @@ final class DetachStateCommandTests: XCTestCase {
             ["emit", "session", "codex", "session", "running", "--unknown", "value"],
             ["meta", "get", "only-path"],
             ["meta", "snapshot", "only-path"],
+            ["meta", "recovery-binding", "only-path"],
             ["meta", "snapshots"],
             ["health", "session", "--"],
             ["health", "session", "no-separator"],
             ["health", "sessions"],
+            ["process", "state"],
+            ["process", "state", "0"],
+            ["process", "state", "not-a-pid"],
+            ["checkpoint", "exchange"],
+            ["checkpoint", "exchange", "/tmp/detach-codex-session"],
             ["events", "publish"],
             ["events", "publish", "/tmp/one", "/tmp/two"],
             ["meta", "usable", "only-path"],
@@ -237,6 +243,181 @@ final class DetachStateCommandTests: XCTestCase {
         ])) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .invalidInteger("not-a-pid"))
         }
+    }
+
+    func testProcessStateReportsTheCurrentOwnedProcess() throws {
+        let data = try DetachStateCommand.run(arguments: [
+            "process", "state", String(getpid()),
+        ])
+
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "alive\n")
+    }
+
+    func testCheckpointExchangeSwapsACompleteExistingGeneration() throws {
+        let session = temporaryDirectory.appendingPathComponent(
+            "detach-codex-exchange", isDirectory: true)
+        let checkpoint = session.appendingPathComponent(
+            "checkpoint", isDirectory: true)
+        let stageName = ".checkpoint-stage-run-123"
+        let stage = session.appendingPathComponent(stageName, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: checkpoint, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: stage, withIntermediateDirectories: false)
+        try Data("generation A\n".utf8).write(
+            to: checkpoint.appendingPathComponent("meta.json"))
+        try Data("payload A\n".utf8).write(
+            to: checkpoint.appendingPathComponent("rollout.jsonl"))
+        try Data("generation B\n".utf8).write(
+            to: stage.appendingPathComponent("meta.json"))
+        try Data("payload B\n".utf8).write(
+            to: stage.appendingPathComponent("rollout.jsonl"))
+        let checkpointIdentifier = try directoryIdentifier(checkpoint)
+        let stageIdentifier = try directoryIdentifier(stage)
+
+        let output = try DetachStateCommand.run(arguments: [
+            "checkpoint", "exchange", session.path, stageName,
+        ])
+
+        XCTAssertTrue(output.isEmpty)
+        XCTAssertEqual(try directoryIdentifier(checkpoint), stageIdentifier)
+        XCTAssertEqual(try directoryIdentifier(stage), checkpointIdentifier)
+        XCTAssertEqual(
+            try String(
+                contentsOf: checkpoint.appendingPathComponent("meta.json"),
+                encoding: .utf8),
+            "generation B\n")
+        XCTAssertEqual(
+            try String(
+                contentsOf: checkpoint.appendingPathComponent("rollout.jsonl"),
+                encoding: .utf8),
+            "payload B\n")
+        XCTAssertEqual(
+            try String(
+                contentsOf: stage.appendingPathComponent("meta.json"),
+                encoding: .utf8),
+            "generation A\n")
+        XCTAssertEqual(
+            try String(
+                contentsOf: stage.appendingPathComponent("rollout.jsonl"),
+                encoding: .utf8),
+            "payload A\n")
+    }
+
+    func testCheckpointExchangeRenamesTheFirstGenerationIntoPlace() throws {
+        let session = temporaryDirectory.appendingPathComponent(
+            "detach-claude-first-checkpoint", isDirectory: true)
+        let stageName = ".checkpoint-stage-first"
+        let stage = session.appendingPathComponent(stageName, isDirectory: true)
+        let checkpoint = session.appendingPathComponent(
+            "checkpoint", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: stage, withIntermediateDirectories: true)
+        try Data("first generation\n".utf8).write(
+            to: stage.appendingPathComponent("meta.json"))
+        let stageIdentifier = try directoryIdentifier(stage)
+
+        let redundantSeparatorPath = session.deletingLastPathComponent().path
+            + "//" + session.lastPathComponent
+        XCTAssertNoThrow(try DetachStateCommand.run(arguments: [
+            "checkpoint", "exchange", redundantSeparatorPath, stageName,
+        ]))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stage.path))
+        XCTAssertEqual(try directoryIdentifier(checkpoint), stageIdentifier)
+        XCTAssertEqual(
+            try String(
+                contentsOf: checkpoint.appendingPathComponent("meta.json"),
+                encoding: .utf8),
+            "first generation\n")
+    }
+
+    func testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories() throws {
+        let session = temporaryDirectory.appendingPathComponent(
+            "detach-codex-safe-session", isDirectory: true)
+        let checkpoint = session.appendingPathComponent(
+            "checkpoint", isDirectory: true)
+        let stageName = ".checkpoint-stage-safe"
+        let stage = session.appendingPathComponent(stageName, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: checkpoint, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: stage, withIntermediateDirectories: false)
+        try Data("generation A\n".utf8).write(
+            to: checkpoint.appendingPathComponent("sentinel"))
+        try Data("generation B\n".utf8).write(
+            to: stage.appendingPathComponent("sentinel"))
+
+        let longName = ".checkpoint-stage-" + String(
+            repeating: "a", count: Int(NAME_MAX))
+        for unsafeName in [
+            "", ".", "..", "checkpoint", ".checkpoint-stage-",
+            ".checkpoint-stage-child/name", ".checkpoint-stage-line\nbreak",
+            longName,
+        ] {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+                "checkpoint", "exchange", session.path, unsafeName,
+            ])) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
+        }
+        XCTAssertEqual(
+            try String(
+                contentsOf: checkpoint.appendingPathComponent("sentinel"),
+                encoding: .utf8),
+            "generation A\n")
+        XCTAssertEqual(
+            try String(
+                contentsOf: stage.appendingPathComponent("sentinel"),
+                encoding: .utf8),
+            "generation B\n")
+
+        let externalStage = temporaryDirectory.appendingPathComponent(
+            "external-stage", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: externalStage, withIntermediateDirectories: false)
+        try FileManager.default.removeItem(at: stage)
+        try FileManager.default.createSymbolicLink(
+            at: stage, withDestinationURL: externalStage)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "checkpoint", "exchange", session.path, stageName,
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stage.path))
+        XCTAssertEqual(
+            try String(
+                contentsOf: checkpoint.appendingPathComponent("sentinel"),
+                encoding: .utf8),
+            "generation A\n")
+
+        let linkedSession = temporaryDirectory.appendingPathComponent(
+            "detach-codex-linked-session", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: linkedSession, withDestinationURL: session)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "checkpoint", "exchange", linkedSession.path, stageName,
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+
+        let checkpointLinkSession = temporaryDirectory.appendingPathComponent(
+            "detach-codex-checkpoint-link", isDirectory: true)
+        let linkedCheckpoint = checkpointLinkSession.appendingPathComponent("checkpoint")
+        let linkedStageName = ".checkpoint-stage-linked-checkpoint"
+        let linkedStage = checkpointLinkSession.appendingPathComponent(
+            linkedStageName, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: linkedStage, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: linkedCheckpoint, withDestinationURL: checkpoint)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "checkpoint", "exchange", checkpointLinkSession.path, linkedStageName,
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: linkedStage.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: linkedCheckpoint.path))
     }
 
     func testMetaGetUsesFallbackPaths() throws {
@@ -372,13 +553,53 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
-    func testMetaSnapshotsBatchesFallbacksAndRejectsIncompleteInput() throws {
+    func testMetaRecoveryBindingNormalizesAliasesAndRejectsWrongTypes() throws {
+        let current = temporaryDirectory.appendingPathComponent("current-meta.json")
+        let legacy = temporaryDirectory.appendingPathComponent("legacy-meta.json")
+        let invalid = temporaryDirectory.appendingPathComponent("invalid-meta.json")
+        let common: [String: Any] = [
+            "schema": 1,
+            "session_name": "detach-codex-project",
+            "project_dir": "/tmp/project",
+            "provider": "codex",
+            "display_name": "Project",
+            "run_token": "run-1",
+            "lifecycle_id": "lifecycle-1",
+            "resume_args_file": "resume-args-run-1.bin",
+        ]
+        var currentObject = common
+        currentObject["agent_session_id"] = "thread-1"
+        currentObject["transcript_path"] = "/tmp/rollout.jsonl"
+        var legacyObject = common
+        legacyObject["codex_session_id"] = "thread-1"
+        legacyObject["rollout_path"] = "/tmp/rollout.jsonl"
+        try JSONSerialization.data(withJSONObject: currentObject).write(to: current)
+        try JSONSerialization.data(withJSONObject: legacyObject).write(to: legacy)
+
+        let currentBinding = try DetachStateCommand.run(arguments: [
+            "meta", "recovery-binding", current.path, "detach-codex-project",
+        ])
+        let legacyBinding = try DetachStateCommand.run(arguments: [
+            "meta", "recovery-binding", legacy.path, "detach-codex-project",
+        ])
+        XCTAssertEqual(currentBinding, legacyBinding)
+
+        var invalidObject = currentObject
+        invalidObject["resume_args_file"] = 7
+        try JSONSerialization.data(withJSONObject: invalidObject).write(to: invalid)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "recovery-binding", invalid.path, "detach-codex-project",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .unusableMetadata)
+        }
+    }
+
+    func testMetaSnapshotsBatchesAbsentPrimaryFallbacksAndRejectsIncompleteInput() throws {
         let root = temporaryDirectory.appendingPathComponent("sessions", isDirectory: true)
         let first = root.appendingPathComponent("detach-codex-one", isDirectory: true)
         let second = root.appendingPathComponent("detach-codex-two", isDirectory: true)
         let third = root.appendingPathComponent("detach-claude-three", isDirectory: true)
         let checkpointDirectory = first.appendingPathComponent("checkpoint", isDirectory: true)
-        let invalid = first.appendingPathComponent("meta.json")
         let checkpoint = checkpointDirectory.appendingPathComponent("meta.json")
         try FileManager.default.createDirectory(
             at: checkpointDirectory, withIntermediateDirectories: true)
@@ -386,7 +607,6 @@ final class DetachStateCommandTests: XCTestCase {
             at: second, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
             at: third, withIntermediateDirectories: true)
-        try Data("not-json".utf8).write(to: invalid)
         try Data(count: 1_048_577).write(to: second.appendingPathComponent("meta.json"))
         let project = "/tmp/project\twith\ncontrols"
         try JSONSerialization.data(withJSONObject: [
@@ -400,6 +620,8 @@ final class DetachStateCommandTests: XCTestCase {
             "session_name": "detach-claude-three",
             "project_dir": "/tmp/primary",
             "status": "running",
+            "preserve_recovery_until_ready": true,
+            "runtime_ready_at": "2026-09-04T12:00:00Z",
         ]).write(to: third.appendingPathComponent("meta.json"))
         try Data("ignored".utf8).write(to: root.appendingPathComponent("regular-file"))
 
@@ -409,18 +631,23 @@ final class DetachStateCommandTests: XCTestCase {
         let values = output.split(separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        let recordSize = 22
+        let recordSize = 25
         XCTAssertEqual(values.count, recordSize * 3 + 2)
         XCTAssertEqual(values[0], "detach-claude-three")
         XCTAssertEqual(values[1], "true")
         XCTAssertEqual(values[2], "running")
         XCTAssertEqual(values[4], "/tmp/primary")
+        XCTAssertEqual(values[22], "true")
+        XCTAssertEqual(values[23], "2026-09-04T12:00:00Z")
+        XCTAssertEqual(values[24], "primary")
         XCTAssertEqual(values[recordSize], "detach-codex-one")
         XCTAssertEqual(values[recordSize + 1], "true")
         XCTAssertEqual(values[recordSize + 2], "stopped")
         XCTAssertEqual(values[recordSize + 4], project)
+        XCTAssertEqual(values[recordSize + 24], "checkpoint")
         XCTAssertEqual(values[recordSize * 2], "detach-codex-two")
         XCTAssertEqual(values[recordSize * 2 + 1], "false")
+        XCTAssertEqual(values[recordSize * 2 + 24], "")
         XCTAssertTrue(values[(recordSize * 2 + 2)..<(recordSize * 3)].allSatisfy(\.isEmpty))
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
         let repeatedSeparatorRoot = root.path.replacingOccurrences(
@@ -465,8 +692,6 @@ final class DetachStateCommandTests: XCTestCase {
             "detach-codex-checkpoint", isDirectory: true)
         try FileManager.default.createDirectory(
             at: checkpointSession, withIntermediateDirectories: true)
-        try Data("not-json".utf8).write(
-            to: checkpointSession.appendingPathComponent("meta.json"))
         try FileManager.default.createSymbolicLink(
             at: checkpointSession.appendingPathComponent("checkpoint"),
             withDestinationURL: external)
@@ -550,6 +775,54 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testMetadataSnapshotsRejectMistypedOperationalFieldsWithoutFallback() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "typed-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-typed", isDirectory: true)
+        let checkpoint = session.appendingPathComponent(
+            "checkpoint", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: checkpoint, withIntermediateDirectories: true)
+        let primary = session.appendingPathComponent("meta.json")
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-typed",
+            "project_dir": "/tmp/project",
+            "status": "running",
+        ]).write(to: checkpoint.appendingPathComponent("meta.json"))
+
+        let malformedValues: [(String, Any)] = [
+            ("preserve_recovery_until_ready", "false"),
+            ("runtime_ready_at", false),
+            ("runtime_shutdown_observed_at", 0),
+        ]
+        for (field, value) in malformedValues {
+            try JSONSerialization.data(withJSONObject: [
+                "schema": 1,
+                "session_name": "detach-codex-typed",
+                "project_dir": "/tmp/project",
+                "status": "starting",
+                field: value,
+            ]).write(to: primary)
+
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+                "meta", "snapshot", primary.path, "detach-codex-typed",
+            ])) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .unusableMetadata)
+            }
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path,
+            ])
+            let values = output.split(
+                separator: 0, omittingEmptySubsequences: false
+            ).dropLast().map { String(decoding: $0, as: UTF8.self) }
+            XCTAssertEqual(values[0], "detach-codex-typed")
+            XCTAssertEqual(values[1], "false")
+            XCTAssertEqual(values[24], "")
+        }
+    }
+
     func testMetaSnapshotsCanBatchBoundedTranscriptSummaries() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "summary-sessions", isDirectory: true)
@@ -579,10 +852,11 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 27 + 2)
+        XCTAssertEqual(values.count, 30 + 2)
         XCTAssertEqual(values[0], "detach-codex-summary")
         XCTAssertEqual(values[1], "true")
-        XCTAssertEqual(Array(values[22..<27]), [
+        XCTAssertEqual(values[24], "primary")
+        XCTAssertEqual(Array(values[25..<30]), [
             "gpt-batched", "", "", "working", "turn-batched",
         ])
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
@@ -601,7 +875,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(cachedValues[22], "cached-proof")
+        XCTAssertEqual(cachedValues[25], "cached-proof")
 
         try Data("""
         {"payload":{"model":"gpt-updated"}}
@@ -614,7 +888,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(changedValues[22], "gpt-updated")
+        XCTAssertEqual(changedValues[25], "gpt-updated")
 
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "meta", "snapshots", root.path, "--unknown",
@@ -651,9 +925,101 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(Array(values[22..<27]), [
+        XCTAssertEqual(values[24], "primary")
+        XCTAssertEqual(Array(values[25..<30]), [
             "claude-test", "10", "", "working", "turn-claude",
         ])
+
+        let askUserQuestion = Data("""
+
+        {"type":"assistant","isSidechain":false,"uuid":"ask-user","message":{"role":"assistant","model":"claude-test","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","id":"tool-1"}]}}
+        """.utf8)
+        let transcriptHandle = try FileHandle(forWritingTo: transcript)
+        try transcriptHandle.seekToEnd()
+        try transcriptHandle.write(contentsOf: askUserQuestion)
+        try transcriptHandle.close()
+
+        let waitingOutput = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let waitingValues = waitingOutput.split(
+            separator: 0, omittingEmptySubsequences: false
+        ).dropLast().map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(Array(waitingValues[28..<30]), ["waiting", "tool-1"])
+
+        let receipt = session.appendingPathComponent(
+            ".transcript-summary-cache.json")
+        var legacyReceipt = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
+                as? [String: Any])
+        legacyReceipt["schema"] = 1
+        legacyReceipt["agentTurnState"] = NSNull()
+        legacyReceipt["agentTurnID"] = NSNull()
+        try JSONSerialization.data(withJSONObject: legacyReceipt).write(to: receipt)
+
+        let migratedOutput = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let migratedValues = migratedOutput.split(
+            separator: 0, omittingEmptySubsequences: false
+        ).dropLast().map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(Array(migratedValues[28..<30]), ["waiting", "tool-1"])
+        let migratedReceipt = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
+                as? [String: Any])
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 3)
+
+        let unrelatedToolResult = Data("""
+
+        {"type":"user","isSidechain":false,"isMeta":false,"uuid":"other-tool-result","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"other-tool"}]}}
+        """.utf8)
+        let unrelatedHandle = try FileHandle(forWritingTo: transcript)
+        try unrelatedHandle.seekToEnd()
+        try unrelatedHandle.write(contentsOf: unrelatedToolResult)
+        try unrelatedHandle.close()
+
+        let stillWaitingOutput = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let stillWaitingValues = stillWaitingOutput.split(
+            separator: 0, omittingEmptySubsequences: false
+        ).dropLast().map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(
+            Array(stillWaitingValues[28..<30]), ["waiting", "tool-1"])
+
+        let plainUser = Data("""
+
+        {"type":"user","isSidechain":false,"isMeta":false,"uuid":"plain-user","message":{"role":"user","content":"not a matching tool result"}}
+        """.utf8)
+        let plainUserHandle = try FileHandle(forWritingTo: transcript)
+        try plainUserHandle.seekToEnd()
+        try plainUserHandle.write(contentsOf: plainUser)
+        try plainUserHandle.close()
+
+        let latchedOutput = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let latchedValues = latchedOutput.split(
+            separator: 0, omittingEmptySubsequences: false
+        ).dropLast().map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(Array(latchedValues[28..<30]), ["waiting", "tool-1"])
+
+        let toolResult = Data("""
+
+        {"type":"user","isSidechain":false,"isMeta":false,"uuid":"answer-user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"First option"}]}}
+        """.utf8)
+        let answerHandle = try FileHandle(forWritingTo: transcript)
+        try answerHandle.seekToEnd()
+        try answerHandle.write(contentsOf: toolResult)
+        try answerHandle.close()
+
+        let workingOutput = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path, "--with-transcript-summary",
+        ])
+        let workingValues = workingOutput.split(
+            separator: 0, omittingEmptySubsequences: false
+        ).dropLast().map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(Array(workingValues[28..<30]), ["working", "answer-user"])
     }
 
     func testMetaSnapshotsFailClosedForNonFileTranscripts() throws {
@@ -678,8 +1044,9 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 27 + 2)
-        XCTAssertEqual(Array(values[22..<27]), Array(repeating: "", count: 5))
+        XCTAssertEqual(values.count, 30 + 2)
+        XCTAssertEqual(values[24], "primary")
+        XCTAssertEqual(Array(values[25..<30]), Array(repeating: "", count: 5))
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
     }
 
@@ -712,7 +1079,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[25..<27])
+            return Array(values[28..<30])
         }
 
         XCTAssertEqual(try turnFields(), ["working", "turn-long"])
@@ -766,7 +1133,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[25..<27])
+            return Array(values[28..<30])
         }
 
         XCTAssertEqual(try turnFields(), ["waiting", "turn-old"])
@@ -1292,6 +1659,13 @@ final class DetachStateCommandTests: XCTestCase {
         )) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .invalidBoolean("yes"))
         }
+        for option in ["--uncommitted-replacement", "--runtime-quiescent"] {
+            XCTAssertThrowsError(try DetachStateCommand.run(
+                arguments: valid + [option, "yes"]
+            )) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidBoolean("yes"))
+            }
+        }
     }
 
     func testHealthEvaluateEnvelopeCarriesStatusAndTypedJSONTogether() throws {
@@ -1317,6 +1691,67 @@ final class DetachStateCommandTests: XCTestCase {
             from: output[output.index(after: newline)...])
         XCTAssertEqual(assessment.effectiveStatus, .running)
         XCTAssertEqual(assessment.reason, .healthy)
+    }
+
+    func testHealthEvaluateRequiresQuiescenceForUncommittedRecovery() throws {
+        let pid = String(ProcessInfo.processInfo.processIdentifier)
+        let common = [
+            "health", "evaluate",
+            "--metadata-valid", "true",
+            "--runtime-identity-expected", "true",
+            "--meta-status", "failed",
+            "--run-token", "match",
+            "--heartbeat", "missing",
+            "--checkpoint", "fresh",
+            "--checkpoint-recoverable", "true",
+            "--agent-session-known", "true",
+            "--uncommitted-replacement", "true",
+            "--lifecycle-phase", "terminal",
+        ]
+        let unknownOutput = try DetachStateCommand.run(arguments: common + [
+            "--tmux", "missing",
+            "--worker", "dead",
+            "--provider-process", "dead",
+        ])
+        let unknown = try JSONDecoder().decode(
+            SessionHealthAssessment.self,
+            from: unknownOutput)
+        XCTAssertEqual(unknown.effectiveStatus, .hung)
+        XCTAssertEqual(unknown.reason, .runtimeQuiescenceUnproven)
+        XCTAssertTrue(unknown.actions.isEmpty)
+
+        let liveOutput = try DetachStateCommand.run(arguments: common + [
+            "--runtime-quiescent", "true",
+            "--tmux", "missing",
+            "--worker", "unknown",
+            "--provider-process", "unknown",
+            "--inspect-processes", "true",
+            "--worker-pid", pid,
+            "--provider-pid", "-",
+            "--pane-pid", "-",
+        ])
+        let live = try JSONDecoder().decode(
+            SessionHealthAssessment.self,
+            from: liveOutput)
+        XCTAssertEqual(live.effectiveStatus, .hung)
+        XCTAssertEqual(live.reason, .runtimeProcessWithoutTmux)
+        XCTAssertTrue(live.actions.isEmpty)
+        XCTAssertEqual(live.reconcileAction, .none)
+
+        let deadOutput = try DetachStateCommand.run(arguments: common + [
+            "--runtime-quiescent", "true",
+            "--tmux", "dead",
+            "--worker", "dead",
+            "--provider-process", "dead",
+        ])
+        let dead = try JSONDecoder().decode(
+            SessionHealthAssessment.self,
+            from: deadOutput)
+        XCTAssertEqual(dead.effectiveStatus, .recoverable)
+        XCTAssertEqual(dead.reason, .recoverableCheckpoint)
+        XCTAssertEqual(dead.actions, [.recover, .delete])
+        XCTAssertEqual(dead.reconcileAction, .removeDeadTmux)
+        XCTAssertFalse(dead.cleanupEligible)
     }
 
     func testHealthEvaluateKeepsExactStopTransitionStopped() throws {
@@ -1829,6 +2264,13 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(first, second)
         XCTAssertTrue(try XCTUnwrap(first.sessions.first).deletable)
         XCTAssertGreaterThan(first.allocatedBytes, 0)
+    }
+
+    private func directoryIdentifier(_ directory: URL) throws -> UInt64 {
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: directory.path)
+        return try XCTUnwrap(
+            attributes[.systemFileNumber] as? NSNumber).uint64Value
     }
 
     private func makeStorageSession(

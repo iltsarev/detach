@@ -173,6 +173,76 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertFalse(result.ownershipProven)
     }
 
+    func testTerminalFailureWithLiveRecordedProcessBlocksUncommittedRecovery() {
+        let result = evaluate(
+            status: .failed,
+            tmux: .missing,
+            worker: .alive,
+            provider: .dead,
+            recoverable: true,
+            uncommittedReplacement: true,
+            runtimeQuiescent: true,
+            lifecyclePhase: .terminal)
+
+        XCTAssertEqual(result.effectiveStatus, .hung)
+        XCTAssertEqual(result.reason, .runtimeProcessWithoutTmux)
+        XCTAssertTrue(result.actions.isEmpty)
+        XCTAssertEqual(result.reconcileAction, .none)
+        XCTAssertFalse(result.cleanupEligible)
+    }
+
+    func testQuiescentUncommittedReplacementUsesCheckpointWithoutStateRewrite() {
+        for (tmux, reconcile) in [
+            (TmuxHealthState.missing, SessionReconcileAction.none),
+            (.dead, .removeDeadTmux),
+        ] {
+            let result = evaluate(
+                status: .failed,
+                tmux: tmux,
+                worker: .dead,
+                provider: .dead,
+                recoverable: true,
+                uncommittedReplacement: true,
+                runtimeQuiescent: true,
+                lifecyclePhase: .terminal)
+
+            XCTAssertEqual(result.effectiveStatus, .recoverable, "tmux=\(tmux)")
+            XCTAssertEqual(result.reason, .recoverableCheckpoint, "tmux=\(tmux)")
+            XCTAssertEqual(result.actions, [.recover, .delete], "tmux=\(tmux)")
+            XCTAssertEqual(result.reconcileAction, reconcile, "tmux=\(tmux)")
+            XCTAssertFalse(result.cleanupEligible, "tmux=\(tmux)")
+        }
+    }
+
+    func testUncommittedReplacementSeparatesUnknownRuntimeFromInvalidCheckpoint() {
+        let unknown = evaluate(
+            status: .failed,
+            tmux: .missing,
+            worker: .dead,
+            provider: .dead,
+            recoverable: true,
+            uncommittedReplacement: true,
+            runtimeQuiescent: false,
+            lifecyclePhase: .terminal)
+        XCTAssertEqual(unknown.effectiveStatus, .hung)
+        XCTAssertEqual(unknown.reason, .runtimeQuiescenceUnproven)
+        XCTAssertTrue(unknown.actions.isEmpty)
+
+        let invalidCheckpoint = evaluate(
+            status: .failed,
+            tmux: .missing,
+            worker: .dead,
+            provider: .dead,
+            recoverable: false,
+            uncommittedReplacement: true,
+            runtimeQuiescent: true,
+            lifecyclePhase: .terminal)
+        XCTAssertEqual(invalidCheckpoint.effectiveStatus, .orphaned)
+        XCTAssertEqual(invalidCheckpoint.reason, .noRecoveryCheckpoint)
+        XCTAssertEqual(invalidCheckpoint.actions, [.delete])
+        XCTAssertEqual(invalidCheckpoint.reconcileAction, .markOrphaned)
+    }
+
     func testFinishingWorkerWithTerminalMetadataIsNotHung() {
         // After Ctrl+C the worker writes `interrupted`, publishes the hint,
         // and only then exits. The list that follows sees a live owned pane
@@ -235,6 +305,31 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertFalse(result.cleanupEligible)
     }
 
+    func testDeadTmuxRunTokenConflictCannotExposePreservedRecovery() {
+        for (token, reason) in [
+            (RunTokenHealthState.missing, SessionHealthReason.runTokenMissing),
+            (.mismatch, .runTokenMismatch),
+        ] {
+            let result = evaluate(
+                status: .failed,
+                tmux: .dead,
+                token: token,
+                worker: .dead,
+                provider: .dead,
+                recoverable: true,
+                uncommittedReplacement: true,
+                runtimeQuiescent: true,
+                lifecyclePhase: .terminal)
+
+            XCTAssertEqual(result.effectiveStatus, .corrupt, "token=\(token)")
+            XCTAssertEqual(result.reason, reason, "token=\(token)")
+            XCTAssertTrue(result.actions.isEmpty, "token=\(token)")
+            XCTAssertEqual(result.reconcileAction, .none, "token=\(token)")
+            XCTAssertFalse(result.ownershipProven, "token=\(token)")
+            XCTAssertFalse(result.cleanupEligible, "token=\(token)")
+        }
+    }
+
     func testMalformedMetadataNeverAuthorizesCleanupOfALivePane() {
         let result = evaluate(metadataValid: false)
 
@@ -244,20 +339,45 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertFalse(result.cleanupEligible)
     }
 
-    func testMalformedMetadataWithoutALivePaneOnlyOffersDelete() {
-        let result = evaluate(metadataValid: false, tmux: .missing)
+    func testMalformedMetadataWithoutALivePaneOffersNoMutation() {
+        let result = evaluate(
+            metadataValid: false,
+            tmux: .missing,
+            worker: .dead,
+            provider: .dead)
 
         XCTAssertEqual(result.effectiveStatus, .corrupt)
         XCTAssertEqual(result.reason, .malformedMetadata)
-        XCTAssertEqual(result.actions, [.delete])
+        XCTAssertTrue(result.actions.isEmpty)
         XCTAssertFalse(result.ownershipProven)
     }
 
-    func testMalformedMetadataWithADeadManagedPaneProvesOwnership() {
-        let result = evaluate(metadataValid: false, tmux: .dead)
+    func testMalformedMetadataWithADeadManagedPaneCannotAuthorizeMutation() {
+        let result = evaluate(
+            metadataValid: false,
+            tmux: .dead,
+            worker: .dead,
+            provider: .dead)
 
-        XCTAssertEqual(result.actions, [.delete])
-        XCTAssertTrue(result.ownershipProven)
+        XCTAssertTrue(result.actions.isEmpty)
+        XCTAssertFalse(result.ownershipProven)
+        XCTAssertFalse(result.cleanupEligible)
+    }
+
+    func testMalformedMetadataCannotAuthorizeActionsWhileARecordedRuntimeLives() {
+        for tmux in [TmuxHealthState.missing, .dead] {
+            let result = evaluate(
+                metadataValid: false,
+                tmux: tmux,
+                worker: .alive,
+                provider: .dead)
+
+            XCTAssertEqual(result.effectiveStatus, .hung, "tmux=\(tmux)")
+            XCTAssertEqual(result.reason, .runtimeProcessWithoutTmux, "tmux=\(tmux)")
+            XCTAssertTrue(result.actions.isEmpty, "tmux=\(tmux)")
+            XCTAssertEqual(result.reconcileAction, .none, "tmux=\(tmux)")
+            XCTAssertFalse(result.cleanupEligible, "tmux=\(tmux)")
+        }
     }
 
     func testMissingRunTokenIsCorruptButManagedPaneRemainsControllable() {
@@ -289,22 +409,30 @@ final class SessionHealthTests: XCTestCase {
     }
 
     func testStoppingPhaseStaysActionlessWhileRuntimeTeardownRemains() {
-        let inProgress: [(TmuxHealthState, ProcessHealthState)] = [
-            (.live, .dead),
-            (.dead, .alive),
-            (.missing, .alive),
-        ]
-        for (tmux, worker) in inProgress {
+        let managed = evaluate(
+            status: .stopped,
+            tmux: .live,
+            worker: .dead,
+            provider: .dead,
+            stopRequested: true,
+            lifecyclePhase: .stopping)
+        XCTAssertEqual(managed.effectiveStatus, .stopped)
+        XCTAssertEqual(managed.reason, .finished)
+        XCTAssertTrue(managed.actions.isEmpty)
+        XCTAssertEqual(managed.reconcileAction, .none)
+        XCTAssertFalse(managed.cleanupEligible)
+
+        for tmux in [TmuxHealthState.dead, .missing] {
             let result = evaluate(
                 status: .stopped,
                 tmux: tmux,
-                worker: worker,
+                worker: .alive,
                 provider: .dead,
                 stopRequested: true,
                 lifecyclePhase: .stopping)
 
-            XCTAssertEqual(result.effectiveStatus, .stopped, "tmux=\(tmux)")
-            XCTAssertEqual(result.reason, .finished, "tmux=\(tmux)")
+            XCTAssertEqual(result.effectiveStatus, .hung, "tmux=\(tmux)")
+            XCTAssertEqual(result.reason, .runtimeProcessWithoutTmux, "tmux=\(tmux)")
             XCTAssertTrue(result.actions.isEmpty, "tmux=\(tmux)")
             XCTAssertEqual(result.reconcileAction, .none, "tmux=\(tmux)")
             XCTAssertFalse(result.cleanupEligible, "tmux=\(tmux)")
@@ -623,6 +751,54 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertLessThanOrEqual(reads, 3, "cycle identities must stay cached")
     }
 
+    func testExactProcessProbeRequiresPositiveDeathEvidence() {
+        let owned = SessionProcessIdentity(parentPID: 1, userID: 501)
+        let foreign = SessionProcessIdentity(parentPID: 1, userID: 502)
+
+        XCTAssertEqual(
+            ExactProcessStateProbe.state(
+                pid: 20,
+                userID: 501,
+                existence: { _ in .missing },
+                identity: { _ in XCTFail("missing PID must not be inspected"); return nil }),
+            .dead)
+        XCTAssertEqual(
+            ExactProcessStateProbe.state(
+                pid: 20,
+                userID: 501,
+                existence: { _ in .exists },
+                identity: { _ in owned }),
+            .alive)
+        XCTAssertEqual(
+            ExactProcessStateProbe.state(
+                pid: 20,
+                userID: 501,
+                existence: { _ in .exists },
+                identity: { _ in foreign }),
+            .dead)
+
+        var confirmedExitReads = 0
+        XCTAssertEqual(
+            ExactProcessStateProbe.state(
+                pid: 20,
+                existence: { _ in
+                    confirmedExitReads += 1
+                    return confirmedExitReads == 1 ? .exists : .missing
+                },
+                identity: { _ in nil }),
+            .dead)
+        var unknownReads = 0
+        XCTAssertEqual(
+            ExactProcessStateProbe.state(
+                pid: 20,
+                existence: { _ in
+                    unknownReads += 1
+                    return unknownReads == 1 ? .exists : .unknown
+                },
+                identity: { _ in nil }),
+            .unknown)
+    }
+
     private func evaluate(
         metadataValid: Bool = true,
         runtimeIdentityExpected: Bool = true,
@@ -635,6 +811,8 @@ final class SessionHealthTests: XCTestCase {
         checkpoint: FreshnessState = .fresh,
         recoverable: Bool = true,
         agentSessionKnown: Bool = true,
+        uncommittedReplacement: Bool = false,
+        runtimeQuiescent: Bool = false,
         stopRequested: Bool = false,
         lifecyclePhase: RuntimeLifecyclePhase? = nil
     ) -> SessionHealthAssessment {
@@ -650,6 +828,8 @@ final class SessionHealthTests: XCTestCase {
             checkpointFreshness: checkpoint,
             checkpointRecoverable: recoverable,
             agentSessionKnown: agentSessionKnown,
+            uncommittedReplacement: uncommittedReplacement,
+            runtimeQuiescent: runtimeQuiescent,
             stopRequested: stopRequested,
             lifecyclePhase: lifecyclePhase))
     }

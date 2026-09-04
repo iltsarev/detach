@@ -101,7 +101,8 @@ public enum SessionMetadataDocument {
 
         try validateLifecycleMutation(from: original, to: object, changes: changes)
 
-        guard JSONSerialization.isValidJSONObject(object) else {
+        guard operationalFieldsAreTyped(object),
+              JSONSerialization.isValidJSONObject(object) else {
             throw DetachStateError.invalidMetadata
         }
         do {
@@ -128,7 +129,8 @@ public enum SessionMetadataDocument {
             }
         }
 
-        guard JSONSerialization.isValidJSONObject(object) else {
+        guard operationalFieldsAreTyped(object),
+              JSONSerialization.isValidJSONObject(object) else {
             throw DetachStateError.invalidMetadata
         }
         do {
@@ -259,6 +261,27 @@ public enum SessionMetadataDocument {
         integer(from: object["schema"]) == 1
             && object["session_name"] as? String == expectedSessionName
             && object["project_dir"] is String
+            && operationalFieldsAreTyped(object)
+    }
+
+    private static func operationalFieldsAreTyped(
+        _ object: [String: Any]
+    ) -> Bool {
+        if let value = object["preserve_recovery_until_ready"],
+           !(value is NSNull) {
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                return false
+            }
+        }
+        for key in ["runtime_ready_at", "runtime_shutdown_observed_at"] {
+            if let value = object[key],
+               !(value is NSNull),
+               !(value is String) {
+                return false
+            }
+        }
+        return true
     }
 
     /// Validates only runtime-owned phase changes. Ordinary scalar patches do
@@ -343,6 +366,7 @@ public struct TranscriptSummary: Equatable, Sendable {
     public var contextWindow: Int?
     public var agentTurnState: AgentTurnState?
     public var agentTurnID: String?
+    var pendingToolUseID: String?
 
     public init(
         model: String? = nil,
@@ -356,6 +380,15 @@ public struct TranscriptSummary: Equatable, Sendable {
         self.contextWindow = contextWindow
         self.agentTurnState = agentTurnState
         self.agentTurnID = agentTurnID
+        self.pendingToolUseID = nil
+    }
+
+    public static func == (lhs: TranscriptSummary, rhs: TranscriptSummary) -> Bool {
+        lhs.model == rhs.model
+            && lhs.contextUsed == rhs.contextUsed
+            && lhs.contextWindow == rhs.contextWindow
+            && lhs.agentTurnState == rhs.agentTurnState
+            && lhs.agentTurnID == rhs.agentTurnID
     }
 }
 
@@ -693,27 +726,81 @@ public enum TranscriptDocument {
             return
         }
 
-        if type == "system", record["subtype"] as? String == "turn_duration" {
+        if type == "assistant",
+           message?["role"] as? String == "assistant",
+           message?["stop_reason"] as? String == "tool_use",
+           let toolUseID = toolUseID(
+            message?["content"], named: "AskUserQuestion") {
             result.agentTurnState = .waiting
-            result.agentTurnID = turnID
+            result.agentTurnID = toolUseID
+            result.pendingToolUseID = toolUseID
+            return
+        }
+
+        if type == "system", record["subtype"] as? String == "turn_duration" {
+            if result.pendingToolUseID == nil {
+                result.agentTurnState = .waiting
+                result.agentTurnID = turnID
+            }
             return
         }
 
         guard type == "user",
               !isJSONTrue(record["isMeta"]),
-              message?["role"] as? String == "user",
-              !containsToolResult(message?["content"]) else {
+              message?["role"] as? String == "user" else {
+            return
+        }
+        let toolResult = toolResultStatus(
+            message?["content"], matching: result.pendingToolUseID)
+        if let pendingToolUseID = result.pendingToolUseID {
+            guard result.agentTurnState == .waiting,
+                  toolResult.present,
+                  toolResult.matches,
+                  pendingToolUseID == result.agentTurnID else {
+                return
+            }
+        } else if toolResult.present {
             return
         }
         result.agentTurnState = .working
         result.agentTurnID = turnID
+        result.pendingToolUseID = nil
     }
 
-    private static func containsToolResult(_ value: Any?) -> Bool {
-        guard let content = value as? [Any] else { return false }
-        return content.contains { item in
-            (item as? [String: Any])?["type"] as? String == "tool_result"
+    private static func toolUseID(_ value: Any?, named name: String) -> String? {
+        guard let content = value as? [Any] else { return nil }
+        return content.compactMap { item -> String? in
+            guard let block = item as? [String: Any],
+                  block["type"] as? String == "tool_use",
+                  block["name"] as? String == name,
+                  let identifier = block["id"] as? String,
+                  !identifier.isEmpty else {
+                return nil
+            }
+            return identifier
+        }.first
+    }
+
+    private static func toolResultStatus(
+        _ value: Any?,
+        matching identifier: String?
+    ) -> (present: Bool, matches: Bool) {
+        guard let content = value as? [Any] else {
+            return (false, false)
         }
+        var present = false
+        for item in content {
+            guard let block = item as? [String: Any],
+                  block["type"] as? String == "tool_result" else {
+                continue
+            }
+            present = true
+            if let identifier,
+               block["tool_use_id"] as? String == identifier {
+                return (true, true)
+            }
+        }
+        return (present, false)
     }
 
     private static func isJSONTrue(_ value: Any?) -> Bool {

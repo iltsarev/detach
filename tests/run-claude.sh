@@ -145,6 +145,9 @@ export DETACH_STATE_BIN="$STATE_HELPER"
 FAKE_POWER_BIN="$TMP_ROOT/fake-detach-power"
 export FAKE_POWER_ARGS_FILE="$TMP_ROOT/power-args.txt"
 export FAKE_POWER_RELEASES_FILE="$TMP_ROOT/power-releases.txt"
+export FAKE_POWER_FAIL_ARM_FILE="$TMP_ROOT/fail-next-power-run"
+export FAKE_POWER_FAIL_RELEASE_FILE="$TMP_ROOT/release-failed-power-run"
+export FAKE_POWER_FAIL_ENTERED_FILE="$TMP_ROOT/entered-failed-power-run"
 printf '%s\n' \
   '#!/bin/bash' \
   'if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then' \
@@ -166,6 +169,16 @@ printf '%s\n' \
   '    shift' \
   '  done' \
   '  [ "${1:-}" = -- ] || exit 2' \
+  '  if [ -f "${FAKE_POWER_FAIL_ARM_FILE:-}" ]; then' \
+  '    [ -z "${FAKE_POWER_FAIL_ENTERED_FILE:-}" ] || printf '\''entered\n'\'' >"$FAKE_POWER_FAIL_ENTERED_FILE"' \
+  '    delay_attempts=0' \
+  '    while [ ! -f "${FAKE_POWER_FAIL_RELEASE_FILE:-}" ] && [ "$delay_attempts" -lt 200 ]; do' \
+  '      delay_attempts=$((delay_attempts + 1))' \
+  '      sleep 0.05' \
+  '    done' \
+  '    [ -f "${FAKE_POWER_FAIL_RELEASE_FILE:-}" ] || exit 124' \
+  '    exit 1' \
+  '  fi' \
   '  [ "${FAKE_POWER_FAIL_RUN:-0}" != 1 ] || exit 1' \
   '  [ -z "$ready_file" ] || : >"$ready_file"' \
   '  [ -z "$pid_file" ] || printf '\''%s\n'\'' "$$" >"$pid_file"' \
@@ -254,6 +267,40 @@ wait_for_file_text() {
     sleep 0.1
   done
   printf 'timed out waiting for %s in %s\n' "$text" "$file" >&2
+  return 1
+}
+
+saved_resume_args_path() {
+  local metadata="$1"
+  local state_dir="$2"
+  local name
+  local token
+
+  name="$("$STATE_HELPER" meta get "$metadata" resume_args_file 2>/dev/null || true)"
+  if [ -n "$name" ]; then
+    case "$name" in *[!A-Za-z0-9._-]*|resume-args-.bin) return 1 ;; esac
+    case "$name" in resume-args-*.bin) ;; *) return 1 ;; esac
+    token="${name#resume-args-}"
+    token="${token%.bin}"
+    [ "$token" = "$("$STATE_HELPER" meta get "$metadata" run_token)" ] || return 1
+    [ -f "$state_dir/$name" ] && [ ! -L "$state_dir/$name" ] || return 1
+    printf '%s\n' "$state_dir/$name"
+    return
+  fi
+  [ -f "$state_dir/resume-args.bin" ] && \
+    [ ! -L "$state_dir/resume-args.bin" ] || return 1
+  printf '%s\n' "$state_dir/resume-args.bin"
+}
+
+require_nul_file_arg() {
+  local file="$1"
+  local expected="$2"
+  local arg
+
+  while IFS= read -r -d '' arg; do
+    [ "$arg" != "$expected" ] || return 0
+  done <"$file"
+  printf 'missing saved argument %s in %s\n' "$expected" "$file" >&2
   return 1
 }
 
@@ -562,8 +609,15 @@ grep -Fx -- '--activity-file' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$power_activity" "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- '--activity-source-file' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$power_activity_source" "$FAKE_POWER_ARGS_FILE" >/dev/null
-printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":[{"type":"tool_result"}]},"uuid":"tool-result-event","timestamp":"2099-01-01T00:02:00.000Z"}\n' \
+printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","id":"ask-tool"}]},"uuid":"ask-user-question","timestamp":"2099-01-01T00:01:00.000Z"}\n' \
   "$session_id" >>"$transcript"
+json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "waiting" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "ask-tool" ]
+wait_for_file_text "$power_activity" waiting
+printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ask-tool"}]},"uuid":"tool-result-event","timestamp":"2099-01-01T00:02:00.000Z"}\n' \
+  "$session_id" >>"$transcript"
+wait_for_file_text "$power_activity" working
 printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"end_turn","id":"message-1"},"uuid":"assistant-chunk-1","timestamp":"2099-01-01T00:03:00.000Z"}\n' \
   "$session_id" >>"$transcript"
 printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"end_turn","id":"message-1"},"uuid":"assistant-chunk-2","timestamp":"2099-01-01T00:03:01.000Z"}\n' \
@@ -572,7 +626,7 @@ json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin display_name)" = \
   "$human_label" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "working" ]
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "$session_id" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "tool-result-event" ]
 printf '{"type":"system","subtype":"turn_duration","isSidechain":false,"sessionId":"%s","uuid":"turn-duration-1","timestamp":"2099-01-01T00:03:02.000Z"}\n' \
   "$session_id" >>"$transcript"
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
@@ -693,6 +747,63 @@ recovery|recovery-guardrails)
   bootstrap_claude_checkpoint
   ;;
 esac
+
+if [ "$CLAUDE_TEST_PART" = recovery-guardrails ]; then
+# The writer must apply the same archive-name contract as List and Recover.
+# A rejected candidate must not replace the last recoverable payload or its
+# matching metadata generation.
+export FAKE_CLAUDE_SLEEP=20
+export FAKE_CLAUDE_EXIT=0
+export FAKE_CLAUDE_EXPECT_RESTORED=0
+reset_fake_claude_ready
+"$SCRIPT" claude resume --name "$human_label" --detach "$session_id"
+wait_for_fake_claude_ready
+writer_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
+writer_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$session:" @detach_pane_id)"
+writer_worker_pid="$(tmux -L "$SOCKET" display-message -p \
+  -t "$writer_pane" '#{pane_pid}')"
+[ "$("$STATE_HELPER" meta get "$meta" worker_pid)" = "$writer_worker_pid" ]
+[ "$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$session:" @detach_run_token)" = "$writer_run_token" ]
+"$SCRIPT" claude __checkpoint_once \
+  "$session" "$writer_run_token" "$writer_worker_pid"
+writer_archive_hash="$(shasum -a 256 "$checkpoint/claude-session.tar" | awk '{print $1}')"
+writer_meta_hash="$(shasum -a 256 "$checkpoint/meta.json" | awk '{print $1}')"
+unsafe_writer_file="$CLAUDE_CONFIG_DIR/projects/fake/$session_id/unsafe\\name"
+printf 'unsafe archive name\n' >"$unsafe_writer_file"
+if "$SCRIPT" claude __checkpoint_once \
+     "$session" "$writer_run_token" "$writer_worker_pid"; then
+  printf 'Claude checkpoint accepted an unsafe archive name\n' >&2
+  exit 1
+fi
+[ "$(shasum -a 256 "$checkpoint/claude-session.tar" | awk '{print $1}')" = \
+  "$writer_archive_hash" ]
+[ "$(shasum -a 256 "$checkpoint/meta.json" | awk '{print $1}')" = \
+  "$writer_meta_hash" ]
+grep -F 'archive is not safely recoverable' "$session_dir/checkpoint.log" >/dev/null
+rm -f "$unsafe_writer_file"
+
+# A dangling live optional companion is not absence. The writer must retain
+# the previous complete checkpoint instead of silently omitting that state.
+dangling_writer_source="$CLAUDE_CONFIG_DIR/file-history/$session_id"
+dangling_writer_saved="$TMP_ROOT/claude-file-history-writer-saved"
+mv "$dangling_writer_source" "$dangling_writer_saved"
+ln -s "$TMP_ROOT/missing-live-claude-companion" "$dangling_writer_source"
+if "$SCRIPT" claude __checkpoint_once \
+     "$session" "$writer_run_token" "$writer_worker_pid"; then
+  printf 'Claude checkpoint accepted a dangling live companion symlink\n' >&2
+  exit 1
+fi
+[ "$(shasum -a 256 "$checkpoint/claude-session.tar" | awk '{print $1}')" = \
+  "$writer_archive_hash" ]
+[ "$(shasum -a 256 "$checkpoint/meta.json" | awk '{print $1}')" = \
+  "$writer_meta_hash" ]
+rm "$dangling_writer_source"
+mv "$dangling_writer_saved" "$dangling_writer_source"
+"$SCRIPT" claude stop "$human_label"
+fi
+
 "$STATE_HELPER" meta patch "$checkpoint/meta.json" --string status running --null exit_status
 rm -f "$meta"
 printf '{damaged transcript\n' >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"
@@ -719,6 +830,72 @@ mkdir -p "$unsafe_claude_outside"
 printf 'outside sentinel\n' >"$unsafe_claude_outside/sentinel"
 rmdir "$CLAUDE_CONFIG_DIR/file-history"
 ln -s "$unsafe_claude_outside" "$CLAUDE_CONFIG_DIR/file-history"
+
+# A valid transcript archive is not recoverable when one of its publish
+# destinations is unsafe. List must not advertise Recover, and the command
+# must finish its full non-mutating preflight before it removes a retained
+# pane whose token still matches primary operational metadata.
+cp -p "$checkpoint/meta.json" "$meta"
+unsafe_restore_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
+unsafe_restore_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s "$session" -n claude)"
+tmux -L "$SOCKET" set-option -q -w -t "$unsafe_restore_pane" remain-on-exit on
+tmux -L "$SOCKET" set-option -q -t "=$session:" @detach 1
+tmux -L "$SOCKET" set-option -q -t "=$session:" @detach_provider claude
+tmux -L "$SOCKET" set-option -q -t "=$session:" @detach_pane_id "$unsafe_restore_pane"
+tmux -L "$SOCKET" set-option -q -t "=$session:" \
+  @detach_run_token "$unsafe_restore_run_token"
+tmux -L "$SOCKET" send-keys -t "$unsafe_restore_pane" exit Enter
+attempts=0
+while [ "$(tmux -L "$SOCKET" display-message -p \
+    -t "$unsafe_restore_pane" '#{pane_dead}')" != "1" ] && \
+    [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$(tmux -L "$SOCKET" display-message -p \
+  -t "$unsafe_restore_pane" '#{pane_dead}')" = "1" ]
+
+# Destination state is independent of checkpoint integrity. A valid A archive
+# and its saved options must remain byte-identical when that destination makes
+# Resume fail before replacement B can start.
+unsafe_resume_archive_hash="$(shasum -a 256 \
+  "$checkpoint/claude-session.tar" | awk '{print $1}')"
+unsafe_resume_meta_hash="$(shasum -a 256 \
+  "$checkpoint/meta.json" | awk '{print $1}')"
+unsafe_resume_args_file="$(saved_resume_args_path \
+  "$checkpoint/meta.json" "$session_dir")"
+unsafe_resume_args_hash="$(shasum -a 256 \
+  "$unsafe_resume_args_file" | awk '{print $1}')"
+printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"live preflight sentinel"}}\n' \
+  "$session_id" "$ROOT" \
+  >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"
+unsafe_resume_live_hash="$(shasum -a 256 \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" | awk '{print $1}')"
+if "$SCRIPT" claude resume --name "$human_label" --detach "$session_id"; then
+  printf 'Claude Resume accepted an unsafe recovery destination\n' >&2
+  exit 1
+fi
+[ "$(shasum -a 256 "$checkpoint/claude-session.tar" | awk '{print $1}')" = \
+  "$unsafe_resume_archive_hash" ]
+[ "$(shasum -a 256 "$checkpoint/meta.json" | awk '{print $1}')" = \
+  "$unsafe_resume_meta_hash" ]
+[ "$(shasum -a 256 "$unsafe_resume_args_file" | awk '{print $1}')" = \
+  "$unsafe_resume_args_hash" ]
+[ "$(shasum -a 256 \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" | awk '{print $1}')" = \
+  "$unsafe_resume_live_hash" ]
+tmux -L "$SOCKET" has-session -t "=$session"
+[ "$(tmux -L "$SOCKET" display-message -p \
+  -t "$unsafe_restore_pane" '#{pane_dead}')" = "1" ]
+printf '{damaged transcript\n' \
+  >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"
+
+unsafe_restore_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$unsafe_restore_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+printf '%s' "$unsafe_restore_json" | grep -F '"health_actions":["delete"]' >/dev/null
 if "$SCRIPT" claude recover --detach "$human_label"; then
   printf 'Claude recover accepted a symlink below its canonical config root\n' >&2
   exit 1
@@ -727,7 +904,11 @@ grep -Fx '{damaged transcript' \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
 grep -Fx 'outside sentinel' "$unsafe_claude_outside/sentinel" >/dev/null
 [ ! -e "$unsafe_claude_outside/$session_id" ]
-! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+tmux -L "$SOCKET" has-session -t "=$session"
+[ "$(tmux -L "$SOCKET" display-message -p \
+  -t "$unsafe_restore_pane" '#{pane_dead}')" = "1" ]
+tmux -L "$SOCKET" kill-session -t "=$session"
+rm -f "$meta"
 rm "$CLAUDE_CONFIG_DIR/file-history"
 mkdir -p "$CLAUDE_CONFIG_DIR/file-history"
 
@@ -740,6 +921,12 @@ mkdir -p "$malicious_claude_stage"
 tar -xf "$good_claude_archive" -C "$malicious_claude_stage"
 mkfifo "$malicious_claude_stage/restore-pipe"
 tar -cf "$checkpoint/claude-session.tar" -C "$malicious_claude_stage" .
+malicious_archive_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$malicious_archive_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+printf '%s' "$malicious_archive_json" | \
+  grep -F '"health_actions":["delete"]' >/dev/null
 if "$SCRIPT" claude recover --detach "$human_label"; then
   printf 'Claude recover accepted a special entry in its checkpoint archive\n' >&2
   exit 1
@@ -749,6 +936,126 @@ grep -Fx '{damaged transcript' \
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
 mv -f "$good_claude_archive" "$checkpoint/claude-session.tar"
 rm -rf "$malicious_claude_stage"
+
+# A type-valid archive can still be impossible to extract when a regular file
+# is followed by a child below the same path. Validate the actual extraction
+# before List advertises Recover or Recover changes any live state.
+good_claude_archive="$checkpoint/claude-session.tar.good-conflict-test"
+conflicting_claude_stage="$TMP_ROOT/conflicting-claude-archive"
+conflicting_claude_archive="$TMP_ROOT/conflicting-claude-session.tar"
+cp -p "$checkpoint/claude-session.tar" "$good_claude_archive"
+mkdir -p "$conflicting_claude_stage"
+cp -p "$checkpoint/transcript.jsonl" \
+  "$conflicting_claude_stage/transcript.jsonl"
+printf 'regular ancestor\n' >"$conflicting_claude_stage/project-session"
+tar -cf "$conflicting_claude_archive" -C "$conflicting_claude_stage" \
+  ./transcript.jsonl ./project-session
+rm -f "$conflicting_claude_stage/project-session"
+mkdir -p "$conflicting_claude_stage/project-session"
+printf 'unextractable child\n' \
+  >"$conflicting_claude_stage/project-session/child"
+tar -rf "$conflicting_claude_archive" -C "$conflicting_claude_stage" \
+  ./project-session/child
+mv -f "$conflicting_claude_archive" "$checkpoint/claude-session.tar"
+conflicting_archive_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$conflicting_archive_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+printf '%s' "$conflicting_archive_json" | \
+  grep -F '"health_actions":["delete"]' >/dev/null
+if "$SCRIPT" claude recover --detach "$human_label"; then
+  printf 'Claude recover accepted a structurally conflicting archive\n' >&2
+  exit 1
+fi
+grep -Fx '{damaged transcript' \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+mv -f "$good_claude_archive" "$checkpoint/claude-session.tar"
+rm -rf "$conflicting_claude_stage"
+
+# An archive is UUID-bound beyond its transcript. It cannot carry task names
+# for another session or a team whose typed lead belongs to another UUID, and
+# it cannot replace an existing team owned by another live session.
+foreign_team_id="99999999-aaaa-4bbb-8ccc-dddddddddddd"
+foreign_team_name=foreign-team-victim
+foreign_team="$CLAUDE_CONFIG_DIR/teams/$foreign_team_name"
+foreign_team_guard="$TMP_ROOT/foreign-team-guard"
+identity_archive_good="$TMP_ROOT/identity-claude-session-good.tar"
+identity_archive_stage="$TMP_ROOT/identity-claude-archive"
+rm -rf "$foreign_team" "$identity_archive_stage"
+mkdir -p "$foreign_team" "$identity_archive_stage"
+printf '{"leadSessionId":"%s"}\n' "$foreign_team_id" \
+  >"$foreign_team/config.json"
+printf 'foreign team sentinel\n' >"$foreign_team/sentinel"
+cp -Rp "$foreign_team" "$foreign_team_guard"
+cp -p "$checkpoint/claude-session.tar" "$identity_archive_good"
+tar -xf "$identity_archive_good" -C "$identity_archive_stage"
+mkdir -p "$identity_archive_stage/teams/$foreign_team_name"
+printf '{"leadSessionId":"%s"}\n' "$foreign_team_id" \
+  >"$identity_archive_stage/teams/$foreign_team_name/config.json"
+tar -cf "$checkpoint/claude-session.tar" -C "$identity_archive_stage" .
+identity_archive_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$identity_archive_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+if "$SCRIPT" claude recover --detach "$human_label"; then
+  printf 'Claude recover accepted another session in its archive\n' >&2
+  exit 1
+fi
+grep -Fx '{damaged transcript' \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
+diff -qr "$foreign_team_guard" "$foreign_team" >/dev/null
+
+printf '{"leadSessionId":"%s"}\n' "$session_id" \
+  >"$identity_archive_stage/teams/$foreign_team_name/config.json"
+tar -cf "$checkpoint/claude-session.tar" -C "$identity_archive_stage" .
+identity_destination_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$identity_destination_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+if "$SCRIPT" claude recover --detach "$human_label"; then
+  printf 'Claude recover replaced a team owned by another session\n' >&2
+  exit 1
+fi
+diff -qr "$foreign_team_guard" "$foreign_team" >/dev/null
+mv -f "$identity_archive_good" "$checkpoint/claude-session.tar"
+rm -rf "$identity_archive_stage" "$foreign_team" "$foreign_team_guard"
+
+# Legacy standalone checkpoints consume companion directories too. An unsafe
+# companion source must close Recover in List and in the command even though
+# the standalone transcript itself is valid.
+legacy_archive="$TMP_ROOT/legacy-claude-session.tar"
+mv "$checkpoint/claude-session.tar" "$legacy_archive"
+ln -s "$unsafe_claude_outside" "$checkpoint/claude-file-history"
+unsafe_legacy_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$unsafe_legacy_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+printf '%s' "$unsafe_legacy_json" | grep -F '"health_actions":["delete"]' >/dev/null
+if "$SCRIPT" claude recover --detach "$human_label"; then
+  printf 'Claude recover accepted an unsafe legacy companion source\n' >&2
+  exit 1
+fi
+grep -Fx '{damaged transcript' \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
+rm "$checkpoint/claude-file-history"
+
+# A dangling optional companion symlink is still present state. Recover must
+# reject it instead of treating it as an absent optional directory.
+ln -s "$TMP_ROOT/missing-claude-companion" \
+  "$checkpoint/claude-file-history"
+dangling_legacy_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$dangling_legacy_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+if "$SCRIPT" claude recover --detach "$human_label"; then
+  printf 'Claude recover accepted a dangling legacy companion symlink\n' >&2
+  exit 1
+fi
+grep -Fx '{damaged transcript' \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
+rm "$checkpoint/claude-file-history"
+mv "$legacy_archive" "$checkpoint/claude-session.tar"
 fi
 
 if [ "$CLAUDE_TEST_PART" != recovery-guardrails ] && \
@@ -789,6 +1096,139 @@ claude_scenario_event pass SC-SESSION-RECOVER-CLAUDE
 "$SCRIPT" claude stop "$human_label"
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
 
+# Reusing the harness name for session B must not publish over session A's
+# recovery bundle until the replacement run is ready. Hold the power wrapper
+# past one checkpoint interval, then prove cleanup and Recover still select A.
+second_id="11111111-2222-4333-8444-555555555555"
+printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"session B"}}\n' \
+  "$second_id" "$ROOT" >"$CLAUDE_CONFIG_DIR/projects/fake/$second_id.jsonl"
+resume_checkpoint_copy="$TMP_ROOT/claude-resume-checkpoint"
+resume_args_file="$(saved_resume_args_path "$checkpoint/meta.json" "$session_dir")"
+resume_args_copy="$TMP_ROOT/claude-resume-args.bin"
+cp -Rp "$checkpoint" "$resume_checkpoint_copy"
+cp -p "$resume_args_file" "$resume_args_copy"
+require_nul_file_arg "$resume_args_copy" display-name
+require_nul_file_arg "$resume_args_copy" "$TMP_ROOT/extra-a"
+failed_resume_output="$TMP_ROOT/failed-claude-resume.out"
+stale_starting_meta="$TMP_ROOT/claude-stale-starting-meta.json"
+rm -f \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+: >"$FAKE_POWER_FAIL_ARM_FILE"
+"$SCRIPT" claude resume --name "$human_label" --detach "$second_id" \
+  >"$failed_resume_output" 2>&1 &
+failed_resume_pid=$!
+if ! wait_for_file_text "$FAKE_POWER_FAIL_ENTERED_FILE" entered; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  sed -n '1,80p' "$failed_resume_output" >&2
+  exit 1
+fi
+if ! cp -p "$meta" "$stale_starting_meta"; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  printf 'Claude could not preserve replacement B starting metadata\n' >&2
+  exit 1
+fi
+sleep 2
+if ! diff -qr "$resume_checkpoint_copy" "$checkpoint" >/dev/null || \
+   ! cmp -s "$resume_args_copy" "$resume_args_file"; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  printf 'Claude Resume changed recovery data before readiness\n' >&2
+  exit 1
+fi
+held_resume_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"" || true)"
+if [ "$(printf '%s' "$held_resume_json" | \
+     "$STATE_HELPER" meta get /dev/stdin agent_session_id 2>/dev/null || true)" != \
+     "$second_id" ] || \
+   [ "$(printf '%s' "$held_resume_json" | \
+     "$STATE_HELPER" meta get /dev/stdin effective_status 2>/dev/null || true)" != \
+     starting ] || \
+   ! printf '%s' "$held_resume_json" | \
+     grep -F '"health_actions":["attach","stop"]' >/dev/null; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  printf 'Claude list exposed recovery while replacement B was still starting: %s\n' \
+    "$held_resume_json" >&2
+  exit 1
+fi
+: >"$FAKE_POWER_FAIL_RELEASE_FILE"
+if wait "$failed_resume_pid"; then
+  printf 'Claude Resume passed a failed power handshake\n' >&2
+  exit 1
+fi
+rm -f \
+  "$FAKE_POWER_FAIL_ARM_FILE" \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+if ! diff -qr "$resume_checkpoint_copy" "$checkpoint" >/dev/null || \
+   ! cmp -s "$resume_args_copy" "$resume_args_file"; then
+  printf 'Claude Resume changed recovery data during failed cleanup\n' >&2
+  exit 1
+fi
+[ -z "$("$STATE_HELPER" meta get "$meta" runtime_ready_at 2>/dev/null || true)" ]
+[ -n "$("$STATE_HELPER" meta get \
+  "$meta" runtime_shutdown_observed_at 2>/dev/null || true)" ]
+[ "$("$STATE_HELPER" meta get "$meta" agent_session_id)" = "$second_id" ]
+failed_resume_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$failed_resume_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$failed_resume_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$session_id" ]
+[ "$(printf '%s' "$failed_resume_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = recoverable_checkpoint ]
+printf '%s' "$failed_resume_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+
+# The legacy unversioned file remains a supported recovery input. Move A's
+# saved options there and remove the typed selector so the existing Recover
+# proves the fallback retains Claude's multi-value provider options.
+mv "$resume_args_file" "$session_dir/resume-args.bin"
+"$STATE_HELPER" meta patch "$checkpoint/meta.json" --null resume_args_file
+
+printf '{truncated task\n' >"$CLAUDE_CONFIG_DIR/tasks/$session_id/task.json"
+export FAKE_CLAUDE_EXPECT_RESTORED=1
+reset_fake_claude_ready
+"$SCRIPT" claude recover --detach "$human_label"
+wait_for_fake_claude_ready
+grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$session_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- 'display-name' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$TMP_ROOT/extra-a" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$TMP_ROOT/extra-b" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$SCRIPT" claude stop "$human_label"
+
+# Model an abrupt loss after B published its starting metadata and exact
+# process identities, but before readiness. Fixed impossible PIDs make the
+# dead-process proof deterministic. Recover must still select checkpoint A.
+"$STATE_HELPER" meta patch "$stale_starting_meta" \
+  --integer worker_pid 2147483647 \
+  --integer provider_pid 2147483646 \
+  --null runtime_shutdown_observed_at
+cp -p "$stale_starting_meta" "$meta"
+stale_starting_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$stale_starting_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$stale_starting_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$session_id" ]
+printf '%s' "$stale_starting_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+printf '{truncated task\n' >"$CLAUDE_CONFIG_DIR/tasks/$session_id/task.json"
+export FAKE_CLAUDE_EXPECT_RESTORED=1
+reset_fake_claude_ready
+"$SCRIPT" claude recover --detach "$human_label"
+wait_for_fake_claude_ready
+grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$session_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- 'display-name' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$TMP_ROOT/extra-a" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$SCRIPT" claude stop "$human_label"
+
 # Universal resume must route a known Claude UUID back to Claude. It must also
 # recreate the encoded project directory and all companion artifacts from the
 # checkpoint before Claude starts.
@@ -811,25 +1251,129 @@ grep -Fx -- "$session_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 "$SCRIPT" claude stop "$human_label"
 
 # A stale checkpoint for session A must not block session B when the same
-# harness name is reused for an explicit resume.
-second_id="11111111-2222-4333-8444-555555555555"
+# harness name is reused for a successful explicit resume.
 printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"session B"}}\n' \
   "$second_id" "$ROOT" >"$CLAUDE_CONFIG_DIR/projects/fake/$second_id.jsonl"
 export FAKE_CLAUDE_EXPECT_RESTORED=0
 reset_fake_claude_ready
-"$SCRIPT" claude resume --name "$human_label" --detach "$second_id"
+"$SCRIPT" claude resume --name "$human_label" --detach \
+  "$second_id" --model detach-live-b-model
 wait_for_fake_claude_ready
 grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 grep -Fx -- "$second_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 "$SCRIPT" claude stop "$human_label"
 
+# Model ready live-only B while canonical checkpoint still contains A. A
+# failed replacement C must first publish a complete immutable B generation,
+# including B's saved options, before any provider process can start.
+rm -rf "$checkpoint"
+cp -Rp "$resume_checkpoint_copy" "$checkpoint"
+"$STATE_HELPER" meta patch "$checkpoint/meta.json" --null resume_args_file
+live_b_args="$(saved_resume_args_path "$meta" "$session_dir")"
+require_nul_file_arg "$live_b_args" --model
+require_nul_file_arg "$live_b_args" detach-live-b-model
+rm -f \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+: >"$FAKE_POWER_FAIL_ARM_FILE"
+"$SCRIPT" claude recover --detach "$human_label" \
+  >"$TMP_ROOT/failed-live-b-recover.out" 2>&1 &
+failed_live_b_recover_pid=$!
+if ! wait_for_file_text "$FAKE_POWER_FAIL_ENTERED_FILE" entered; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_live_b_recover_pid" || true
+  exit 1
+fi
+: >"$FAKE_POWER_FAIL_RELEASE_FILE"
+if wait "$failed_live_b_recover_pid"; then
+  printf 'Claude replacement C passed a failed power handshake\n' >&2
+  exit 1
+fi
+rm -f \
+  "$FAKE_POWER_FAIL_ARM_FILE" \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+[ "$("$STATE_HELPER" meta get "$checkpoint/meta.json" agent_session_id)" = \
+  "$second_id" ]
+valid_claude_checkpoint_archive_for_test() {
+  tar -xOf "$1" ./transcript.jsonl | \
+    "$STATE_HELPER" jsonl validate claude /dev/stdin "$2"
+}
+valid_claude_checkpoint_archive_for_test \
+  "$checkpoint/claude-session.tar" "$second_id"
+preserved_live_b_args="$(saved_resume_args_path \
+  "$checkpoint/meta.json" "$session_dir")"
+[ "$preserved_live_b_args" = "$live_b_args" ]
+require_nul_file_arg "$preserved_live_b_args" detach-live-b-model
+
 printf '{truncated task\n' >"$CLAUDE_CONFIG_DIR/tasks/$second_id/task.json"
+printf '{truncated live B transcript\n' \
+  >"$CLAUDE_CONFIG_DIR/projects/fake/$second_id.jsonl"
 export FAKE_CLAUDE_EXPECT_RESTORED=1
 reset_fake_claude_ready
 "$SCRIPT" claude recover --detach "$human_label"
 wait_for_fake_claude_ready
+grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$second_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$STATE_HELPER" meta matches "$meta" claude "$second_id"
 "$SCRIPT" claude stop "$human_label"
 export FAKE_CLAUDE_EXPECT_RESTORED=0
+
+# The transcript can stay byte-identical while a Claude companion advances.
+# A failed replacement C must materialize that complete live B bundle instead
+# of taking the same-binding fast path on transcript bytes alone.
+companion_only_value='companion-only B advance'
+companion_only_payload="$(
+  jq -cn --arg task "$companion_only_value" '{task: $task}'
+)"
+printf '%s\n' "$companion_only_payload" \
+  >"$CLAUDE_CONFIG_DIR/tasks/$second_id/task.json"
+companion_only_third_id="66666666-7777-4888-8999-aaaaaaaaaaaa"
+printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"session C"}}\n' \
+  "$companion_only_third_id" "$ROOT" \
+  >"$CLAUDE_CONFIG_DIR/projects/fake/$companion_only_third_id.jsonl"
+rm -f \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+: >"$FAKE_POWER_FAIL_ARM_FILE"
+reset_fake_claude_ready
+"$SCRIPT" claude resume --name "$human_label" --detach \
+  "$companion_only_third_id" \
+  >"$TMP_ROOT/failed-companion-only-resume.out" 2>&1 &
+companion_only_resume_pid=$!
+if ! wait_for_file_text "$FAKE_POWER_FAIL_ENTERED_FILE" entered; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$companion_only_resume_pid" || true
+  exit 1
+fi
+: >"$FAKE_POWER_FAIL_RELEASE_FILE"
+if wait "$companion_only_resume_pid"; then
+  printf 'Claude companion-only replacement passed a failed power handshake\n' >&2
+  exit 1
+fi
+rm -f \
+  "$FAKE_POWER_FAIL_ARM_FILE" \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+[ "$("$STATE_HELPER" meta get "$checkpoint/meta.json" agent_session_id)" = \
+  "$second_id" ]
+[ "$(tar -xOf "$checkpoint/claude-session.tar" \
+  "./tasks/$second_id/task.json")" = "$companion_only_payload" ]
+printf '{damaged companion after materialization\n' \
+  >"$CLAUDE_CONFIG_DIR/tasks/$second_id/task.json"
+export FAKE_CLAUDE_EXPECT_RESTORED=1
+export FAKE_CLAUDE_TASK_VALUE="$companion_only_value"
+reset_fake_claude_ready
+"$SCRIPT" claude recover --detach "$human_label"
+wait_for_fake_claude_ready
+[ "$(<"$CLAUDE_CONFIG_DIR/tasks/$second_id/task.json")" = \
+  "$companion_only_payload" ]
+"$SCRIPT" claude stop "$human_label"
+unset FAKE_CLAUDE_TASK_VALUE
+export FAKE_CLAUDE_EXPECT_RESTORED=0
+
 if [ "$CLAUDE_TEST_PART" = all ]; then
   default_history_fixture="$TMP_ROOT/default-claude-history-fixture"
   cp -Rp "$DETACH_CLAUDE_STATE_ROOT/sessions/$session" "$default_history_fixture"
@@ -883,11 +1427,40 @@ empty_id="$("$STATE_HELPER" meta get "$empty_meta" agent_session_id)"
 ! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
 rm -rf \
   "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id.jsonl" \
-  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id"
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/file-history/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/session-env/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/session-${empty_id:0:8}" \
+  "$CLAUDE_CONFIG_DIR/teams/session-${empty_id:0:8}"
 rm -f \
   "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session.tar" \
   "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/transcript.jsonl"
+rm -rf \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-file-history" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session-env"
 "$STATE_HELPER" meta patch "$empty_meta" --null transcript_path --null last_checkpoint_at
+cp -p "$empty_meta" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/meta.json"
+rm -f "$empty_meta"
+unsafe_team_dir="$CLAUDE_CONFIG_DIR/teams/unsafe-metadata-only"
+unsafe_team_target="$TMP_ROOT/unsafe-team-config-target"
+mkdir -p "$unsafe_team_dir"
+printf '{"leadSessionId":"unrelated"}\n' >"$unsafe_team_target"
+ln -s "$unsafe_team_target" "$unsafe_team_dir/config.json"
+: >"$FAKE_CLAUDE_ARGS_FILE"
+if "$SCRIPT" resume --detach "$empty_id" >/dev/null 2>&1; then
+  printf 'metadata-only Resume ignored an unsafe team config\n' >&2
+  exit 1
+fi
+[ ! -s "$FAKE_CLAUDE_ARGS_FILE" ]
+! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
+rm -rf "$unsafe_team_dir"
+claude_config_dir_with_history="$CLAUDE_CONFIG_DIR"
+metadata_only_empty_home="$TMP_ROOT/metadata-only-empty-claude-home"
+rm -rf "$metadata_only_empty_home"
+export CLAUDE_CONFIG_DIR="$metadata_only_empty_home"
 reset_fake_claude_ready
 "$SCRIPT" resume --detach "$empty_id"
 wait_for_fake_claude_ready
@@ -896,10 +1469,111 @@ grep -Fx -- '--session-id' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 grep -Fx -- "$empty_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 "$STATE_HELPER" meta matches "$empty_meta" claude "$empty_id"
 "$SCRIPT" claude stop "$empty_label"
+export CLAUDE_CONFIG_DIR="$claude_config_dir_with_history"
 
-# A present invalid transcript must fail closed and must not start Claude.
+# If a later metadata-only Resume fails before readiness, Recover must still
+# select checkpoint A and launch its UUID with --session-id. No transcript or
+# provider payload exists yet for that generation.
+rm -rf \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/file-history/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/session-env/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/session-${empty_id:0:8}" \
+  "$CLAUDE_CONFIG_DIR/teams/session-${empty_id:0:8}"
+rm -f \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session.tar" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/transcript.jsonl"
+rm -rf \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-file-history" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session-env"
+"$STATE_HELPER" meta patch "$empty_meta" \
+  --null transcript_path --null last_checkpoint_at
+cp -p "$empty_meta" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/meta.json"
+rm -f \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+: >"$FAKE_POWER_FAIL_ARM_FILE"
+reset_fake_claude_ready
+"$SCRIPT" claude resume --name "$empty_label" --detach "$empty_id" \
+  >"$TMP_ROOT/failed-empty-resume.out" 2>&1 &
+failed_empty_resume_pid=$!
+if ! wait_for_file_text "$FAKE_POWER_FAIL_ENTERED_FILE" entered; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_empty_resume_pid" || true
+  exit 1
+fi
+: >"$FAKE_POWER_FAIL_RELEASE_FILE"
+if wait "$failed_empty_resume_pid"; then
+  printf 'metadata-only Claude Resume passed a failed power handshake\n' >&2
+  exit 1
+fi
+rm -f \
+  "$FAKE_POWER_FAIL_ARM_FILE" \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
+empty_failed_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$empty_session\"")"
+[ "$(printf '%s' "$empty_failed_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$empty_failed_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$empty_id" ]
+reset_fake_claude_ready
+"$SCRIPT" claude recover --detach "$empty_label"
+wait_for_fake_claude_ready
+grep -Fx -- '--session-id' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+! grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$empty_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$STATE_HELPER" meta matches "$empty_meta" claude "$empty_id"
+"$SCRIPT" claude stop "$empty_label"
+
+# Blank metadata means that Claude has not created any UUID-bound state. A
+# present invalid transcript must not be reclassified as metadata-only merely
+# because the valid-transcript resolver ignores it.
+rm -rf \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/file-history/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/session-env/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/session-${empty_id:0:8}" \
+  "$CLAUDE_CONFIG_DIR/teams/session-${empty_id:0:8}"
+rm -f \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session.tar" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/transcript.jsonl"
+rm -rf \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-file-history" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session-env"
+"$STATE_HELPER" meta patch "$empty_meta" --null transcript_path
+cp -p "$empty_meta" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/meta.json"
 printf '{truncated claude transcript\n' \
   >"$CLAUDE_CONFIG_DIR/projects/fake/$empty_id.jsonl"
+blank_invalid_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$empty_session\"")"
+[ "$(printf '%s' "$blank_invalid_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
+[ "$(printf '%s' "$blank_invalid_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
+reset_fake_claude_ready
+: >"$FAKE_CLAUDE_ARGS_FILE"
+if "$SCRIPT" resume --detach "$empty_id"; then
+  printf 'Resume treated a present invalid transcript as metadata-only\n' >&2
+  exit 1
+fi
+[ ! -s "$FAKE_CLAUDE_ARGS_FILE" ]
+! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
+
+# An explicit invalid transcript binding must fail closed too. A second valid
+# file for the same UUID must not replace the path that Detach bound.
+mkdir -p "$CLAUDE_CONFIG_DIR/projects/alternate"
+printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"alternate"}}\n' \
+  "$empty_id" "$ROOT" \
+  >"$CLAUDE_CONFIG_DIR/projects/alternate/$empty_id.jsonl"
 "$STATE_HELPER" meta patch "$empty_meta" \
   --string transcript_path "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id.jsonl"
 rm -f \

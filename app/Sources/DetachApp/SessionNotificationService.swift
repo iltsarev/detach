@@ -303,7 +303,7 @@ final class SessionNotificationService: ObservableObject {
             }
         case .recoverable:
             title = L10n.string("Session can be recovered")
-            detail = L10n.string("Recovery from the latest checkpoint is available")
+            detail = L10n.string("Validated recovery data is available")
         case .waitingForUser:
             title = L10n.string("Agent response is ready")
             detail = L10n.string("Open the session to continue")

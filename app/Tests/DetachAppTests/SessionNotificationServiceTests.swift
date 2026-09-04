@@ -284,7 +284,7 @@ final class SessionNotificationServiceTests: XCTestCase {
             (
                 .recoverable,
                 "Session can be recovered",
-                "Recovery from the latest checkpoint is available"
+                "Validated recovery data is available"
             ),
         ]
 

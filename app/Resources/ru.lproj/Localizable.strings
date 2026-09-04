@@ -150,7 +150,7 @@
 "Provider" = "Провайдер";
 "Provider CLI" = "CLI провайдера";
 "Ready — we'll notify you about ready responses, completed sessions, or session problems." = "Готово — сообщим о готовом ответе, завершении или проблеме сессии.";
-"Recovery from the latest checkpoint is available" = "Доступно восстановление из последнего чекпойнта";
+"Validated recovery data is available" = "Доступны проверенные данные для восстановления";
 "Recover" = "Восстановить";
 "Reconnect" = "Переподключиться";
 "Recover in %@" = "Восстановить в %@";
@@ -414,8 +414,9 @@
 "The provider process exited while its worker remained alive." = "Процесс провайдера завершился, но его worker остался запущен.";
 "The recorded provider PID is not owned by this worker." = "Сохранённый PID провайдера не принадлежит этому worker-процессу.";
 "A recorded runtime process is still alive without its managed tmux session; Detach will not signal it." = "Сохранённый runtime-процесс ещё работает без управляемой tmux-сессии; Detach не будет посылать ему сигналы.";
-"The live runtime disappeared, but a valid checkpoint can be recovered." = "Живой runtime исчез, но доступна корректная контрольная точка для восстановления.";
-"The live runtime disappeared without a valid recovery checkpoint." = "Живой runtime исчез без корректной контрольной точки для восстановления.";
+"Detach could not confirm that the replacement runtime stopped." = "Detach не удалось подтвердить остановку нового runtime-процесса.";
+"The live runtime disappeared, but validated recovery data is available." = "Живой runtime исчез, но доступны проверенные данные для восстановления.";
+"The live runtime disappeared without validated recovery data." = "Живой runtime исчез без проверенных данных для восстановления.";
 
 /* Session shortcuts and defaults */
 "Quick chat" = "Быстрый чат";

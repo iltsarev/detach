@@ -933,10 +933,10 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
-    func testControlVReachesTheProviderAsTheRawClipboardImageShortcut() throws {
+    func testControlShortcutsReachTheProviderAsRawBytes() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
-                "detach-attach-control-v-\(UUID().uuidString)",
+                "detach-attach-control-shortcuts-\(UUID().uuidString)",
                 isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -949,7 +949,7 @@ final class SessionAttachTerminalTests: XCTestCase {
             args: [
                 "-c",
                 "stty raw -echo; : > '\(ready.path)'; "
-                    + "dd bs=1 count=1 of='\(received.path)' 2>/dev/null",
+                    + "dd bs=1 count=2 of='\(received.path)' 2>/dev/null",
             ],
             environment: ["PATH=/bin:/usr/bin"])
         defer { SessionAttachController.terminate(process: terminal.process) }
@@ -958,7 +958,18 @@ final class SessionAttachTerminalTests: XCTestCase {
             FileManager.default.fileExists(atPath: ready.path)
                 && terminal.process.running
         }
-        let event = try XCTUnwrap(NSEvent.keyEvent(
+        let controlC = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .control,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{03}",
+            charactersIgnoringModifiers: "c",
+            isARepeat: false,
+            keyCode: 8))
+        let controlV = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
             modifierFlags: .control,
@@ -971,13 +982,16 @@ final class SessionAttachTerminalTests: XCTestCase {
             keyCode: 9))
 
         XCTAssertTrue(SessionAttachKeyboard.routeProviderShortcut(
-            from: event,
+            from: controlC,
+            send: terminal.send))
+        XCTAssertTrue(SessionAttachKeyboard.routeProviderShortcut(
+            from: controlV,
             send: terminal.send))
 
         try waitUntil {
-            (try? Data(contentsOf: received).count) == 1
+            (try? Data(contentsOf: received).count) == 2
         }
-        XCTAssertEqual(try Data(contentsOf: received), Data([0x16]))
+        XCTAssertEqual(try Data(contentsOf: received), Data([0x03, 0x16]))
     }
 
     func testProviderClipboardShortcutRequiresUnmodifiedControlV() throws {

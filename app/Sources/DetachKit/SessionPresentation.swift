@@ -136,10 +136,12 @@ public extension Session {
             L10n.string("The recorded provider PID is not owned by this worker.")
         case .runtimeProcessWithoutTmux:
             L10n.string("A recorded runtime process is still alive without its managed tmux session; Detach will not signal it.")
+        case .runtimeQuiescenceUnproven:
+            L10n.string("Detach could not confirm that the replacement runtime stopped.")
         case .recoverableCheckpoint:
-            L10n.string("The live runtime disappeared, but a valid checkpoint can be recovered.")
+            L10n.string("The live runtime disappeared, but validated recovery data is available.")
         case .noRecoveryCheckpoint:
-            L10n.string("The live runtime disappeared without a valid recovery checkpoint.")
+            L10n.string("The live runtime disappeared without validated recovery data.")
         }
     }
 
