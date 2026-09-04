@@ -959,8 +959,12 @@ enum UIE2ETestDriver {
             throw Failure(message: "quick chat folder panel is not an open panel")
         }
         openPanel.cancel(nil)
+        trace("cancelled folder panel: visible=\(openPanel.isVisible), "
+            + "attached=\(openPanel.sheetParent != nil)")
         try await waitUntil("quick chat folder panel closes") {
-            find(identifier: "open-panel") == nil
+            !openPanel.isVisible && openPanel.sheetParent == nil
+                && NSApp.modalWindow !== openPanel
+                && find(identifier: "open-panel") == nil
                 && NSApp.windows.allSatisfy(\.sheets.isEmpty)
         }
         checks.append("settings-quick-chat-folder-panel")
@@ -1016,8 +1020,6 @@ enum UIE2ETestDriver {
               abs(window.frame.width - originalFrame.width) < 1 else {
             throw Failure(message: "text size draft resized Settings before Apply")
         }
-        window.setFrameOrigin(CGPoint(
-            x: visible.maxX - window.frame.width, y: visible.minY))
         try await revealGeometry(
             identifier: "settings-apply-text-size", name: "text size Apply")
         try await clickMeasuredControl(
@@ -1030,6 +1032,22 @@ enum UIE2ETestDriver {
         }
         AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
         try await waitUntil("Settings restores its original text size") {
+            abs(window.frame.width - originalFrame.width) < 1
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        trace("Settings Apply changed the font and window size")
+        // Exercise screen-edge growth separately from control input. A
+        // programmatic window move must not race the real Apply click.
+        window.setFrameOrigin(CGPoint(
+            x: visible.maxX - window.frame.width, y: visible.minY))
+        AppSettings.defaults.set(
+            AppFontSize.allowedRange.upperBound, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings grows from the screen edge") {
+            window.frame.width > originalFrame.width + 100
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings restores its size at the screen edge") {
             abs(window.frame.width - originalFrame.width) < 1
                 && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
         }
