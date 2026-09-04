@@ -16,7 +16,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 from quality_policy import POLICY_FILE, Policy  # noqa: E402
-from quality_promote import PromotionError, read_tsv, validate_promotion  # noqa: E402
+from quality_promote import (  # noqa: E402
+    PromotionError, read_tsv, validate_evidence, validate_promotion,
+)
 
 
 POLICY = Policy(POLICY_FILE)
@@ -350,6 +352,36 @@ def main() -> None:
         root = Path(raw)
         evidence = create_evidence(root / "source")
         fake_gh, fake_git = fake_tools(root)
+
+        mixed_paths = [
+            "tools/quality_gate.py", "tests/run-claude.sh", "tests/release-workflow.sh",
+        ]
+        mixed = create_evidence(root / "mixed-impact", mixed_paths)
+        mixed_manifest_path = mixed / "manifest.tsv"
+        mixed_manifest = read_tsv(mixed_manifest_path, "mixed manifest")
+        expected_mixed = POLICY.impact(mixed_paths).document()
+        for field in ("specs", "capabilities", "journeys"):
+            members = mixed_manifest[field].split(",")
+            assert len(members) > 1
+            for variant, values, accepted in (
+                ("reordered", list(reversed(members)), True),
+                ("duplicate", members + [members[0]], False),
+                ("missing", members[1:], False),
+                ("extra", members + ["unknown-identity"], False),
+            ):
+                candidate = dict(mixed_manifest, **{field: ",".join(values)})
+                mixed_manifest_path.write_text(
+                    "".join(f"{key}\t{value}\n" for key, value in candidate.items()),
+                    encoding="utf-8",
+                )
+                try:
+                    validate_evidence(mixed, POLICY, BASE, expected_mixed)
+                except PromotionError as error:
+                    if accepted or f"quality manifest {field} is not exact" not in str(error):
+                        raise AssertionError(f"unexpected {field}/{variant} failure: {error}") from error
+                else:
+                    if not accepted:
+                        raise AssertionError(f"accepted {field}/{variant} impact")
 
         first = root / "first"
         result = invoke(fake_gh, fake_git, evidence, first)

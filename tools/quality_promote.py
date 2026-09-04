@@ -488,12 +488,15 @@ def validate_evidence(
             for stage in expected_impact["stages"]
             if stage != "release-budget"
         ),
-        "specs": ",".join(expected_impact["specs"]),
-        "capabilities": ",".join(expected_impact["capabilities"]),
-        "journeys": ",".join(expected_impact["journeys"]),
     }
     for key, value in expected.items():
         if manifest.get(key) != value:
+            raise PromotionError(f"quality manifest {key} is not exact")
+    # Gate traversal and policy registration can emit the same identities in
+    # different orders. Preserve the bound manifest and compare exact membership.
+    for key in ("specs", "capabilities", "journeys"):
+        members = manifest.get(key, "").split(",")
+        if len(members) != len(set(members)) or set(members) != set(expected_impact[key]):
             raise PromotionError(f"quality manifest {key} is not exact")
     tested_commit = manifest.get("source_commit", "")
     if not COMMIT.fullmatch(tested_commit):
