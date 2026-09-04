@@ -34,7 +34,9 @@ Bootstrap runs only from `/Applications`, not a DMG or App Translocation path.
 
 Settings → General owns both menu bar toggles. Settings → System keeps the only
 Mac Power status and approval controls. Settings follows the hosting screen;
-System scrolls. Temperature safety has its own warning shape and the
+System scrolls. A size or screen change moves the window inside the visible
+screen area. A window that already fits keeps its position.
+Temperature safety has its own warning shape and the
 text **Mac can sleep: temperature**.
 
 Settings → System owns the only **Mac Power** status and approval block. Helper

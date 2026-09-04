@@ -1508,19 +1508,28 @@ final class SettingsWindowFrameView: NSView {
 
     private func pinToHostingScreen() {
         guard let window, width > 0 else { return }
-        let visibleHeight = window.screen?.visibleFrame.height ?? 720
+        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
         let size = CGSize(
             width: width,
             height: SettingsWindowLayout.contentHeight(
                 base: baseHeight,
                 fontPointSize: fontPointSize,
-                visibleScreenHeight: visibleHeight))
+                visibleScreenHeight: visibleFrame?.height ?? 720))
         window.contentMinSize = size
         window.contentMaxSize = size
         let current = window.contentView?.bounds.size ?? .zero
         if abs(current.width - size.width) > 0.5
             || abs(current.height - size.height) > 0.5 {
             window.setContentSize(size)
+        }
+        if let visibleFrame {
+            let frame = window.frame
+            let origin = CGPoint(
+                x: max(visibleFrame.minX, min(frame.minX, visibleFrame.maxX - frame.width)),
+                y: max(visibleFrame.minY, min(frame.minY, visibleFrame.maxY - frame.height)))
+            if origin != frame.origin {
+                window.setFrameOrigin(origin)
+            }
         }
     }
 }

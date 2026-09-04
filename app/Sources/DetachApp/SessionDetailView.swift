@@ -234,20 +234,14 @@ struct SessionDetailView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(session.displayTitle)
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                    .background {
+                        uiE2EGeometryProbe(identifier: "session-detail-title")
+                    }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
                 statusPill
-                if let model = session.model {
-                    Text(model)
-                        .appFont(.caption, weight: .semibold)
-                        .lineLimit(1)
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Capsule().fill(providerTint.opacity(0.16)))
-                        .foregroundStyle(providerTint)
-                        // Pills keep their single line; the title truncates first.
-                        .layoutPriority(1)
-                }
-                if session.contextSummary != nil {
-                    ContextGauge(session: session)
-                }
                 Spacer()
             }
             metadataRail
@@ -307,6 +301,17 @@ struct SessionDetailView: View {
     private var metadataRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                if let model = session.model {
+                    Text(model)
+                        .appFont(.caption, weight: .semibold)
+                        .lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(providerTint.opacity(0.16)))
+                        .foregroundStyle(providerTint)
+                }
+                if session.contextSummary != nil {
+                    ContextGauge(session: session)
+                }
                 if let reason = session.healthReasonLabel {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
                         .appFont(.caption)

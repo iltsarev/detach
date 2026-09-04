@@ -56,7 +56,8 @@ preserve_failure_diagnostics() {
   }
   mkdir -p "$ARTIFACT_DIR"
   chmod 0700 "$ARTIFACT_DIR"
-  for source in "$APP_LOG" "$RESULT" "$FAKE_DIR/invocations.log"; do
+  for source in "$TEST_ROOT"/app-*.log "$TEST_ROOT"/result-*.json \
+      "$FAKE_DIR/invocations.log"; do
     [ -f "$source" ] && [ ! -L "$source" ] || continue
     destination="$ARTIFACT_DIR/$(basename "$source")"
     install -m 0600 "$source" "$destination"
@@ -318,9 +319,11 @@ run_app_scenario() {
       live-terminal-routes-control-v|\
       live-session-switch-reuses-synchronized-client|\
       non-live-session-switch-uses-warm-cache|\
+      session-title-survives-narrow-window-and-large-text|\
       recover-and-reconnect-run-in-app-with-terminal-fallback|\
       resume-runs-in-app-with-terminal-fallback|\
       session-shortcut-selects-assigned-session|\
+      settings-text-growth-stays-on-screen|\
       settings-window-stays-on-screen|\
       settings-system-reveals-storage-and-installation|\
       new-session-advanced-keeps-top-edge|\
@@ -345,6 +348,7 @@ run_app_scenario() {
       settings-quick-chat-provider-persists) ;;
       settings-quick-chat-folder-panel) ;;
       quick-chat-command-starts-session) ;;
+      session-shortcut-reopens-closed-main-window) ;;
       *) printf 'UI e2e: unowned check: %s\n' "$check" >&2; exit 1 ;;
     esac
     if [ -n "${pass:-}" ]; then
@@ -364,6 +368,7 @@ run_app_scenario main sessions 32 \
   dashboard-accessible \
   sidebar-shortcut-guide-visible \
   non-live-session-switch-uses-warm-cache \
+  session-title-survives-narrow-window-and-large-text \
   recover-and-reconnect-run-in-app-with-terminal-fallback \
   sidebar-selects-completed-session \
   session-uuid-copies-from-text-side \
@@ -390,9 +395,11 @@ run_app_scenario main sessions 32 \
   settings-session-defaults-visible \
   settings-quick-chat-provider-persists \
   settings-quick-chat-folder-panel \
+  settings-text-growth-stays-on-screen \
   settings-window-stays-on-screen \
   settings-system-reveals-storage-and-installation \
   quick-chat-command-starts-session \
+  session-shortcut-reopens-closed-main-window \
   installed-app-focus-restored
 run_app_scenario onboarding-first-run empty 8 onboarding-first-run-completes
 run_app_scenario onboarding-provider empty 8 onboarding-detects-provider

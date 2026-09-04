@@ -330,6 +330,8 @@ enum UIE2ETestDriver {
                     "UI fixture log for \(recoverableID)")
             }
             checks.append("non-live-session-switch-uses-warm-cache")
+            try await verifySessionTitleAtMinimumWindowSize(mainWindow)
+            checks.append("session-title-survives-narrow-window-and-large-text")
             let recoverButton = try await element(
                 identifier: "session-action-recover-in-app")
             let recoverFallback = try await element(
@@ -359,6 +361,11 @@ enum UIE2ETestDriver {
                 reconnectFallback, name: "external reconnect fallback")
             guard label(reconnectButton) == L10n.string("Reconnect") else {
                 throw Failure(message: "exited attach client does not offer Reconnect")
+            }
+            try await waitUntil("disconnected session log is readable") {
+                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else { return false }
+                return textView.string.contains("UI fixture log for \(recoverableID)")
             }
             try await clickUntil(
                 reconnectButton,
@@ -850,6 +857,21 @@ enum UIE2ETestDriver {
             }
             checks.append("quick-chat-command-starts-session")
 
+            guard let shortcutID = shortcuts.sessionID(for: 1) else {
+                throw Failure(message: "no session has the first window-reopen shortcut")
+            }
+            mainWindow.close()
+            try await waitUntil("main window closes") { !mainWindow.isVisible }
+            NSApp.activate(ignoringOtherApps: true)
+            try await keyPress("1", keyCode: 18, modifiers: [.command])
+            _ = try await element(identifier: "session-detail-\(shortcutID)")
+            guard NSApp.windows.contains(where: {
+                $0.identifier?.rawValue == "main" && $0.isVisible
+            }) else {
+                throw Failure(message: "session shortcut did not reopen the main window")
+            }
+            checks.append("session-shortcut-reopens-closed-main-window")
+
             try await restoreFocus(
                 to: previousFrontmost, policy: previousActivationPolicy)
             checks.append("installed-app-focus-restored")
@@ -953,6 +975,8 @@ enum UIE2ETestDriver {
         guard visible.insetBy(dx: -2, dy: -2).contains(frame) else {
             throw Failure(message: "Settings window is off the hosting screen")
         }
+        try await verifySettingsTextGrowth(in: settingsWindow, visible: visible)
+        checks.append("settings-text-growth-stays-on-screen")
         checks.append("settings-window-stays-on-screen")
         let systemTab = try await buttonLabeled(
             L10n.string("System"), attempts: 40)
@@ -962,6 +986,47 @@ enum UIE2ETestDriver {
             identifier: "settings-installation", name: "Installation")
         checks.append("settings-system-reveals-storage-and-installation")
         return checks
+    }
+
+    private static func verifySettingsTextGrowth(
+        in window: NSWindow,
+        visible: CGRect
+    ) async throws {
+        let originalPreference = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        let originalFont = originalPreference as? Double ?? AppFontSize.defaultValue
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        let originalFrame = window.frame
+        defer {
+            AppSettings.defaults.set(originalPreference, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        window.setFrameOrigin(CGPoint(
+            x: visible.maxX - window.frame.width, y: visible.minY))
+        let slider = try await element(role: .slider)
+        try requireGeometry(slider, name: "settings text size slider")
+        let sliderFrame = frame(slider)
+        try await click(
+            frame: CGRect(x: sliderFrame.maxX - 3, y: sliderFrame.midY - 1,
+                          width: 2, height: 2),
+            name: "maximum settings text size", owningWindow: window)
+        let apply = try await buttonLabeled(L10n.string("Apply"))
+        try await waitUntil("text size draft can be applied") { isEnabled(apply) }
+        guard AppSettings.defaults.double(forKey: AppFontSize.storageKey) == originalFont,
+              abs(window.frame.width - originalFrame.width) < 1 else {
+            throw Failure(message: "text size draft resized Settings before Apply")
+        }
+        try await click(apply, name: "apply maximum text size")
+        try await waitUntil("Settings grows within the hosting screen") {
+            AppSettings.defaults.double(forKey: AppFontSize.storageKey)
+                == AppFontSize.allowedRange.upperBound
+                && window.frame.width > originalFrame.width + 100
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings restores its original text size") {
+            abs(window.frame.width - originalFrame.width) < 1
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
     }
 
     private static func runOnboardingFirstRun(
@@ -1340,6 +1405,42 @@ enum UIE2ETestDriver {
         throw Failure(message: "\(name) did not produce \(resultIdentifier)")
     }
 
+    private static func verifySessionTitleAtMinimumWindowSize(
+        _ window: NSWindow
+    ) async throws {
+        let originalFrame = window.frame
+        let originalFont = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        defer {
+            AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        for font in [AppFontSize.defaultValue, AppFontSize.allowedRange.upperBound] {
+            AppSettings.defaults.set(font, forKey: AppFontSize.storageKey)
+            try await waitUntil("session title uses font \(font)") {
+                guard let title = UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                else { return false }
+                let pointSize = AppFontRole.title2.pointSize(base: font)
+                return title.height >= pointSize && title.height < pointSize + 12
+            }
+            window.setContentSize(AppFontSize.minimumWindowSize(for: font))
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await waitUntil("session title is inside the resized window") {
+                elements().compactMap { $0 as? UIE2EGeometryView }
+                    .filter { $0.identifierValue == "session-detail-title" }
+                    .forEach { $0.publishFrame() }
+                return UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                    .map { window.frame.contains($0) } == true
+            }
+            let title = try await measuredFrame(
+                identifier: "session-detail-title", name: "session title")
+            guard title.width >= font * 5, title.height >= font,
+                  window.frame.contains(title) else {
+                throw Failure(message:
+                    "session title disappeared or collapsed at font \(font): \(title)")
+            }
+        }
+    }
+
     private static func clickUntil(
         _ control: any NSAccessibilityProtocol,
         name: String,
@@ -1431,6 +1532,9 @@ enum UIE2ETestDriver {
     ) async throws -> CGRect {
         var result: CGRect?
         try await waitUntil("real control geometry for \(name)") {
+            elements().compactMap { $0 as? UIE2EGeometryView }
+                .filter { $0.identifierValue == identifier }
+                .forEach { $0.publishFrame() }
             result = UIE2EGeometryRegistry.frame(for: identifier)
             return result?.isEmpty == false
         }
