@@ -1005,8 +1005,6 @@ enum UIE2ETestDriver {
             AppSettings.defaults.set(originalPreference, forKey: AppFontSize.storageKey)
             window.setFrame(originalFrame, display: true)
         }
-        window.setFrameOrigin(CGPoint(
-            x: visible.maxX - window.frame.width, y: visible.minY))
         try await activate(window)
         window.contentView?.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
@@ -1028,6 +1026,8 @@ enum UIE2ETestDriver {
               abs(window.frame.width - originalFrame.width) < 1 else {
             throw Failure(message: "text size draft resized Settings before Apply")
         }
+        window.setFrameOrigin(CGPoint(
+            x: visible.maxX - window.frame.width, y: visible.minY))
         try await revealGeometry(
             identifier: "settings-apply-text-size", name: "text size Apply")
         try await clickMeasuredControl(
@@ -1658,10 +1658,18 @@ enum UIE2ETestDriver {
     ) async throws {
         trace("dragging \(name) from \(start) to \(end), key=\(window.isKeyWindow)")
         try moveCursor(to: start, name: name)
-        let endCursor = try cursorPoint(for: end, name: name)
-        let sequence: [(NSEvent.EventType, CGPoint)] = [
-            (.leftMouseDown, start), (.leftMouseDragged, end), (.leftMouseUp, end),
-        ]
+        trace("drag pointer in window: \(window.mouseLocationOutsideOfEventStream), "
+            + "expected \(window.convertPoint(fromScreen: start))")
+        // Gesture recognition needs movement after its initial drag event.
+        // A single jump followed by mouseUp can only begin the gesture.
+        var sequence: [(NSEvent.EventType, CGPoint)] = [(.leftMouseDown, start)]
+        for step in 1...6 {
+            let fraction = Double(step) / 6
+            sequence.append((.leftMouseDragged, CGPoint(
+                x: start.x + (end.x - start.x) * fraction,
+                y: start.y + (end.y - start.y) * fraction)))
+        }
+        sequence.append((.leftMouseUp, end))
         var events: [NSEvent] = []
         let timestamp = ProcessInfo.processInfo.systemUptime
         for (index, item) in sequence.enumerated() {
@@ -1677,13 +1685,14 @@ enum UIE2ETestDriver {
         }
         for index in 1..<events.count {
             let delivery = UIE2EDeferredMouseEvent(
-                application: NSApp, event: events[index], cursorPosition: endCursor)
+                application: NSApp, event: events[index],
+                cursorPosition: try cursorPoint(for: sequence[index].1, name: name))
             DispatchQueue.global(qos: .userInitiated).asyncAfter(
                 deadline: .now() + Double(index) * 0.05
             ) { delivery.post() }
         }
         NSApp.postEvent(events[0], atStart: true)
-        try await Task.sleep(nanoseconds: 150_000_000)
+        try await Task.sleep(nanoseconds: 400_000_000)
     }
 
     private static func moveCursor(
