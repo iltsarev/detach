@@ -1049,9 +1049,9 @@ enum UIE2ETestDriver {
                 throw Failure(message: "text size slider has no native value")
             }
             if previous.doubleValue >= maximum.doubleValue { return }
-            guard slider.accessibilityPerformIncrement() else {
-                throw Failure(message: "text size slider rejected its increment action")
-            }
+            // SwiftUI can return false even when its native value changes.
+            // Require the observable change instead of that return flag.
+            _ = slider.accessibilityPerformIncrement()
             try await waitUntil("native text size slider increment", attempts: 20) {
                 (value(slider) as? NSNumber)?.doubleValue != previous.doubleValue
             }
