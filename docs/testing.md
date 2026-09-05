@@ -232,7 +232,10 @@ the signed candidate, runs the real power smoke, publishes, and independently
 lists, downloads, and hashes every remote asset. `scripts/release-impact` compares the
 last published tag with the release source. It selects the supervised
 closed-lid probe only for power, helper, watchdog, lease, assertion, or
-lid-probe impact. Unknown product paths select the closed-lid gate. Its private
+lid-probe impact. Unknown product paths select the closed-lid gate. The policy
+`release-scan` row for `bin/detach-core` waives the probe for a plain
+modification whose diff hunks mention no power token; the result records
+`lid_test_scan_waived`. Its private
 resume state and impact evidence live under ignored `app/build/`.
 The path result is fail-safe. For a false positive, a release operator can
 supply `DETACH_RELEASE_IMPACT_REVIEW` with an absolute path directly under

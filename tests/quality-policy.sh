@@ -42,6 +42,10 @@ policy_version="$("$ROOT/scripts/quality-policy" version)"
 [ "$("$ROOT/scripts/quality-policy" timeout app)" = 2400 ] || fail 'app timeout is not policy owned'
 [ -z "$("$ROOT/scripts/quality-policy" dependencies)" ] || \
   fail 'stage dependencies must not cascade beyond the routed plan'
+[ "$("$ROOT/scripts/quality-policy" release-scan bin/detach-core)" != - ] || \
+  fail 'bin/detach-core has no release scan pattern'
+[ "$("$ROOT/scripts/quality-policy" release-scan README.md)" = - ] || \
+  fail 'README.md must not have a release scan pattern'
 [ "$("$ROOT/scripts/quality-policy" critical | wc -l | tr -d ' ')" = 13 ] || \
   fail 'critical source inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" suites | wc -l | tr -d ' ')" = 12 ] || \

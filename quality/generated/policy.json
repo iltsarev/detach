@@ -742,7 +742,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 57,
+  "policy": 58,
   "release_domains": [
     {
       "gates": "-",
@@ -768,6 +768,12 @@
       "gates": "lid",
       "id": "unknown",
       "unknown": true
+    }
+  ],
+  "release_scans": [
+    {
+      "path": "bin/detach-core",
+      "pattern": "power|lid|clamshell|sleep|assert|lease|watchdog|pmset|caffeinate|thermal|battery|idle|helper"
     }
   ],
   "required_suites": [

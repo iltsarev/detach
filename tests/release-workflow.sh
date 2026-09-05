@@ -22,6 +22,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+grep -F 'export GIT_PAGER=cat PAGER=cat GH_PAGER=cat' \
+  "$ROOT/scripts/release-version" >/dev/null || {
+  printf 'release-version must disable pagers for terminal runs\n' >&2
+  exit 1
+}
+
 write_executable() {
   local path="$1"
   mkdir -p "$(dirname "$path")"

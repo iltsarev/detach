@@ -249,6 +249,25 @@ class QualityGateContract(unittest.TestCase):
             with self.assertRaisesRegex(GateError, "hosted CI authority"):
                 exact_products_enabled()
 
+    def test_provider_stages_receive_the_exact_product_binding(self) -> None:
+        environment = {
+            "DETACH_QUALITY_GATE_TEST_MODE": "1",
+            "DETACH_QUALITY_EXACT_PRODUCTS": "1",
+            "DETACH_QUALITY_EXACT_APP": "1",
+        }
+        with patch.dict("os.environ", environment, clear=False):
+            gate = QualityGate(parse_options([]))
+            for stage in ("codex", "claude", "swift", "ui-e2e"):
+                self.assertEqual(
+                    gate.stage_environment(stage).get("DETACH_QUALITY_EXACT_PRODUCTS"), "1",
+                    stage,
+                )
+            for stage in ("static", "distribution", "tmux-runtime"):
+                self.assertNotIn(
+                    "DETACH_QUALITY_EXACT_PRODUCTS", gate.stage_environment(stage), stage
+                )
+            self.assertNotIn("DETACH_QUALITY_EXACT_APP", gate.stage_environment("codex"))
+
     def test_codex_parts_get_private_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
