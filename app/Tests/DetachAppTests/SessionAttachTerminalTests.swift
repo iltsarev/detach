@@ -14,12 +14,17 @@ private final class SilentDetachCLI: DetachCLIRunning, @unchecked Sendable {
 
 private actor DetailLogSequenceCLI: DetachCLIRunning {
     private var responses: [CLIResult]
+    private let cancelDuringRead: Bool
     private(set) var callCount = 0
 
-    init(responses: [CLIResult]) { self.responses = responses }
+    init(responses: [CLIResult], cancelDuringRead: Bool = false) {
+        self.responses = responses
+        self.cancelDuringRead = cancelDuringRead
+    }
 
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         callCount += 1
+        if cancelDuringRead { withUnsafeCurrentTask { $0?.cancel() } }
         guard !responses.isEmpty else {
             return CLIResult(exitCode: 1, stdout: "", stderr: "unexpected read", timedOut: false)
         }
@@ -425,6 +430,71 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertNotEqual(
             view.logContentForTesting.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
             NSColor.systemOrange)
+    }
+
+    @MainActor
+    func testLiveDetailLogRefreshRecoversBeforeCancelledWaitStopsReads() async throws {
+        let session = try XCTUnwrap(Self.session(status: "running"))
+        let cli = DetailLogSequenceCLI(responses: [
+            CLIResult(exitCode: 1, stdout: "", stderr: "Log read failed\n", timedOut: false),
+            CLIResult(exitCode: 0, stdout: "\u{001B}[32mRestored log\u{001B}[0m", stderr: "", timedOut: false),
+        ])
+        let poller = LogPoller(
+            cli: cli, provider: session.provider, sessionName: session.sessionName)
+        let view = SessionDetailView(
+            session: session,
+            store: SessionStore(cli: SilentDetachCLI()),
+            detachPath: "/tmp/detach",
+            terminalScreens: SessionTerminalScreenCache(),
+            cachedLog: poller)
+        var waitCount = 0
+
+        await view.refreshVisibleLogForTesting {
+            waitCount += 1
+            if waitCount == 1 {
+                XCTAssertEqual(view.logContentForTesting.string, "⚠︎ Log read failed")
+                return
+            }
+            XCTAssertEqual(view.logContentForTesting.string, "Restored log")
+            throw CancellationError()
+        }
+
+        let calls = await cli.callCount
+        XCTAssertEqual(waitCount, 2)
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(view.logContentForTesting, poller.attributed)
+        XCTAssertNil(poller.errorText)
+    }
+
+    @MainActor
+    func testDetailLogCancelledDuringReadCannotScheduleAnotherRefresh() async throws {
+        let session = try XCTUnwrap(Self.session(status: "running"))
+        let cli = DetailLogSequenceCLI(
+            responses: [
+                CLIResult(exitCode: 0, stdout: "Last log", stderr: "", timedOut: false),
+            ],
+            cancelDuringRead: true)
+        let poller = LogPoller(
+            cli: cli, provider: session.provider, sessionName: session.sessionName)
+        let view = SessionDetailView(
+            session: session,
+            store: SessionStore(cli: SilentDetachCLI()),
+            detachPath: "/tmp/detach",
+            terminalScreens: SessionTerminalScreenCache(),
+            cachedLog: poller)
+
+        let read = Task { @MainActor in
+            await view.refreshVisibleLogForTesting {
+                XCTFail("A cancelled read cannot schedule a refresh wait")
+                throw CancellationError()
+            }
+        }
+        await read.value
+
+        let calls = await cli.callCount
+        XCTAssertTrue(read.isCancelled)
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(view.logContentForTesting.string, "Last log")
     }
 
     @MainActor

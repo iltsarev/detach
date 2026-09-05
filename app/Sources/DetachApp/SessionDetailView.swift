@@ -357,7 +357,12 @@ struct SessionDetailView: View {
             cachedLogIdentity: cachedLog.map(ObjectIdentifier.init))
     }
 
-    private func refreshVisibleLog() async {
+    private func refreshVisibleLog(
+        waitForNextRead: @MainActor @Sendable () async throws -> Void = {
+            try await Task.sleep(
+                nanoseconds: SessionDetailLogRefresh.liveFallbackIntervalNanoseconds)
+        }
+    ) async {
         guard !Task.isCancelled else { return }
         let poller = cachedLog
             ?? (logPollerSessionID == session.id ? logPoller : nil)
@@ -379,8 +384,7 @@ struct SessionDetailView: View {
         // and the embedded terminal cancel this task.
         while !Task.isCancelled {
             do {
-                try await Task.sleep(
-                    nanoseconds: SessionDetailLogRefresh.liveFallbackIntervalNanoseconds)
+                try await waitForNextRead()
             } catch {
                 return
             }
@@ -392,6 +396,10 @@ struct SessionDetailView: View {
     var logContentForTesting: NSAttributedString { logContent }
 
     func refreshVisibleLogForTesting() async { await refreshVisibleLog() }
+
+    func refreshVisibleLogForTesting(
+        waitForNextRead: @MainActor @Sendable () async throws -> Void
+    ) async { await refreshVisibleLog(waitForNextRead: waitForNextRead) }
 #endif
 
     private var logView: some View {
