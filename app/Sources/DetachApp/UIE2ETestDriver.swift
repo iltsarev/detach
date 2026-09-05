@@ -341,6 +341,9 @@ enum UIE2ETestDriver {
                 recoverButton, name: "in-app recover action")
             try requireSemanticControl(
                 recoverFallback, name: "external recover fallback")
+            let logFailure = configuration.root.appendingPathComponent(
+                "fake/disconnected-log-failure")
+            try Data().write(to: logFailure, options: .atomic)
             try await clickUntil(
                 recoverButton,
                 name: "in-app recover action",
@@ -363,17 +366,16 @@ enum UIE2ETestDriver {
             guard label(reconnectButton) == L10n.string("Reconnect") else {
                 throw Failure(message: "exited attach client does not offer Reconnect")
             }
-            try await waitUntil("disconnected session log is readable") {
+            try await waitUntil("disconnected session log shows a read failure") {
+                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else { return false }
+                return textView.string.contains("UI fixture log read failed")
+            }
+            try FileManager.default.removeItem(at: logFailure)
+            try await waitUntil("disconnected session log recovers after read failure") {
                 guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
                       let textView = scrollView.documentView as? NSTextView else { return false }
                 return textView.string.contains("UI fixture log for \(recoverableID)")
-            }
-            try Data().write(to: configuration.root.appendingPathComponent(
-                "fake/disconnected-log-updated"), options: .atomic)
-            try await waitUntil("disconnected session log follows new output") {
-                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
-                      let textView = scrollView.documentView as? NSTextView else { return false }
-                return textView.string.contains("Updated UI fixture log for \(recoverableID)")
             }
             try await clickUntil(
                 reconnectButton,
