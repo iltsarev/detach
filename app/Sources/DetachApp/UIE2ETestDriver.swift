@@ -156,6 +156,7 @@ enum UIE2ETestDriver {
     private static var scenarioDeadline = TimeInterval.greatestFiniteMagnitude
     private static var nextMouseEventNumber = Int(
         ProcessInfo.processInfo.systemUptime * 1_000)
+    private static let mouseClickInterval: TimeInterval = 0.03
     private static var cursorRestorePoint: CGPoint?
 
     static func runIfRequested(
@@ -330,6 +331,8 @@ enum UIE2ETestDriver {
                     "UI fixture log for \(recoverableID)")
             }
             checks.append("non-live-session-switch-uses-warm-cache")
+            try await verifySessionTitleAtMinimumWindowSize(mainWindow)
+            checks.append("session-title-survives-narrow-window-and-large-text")
             let recoverButton = try await element(
                 identifier: "session-action-recover-in-app")
             let recoverFallback = try await element(
@@ -359,6 +362,11 @@ enum UIE2ETestDriver {
                 reconnectFallback, name: "external reconnect fallback")
             guard label(reconnectButton) == L10n.string("Reconnect") else {
                 throw Failure(message: "exited attach client does not offer Reconnect")
+            }
+            try await waitUntil("disconnected session log is readable") {
+                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else { return false }
+                return textView.string.contains("UI fixture log for \(recoverableID)")
             }
             try await clickUntil(
                 reconnectButton,
@@ -850,6 +858,21 @@ enum UIE2ETestDriver {
             }
             checks.append("quick-chat-command-starts-session")
 
+            guard let shortcutID = shortcuts.sessionID(for: 1) else {
+                throw Failure(message: "no session has the first window-reopen shortcut")
+            }
+            mainWindow.close()
+            try await waitUntil("main window closes") { !mainWindow.isVisible }
+            NSApp.activate(ignoringOtherApps: true)
+            try await keyPress("1", keyCode: 18, modifiers: [.command])
+            _ = try await element(identifier: "session-detail-\(shortcutID)")
+            guard NSApp.windows.contains(where: {
+                $0.identifier?.rawValue == "main" && $0.isVisible
+            }) else {
+                throw Failure(message: "session shortcut did not reopen the main window")
+            }
+            checks.append("session-shortcut-reopens-closed-main-window")
+
             try await restoreFocus(
                 to: previousFrontmost, policy: previousActivationPolicy)
             checks.append("installed-app-focus-restored")
@@ -937,8 +960,12 @@ enum UIE2ETestDriver {
             throw Failure(message: "quick chat folder panel is not an open panel")
         }
         openPanel.cancel(nil)
+        trace("cancelled folder panel: visible=\(openPanel.isVisible), "
+            + "attached=\(openPanel.sheetParent != nil)")
         try await waitUntil("quick chat folder panel closes") {
-            find(identifier: "open-panel") == nil
+            !openPanel.isVisible && openPanel.sheetParent == nil
+                && NSApp.modalWindow !== openPanel
+                && find(identifier: "open-panel") == nil
                 && NSApp.windows.allSatisfy(\.sheets.isEmpty)
         }
         checks.append("settings-quick-chat-folder-panel")
@@ -961,7 +988,112 @@ enum UIE2ETestDriver {
         try await revealGeometry(
             identifier: "settings-installation", name: "Installation")
         checks.append("settings-system-reveals-storage-and-installation")
+        let generalTab = try await buttonLabeled(
+            L10n.string("General"), attempts: 40)
+        _ = try await clickUntilElement(
+            generalTab, name: "General settings tab",
+            resultIdentifier: "settings-show-tips")
+        // Placement checks run last so no later control click consumes a
+        // cached accessibility frame from before a programmatic window move.
+        try await verifySettingsTextGrowth(in: settingsWindow, visible: visible)
+        checks.append("settings-text-growth-stays-on-screen")
         return checks
+    }
+
+    private static func verifySettingsTextGrowth(
+        in window: NSWindow,
+        visible: CGRect
+    ) async throws {
+        let originalPreference = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        let originalFont = originalPreference as? Double ?? AppFontSize.defaultValue
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        let originalFrame = window.frame
+        var completed = false
+        defer {
+            if !completed { captureSettingsFailure(window) }
+            AppSettings.defaults.set(originalPreference, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        try await activate(window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        try await revealGeometry(
+            identifier: "settings-text-size", name: "settings text size slider")
+        let sliderFrame = try await measuredFrame(
+            identifier: "settings-text-size", name: "settings text size slider")
+        try await incrementSliderToMaximum(in: sliderFrame)
+        let apply = try await element(identifier: "settings-apply-text-size")
+        try await waitUntil("text size draft can be applied") { isEnabled(apply) }
+        guard AppSettings.defaults.double(forKey: AppFontSize.storageKey) == originalFont,
+              abs(window.frame.width - originalFrame.width) < 1 else {
+            throw Failure(message: "text size draft resized Settings before Apply")
+        }
+        try await revealGeometry(
+            identifier: "settings-apply-text-size", name: "text size Apply")
+        try await clickMeasuredControl(
+            identifier: "settings-apply-text-size", name: "apply maximum text size")
+        try await waitUntil("Settings grows within the hosting screen") {
+            AppSettings.defaults.double(forKey: AppFontSize.storageKey)
+                == AppFontSize.allowedRange.upperBound
+                && window.frame.width > originalFrame.width + 100
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings restores its original text size") {
+            abs(window.frame.width - originalFrame.width) < 1
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        trace("Settings Apply changed the font and window size")
+        // Exercise screen-edge growth separately from control input. A
+        // programmatic window move must not race the real Apply click.
+        window.setFrameOrigin(CGPoint(
+            x: visible.maxX - window.frame.width, y: visible.minY))
+        AppSettings.defaults.set(
+            AppFontSize.allowedRange.upperBound, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings grows from the screen edge") {
+            window.frame.width > originalFrame.width + 100
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings restores its size at the screen edge") {
+            abs(window.frame.width - originalFrame.width) < 1
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        completed = true
+    }
+
+    private static func incrementSliderToMaximum(in measuredFrame: CGRect) async throws {
+        let slider = try await element(role: .slider)
+        guard frame(slider).intersects(measuredFrame),
+              let maximum = slider.accessibilityMaxValue() as? NSNumber else {
+            throw Failure(message: "text size slider has no native range or matching frame")
+        }
+        // Invoke the real control's standard increment action. The locator
+        // probe supplies geometry only and cannot change the slider value.
+        for _ in 0...Int(AppFontSize.allowedRange.upperBound - AppFontSize.allowedRange.lowerBound) {
+            guard let previous = value(slider) as? NSNumber else {
+                throw Failure(message: "text size slider has no native value")
+            }
+            if previous.doubleValue >= maximum.doubleValue { return }
+            // SwiftUI can return false even when its native value changes.
+            // Require the observable change instead of that return flag.
+            _ = slider.accessibilityPerformIncrement()
+            try await waitUntil("native text size slider increment", attempts: 20) {
+                (value(slider) as? NSNumber)?.doubleValue != previous.doubleValue
+            }
+        }
+        throw Failure(message: "text size slider did not reach its maximum")
+    }
+
+    private static func captureSettingsFailure(_ window: NSWindow) {
+        guard let configuration = AppSettings.uiE2E,
+              let view = window.contentView,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+        else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? data.write(to: configuration.root.appendingPathComponent(
+            "window-settings-failure.png"), options: .atomic)
     }
 
     private static func runOnboardingFirstRun(
@@ -1340,6 +1472,42 @@ enum UIE2ETestDriver {
         throw Failure(message: "\(name) did not produce \(resultIdentifier)")
     }
 
+    private static func verifySessionTitleAtMinimumWindowSize(
+        _ window: NSWindow
+    ) async throws {
+        let originalFrame = window.frame
+        let originalFont = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        defer {
+            AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        for font in [AppFontSize.defaultValue, AppFontSize.allowedRange.upperBound] {
+            AppSettings.defaults.set(font, forKey: AppFontSize.storageKey)
+            try await waitUntil("session title uses font \(font)") {
+                guard let title = UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                else { return false }
+                let pointSize = AppFontRole.title2.pointSize(base: font)
+                return title.height >= pointSize && title.height < pointSize + 12
+            }
+            window.setContentSize(AppFontSize.minimumWindowSize(for: font))
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await waitUntil("session title is inside the resized window") {
+                elements().compactMap { $0 as? UIE2EGeometryView }
+                    .filter { $0.identifierValue == "session-detail-title" }
+                    .forEach { $0.publishFrame() }
+                return UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                    .map { window.frame.contains($0) } == true
+            }
+            let title = try await measuredFrame(
+                identifier: "session-detail-title", name: "session title")
+            guard title.width >= font * 5, title.height >= font,
+                  window.frame.contains(title) else {
+                throw Failure(message:
+                    "session title disappeared or collapsed at font \(font): \(title)")
+            }
+        }
+    }
+
     private static func clickUntil(
         _ control: any NSAccessibilityProtocol,
         name: String,
@@ -1431,6 +1599,9 @@ enum UIE2ETestDriver {
     ) async throws -> CGRect {
         var result: CGRect?
         try await waitUntil("real control geometry for \(name)") {
+            elements().compactMap { $0 as? UIE2EGeometryView }
+                .filter { $0.identifierValue == identifier }
+                .forEach { $0.publishFrame() }
             result = UIE2EGeometryRegistry.frame(for: identifier)
             return result?.isEmpty == false
         }
@@ -1447,6 +1618,35 @@ enum UIE2ETestDriver {
         }
         trace("measured \(name): \(result!)")
         return result!
+    }
+
+    static func mouseClickEvents(
+        at windowPoint: CGPoint,
+        windowNumber: Int,
+        name: String
+    ) throws -> [NSEvent] {
+        var events: [NSEvent] = []
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        let eventNumber = nextMouseEventNumber
+        nextMouseEventNumber += 1
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(
+                with: type,
+                location: windowPoint,
+                modifierFlags: [],
+                timestamp: timestamp + Double(events.count) * mouseClickInterval,
+                windowNumber: windowNumber,
+                context: nil,
+                eventNumber: eventNumber,
+                clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0)
+            else { continue }
+            events.append(event)
+        }
+        guard events.count == 2 else {
+            throw Failure(message: "cannot create mouse pair for \(name)")
+        }
+        return events
     }
 
     private static func click(
@@ -1482,35 +1682,15 @@ enum UIE2ETestDriver {
             }
             trace("hit chain for \(name): \(names.joined(separator: " > "))")
         }
-        var events: [NSEvent] = []
-        let timestamp = ProcessInfo.processInfo.systemUptime
-        let clickInterval: TimeInterval = 0.03
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let eventNumber = nextMouseEventNumber
-            nextMouseEventNumber += 1
-            guard let event = NSEvent.mouseEvent(
-                with: type,
-                location: windowPoint,
-                modifierFlags: [],
-                timestamp: timestamp + Double(events.count) * clickInterval,
-                windowNumber: window.windowNumber,
-                context: nil,
-                eventNumber: eventNumber,
-                clickCount: 1,
-                pressure: type == .leftMouseDown ? 1 : 0)
-            else { continue }
-            events.append(event)
-        }
-        guard events.count == 2 else {
-            throw Failure(message: "cannot create mouse pair for \(name)")
-        }
+        let events = try mouseClickEvents(
+            at: windowPoint, windowNumber: window.windowNumber, name: name)
         // AppKit permits postEvent from a subthread. Delay mouseUp so SwiftUI
         // receives a physical-duration click even inside a tracking loop. Put
         // mouseUp at the queue tail so a busy main thread cannot process it
         // before the mouseDown event at the queue head.
         let mouseUp = UIE2EDeferredMouseUp(application: NSApp, event: events[1])
         DispatchQueue.global(qos: .userInitiated).asyncAfter(
-            deadline: .now() + clickInterval
+            deadline: .now() + mouseClickInterval
         ) {
             mouseUp.post()
         }

@@ -38,6 +38,20 @@ public final class SessionStore {
         let continuation: CheckedContinuation<[Session], Never>
     }
 
+    private struct TransientTransition: Hashable {
+        let sessionID: String
+        let lifecycleID: String?
+        let createdAt: Date?
+        let status: EffectiveStatus
+
+        init(_ session: Session) {
+            sessionID = session.id
+            lifecycleID = session.lifecycleID
+            createdAt = session.lifecycleID == nil ? session.createdAt : nil
+            status = session.effectiveStatus
+        }
+    }
+
     private enum Mutation {
         case stop
         case delete
@@ -79,7 +93,8 @@ public final class SessionStore {
     @ObservationIgnored private var refreshRetryTask: Task<Void, Never>?
     @ObservationIgnored private var refreshRetryAttempt = 0
     @ObservationIgnored private var transientConfirmationTask: Task<Void, Never>?
-    @ObservationIgnored private var confirmedTransientSessionIDs: Set<String> = []
+    @ObservationIgnored private var pendingTransientTransitions: Set<TransientTransition> = []
+    @ObservationIgnored private var confirmedTransientTransitions: Set<TransientTransition> = []
     @ObservationIgnored private var eventGeneration: UInt64 = 0
     /// Epoch invalidates results from a previous CLI/observation lifetime.
     @ObservationIgnored private var refreshEpoch: UInt64 = 0
@@ -222,11 +237,19 @@ public final class SessionStore {
         // this observation lifetime. A stopped store must launch no later CLI
         // work until an explicit refresh or a new watcher starts it again.
         refreshEpoch &+= 1
+        // Requests made before stop belong to the old lifetime, including
+        // those queued behind a read that cannot be cancelled immediately.
+        refreshCompletedGeneration = refreshRequestGeneration
+        let stoppedWaiters = refreshWaiters
+        refreshWaiters = []
+        for waiter in stoppedWaiters { waiter.continuation.resume(returning: []) }
         refreshRetryTask?.cancel()
         refreshRetryTask = nil
         refreshRetryAttempt = 0
         transientConfirmationTask?.cancel()
         transientConfirmationTask = nil
+        pendingTransientTransitions = []
+        confirmedTransientTransitions = []
         eventReadinessTimeoutTask?.cancel()
         eventReadinessTimeoutTask = nil
         eventReadinessTimedOutGeneration = nil
@@ -348,7 +371,8 @@ public final class SessionStore {
             let servicedGeneration = refreshRequestGeneration
             let epoch = refreshEpoch
             latestSnapshot = await performRefresh(epoch: epoch)
-            refreshCompletedGeneration = servicedGeneration
+            refreshCompletedGeneration = max(
+                refreshCompletedGeneration, servicedGeneration)
 
             var pending: [RefreshWaiter] = []
             for waiter in refreshWaiters {
@@ -521,20 +545,22 @@ public final class SessionStore {
     }
 
     private func scheduleTransientConfirmation(for snapshot: [Session]) {
-        let transientIDs = Set(snapshot.lazy
+        let transientTransitions = Set(snapshot.lazy
             .filter { Self.isTransient($0.effectiveStatus) }
-            .map(\.id))
-        confirmedTransientSessionIDs.formIntersection(transientIDs)
-        guard !transientIDs.isEmpty else {
-            transientConfirmationTask?.cancel()
-            transientConfirmationTask = nil
-            return
-        }
-        let unconfirmedIDs = transientIDs.subtracting(
-            confirmedTransientSessionIDs)
-        guard !unconfirmedIDs.isEmpty else { return }
-
+            .map(TransientTransition.init))
+        confirmedTransientTransitions.formIntersection(transientTransitions)
+        pendingTransientTransitions.formIntersection(transientTransitions)
+        // Keep the original deadline while any of its transitions remain.
+        // Other sessions can emit snapshots continuously. They must not
+        // postpone confirmation or mark a newly joined transition early.
+        if !pendingTransientTransitions.isEmpty { return }
         transientConfirmationTask?.cancel()
+        transientConfirmationTask = nil
+        let unconfirmedTransitions = transientTransitions.subtracting(
+            confirmedTransientTransitions)
+        guard !unconfirmedTransitions.isEmpty else { return }
+
+        pendingTransientTransitions = unconfirmedTransitions
         transientConfirmationTask = Task { [weak self] in
             do {
                 try await self?.confirmationSleep(350_000_000)
@@ -542,7 +568,8 @@ public final class SessionStore {
                 return
             }
             guard !Task.isCancelled, let self else { return }
-            self.confirmedTransientSessionIDs.formUnion(unconfirmedIDs)
+            self.confirmedTransientTransitions.formUnion(self.pendingTransientTransitions)
+            self.pendingTransientTransitions = []
             self.transientConfirmationTask = nil
             await self.refresh()
         }

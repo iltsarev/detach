@@ -24,10 +24,14 @@ Protected counts working sessions. Allowed names all-waiting or an unprotected
 working session and never claims no sessions. Typed heartbeat and
 `detach watch --json` sources supply them. A schema-1 hint, activation, or
 `resync` starts a serialized `list --json`. Hints during a read share one ordered
-trailing read. No list timer runs. Dead or unready watchers and failed lists retry
+trailing read. Stop discards queued reads and prevents old results from updating
+the store. A new explicit read remains serialized with an active old read.
+No list timer runs. Dead or unready watchers and failed lists retry
 with 2–60 s backoff. Cold start waits 1 s for `ready`; a late `ready` repeats the
 snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
 checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
+After a transcript file is replaced, registration of its new file observer
+emits a refresh hint. Writes before registration must not leave the UI stale.
 
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
@@ -63,7 +67,9 @@ Detached live logs reread every 2 s. Cold attach uses one passive SwiftTerm
 overlay; cached bytes never enter the live buffer. Live switching keeps its PTY.
 tmux holds the frame until a synchronized redraw.
 Metadata stays in one scrolling row. Selection keeps header, terminal, and
-action geometry. A cold passive screen leaves within one second.
+action geometry. The model and context gauge stay in the metadata row. They
+cannot reduce the title to zero width in a narrow window or with large text.
+A cold passive screen leaves within one second.
 New session accepts an optional printable UTF-8 name up to 100 bytes and
 rejects invalid input. Launch runs in Detach. Advanced holds the prompt
 below a fixed top. Titles use `display_name`, then the project or internal name.
@@ -78,8 +84,12 @@ When a session leaves them, the earliest waiting session gets its number;
 extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
 Notifications are opt-in and deduplicated. Stop intent is not failure;
-`interrupted` and `hung` get one 350 ms recheck. Ordered detection never waits
-for delivery.
+`interrupted` and `hung` get one 350 ms recheck. Snapshot bursts do not restart
+that deadline. A new transition waits for the pending recheck, then gets its
+own deadline. Stable state cancels an obsolete recheck. Each observation
+lifetime confirms its own transitions. Status and session lifecycle changes
+require a new confirmation, even when the session name stays the same.
+Ordered detection never waits for delivery.
 
 SwiftTerm 1.19.0 is pinned. The exact SwiftTerm shader bundle is shipped and
 verified.
@@ -90,7 +100,9 @@ signed marker. UI smoke uses a stripped private copy below
 unsafe identity, build mismatch, or payload fails closed.
 
 Smoke restores focus and the pointer, then sends ordered AppKit events to
-controls. It covers all main surfaces, focus, session actions, and
+controls. Each mouse click uses one event number for both events.
+Slider changes use the native control's Accessibility increment
+action. It covers all main surfaces, focus, session actions, and
 onboarding. Stop disconnects first. Stages have deadlines. Coverage isolates
 the normal bundle, instrumented copy, tests, binary, and profiles. The driver
 detects clipped controls before an action.

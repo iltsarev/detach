@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class UIE2EEventWindowResolverTests: XCTestCase {
+    func testMouseClickPairsShareTheNativeEventNumber() throws {
+        let first = try UIE2ETestDriver.mouseClickEvents(
+            at: CGPoint(x: 20, y: 30), windowNumber: 0, name: "first click")
+        let second = try UIE2ETestDriver.mouseClickEvents(
+            at: CGPoint(x: 20, y: 30), windowNumber: 0, name: "second click")
+        for pair in [first, second] {
+            XCTAssertEqual(pair.map(\.type), [.leftMouseDown, .leftMouseUp])
+            // CoreGraphics requires matching down/up events to share a number.
+            XCTAssertEqual(pair[0].eventNumber, pair[1].eventNumber)
+            let down = try XCTUnwrap(pair[0].cgEvent)
+            let up = try XCTUnwrap(pair[1].cgEvent)
+            XCTAssertEqual(down.getIntegerValueField(.mouseEventNumber),
+                           up.getIntegerValueField(.mouseEventNumber))
+        }
+        XCTAssertNotEqual(first[0].eventNumber, second[0].eventNumber)
+    }
+
     func testCursorPointMapsBetweenOffsetDisplayCoordinateSystems() {
         let screenFrame = CGRect(x: -800, y: 200, width: 800, height: 600)
         let displayBounds = CGRect(x: 1_600, y: 900, width: 800, height: 600)

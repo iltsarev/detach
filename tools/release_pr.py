@@ -149,12 +149,16 @@ def validate_completed_gate(
     return run["id"]
 
 
-def write_summary(path: Path, value: dict[str, Any], test_mode: bool) -> None:
+def prepare_summary_path(path: Path, test_mode: bool) -> None:
     if not test_mode and path.resolve() != DEFAULT_OUTPUT.resolve():
         raise ReleasePrError("release PR evidence must use app/build/release-pr.json")
-    if path.exists() and (not path.is_file() or path.is_symlink()):
+    if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ReleasePrError("release PR evidence output is unsafe")
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def write_summary(path: Path, value: dict[str, Any], test_mode: bool) -> None:
+    prepare_summary_path(path, test_mode)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         temporary.write_text(
@@ -242,6 +246,7 @@ def main() -> int:
     args = parser().parse_args()
     test_mode = os.environ.get("DETACH_RELEASE_PR_TEST_MODE") == "1"
     try:
+        prepare_summary_path(args.output, test_mode)
         summary = execute(args, Policy(POLICY_FILE))
         write_summary(args.output, summary, test_mode)
     except (ReleasePrError, MergeError, OSError, ValueError) as error:

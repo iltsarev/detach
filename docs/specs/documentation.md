@@ -147,7 +147,9 @@ Hosted CI is the merge-readiness authority.
   exact head check. It then enables native auto-merge for that head and waits
   at most the merge deadline. It disables auto-merge on timeout. The command
   rejects a changed head, an invalid ruleset, and a repair attempt above the
-  policy maximum. It writes current-policy evidence under `app/build/`.
+  policy maximum. It validates the evidence path and creates its parent
+  before it calls GitHub. Invalid paths cannot trigger a merge. It writes
+  current-policy evidence under `app/build/`.
 - Weekly Dependabot checks pinned Actions and Swift packages. It groups each
   ecosystem into at most one pull request to protect the feedback queue. The
   bounded weekly/manual CodeQL workflow scans Actions on Linux and arm64 Swift

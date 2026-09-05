@@ -43,38 +43,6 @@ public protocol RootCommandRunning: Sendable {
     func run(_ command: RootCommand) throws -> RootCommandResult
 }
 
-private final class BoundedRootCommandOutput: @unchecked Sendable {
-    private let lock = NSLock()
-    private let maximumBytes: Int
-    private var data = Data()
-    private var didTruncate = false
-
-    init(maximumBytes: Int) {
-        self.maximumBytes = max(0, maximumBytes)
-    }
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        let remaining = max(0, maximumBytes - data.count)
-        if chunk.count > remaining { didTruncate = true }
-        guard remaining > 0 else { return }
-        data.append(chunk.prefix(remaining))
-    }
-
-    var string: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self)
-    }
-
-    var isTruncated: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return didTruncate
-    }
-}
-
 public struct RootProcessCommandRunner: RootCommandRunning {
     public static let defaultTimeout: TimeInterval = 2
     public static let defaultTerminationGrace: TimeInterval = 1
@@ -97,71 +65,26 @@ public struct RootProcessCommandRunner: RootCommandRunning {
     }
 
     public func run(_ command: RootCommand) throws -> RootCommandResult {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: command.executable)
-        process.arguments = command.arguments
-        process.environment = [
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "LC_ALL": "C",
-        ]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-
-        let output = BoundedRootCommandOutput(
-            maximumBytes: maximumOutputBytes)
-        let errorOutput = BoundedRootCommandOutput(
-            maximumBytes: maximumOutputBytes)
-        let readers = DispatchGroup()
-        Self.drain(stdout.fileHandleForReading, into: output, group: readers)
-        Self.drain(stderr.fileHandleForReading, into: errorOutput, group: readers)
-
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            usleep(10_000)
-        }
-        let timedOut = process.isRunning
-        if timedOut {
-            process.terminate()
-            let killDeadline = Date().addingTimeInterval(terminationGrace)
-            while process.isRunning && Date() < killDeadline {
-                usleep(10_000)
-            }
-            if process.isRunning {
-                Darwin.kill(process.processIdentifier, SIGKILL)
-            }
-        }
-        process.waitUntilExit()
-        readers.wait()
-        if timedOut {
+        let result = try BoundedProcessRunner().run(BoundedProcessRequest(
+            executableURL: URL(fileURLWithPath: command.executable),
+            arguments: command.arguments,
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "LC_ALL": "C",
+            ],
+            timeout: timeout,
+            terminationGrace: terminationGrace,
+            maximumOutputBytes: maximumOutputBytes))
+        if result.timedOut {
             throw PowerHelperPlatformError.commandTimedOut(
                 executable: command.executable)
         }
         return RootCommandResult(
-            exitCode: process.terminationStatus,
-            standardOutput: output.string,
-            standardError: errorOutput.string,
-            standardOutputTruncated: output.isTruncated,
-            standardErrorTruncated: errorOutput.isTruncated)
-    }
-
-    private static func drain(
-        _ handle: FileHandle,
-        into output: BoundedRootCommandOutput,
-        group: DispatchGroup
-    ) {
-        group.enter()
-        DispatchQueue.global(qos: .utility).async {
-            defer { group.leave() }
-            while true {
-                guard let chunk = try? handle.read(upToCount: 4_096),
-                      !chunk.isEmpty else { return }
-                output.append(chunk)
-            }
-        }
+            exitCode: result.exitCode,
+            standardOutput: String(decoding: result.standardOutput, as: UTF8.self),
+            standardError: String(decoding: result.standardError, as: UTF8.self),
+            standardOutputTruncated: result.standardOutputTruncated,
+            standardErrorTruncated: result.standardErrorTruncated)
     }
 }
 
@@ -291,7 +214,7 @@ public struct PowerHelperLifetimeBarrier: Sendable {
     /// its separately persisted boot-session evidence to accept `.missing`.
     public func status() throws -> PowerHelperLifetimeBarrierStatus {
         let descriptor = Darwin.open(
-            fileURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             let code = errno
             if code == ENOENT { return .missing }
@@ -476,7 +399,7 @@ public struct PowerHelperSystemHandoffLock: Sendable {
     /// handled separately by the app; an existing file is never recreated.
     public func acquire() throws -> PowerHelperSystemHandoffLease? {
         let descriptor = Darwin.open(
-            fileURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             let code = errno
             if code == ENOENT { return nil }

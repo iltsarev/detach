@@ -148,6 +148,52 @@ final class TextSizeTests: XCTestCase {
         XCTAssertEqual(contentView.bounds.height, expectedHeight, accuracy: 0.001)
     }
 
+    @MainActor
+    func testSettingsGrowthKeepsRightAndBottomEdgesOnScreen() throws {
+        let screen = try XCTUnwrap(NSScreen.main)
+        let visible = screen.visibleFrame
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let frameView = SettingsWindowFrameView(frame: .zero)
+        try XCTUnwrap(window.contentView).addSubview(frameView)
+        window.setFrameOrigin(NSPoint(
+            x: visible.maxX - window.frame.width, y: visible.minY))
+        XCTAssertTrue(visible.contains(window.frame))
+
+        frameView.apply(width: 760, baseHeight: 780, fontPointSize: 22)
+
+        XCTAssertTrue(visible.contains(window.frame), "Settings moved off screen: \(window.frame)")
+        let largeTop = window.frame.maxY
+        frameView.apply(width: 560, baseHeight: 450, fontPointSize: 14)
+        XCTAssertTrue(visible.contains(window.frame))
+        XCTAssertEqual(window.frame.maxY, largeTop, accuracy: 0.5)
+        let settled = window.frame
+        frameView.apply(width: 560, baseHeight: 450, fontPointSize: 14)
+        XCTAssertEqual(window.frame, settled)
+    }
+
+    @MainActor
+    func testSettingsScreenChangeMovesAnOffscreenFrameBackInside() throws {
+        let visible = try XCTUnwrap(NSScreen.main).visibleFrame
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let frameView = SettingsWindowFrameView(frame: .zero)
+        try XCTUnwrap(window.contentView).addSubview(frameView)
+        frameView.apply(width: 560, baseHeight: 450, fontPointSize: 14)
+        window.setFrameOrigin(NSPoint(x: visible.maxX - 50, y: visible.maxY - 50))
+
+        NotificationCenter.default.post(
+            name: NSWindow.didChangeScreenNotification, object: window)
+
+        XCTAssertTrue(visible.contains(window.frame), "Settings remained off screen: \(window.frame)")
+    }
+
     func testLogResizeUsesExactPointSizeAndPreservesTraitsAndColors() throws {
         let regular = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         let bold = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)

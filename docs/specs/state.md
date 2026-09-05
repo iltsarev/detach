@@ -6,7 +6,10 @@
 metadata, JSONL, health, reconcile, storage, emit, and event operations.
 `meta snapshots` enumerates one owned sessions root through anchored directory
 descriptors. It rejects unsafe directories and opens only owned regular files
-of at most 1 MiB with `O_NOFOLLOW`.
+of at most 1 MiB with `O_NOFOLLOW`. Storage metadata, checkpoint fallback
+metadata, and cached transcript validation use nonblocking file opens before
+they check the file type. This includes validation receipts. A FIFO cannot
+delay these reads while it waits for a writer.
 Integer conversion must not trap. Storage reports allocated and logical bytes,
 excludes provider storage, does not follow symlinks, and authorizes cleanup
 only after a complete scan with explicit `cleanup_eligible: true`.

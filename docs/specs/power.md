@@ -12,6 +12,12 @@ Power protection has two required layers and one observable combined state:
    It manages only the machine-wide closed-lid setting through absolute
    `/usr/bin/pmset` invocations and a renewable lease registry.
 
+Root commands use the same bounded process-group runner as CLI reads. Each
+command has a two-second default deadline and a one-second TERM grace.
+Dedicated readers bound each output stream. An inherited pipe cannot keep the
+helper waiting after command exit. Incomplete output cannot prove power state.
+The command environment keeps a fixed system PATH and the C locale.
+
 The wrapper must acquire both layers before provider launch. It watches a
 private, run-token-scoped activity file. Before it accepts `waiting`, it also
 validates a recorded inode/mtime/size snapshot and starts an event watcher on the
@@ -73,6 +79,10 @@ submitted unregister phase under the system and per-user transaction locks.
 Only a busy lifetime lock permits the prepare call. A replacement is not
 registered until the old lifetime lock is released or an exact absent-job
 callback provides the required completion barrier.
+Lifetime and system handoff probes reject special files without waiting for
+a FIFO writer. File validation precedes lock acquisition. Activity and source
+handoff readers also reject special files without blocking and keep the
+session working.
 
 An enabled registration with a matching bundled-definition digest is not
 enough to prove liveness. At startup, a missing or released lifetime lock that
