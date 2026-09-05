@@ -12,6 +12,21 @@ private final class SilentDetachCLI: DetachCLIRunning, @unchecked Sendable {
     }
 }
 
+private actor DetailLogSequenceCLI: DetachCLIRunning {
+    private var responses: [CLIResult]
+    private(set) var callCount = 0
+
+    init(responses: [CLIResult]) { self.responses = responses }
+
+    func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
+        callCount += 1
+        guard !responses.isEmpty else {
+            return CLIResult(exitCode: 1, stdout: "", stderr: "unexpected read", timedOut: false)
+        }
+        return responses.removeFirst()
+    }
+}
+
 private actor TerminalScreenPrefetchCLI: DetachCLIRunning {
     private(set) var calls: [[String]] = []
     private var activeCalls = 0
@@ -379,6 +394,67 @@ final class SessionAttachTerminalTests: XCTestCase {
             detachPath: "/tmp/detach",
             terminalScreens: SessionTerminalScreenCache(),
             cachedLog: cache.poller(for: session)).body
+    }
+
+    @MainActor
+    func testDetailLogReplacesReadErrorWithSuccessfulStyledOutput() async throws {
+        let session = try XCTUnwrap(Self.session(status: "stopped"))
+        let cli = DetailLogSequenceCLI(responses: [
+            CLIResult(exitCode: 1, stdout: "", stderr: "Log read failed\n", timedOut: false),
+            CLIResult(exitCode: 0, stdout: "\u{001B}[32mRestored log\u{001B}[0m", stderr: "", timedOut: false),
+        ])
+        let poller = LogPoller(
+            cli: cli, provider: session.provider, sessionName: session.sessionName)
+        let view = SessionDetailView(
+            session: session,
+            store: SessionStore(cli: SilentDetachCLI()),
+            detachPath: "/tmp/detach",
+            terminalScreens: SessionTerminalScreenCache(),
+            cachedLog: poller)
+
+        XCTAssertEqual(view.logContent.string, "…")
+        await poller.fetchOnce()
+        XCTAssertEqual(view.logContent.string, "⚠︎ Log read failed")
+        XCTAssertEqual(
+            view.logContent.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+            NSColor.systemOrange)
+
+        await poller.fetchOnce()
+        XCTAssertEqual(view.logContent.string, "Restored log")
+        XCTAssertEqual(view.logContent, poller.attributed)
+        XCTAssertNotEqual(
+            view.logContent.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+            NSColor.systemOrange)
+    }
+
+    @MainActor
+    func testRetiredLogTaskCannotReadAndWarmLogDoesNotReread() async throws {
+        let session = try XCTUnwrap(Self.session(status: "stopped"))
+        let cli = DetailLogSequenceCLI(responses: [
+            CLIResult(exitCode: 0, stdout: "Ready log", stderr: "", timedOut: false),
+        ])
+        let poller = LogPoller(
+            cli: cli, provider: session.provider, sessionName: session.sessionName)
+        let view = SessionDetailView(
+            session: session,
+            store: SessionStore(cli: SilentDetachCLI()),
+            detachPath: "/tmp/detach",
+            terminalScreens: SessionTerminalScreenCache(),
+            cachedLog: poller)
+
+        let retired = Task { @MainActor in await view.refreshVisibleLog() }
+        retired.cancel()
+        await retired.value
+        let retiredCalls = await cli.callCount
+        XCTAssertEqual(retiredCalls, 0)
+        XCTAssertFalse(poller.hasLoaded)
+
+        await view.refreshVisibleLog()
+        XCTAssertEqual(view.logContent.string, "Ready log")
+        await view.refreshVisibleLog()
+        let loadedCalls = await cli.callCount
+        XCTAssertEqual(loadedCalls, 1)
+        XCTAssertEqual(view.logContent.string, "Ready log")
     }
 
     func testDetachedLiveLogRefreshKeysOnSessionAndCacheIdentity() throws {

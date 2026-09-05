@@ -328,9 +328,9 @@ struct SessionDetailView: View {
         .foregroundColor: NSColor(white: 0.85, alpha: 1),
     ]
 
-    private var logContent: NSAttributedString {
-        let sessionPoller = logPollerSessionID == session.id ? logPoller : nil
-        let visiblePoller = cachedLog ?? sessionPoller
+    var logContent: NSAttributedString {
+        let visiblePoller = cachedLog
+            ?? (logPollerSessionID == session.id ? logPoller : nil)
         if let error = visiblePoller?.errorText {
             var attributes = Self.placeholderAttributes
             attributes[.foregroundColor] = NSColor.systemOrange
@@ -357,7 +357,7 @@ struct SessionDetailView: View {
             cachedLogIdentity: cachedLog.map(ObjectIdentifier.init))
     }
 
-    private func refreshVisibleLog() async {
+    func refreshVisibleLog() async {
         guard !Task.isCancelled else { return }
         let poller = cachedLog
             ?? (logPollerSessionID == session.id ? logPoller : nil)
