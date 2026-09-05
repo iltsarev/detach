@@ -2015,6 +2015,22 @@ install_session_event_hook() {
     error "warning: could not install the tmux pane-died hook for this session"
 }
 
+install_session_completion_hook() {
+  local session="$1" pane_id="$2" run_token="$3"
+  local session_id condition command
+
+  [[ "$pane_id" =~ ^%[0-9]+$ ]] || return 1
+  [[ "$run_token" =~ ^[a-zA-Z0-9_-]+$ ]] || return 1
+  session_id="$("${TMUX_CMD[@]}" display-message -p -t "$pane_id" '#{session_id}')" || \
+    return 1
+  [[ "$session_id" =~ ^\$[0-9]+$ ]] || return 1
+  # Use tmux's event queue and immutable pane/session IDs. A dead user split
+  # or an old run must never disconnect clients of the current provider run.
+  condition="#{&&:#{==:#{hook_pane},$pane_id},#{&&:#{pane_dead},#{&&:#{==:#{@detach_pane_id},$pane_id},#{==:#{@detach_run_token},$run_token}}}}"
+  command="if-shell -F -t $pane_id '$condition' { detach-client -s '$session_id' }"
+  "${TMUX_CMD[@]}" set-hook -t "=$session:" 'pane-died[1]' "$command"
+}
+
 state_update_meta_for_run() {
   local session="$1"
   local run_token="$2"
@@ -6059,6 +6075,8 @@ start_tmux_session() {
   "${TMUX_CMD[@]}" set-option -q -w -t "$pane_id" remain-on-exit off
   "${TMUX_CMD[@]}" set-option -q -p -t "$pane_id" remain-on-exit on
   install_session_event_hook "$session"
+  install_session_completion_hook "$session" "$pane_id" "$run_token" || \
+    die "could not configure terminal return after provider exit"
   "${TMUX_CMD[@]}" set-option -q -t "=$session:" history-limit "$HISTORY_LIMIT"
   tmux_configure_server || \
     error "warning: could not configure Detach server input options for this session"

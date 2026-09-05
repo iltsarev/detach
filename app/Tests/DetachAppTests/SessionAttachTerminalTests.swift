@@ -14,17 +14,17 @@ private final class SilentDetachCLI: DetachCLIRunning, @unchecked Sendable {
 
 private actor DetailLogSequenceCLI: DetachCLIRunning {
     private var responses: [CLIResult]
-    private let cancelDuringRead: Bool
+    private let cancelDuringRead: Int?
     private(set) var callCount = 0
 
-    init(responses: [CLIResult], cancelDuringRead: Bool = false) {
+    init(responses: [CLIResult], cancelDuringRead: Int? = nil) {
         self.responses = responses
         self.cancelDuringRead = cancelDuringRead
     }
 
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         callCount += 1
-        if cancelDuringRead { withUnsafeCurrentTask { $0?.cancel() } }
+        if cancelDuringRead == callCount { withUnsafeCurrentTask { $0?.cancel() } }
         guard !responses.isEmpty else {
             return CLIResult(exitCode: 1, stdout: "", stderr: "unexpected read", timedOut: false)
         }
@@ -473,7 +473,7 @@ final class SessionAttachTerminalTests: XCTestCase {
             responses: [
                 CLIResult(exitCode: 0, stdout: "Last log", stderr: "", timedOut: false),
             ],
-            cancelDuringRead: true)
+            cancelDuringRead: 1)
         let poller = LogPoller(
             cli: cli, provider: session.provider, sessionName: session.sessionName)
         let view = SessionDetailView(
@@ -495,6 +495,33 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertTrue(read.isCancelled)
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(view.logContentForTesting.string, "Last log")
+    }
+
+    @MainActor
+    func testLiveDetailLogDefaultWaitRefreshesBeforeReadCancellation() async throws {
+        let session = try XCTUnwrap(Self.session(status: "running"))
+        let cli = DetailLogSequenceCLI(
+            responses: [
+                CLIResult(exitCode: 0, stdout: "Initial log", stderr: "", timedOut: false),
+                CLIResult(exitCode: 0, stdout: "Updated log", stderr: "", timedOut: false),
+            ],
+            cancelDuringRead: 2)
+        let poller = LogPoller(
+            cli: cli, provider: session.provider, sessionName: session.sessionName)
+        let view = SessionDetailView(
+            session: session,
+            store: SessionStore(cli: SilentDetachCLI()),
+            detachPath: "/tmp/detach",
+            terminalScreens: SessionTerminalScreenCache(),
+            cachedLog: poller)
+
+        let refresh = Task { @MainActor in await view.refreshVisibleLogForTesting() }
+        await refresh.value
+
+        let calls = await cli.callCount
+        XCTAssertTrue(refresh.isCancelled)
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(view.logContentForTesting.string, "Updated log")
     }
 
     @MainActor

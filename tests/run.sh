@@ -1640,6 +1640,103 @@ grep -Fx "release --session $SESSION --run-token $stopped_run_token" \
   "$FAKE_POWER_RELEASES_FILE" >/dev/null
 codex_scenario_event pass SC-SESSION-STOP-CODEX
 
+# Ctrl+C that ends the provider must return the attached terminal to its
+# original shell. Keep the dead provider pane available for retained logs.
+interrupt_session=detach-codex-interrupt-terminal
+interrupt_project="$TMP_ROOT/interrupt-project"
+interrupt_returned="$TMP_ROOT/interrupt-terminal-returned"
+interrupt_usable="$TMP_ROOT/interrupt-terminal-usable"
+mkdir -p "$interrupt_project"
+(
+  cd "$interrupt_project"
+  FAKE_CODEX_RELEASE_FILE="$TMP_ROOT/interrupt-provider-release" \
+    FAKE_CODEX_FOREIGN_FIRST=0 FAKE_CODEX_INIT_DELAY=0 \
+    run_codex --name interrupt-terminal --detach >/dev/null
+)
+interrupt_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$interrupt_session:" @detach_pane_id)"
+interrupt_host="$(tmux -L "$OUTER_SOCKET" new-session -d -P \
+  -F '#{pane_id}' -s interrupt-host -x 120 -y 30)"
+printf -v interrupt_command \
+  'env -u TMUX -u TMUX_PANE %q codex attach interrupt-terminal; printf returned >%q' \
+  "$DETACH" "$interrupt_returned"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$interrupt_host" -- "$interrupt_command"
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_host" C-m
+attempts=0
+while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+    grep -Fx "$interrupt_session" >/dev/null && [ "$attempts" -lt 100 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx "$interrupt_session" >/dev/null
+# A user split can retain its own dead process. Its death must leave the
+# provider client attached, and an unrelated client must survive completion.
+interrupt_split="$(tmux -L "$SOCKET" split-window -d -P -F '#{pane_id}' \
+  -t "$interrupt_pane" /bin/sleep 60)"
+tmux -L "$SOCKET" set-option -p -t "$interrupt_split" remain-on-exit on
+tmux -L "$SOCKET" respawn-pane -k -t "$interrupt_split" /usr/bin/true
+attempts=0
+while [ "$(tmux -L "$SOCKET" display-message -p -t "$interrupt_split" '#{pane_dead}')" != 1 ] && \
+    [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$(tmux -L "$SOCKET" display-message -p -t "$interrupt_split" '#{pane_dead}')" = 1 ]
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx "$interrupt_session" >/dev/null
+[ ! -f "$interrupt_returned" ]
+tmux -L "$SOCKET" new-session -d -s completion-unrelated
+interrupt_other_host="$(tmux -L "$OUTER_SOCKET" split-window -d -P \
+  -F '#{pane_id}' -t "$interrupt_host")"
+printf -v interrupt_command \
+  'env -u TMUX -u TMUX_PANE %q -S %q attach-session -t "=completion-unrelated"' \
+  "$TMUX_TEST_BIN" "$SOCKET_PATH"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$interrupt_other_host" -- "$interrupt_command"
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_other_host" C-m
+attempts=0
+while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+    grep -Fx completion-unrelated >/dev/null && [ "$attempts" -lt 100 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx completion-unrelated >/dev/null || {
+    printf 'unrelated terminal client did not attach\n' >&2
+    tmux -L "$OUTER_SOCKET" capture-pane -p -t "$interrupt_other_host" >&2
+    exit 1
+  }
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_host" C-c
+attempts=0
+while [ ! -f "$interrupt_returned" ] && [ "$attempts" -lt 160 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -f "$interrupt_returned" ] || {
+  printf 'Ctrl+C left the terminal attached after provider exit\n' >&2
+  exit 1
+}
+[ "$(tmux -L "$SOCKET" display-message -p -t "$interrupt_pane" '#{pane_dead}')" = 1 ]
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx completion-unrelated >/dev/null || {
+    printf 'provider completion disconnected an unrelated client\n' >&2
+    tmux -L "$SOCKET" list-clients -F '#{client_session}' >&2
+    exit 1
+  }
+run_codex logs interrupt-terminal | grep -F 'fake Codex started' >/dev/null
+printf -v interrupt_command 'printf usable >%q' "$interrupt_usable"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$interrupt_host" -- "$interrupt_command"
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_host" C-m
+attempts=0
+while [ ! -f "$interrupt_usable" ] && [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -f "$interrupt_usable" ]
+run_codex delete --force interrupt-terminal >/dev/null
+tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
+tmux -L "$SOCKET" kill-session -t =completion-unrelated
+
 if [ "$CODEX_TEST_PART" = lifecycle ]; then
   run_codex delete --force integration
 fi

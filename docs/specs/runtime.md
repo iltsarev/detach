@@ -73,6 +73,13 @@ canonical project beneath the cleanup trap.
 
 Tmux environment arguments stay in memory; credentials never touch disk.
 
+When the provider pane dies, tmux detaches its clients. External terminals
+return to their original shell.
+The completion hook requires the exact pane ID and run token. It targets the
+original tmux session ID. A dead user split cannot disconnect those clients.
+The retained provider pane, metadata, and checkpoints remain available.
+Ctrl-C that leaves the provider running does not detach its clients.
+
 Default starts form a provider/project history series. A fresh start refuses a
 live member or second writer; otherwise it allocates a successor without
 reusing saved state. No-`NAME` commands select the live member, then the highest
