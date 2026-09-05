@@ -323,9 +323,9 @@ run_app_scenario() {
       recover-and-reconnect-run-in-app-with-terminal-fallback|\
       resume-runs-in-app-with-terminal-fallback|\
       session-shortcut-selects-assigned-session|\
-      settings-text-growth-stays-on-screen|\
       settings-window-stays-on-screen|\
       settings-system-reveals-storage-and-installation|\
+      settings-text-growth-stays-on-screen|\
       new-session-advanced-keeps-top-edge|\
       new-session-starts-without-outer-terminal|\
       new-session-start-opens-embedded-terminal) ;;
@@ -395,9 +395,9 @@ run_app_scenario main sessions 32 \
   settings-session-defaults-visible \
   settings-quick-chat-provider-persists \
   settings-quick-chat-folder-panel \
-  settings-text-growth-stays-on-screen \
   settings-window-stays-on-screen \
   settings-system-reveals-storage-and-installation \
+  settings-text-growth-stays-on-screen \
   quick-chat-command-starts-session \
   session-shortcut-reopens-closed-main-window \
   installed-app-focus-restored
