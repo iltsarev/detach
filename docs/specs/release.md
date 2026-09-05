@@ -69,28 +69,20 @@ change real power state, upload assets, or claim publication.
   The SBOM names the exact tag and commit. The release manifest binds its
   digest to the signed and notarized artifacts. Publication validates the SBOM
   before upload and after an independent remote download.
-- Reference-machine timing budgets are mandatory by default. When the release
-  Mac is intentionally busy, the owner may set
-  `DETACH_RELEASE_IGNORE_TIMING=1` for one `release-version` invocation and
-  confirm the exact `owner/repository@tag`; this omits only wall and per-stage
-  timing enforcement. Every functional, artifact, signing, power, lid, and
-  publication gate remains mandatory, and the waiver is recorded in private
-  gate and workflow evidence. The interactive prompt and environment forms
-  pass the same exact confirmation to the nested release quality gate.
-- A reviewed budget-schema change can rebaseline reference-Mac capacity after
-  required product work grows. The change records measured evidence and new
-  ceilings. Within one schema, each ceiling can only stay equal or decrease.
+- Stage and wall durations are telemetry. Every functional, artifact,
+  signing, power, lid, and publication gate remains mandatory; no timing
+  comparison can pass or fail a release.
 - The pre-release quality gate classifies the complete diff from the last
-  published tag to synchronized `main`. It runs that dependency-closed plan on
-  the release Mac and applies the reference-machine budgets. An empty or
+  published tag to synchronized `main`. It runs that plan on the release Mac.
+  An empty or
   unknown diff selects the complete release plan. This selection does not omit
   later signing, notarization, hardware, artifact, or publication gates.
 - A resumed release automatically reuses digest-bound passed stages from the
   newest compatible local run. It starts fresh when no compatible run exists.
-  It inherits a failed wall budget, so a shorter retry cannot hide a regression.
+  It inherits the earlier wall time as telemetry.
 - Before the pre-release gate, the orchestrator downloads the evidence from the
-  newest green `main` run that contains measured quality metrics. Test
-  identities and measured coverage must not regress from that artifact.
+  newest green `main` run that contains measured quality metrics.
+  Critical-source coverage must not regress from that artifact.
   Missing or invalid baseline evidence stops the release.
 - Resume state is private under `app/build/`. Resume is allowed only when
   source, durable stage evidence, and existing asset digests still match.

@@ -152,9 +152,17 @@ def main() -> None:
         )
     health_impact = policy.impact(["app/Sources/DetachKit/SessionHealth.swift"])
     require(
-        {"swift", "app", "codex", "claude", "distribution", "tmux-runtime"}
-        <= set(health_impact.stages),
+        {"swift", "app", "ui-e2e", "codex", "claude"} <= set(health_impact.stages),
         "session health changes omit runtime ownership evidence",
+    )
+    require(
+        not {"distribution", "tmux-runtime"} & set(health_impact.stages),
+        "session health changes select stages that cannot observe them",
+    )
+    cli_impact = policy.impact(["bin/detach-core"])
+    require(
+        tuple(cli_impact.stages) == ("static", "app", "codex", "claude", "distribution"),
+        "CLI changes do not select exactly their observable stages",
     )
     require(
         all("status" not in spec for spec in specs),

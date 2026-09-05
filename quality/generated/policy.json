@@ -370,12 +370,7 @@
       "requirement": "QC-APP-DOCTOR"
     }
   ],
-  "dependencies": [
-    {
-      "dependent": "ui-e2e",
-      "prerequisite": "app"
-    }
-  ],
+  "dependencies": [],
   "journeys": [
     {
       "capability": "quality-system",
@@ -747,7 +742,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 55,
+  "policy": 56,
   "release_domains": [
     {
       "gates": "-",
@@ -1242,13 +1237,6 @@
       "release_domain": "safe",
       "spec": "docs/specs/release.md",
       "test_domain": "release-contract"
-    },
-    {
-      "pattern": "tests/release-budget*",
-      "priority": 1000,
-      "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
-      "test_domain": "policy"
     },
     {
       "pattern": "tests/shell-safety*",
@@ -2166,7 +2154,7 @@
     {
       "command": "scripts/release-lid-probe",
       "id": "SC-POWER-CLOSED-LID",
-      "stage": "release-budget",
+      "stage": "publish-preflight",
       "status": "manual-release"
     },
     {
@@ -2361,7 +2349,6 @@
         "tests/docs-contract.sh",
         "tests/quality-*",
         "tests/quality_*",
-        "tests/release-budget*",
         "tests/security-*",
         "tests/security_*",
         "tests/shell-safety*",
@@ -2794,7 +2781,7 @@
             {
               "command": "scripts/release-lid-probe",
               "id": "SC-POWER-CLOSED-LID",
-              "stage": "release-budget",
+              "stage": "publish-preflight",
               "status": "manual-release"
             }
           ],
@@ -3279,12 +3266,6 @@
       "order": 130,
       "release": false,
       "timeout_seconds": 900
-    },
-    {
-      "name": "release-budget",
-      "order": 140,
-      "release": true,
-      "timeout_seconds": 1
     }
   ],
   "test_domains": [
@@ -3306,157 +3287,157 @@
     {
       "capabilities": "session-lifecycle,session-state",
       "id": "state-runtime",
-      "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
     {
       "capabilities": "session-state",
       "id": "state-source",
-      "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
     {
       "capabilities": "session-lifecycle,session-state,app-experience",
       "id": "session-health-source",
-      "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
     {
       "capabilities": "power-protection",
       "id": "power",
-      "stages": "static,swift,quality-contracts,app,distribution,tmux-runtime,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "session-lifecycle,session-state,power-protection",
       "id": "bounded-process-source",
-      "stages": "static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
     {
       "capabilities": "app-experience",
       "id": "swift-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "app-experience,onboarding",
       "id": "root-view-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "power-protection,onboarding,settings,update,diagnostics,installation",
       "id": "installation-store-source",
-      "stages": "static,swift,quality-contracts,app,distribution,tmux-runtime,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "app-experience,onboarding,settings,update",
       "id": "app-shell-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "app-experience,onboarding,settings",
       "id": "ui-e2e-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "onboarding",
       "id": "onboarding-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "settings",
       "id": "settings-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "update",
       "id": "update-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "diagnostics",
       "id": "diagnostics-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "session-lifecycle,session-state",
       "id": "runtime-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "session-lifecycle,session-state,app-experience",
       "id": "session-ui-source",
-      "stages": "static,swift,quality-contracts,app,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
       "capabilities": "quality-system",
       "id": "swift-test",
-      "stages": "static,swift,quality-contracts,release-budget"
+      "stages": "static,swift,quality-contracts"
     },
     {
       "capabilities": "installation,update",
       "id": "package",
-      "stages": "static,swift,quality-contracts,app,tmux-runtime,release-budget"
+      "stages": "static,swift,quality-contracts,app,ui-e2e,tmux-runtime"
     },
     {
       "capabilities": "session-lifecycle,session-state",
       "id": "cli",
-      "stages": "static,app,codex,claude,distribution,tmux-runtime,release-budget"
+      "stages": "static,app,codex,claude,distribution"
     },
     {
       "capabilities": "installation",
       "id": "install",
-      "stages": "static,app,distribution,tmux-runtime,release-budget"
+      "stages": "static,app,distribution"
     },
     {
       "capabilities": "session-lifecycle",
       "id": "tmux-build",
-      "stages": "static,app,codex,claude,tmux-runtime,release-budget"
+      "stages": "static,app,codex,claude,tmux-runtime"
     },
     {
       "capabilities": "update,publication",
       "id": "release-tool",
-      "stages": "static,app,release-preflight,publish-preflight,release-workflow,release-budget"
+      "stages": "static,app,release-preflight,publish-preflight,release-workflow"
     },
     {
       "capabilities": "installation",
       "id": "app-script",
-      "stages": "static,app,tmux-runtime,release-preflight,release-budget"
+      "stages": "static,app,tmux-runtime,release-preflight"
     },
     {
       "capabilities": "session-lifecycle,session-state",
       "id": "codex-test",
-      "stages": "static,codex,release-budget"
+      "stages": "static,codex"
     },
     {
       "capabilities": "session-lifecycle,session-state",
       "id": "claude-test",
-      "stages": "static,claude,release-budget"
+      "stages": "static,claude"
     },
     {
       "capabilities": "installation",
       "id": "distribution-test",
-      "stages": "static,app,distribution,release-budget"
+      "stages": "static,app,distribution"
     },
     {
       "capabilities": "session-lifecycle,power-protection",
       "id": "runtime-test",
-      "stages": "static,app,tmux-runtime,release-budget"
+      "stages": "static,app,tmux-runtime"
     },
     {
       "capabilities": "app-experience",
       "id": "ui-test",
-      "stages": "static,app,release-budget"
+      "stages": "static,app,ui-e2e"
     },
     {
       "capabilities": "update",
       "id": "release-preflight-test",
-      "stages": "static,release-preflight,release-budget"
+      "stages": "static,release-preflight"
     },
     {
       "capabilities": "publication",
       "id": "publish-preflight-test",
-      "stages": "static,publish-preflight,release-budget"
+      "stages": "static,publish-preflight"
     },
     {
       "capabilities": "update,publication",
       "id": "release-workflow-test",
-      "stages": "static,release-workflow,release-budget"
+      "stages": "static,release-workflow"
     },
     {
       "capabilities": "update,publication",

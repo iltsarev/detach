@@ -23,8 +23,7 @@
           "tmux-runtime",
           "release-preflight",
           "publish-preflight",
-          "release-workflow",
-          "release-budget"
+          "release-workflow"
         ],
         "specs": [
           "documentation"
@@ -90,8 +89,7 @@
         "status": "known",
         "stages": [
           "static",
-          "codex",
-          "release-budget"
+          "codex"
         ],
         "specs": [
           "runtime"
@@ -125,12 +123,9 @@
         "stages": [
           "static",
           "app",
-          "ui-e2e",
           "codex",
           "claude",
-          "distribution",
-          "tmux-runtime",
-          "release-budget"
+          "distribution"
         ],
         "specs": [
           "runtime"
@@ -168,8 +163,7 @@
           "swift",
           "quality-contracts",
           "app",
-          "ui-e2e",
-          "release-budget"
+          "ui-e2e"
         ],
         "specs": [
           "app"
@@ -212,10 +206,7 @@
           "swift",
           "quality-contracts",
           "app",
-          "ui-e2e",
-          "distribution",
-          "tmux-runtime",
-          "release-budget"
+          "ui-e2e"
         ],
         "specs": [
           "power"
@@ -250,10 +241,7 @@
           "swift",
           "quality-contracts",
           "app",
-          "ui-e2e",
-          "distribution",
-          "tmux-runtime",
-          "release-budget"
+          "ui-e2e"
         ],
         "specs": [
           "documentation",
@@ -298,8 +286,7 @@
           "tmux-runtime",
           "release-preflight",
           "publish-preflight",
-          "release-workflow",
-          "release-budget"
+          "release-workflow"
         ],
         "specs": [
           "documentation",

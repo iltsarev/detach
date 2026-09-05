@@ -78,10 +78,10 @@ read every spec.
   evidence.
 - Prefer one focused test while iterating. Do not repeatedly pay for the full
   suite when a narrower deterministic check can close the feedback loop.
-- Treat a local timing-budget failure as performance work: diagnose and reduce
-  the slow stage before rerunning it. Never rerun merely for warmer
-  caches, timing variance, or a lucky result; rerun unchanged only after
-  evidence identifies an unrelated external transient, and record its cause.
+- Stage timing is telemetry, not a verdict. Treat a slow stage as performance
+  work. Never rerun merely for warmer caches, timing variance, or a lucky
+  result; rerun unchanged only after evidence identifies an unrelated external
+  transient, and record its cause.
 - Never run real power tests, signing, notarization, tagging, upload, or
   publication during ordinary implementation.
 

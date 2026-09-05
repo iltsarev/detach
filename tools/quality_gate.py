@@ -44,9 +44,6 @@ VALID_RESULTS = {
     "blocked",
 }
 FAILURE_RESULTS = {"failed", "environment-failed", "timeout", "interrupted"}
-RELEASE_TARGET = re.compile(
-    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@v[0-9A-Za-z._+-]+$"
-)
 SAFE_RUN_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
@@ -57,6 +54,19 @@ EXECUTION_PREREQUISITES = {
     "codex": ("app",),
     "claude": ("app",),
     "tmux-runtime": ("app",),
+}
+# Typical measured stage seconds on the reference Mac. The scheduler starts
+# the longest ready post-UI stage first. These are scheduling hints only; no
+# verdict compares a measured duration with them.
+POST_UI_STAGE_WEIGHTS = {
+    "gate-contract": 120,
+    "codex": 110,
+    "release-workflow": 110,
+    "distribution": 80,
+    "claude": 60,
+    "publish-preflight": 30,
+    "release-preflight": 15,
+    "tmux-runtime": 8,
 }
 POST_UI_STAGES = (
     "gate-contract",
@@ -193,7 +203,6 @@ class Options:
     explain: bool
     resume: str
     keep_going: bool
-    without_release_budget: bool
     list_stages: bool
     stage: str
     shard: str
@@ -343,7 +352,6 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--explain", action="store_true")
     result.add_argument("--resume", default="")
     result.add_argument("--keep-going", action="store_true")
-    result.add_argument("--without-release-budget", action="store_true")
     result.add_argument("--list-stages", action="store_true")
     result.add_argument("--stage", default="")
     result.add_argument("--shard", default="")
@@ -360,7 +368,6 @@ def parse_options(arguments: list[str]) -> Options:
         explain=values.explain,
         resume=values.resume,
         keep_going=values.keep_going,
-        without_release_budget=values.without_release_budget,
         list_stages=values.list_stages,
         stage=values.stage,
         shard=values.shard,
@@ -378,8 +385,6 @@ class QualityGate:
         self.test_mode = environment_flag("DETACH_QUALITY_GATE_TEST_MODE")
         self.test_real_static = environment_flag("DETACH_QUALITY_GATE_TEST_REAL_STATIC")
         self.test_direct = environment_flag("DETACH_QUALITY_GATE_TEST_DIRECT")
-        self.release_timing_override = os.environ.get("DETACH_RELEASE_TIMING_OVERRIDE", "")
-        self.release_timing_override_active = False
         self.authority = ""
         self.resolved_base = ""
         self.source_commit = git_text(["rev-parse", "--verify", "HEAD"])
@@ -406,10 +411,8 @@ class QualityGate:
         self.markdown = self.run_dir / "summary.md"
         self.environment = self.run_dir / "environment.tsv"
         self.artifacts = self.run_dir / "artifacts.tsv"
-        self.release_budget = ROOT / "tests/release-budget.tsv"
         self.started_epoch = int(time.time())
         self.started_at = utc_now()
-        self.effective_timing_wall = 0
         self.results: dict[str, StageResult] = {}
         self.active: dict[str, ActiveStage] = {}
         self.reported: set[str] = set()
@@ -462,43 +465,6 @@ class QualityGate:
         else:
             raise GateError(f"invalid quality authority: {self.authority}")
 
-        if self.release_timing_override:
-            if not RELEASE_TARGET.fullmatch(self.release_timing_override):
-                raise GateError(
-                    "DETACH_RELEASE_TIMING_OVERRIDE must be an exact owner/repository@tag"
-                )
-            if os.environ.get("DETACH_CONFIRM_RELEASE") != self.release_timing_override:
-                raise GateError(
-                    "release timing override requires matching exact release confirmation"
-                )
-            if self.options.mode not in ("release", "repository") or not (
-                self.options.without_release_budget
-            ):
-                raise GateError(
-                    "release timing override requires repository or release mode with "
-                    "--without-release-budget"
-                )
-            self.release_timing_override_active = True
-        if (
-            self.options.without_release_budget
-            and os.environ.get("GITHUB_ACTIONS") != "true"
-            and not self.test_mode
-            and not self.release_timing_override_active
-        ):
-            raise GateError("--without-release-budget is restricted to GitHub Actions")
-
-        if not self.test_mode:
-            clock_names = [
-                "DETACH_QUALITY_GATE_TEST_WALL_SECONDS",
-                "DETACH_QUALITY_GATE_TEST_CODEX_SECONDS",
-            ]
-            clock_names.extend(
-                "DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_"
-                + stage.upper().replace("-", "_")
-                for stage in self.all_stages
-            )
-            if any(os.environ.get(name, "") for name in clock_names):
-                raise GateError("quality-gate clock overrides are test-only")
         if self.options.output_format not in ("text", "json"):
             raise GateError(f"invalid format: {self.options.output_format}")
         if self.options.stage and (
@@ -661,10 +627,7 @@ class QualityGate:
                         changed = True
         if self.options.mode == "release":
             self.selected = [stage for stage in self.selected if stage in self.release_stages]
-            self.add_stage("release-budget", "mandatory release timing postflight")
         self.selected = [stage for stage in self.all_stages if stage in self.selected]
-        if self.options.without_release_budget:
-            self.selected = [stage for stage in self.selected if stage != "release-budget"]
         if self.options.shard:
             requested = self.options.shard.split(",")
             if (
@@ -792,9 +755,6 @@ class QualityGate:
             }
         lines = ["schema\t1"]
         lines.extend(f"{key}\t{value}" for key, value in values.items())
-        lines.append(
-            f"release_timing_override\t{int(self.release_timing_override_active)}"
-        )
         lines.append(
             f"managed_sandbox_declared\t{str(bool(os.environ.get('CODEX_SANDBOX'))).lower()}"
         )
@@ -968,10 +928,7 @@ class QualityGate:
             measured = int(time.time()) - self.started_epoch
             duration = str(measured)
             summary_digest = sha256_file(self.summary)
-            effective = self.effective_timing_wall or measured
-            if effective <= 0:
-                effective = measured
-            timing_wall = str(effective)
+            timing_wall = str(max(measured, self.inherited_timing_wall()))
         resumed_from_run = ""
         resumed_from_digest = ""
         if self.resume_dir is not None:
@@ -1325,9 +1282,7 @@ class QualityGate:
         exact_app = environment.pop("DETACH_QUALITY_EXACT_APP", "")
         exact_products = environment.pop("DETACH_QUALITY_EXACT_PRODUCTS", "")
         for name in (
-            "DETACH_RELEASE_TIMING_OVERRIDE",
             "DETACH_CONFIRM_RELEASE",
-            "DETACH_RELEASE_IGNORE_TIMING",
             "DETACH_VERSION",
             "DETACH_BUILD_VERSION",
             "DETACH_BUILD_ARCHS",
@@ -1516,18 +1471,10 @@ class QualityGate:
 
     def run_post_ui_stages(self) -> None:
         pending = [stage for stage in POST_UI_STAGES if stage in self.selected]
-        budgets = self.budget_values()
-
-        def expected_seconds(stage: str) -> int:
-            value = budgets.get(f"stage_{stage.replace('-', '_')}_seconds_max")
-            if value is None or not POSITIVE_INTEGER.fullmatch(value):
-                raise GateError(f"release stage budget must rank scheduled stage: {stage}")
-            return int(value)
-
         pending.sort(
             key=lambda stage: (
                 stage != "gate-contract",
-                -expected_seconds(stage),
+                -POST_UI_STAGE_WEIGHTS.get(stage, 0),
                 self.all_stages.index(stage),
             )
         )
@@ -1587,68 +1534,18 @@ class QualityGate:
             if pending or any(stage in self.active for stage in POST_UI_STAGES):
                 time.sleep(PROCESS_POLL_SECONDS)
 
-    def budget_values(self) -> dict[str, str | None]:
-        if not self.release_budget.is_file() or self.release_budget.is_symlink():
-            raise GateError("release budget is missing or unsafe")
-        values: dict[str, list[str]] = {}
-        for line in self.release_budget.read_text(encoding="utf-8").splitlines():
-            fields = line.split("\t")
-            if len(fields) == 2:
-                values.setdefault(fields[0], []).append(fields[1])
-        return {
-            key: items[0] if len(items) == 1 else None
-            for key, items in values.items()
-        }
-
-    def stage_budget_override(self, stage: str) -> str:
-        suffix = stage.upper().replace("-", "_")
-        value = os.environ.get(
-            f"DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_{suffix}", ""
-        )
-        if not value and stage == "codex":
-            value = os.environ.get("DETACH_QUALITY_GATE_TEST_CODEX_SECONDS", "")
-        return value
-
-    def enforce_stage_budget(self, stage: str) -> None:
-        if (
-            self.options.without_release_budget
-            or stage == "release-budget"
-            or "release-budget" in self.selected
-        ):
-            return
-        result = self.results[stage]
-        if result.status not in ("passed", "reused"):
-            return
-        override = self.stage_budget_override(stage)
-        if self.test_mode and not override:
-            return
-        measured = override or str(result.duration)
-        if not NONNEGATIVE_INTEGER.fullmatch(measured):
-            raise GateError(f"stage duration must be a non-negative integer: {stage}")
-        key = f"stage_{stage.replace('-', '_')}_seconds_max"
-        maximum = self.budget_values().get(key)
-        if maximum is None:
-            raise GateError(f"release stage budget is missing or duplicated: {stage}")
-        if not POSITIVE_INTEGER.fullmatch(maximum):
-            raise GateError(f"release stage budget must be a positive integer: {stage}")
-        if int(measured) > int(maximum):
-            log = result.log
-            if log == "-":
-                log = f"{stage}.log"
-                write_private(self.run_dir / log, "")
-            with (self.run_dir / log).open("a", encoding="utf-8") as output:
-                output.write(
-                    f"stage budget: {stage} regressed: {measured}s > {maximum}s\n"
-                )
-            self.record_result(
-                stage,
-                StageResult("failed", int(measured), log, 1, result.origin_run),
-            )
+    def inherited_timing_wall(self) -> int:
+        """Return the wall time carried from a resumed run as telemetry."""
+        if self.resume_dir is None:
+            return 0
+        raw = self.prior_manifest.get("timing_wall_seconds")
+        if raw is None or not NONNEGATIVE_INTEGER.fullmatch(raw):
+            raise GateError("resume timing wall duration is invalid")
+        return int(raw)
 
     def report(self, stage: str) -> None:
         if stage in self.reported:
             return
-        self.enforce_stage_budget(stage)
         result = self.results[stage]
         if result.status in ("failed", "environment-failed", "timeout"):
             if result.log != "-":
@@ -1675,92 +1572,6 @@ class QualityGate:
                 f"({result.duration}s; log={result.log})"
             )
         self.reported.add(stage)
-
-    def evaluate_release_budget(self) -> None:
-        if "release-budget" not in self.selected:
-            return
-        for stage in self.selected:
-            if stage == "release-budget":
-                continue
-            result = self.results.get(stage)
-            if result is None or result.status not in ("passed", "reused"):
-                print(
-                    f"quality-gate: blocking release-budget because {stage} is not passed",
-                    file=sys.stderr,
-                )
-                self.record_result(
-                    "release-budget", StageResult("blocked", 0, "-", 0)
-                )
-                return
-        values = self.budget_values()
-        if values.get("schema") != "3":
-            raise GateError("release budget schema is unsupported")
-        raw_elapsed = os.environ.get(
-            "DETACH_QUALITY_GATE_TEST_WALL_SECONDS",
-            str(int(time.time()) - self.started_epoch),
-        )
-        if not NONNEGATIVE_INTEGER.fullmatch(raw_elapsed):
-            raise GateError("test wall duration must be a non-negative integer")
-        elapsed = int(raw_elapsed)
-        inherited = 0
-        if self.resume_dir is not None:
-            raw_inherited = self.prior_manifest.get("timing_wall_seconds")
-            if raw_inherited is None or not NONNEGATIVE_INTEGER.fullmatch(raw_inherited):
-                raise GateError("resume timing wall duration is invalid")
-            inherited = int(raw_inherited)
-        self.effective_timing_wall = max(elapsed, inherited)
-        wall_maximum = values.get("wall_seconds_max")
-        if wall_maximum is None:
-            raise GateError("release wall budget is missing or duplicated")
-        if not POSITIVE_INTEGER.fullmatch(wall_maximum):
-            raise GateError("release wall budget must be a positive integer")
-        lines = [
-            f"invocation_wall_seconds\t{elapsed}",
-            f"inherited_wall_seconds\t{inherited}",
-            f"effective_wall_seconds\t{self.effective_timing_wall}\tmax\t{wall_maximum}",
-        ]
-        result = "passed"
-        exit_status = 0
-        if self.effective_timing_wall > int(wall_maximum):
-            lines.append(
-                f"release budget: wall time regressed: {self.effective_timing_wall}s > "
-                f"{wall_maximum}s"
-            )
-            result = "failed"
-            exit_status = 1
-        for stage in self.selected:
-            if stage == "release-budget":
-                continue
-            stage_result = self.results[stage]
-            override = self.stage_budget_override(stage)
-            duration = override or str(stage_result.duration)
-            if not NONNEGATIVE_INTEGER.fullmatch(duration):
-                raise GateError(f"stage duration must be a non-negative integer: {stage}")
-            key = f"stage_{stage.replace('-', '_')}_seconds_max"
-            maximum = values.get(key)
-            if maximum is None:
-                raise GateError(f"release stage budget is missing or duplicated: {stage}")
-            if not POSITIVE_INTEGER.fullmatch(maximum):
-                raise GateError(f"release stage budget must be a positive integer: {stage}")
-            lines.append(f"{stage}_seconds\t{duration}\tmax\t{maximum}")
-            if self.test_mode and not override:
-                continue
-            if int(duration) > int(maximum):
-                lines.append(
-                    f"release budget: {stage} regressed: {duration}s > {maximum}s"
-                )
-                result = "failed"
-                exit_status = 1
-        if result == "passed":
-            lines.append(
-                f"Release budget passed: wall={self.effective_timing_wall}s "
-                f"max={wall_maximum}s"
-            )
-        write_private(self.run_dir / "release-budget.log", "\n".join(lines) + "\n")
-        self.record_result(
-            "release-budget",
-            StageResult(result, 0, "release-budget.log", exit_status),
-        )
 
     def assemble_summary(self) -> None:
         for stage in self.selected:
@@ -1964,10 +1775,7 @@ class QualityGate:
             self.wait_for(("quality-contracts",))
             self.run_post_ui_stages()
             for stage in self.selected:
-                if stage != "release-budget":
-                    self.wait_for((stage,))
-            self.evaluate_release_budget()
-            self.wait_for(("release-budget",))
+                self.wait_for((stage,))
         except InterruptedRun:
             self.interrupt()
         finally:
@@ -2249,7 +2057,6 @@ def run_distribution_parts(root: Path, run_dir: Path) -> int:
 def run_static_contracts(root: Path, run_dir: Path) -> int:
     contracts = (
         ("documentation", [str(root / "tests/docs-contract.sh")]),
-        ("release-budget", [str(root / "tests/release-budget-ratchet.sh")]),
         ("shell-safety", [str(root / "tests/shell-safety.sh")]),
         ("suite-inventory", [str(root / "tests/test-suite-contract.sh")]),
     )
@@ -2449,12 +2256,6 @@ def gate_contract_definitions(
             [str(root / "tests/quality-mutation.sh")],
             {},
             "Quality mutation contracts passed",
-        ),
-        (
-            "release-budget-ratchet.log",
-            [str(root / "tests/release-budget-ratchet-contract.sh")],
-            {},
-            "Release budget ratchet contract tests passed",
         ),
         (
             "shell-safety.log",

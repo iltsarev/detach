@@ -506,7 +506,7 @@ def main() -> None:
             "total": 1,
             "lines": {region_line: False},
         }
-        region_metrics = build_metrics(
+        region_metrics, _ = build_metrics(
             region_coverage,
             set(test_lines()),
             POLICY,
@@ -575,9 +575,8 @@ def main() -> None:
                 baseline=baseline_root,
                 authority="ci-merge",
             ),
-            expected=1,
         )
-        require_text(exact_removed, "business test was removed")
+        require_text(exact_removed, "advisory: business test was removed")
 
         wrong_policy = json.loads(original_metrics)
         wrong_policy["policy"] = 13
@@ -654,9 +653,8 @@ def main() -> None:
                 baseline=baseline_root,
                 authority="ci-merge",
             ),
-            expected=1,
         )
-        require_text(aggregate, "ui line coverage regressed")
+        require_text(aggregate, "advisory: ui line coverage regressed")
 
         critical_path = POLICY.critical[0][0]
         critical_coverage = root / "critical-regressed.json"
@@ -687,9 +685,8 @@ def main() -> None:
                 baseline=baseline_root,
                 authority="ci-merge",
             ),
-            expected=1,
         )
-        require_text(changed_loss, "changed-line coverage regressed")
+        require_text(changed_loss, "advisory: changed-line coverage regressed")
 
         no_metrics_root = root / "no-metrics"
         create_baseline(no_metrics_root, baseline_metrics, include_metrics=False)

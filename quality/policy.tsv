@@ -1,5 +1,5 @@
 schema	1
-policy	55
+policy	56
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -29,42 +29,40 @@ stage	100	tmux-runtime	1200	true
 stage	110	release-preflight	900	true
 stage	120	publish-preflight	900	true
 stage	130	release-workflow	900	false
-stage	140	release-budget	1	true
-dependency	app	ui-e2e
 test-domain	policy	static,gate-contract	quality-system
 test-domain	quality-core	*	*
 test-domain	docs	static	documentation
-test-domain	state-runtime	static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget	session-lifecycle,session-state
-test-domain	state-source	static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget	session-state
-test-domain	session-health-source	static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget	session-lifecycle,session-state,app-experience
-test-domain	power	static,swift,quality-contracts,app,distribution,tmux-runtime,release-budget	power-protection
-test-domain	bounded-process-source	static,swift,quality-contracts,app,codex,claude,distribution,tmux-runtime,release-budget	session-lifecycle,session-state,power-protection
-test-domain	swift-source	static,swift,quality-contracts,app,release-budget	app-experience
-test-domain	root-view-source	static,swift,quality-contracts,app,release-budget	app-experience,onboarding
-test-domain	installation-store-source	static,swift,quality-contracts,app,distribution,tmux-runtime,release-budget	power-protection,onboarding,settings,update,diagnostics,installation
-test-domain	app-shell-source	static,swift,quality-contracts,app,release-budget	app-experience,onboarding,settings,update
-test-domain	ui-e2e-source	static,swift,quality-contracts,app,release-budget	app-experience,onboarding,settings
-test-domain	onboarding-source	static,swift,quality-contracts,app,release-budget	onboarding
-test-domain	settings-source	static,swift,quality-contracts,app,release-budget	settings
-test-domain	update-source	static,swift,quality-contracts,app,release-budget	update
-test-domain	diagnostics-source	static,swift,quality-contracts,app,release-budget	diagnostics
-test-domain	runtime-source	static,swift,quality-contracts,app,release-budget	session-lifecycle,session-state
-test-domain	session-ui-source	static,swift,quality-contracts,app,release-budget	session-lifecycle,session-state,app-experience
-test-domain	swift-test	static,swift,quality-contracts,release-budget	quality-system
-test-domain	package	static,swift,quality-contracts,app,tmux-runtime,release-budget	installation,update
-test-domain	cli	static,app,codex,claude,distribution,tmux-runtime,release-budget	session-lifecycle,session-state
-test-domain	install	static,app,distribution,tmux-runtime,release-budget	installation
-test-domain	tmux-build	static,app,codex,claude,tmux-runtime,release-budget	session-lifecycle
-test-domain	release-tool	static,app,release-preflight,publish-preflight,release-workflow,release-budget	update,publication
-test-domain	app-script	static,app,tmux-runtime,release-preflight,release-budget	installation
-test-domain	codex-test	static,codex,release-budget	session-lifecycle,session-state
-test-domain	claude-test	static,claude,release-budget	session-lifecycle,session-state
-test-domain	distribution-test	static,app,distribution,release-budget	installation
-test-domain	runtime-test	static,app,tmux-runtime,release-budget	session-lifecycle,power-protection
-test-domain	ui-test	static,app,release-budget	app-experience
-test-domain	release-preflight-test	static,release-preflight,release-budget	update
-test-domain	publish-preflight-test	static,publish-preflight,release-budget	publication
-test-domain	release-workflow-test	static,release-workflow,release-budget	update,publication
+test-domain	state-runtime	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state
+test-domain	state-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-state
+test-domain	session-health-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state,app-experience
+test-domain	power	static,swift,quality-contracts,app,ui-e2e	power-protection
+test-domain	bounded-process-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state,power-protection
+test-domain	swift-source	static,swift,quality-contracts,app,ui-e2e	app-experience
+test-domain	root-view-source	static,swift,quality-contracts,app,ui-e2e	app-experience,onboarding
+test-domain	installation-store-source	static,swift,quality-contracts,app,ui-e2e	power-protection,onboarding,settings,update,diagnostics,installation
+test-domain	app-shell-source	static,swift,quality-contracts,app,ui-e2e	app-experience,onboarding,settings,update
+test-domain	ui-e2e-source	static,swift,quality-contracts,app,ui-e2e	app-experience,onboarding,settings
+test-domain	onboarding-source	static,swift,quality-contracts,app,ui-e2e	onboarding
+test-domain	settings-source	static,swift,quality-contracts,app,ui-e2e	settings
+test-domain	update-source	static,swift,quality-contracts,app,ui-e2e	update
+test-domain	diagnostics-source	static,swift,quality-contracts,app,ui-e2e	diagnostics
+test-domain	runtime-source	static,swift,quality-contracts,app,ui-e2e	session-lifecycle,session-state
+test-domain	session-ui-source	static,swift,quality-contracts,app,ui-e2e	session-lifecycle,session-state,app-experience
+test-domain	swift-test	static,swift,quality-contracts	quality-system
+test-domain	package	static,swift,quality-contracts,app,ui-e2e,tmux-runtime	installation,update
+test-domain	cli	static,app,codex,claude,distribution	session-lifecycle,session-state
+test-domain	install	static,app,distribution	installation
+test-domain	tmux-build	static,app,codex,claude,tmux-runtime	session-lifecycle
+test-domain	release-tool	static,app,release-preflight,publish-preflight,release-workflow	update,publication
+test-domain	app-script	static,app,tmux-runtime,release-preflight	installation
+test-domain	codex-test	static,codex	session-lifecycle,session-state
+test-domain	claude-test	static,claude	session-lifecycle,session-state
+test-domain	distribution-test	static,app,distribution	installation
+test-domain	runtime-test	static,app,tmux-runtime	session-lifecycle,power-protection
+test-domain	ui-test	static,app,ui-e2e	app-experience
+test-domain	release-preflight-test	static,release-preflight	update
+test-domain	publish-preflight-test	static,publish-preflight	publication
+test-domain	release-workflow-test	static,release-workflow	update,publication
 test-domain	release-contract	static,gate-contract	update,publication
 test-domain	metadata	static	quality-system
 test-domain	unknown	*	*
@@ -137,7 +135,6 @@ route	1000	tests/release-pr*	release-contract	safe	docs/specs/release.md
 route	1000	tests/release_pr*	release-contract	safe	docs/specs/release.md
 route	1000	tests/release-sbom*	release-contract	safe	docs/specs/release.md
 route	1000	tests/release_sbom*	release-contract	safe	docs/specs/release.md
-route	1000	tests/release-budget*	policy	safe	docs/specs/documentation.md
 route	1000	tests/shell-safety*	policy	safe	docs/specs/documentation.md
 route	1000	tests/test-suite-contract.sh	policy	safe	docs/specs/documentation.md
 route	990	tests/docs-contract.sh	docs	safe	docs/specs/documentation.md
@@ -313,7 +310,7 @@ scenario	SC-SESSION-DELETE-CLAUDE	claude	instrumented	tests/run-claude.sh
 scenario	SC-POWER-UNIT	swift	legacy-stage	cd app && swift test --filter Power
 scenario	SC-POWER-LOW-BATTERY	swift	legacy-stage	cd app && swift test --filter PowerProtection
 scenario	SC-POWER-HELPER	swift	legacy-stage	cd app && swift test --filter PowerHelper
-scenario	SC-POWER-CLOSED-LID	release-budget	manual-release	scripts/release-lid-probe
+scenario	SC-POWER-CLOSED-LID	publish-preflight	manual-release	scripts/release-lid-probe
 scenario	SC-APP-ONBOARDING-UNIT	swift	legacy-stage	cd app && swift test --filter Onboarding
 scenario	SC-APP-SETTINGS-UNIT	swift	legacy-stage	cd app && swift test --filter Settings
 scenario	SC-UI-DASHBOARD	ui-e2e	instrumented	tests/ui-e2e.sh

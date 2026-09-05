@@ -19,7 +19,7 @@ trap cleanup EXIT
 grep -F 'timeout-minutes: 10' "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 grep -F 'DETACH_QUALITY_AUTHORITY: ci-merge' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
-grep -F 'run: scripts/quality-gate --mode repository --keep-going --without-release-budget' \
+grep -F 'run: scripts/quality-gate --mode repository --keep-going' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 grep -F 'name: Validate and partition exact pull-request impact' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
@@ -216,11 +216,8 @@ prepare_template() {
   install -m 0644 "$ROOT/quality/generated/policy.json" \
     "$TEMPLATE_REPO/quality/generated/policy.json"
   install -m 0644 "$ROOT"/docs/specs/*.md "$TEMPLATE_REPO/docs/specs/"
-  install -m 0755 "$ROOT/tests/release-budget-ratchet.sh" \
-    "$ROOT/tests/shell-safety.sh" "$ROOT/tests/quality-policy.sh" \
+  install -m 0755 "$ROOT/tests/shell-safety.sh" "$ROOT/tests/quality-policy.sh" \
     "$ROOT/tests/quality-dashboard.sh" "$TEMPLATE_REPO/tests/"
-  install -m 0644 "$ROOT/tests/release-budget.tsv" \
-    "$TEMPLATE_REPO/tests/"
   printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/docs-contract.sh"
   chmod 0755 "$TEMPLATE_REPO/tests/docs-contract.sh"
   printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/test-suite-contract.sh"
@@ -229,7 +226,7 @@ prepare_template() {
   printf '%s\n' actions.log results aggregate tampered-aggregate '*.out' /presentations/ \
     >"$TEMPLATE_REPO/.gitignore"
   for stage in static gate-contract swift quality-contracts app ui-e2e codex claude distribution tmux-runtime release-preflight publish-preflight release-workflow; do
-    printf '#!/bin/bash\nset -eu\nexpected_cache="${GATE_EXPECTED_MODULE_CACHE:?}/%s"\n[ -z "${DETACH_RELEASE_TIMING_OVERRIDE:-}" ] || { printf "release timing override leaked into stage\\n" >&2; exit 1; }\n[ -z "${DETACH_CONFIRM_RELEASE:-}" ] || { printf "release confirmation leaked into stage\\n" >&2; exit 1; }\n[ -z "${DETACH_QUALITY_GATE_RESULT_ROOT:-}" ] || { printf "quality result root leaked into stage\\n" >&2; exit 1; }\n[ "${CLANG_MODULE_CACHE_PATH:-}" = "$expected_cache" ] || { printf "unexpected Clang module cache: %%s\\n" "${CLANG_MODULE_CACHE_PATH:-missing}" >&2; exit 1; }\n[ "${SWIFTPM_MODULECACHE_OVERRIDE:-}" = "$expected_cache" ] || { printf "unexpected SwiftPM module cache: %%s\\n" "${SWIFTPM_MODULECACHE_OVERRIDE:-missing}" >&2; exit 1; }\nprintf "%%s\\n" "%s" >>"${GATE_ACTION_LOG:?}"\n[ "${STAGE_SLEEP:-0}" = 0 ] || sleep "$STAGE_SLEEP"\ncase " ${FAIL_STAGES:-} " in *" %s "*) exit 23 ;; esac\n' "$stage" "$stage" "$stage" \
+    printf '#!/bin/bash\nset -eu\nexpected_cache="${GATE_EXPECTED_MODULE_CACHE:?}/%s"\n[ -z "${DETACH_CONFIRM_RELEASE:-}" ] || { printf "release confirmation leaked into stage\\n" >&2; exit 1; }\n[ -z "${DETACH_QUALITY_GATE_RESULT_ROOT:-}" ] || { printf "quality result root leaked into stage\\n" >&2; exit 1; }\n[ "${CLANG_MODULE_CACHE_PATH:-}" = "$expected_cache" ] || { printf "unexpected Clang module cache: %%s\\n" "${CLANG_MODULE_CACHE_PATH:-missing}" >&2; exit 1; }\n[ "${SWIFTPM_MODULECACHE_OVERRIDE:-}" = "$expected_cache" ] || { printf "unexpected SwiftPM module cache: %%s\\n" "${SWIFTPM_MODULECACHE_OVERRIDE:-missing}" >&2; exit 1; }\nprintf "%%s\\n" "%s" >>"${GATE_ACTION_LOG:?}"\n[ "${STAGE_SLEEP:-0}" = 0 ] || sleep "$STAGE_SLEEP"\ncase " ${FAIL_STAGES:-} " in *" %s "*) exit 23 ;; esac\n' "$stage" "$stage" "$stage" \
       >"$TEMPLATE_REPO/tests/quality-gate-fixtures/$stage"
     chmod 0755 "$TEMPLATE_REPO/tests/quality-gate-fixtures/$stage"
   done
@@ -268,8 +265,7 @@ commit_ci_merge() {
 }
 
 gate() {
-  local release_override="${DETACH_TEST_RELEASE_TIMING_OVERRIDE:-}"
-  local release_confirmation="${DETACH_TEST_RELEASE_CONFIRMATION:-$release_override}"
+  local release_confirmation="${DETACH_TEST_RELEASE_CONFIRMATION:-}"
   (
     cd -P "$REPO"
     GATE_ACTION_LOG="$ACTION_LOG" \
@@ -277,19 +273,16 @@ gate() {
       DETACH_QUALITY_GATE_TEST_MODE=1 \
       DETACH_QUALITY_GATE_TEST_DIRECT="${DETACH_QUALITY_GATE_TEST_DIRECT:-1}" \
       DETACH_QUALITY_GATE_RESULT_ROOT="$RESULT_ROOT" \
-      DETACH_RELEASE_TIMING_OVERRIDE="$release_override" \
       DETACH_CONFIRM_RELEASE="$release_confirmation" \
       "$REPO/scripts/quality-gate" "$@"
   )
 }
 
 production_plan() {
-  local release_override="${DETACH_TEST_RELEASE_TIMING_OVERRIDE:-}"
-  local release_confirmation="${DETACH_TEST_RELEASE_CONFIRMATION:-$release_override}"
+  local release_confirmation="${DETACH_TEST_RELEASE_CONFIRMATION:-}"
   (
     cd -P "$REPO"
     GITHUB_ACTIONS= \
-    DETACH_RELEASE_TIMING_OVERRIDE="$release_override" \
       DETACH_CONFIRM_RELEASE="$release_confirmation" \
       "$REPO/scripts/quality-gate" "$@"
   )
@@ -331,9 +324,9 @@ esac
 if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = selection ]; then
 setup_fixture docs
 stages="$(gate --list-stages)"
-[ "$(printf '%s\n' "$stages" | wc -l | tr -d ' ')" = 14 ]
+[ "$(printf '%s\n' "$stages" | wc -l | tr -d ' ')" = 13 ]
 [ "$(printf '%s\n' "$stages" | head -1)" = static ]
-[ "$(printf '%s\n' "$stages" | tail -1)" = release-budget ]
+[ "$(printf '%s\n' "$stages" | tail -1)" = release-workflow ]
 printf '%s\n' docs >>"$REPO/README.md"
 plan="$(gate --plan)"
 [[ "$plan" = *'stages=static' ]]
@@ -346,12 +339,12 @@ plan="$(gate --plan)"
 setup_fixture codex-provider-test
 printf '%s\n' '#!/bin/bash' >"$REPO/tests/run.sh"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,codex,release-budget' ]]
+[[ "$plan" = *'stages=static,codex' ]]
 
 setup_fixture claude-provider-test
 printf '%s\n' '#!/bin/bash' >"$REPO/tests/run-claude.sh"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,claude,release-budget' ]]
+[[ "$plan" = *'stages=static,claude' ]]
 
 setup_fixture ignored-presentations
 clean_plan="$(gate --plan)"
@@ -365,26 +358,26 @@ setup_fixture swift
 mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct Changed {}' >"$REPO/app/Sources/DetachKit/Changed.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e' ]]
 
 setup_fixture swift-test
 mkdir -p "$REPO/app/Tests/DetachKitTests"
 printf '%s\n' 'final class ChangedTests {}' \
   >"$REPO/app/Tests/DetachKitTests/ChangedTests.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts' ]]
 
 setup_fixture typed-state-impact
 mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct ChangedState {}' >"$REPO/app/Sources/DetachKit/DetachStateCommand.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,codex,claude' ]]
 
 setup_fixture power-impact
 mkdir -p "$REPO/app/Sources/DetachKit"
 printf '%s\n' 'struct ChangedPower {}' >"$REPO/app/Sources/DetachKit/PowerHelperLeaseService.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e' ]]
 
 setup_fixture onboarding-journey-impact
 mkdir -p "$REPO/app/Sources/DetachApp"
@@ -399,30 +392,30 @@ setup_fixture package
 mkdir -p "$REPO/app"
 printf '%s\n' '// changed package' >"$REPO/app/Package.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,tmux-runtime' ]]
 
 setup_fixture shell
 mkdir -p "$REPO/bin"
 printf '%s\n' '#!/bin/bash' >"$REPO/bin/detach"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,app,codex,claude,distribution' ]]
 
 setup_fixture release-files
 printf '%s\n' 999 >"$REPO/BUILD"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,ui-e2e,release-preflight,publish-preflight,release-workflow,release-budget' ]]
+[[ "$plan" = *'stages=static,app,release-preflight,publish-preflight,release-workflow' ]]
 
 setup_fixture release-impact
 printf '%s\n' '#!/bin/bash' >"$REPO/scripts/release-impact"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,ui-e2e,release-preflight,publish-preflight,release-workflow,release-budget' ]]
+[[ "$plan" = *'stages=static,app,release-preflight,publish-preflight,release-workflow' ]]
 
 setup_fixture mixed
 mkdir -p "$REPO/bin" "$REPO/app/Sources/DetachKit"
 printf '%s\n' '#!/bin/bash' >"$REPO/bin/detach"
 printf '%s\n' 'struct Changed {}' >"$REPO/app/Sources/DetachKit/Changed.swift"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,codex,claude,distribution' ]]
 
 setup_fixture base-ref
 mkdir -p "$REPO/app/Sources/DetachKit"
@@ -431,12 +424,12 @@ git -C "$REPO" add .
 git -C "$REPO" commit -qm change
 printf '%s\n' docs >>"$REPO/README.md"
 plan="$(gate --base "$BASE" --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,release-budget' ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e' ]]
 
 setup_fixture unknown
 printf '%s\n' unknown >"$REPO/new-contract.data"
 plan="$(gate --plan 2>&1)"
-[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow,release-budget' ]]
+[[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow' ]]
 
 setup_fixture deletion
 mkdir -p "$REPO/bin"
@@ -445,7 +438,7 @@ git -C "$REPO" add .
 git -C "$REPO" commit -qm add-lifecycle-file
 rm "$REPO/bin/detach"
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,app,codex,claude,distribution' ]]
 
 setup_fixture rename
 mkdir -p "$REPO/bin" "$REPO/docs"
@@ -454,7 +447,7 @@ git -C "$REPO" add .
 git -C "$REPO" commit -qm add-lifecycle-file
 git -C "$REPO" mv bin/detach docs/moved.md
 plan="$(gate --plan)"
-[[ "$plan" = *'stages=static,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-budget' ]]
+[[ "$plan" = *'stages=static,app,codex,claude,distribution' ]]
 
 setup_fixture unusual-name
 mkdir -p "$REPO/app/Sources/DetachKit"
@@ -463,7 +456,7 @@ break.swift"
 plan="$(gate --plan --format json)"
 [[ "$plan" = '{"policy":'"$POLICY_VERSION"',"mode":"change","authority":"local-diagnostic","source_commit":"'* ]]
 [[ "$plan" = *'"base_commit":"","input_fingerprint":"'* ]]
-[[ "$plan" = *'"stages":["static","swift","quality-contracts","app","ui-e2e","release-budget"]}' ]]
+[[ "$plan" = *'"stages":["static","swift","quality-contracts","app","ui-e2e"]}' ]]
 
 setup_fixture explain
 mkdir -p "$REPO/app/Sources/DetachKit"
@@ -499,30 +492,20 @@ printf '%s\n' 'struct ReleaseImpact {}' >"$REPO/app/Sources/DetachKit/ReleaseImp
 git -C "$REPO" add .
 git -C "$REPO" commit -qm release-impact
 plan="$(gate --mode release --base "$BASE" --plan)"
-[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e,release-budget'* ]]
+[[ "$plan" = *'stages=static,swift,quality-contracts,app,ui-e2e'* ]]
 [[ "$plan" != *'codex'* ]]
 [[ "$plan" != *'release-workflow'* ]]
 
-setup_fixture github-budget
+setup_fixture github-impact
 commit_ci_merge .github/workflows/quality-gates.yml '# impact core'
 plan="$(GITHUB_ACTIONS=true GITHUB_SHA="$CI_MERGE" DETACH_QUALITY_AUTHORITY=ci-merge \
-  gate --mode impact --base "$BASE" --without-release-budget --plan)"
+  gate --mode impact --base "$BASE" --plan)"
 [[ "$plan" = *'stages=static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight,release-workflow' ]]
-[[ "$plan" != *'release-budget'* ]]
 [[ "$plan" = *'authority=ci-merge'* ]]
 plan="$(GITHUB_ACTIONS=true GITHUB_SHA="$CI_MERGE" DETACH_QUALITY_AUTHORITY=ci-shard \
-  gate --mode impact --base "$BASE" --shard static,gate-contract \
-    --without-release-budget --plan)"
+  gate --mode impact --base "$BASE" --shard static,gate-contract --plan)"
 [[ "$plan" = *'authority=ci-shard'* ]]
 [[ "$plan" = *'stages=static,gate-contract'* ]]
-if GITHUB_ACTIONS=true GITHUB_SHA="$CI_MERGE" DETACH_QUALITY_AUTHORITY=ci-shard \
-    gate --mode impact --base "$BASE" --shard release-budget \
-      --without-release-budget --plan >"$REPO/unplanned-shard.out" 2>&1; then
-  printf 'quality gate accepted an unplanned shard stage\n' >&2
-  exit 1
-fi
-grep -F 'shard contains an unplanned stage: release-budget' \
-  "$REPO/unplanned-shard.out" >/dev/null
 fi
 
 if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = distributed ]; then
@@ -555,11 +538,19 @@ if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = selection ]; then
 setup_fixture github-docs-impact
 commit_ci_merge README.md 'documentation impact'
 plan="$(GITHUB_ACTIONS=true GITHUB_SHA="$CI_MERGE" DETACH_QUALITY_AUTHORITY=ci-merge \
-  gate --mode impact --base "$BASE" --without-release-budget --plan)"
+  gate --mode impact --base "$BASE" --plan)"
 [[ "$plan" = *'stages=static specs=documentation capabilities=documentation'* ]]
 [[ "$plan" != *'swift'* ]]
+if GITHUB_ACTIONS=true GITHUB_SHA="$CI_MERGE" DETACH_QUALITY_AUTHORITY=ci-shard \
+    gate --mode impact --base "$BASE" --shard swift --plan \
+      >"$REPO/unplanned-shard.out" 2>&1; then
+  printf 'quality gate accepted an unplanned shard stage\n' >&2
+  exit 1
+fi
+grep -F 'shard contains an unplanned stage: swift' \
+  "$REPO/unplanned-shard.out" >/dev/null
 if GITHUB_ACTIONS=true GITHUB_SHA="$CI_MERGE" DETACH_QUALITY_AUTHORITY=ci-merge \
-    gate --mode impact --base "$CI_MERGE^2" --without-release-budget --plan \
+    gate --mode impact --base "$CI_MERGE^2" --plan \
     >"$REPO/wrong-impact-base.out" 2>&1; then
   printf 'quality gate accepted a non-first-parent CI impact base\n' >&2
   exit 1
@@ -576,44 +567,6 @@ fi
 grep -F 'ci-merge authority is restricted to GitHub Actions' \
   "$REPO/spoof-authority.out" >/dev/null
 
-setup_fixture release-timing-override
-if production_plan --mode release --without-release-budget --plan \
-    >"$REPO/local-budget.stdout" 2>"$REPO/local-budget.stderr"; then
-  printf 'quality gate accepted an unconfirmed local timing override\n' >&2
-  exit 1
-fi
-grep -F -- '--without-release-budget is restricted to GitHub Actions' \
-  "$REPO/local-budget.stderr" >/dev/null
-if DETACH_TEST_RELEASE_TIMING_OVERRIDE=example/detach@v1.2.4 \
-    production_plan --mode change --without-release-budget --plan \
-    >"$REPO/wrong-mode.stdout" 2>"$REPO/wrong-mode.stderr"; then
-  printf 'quality gate accepted a release timing override outside release mode\n' >&2
-  exit 1
-fi
-grep -F 'release timing override requires repository or release mode' \
-  "$REPO/wrong-mode.stderr" >/dev/null
-if DETACH_TEST_RELEASE_TIMING_OVERRIDE=example/detach@v1.2.4 \
-    DETACH_TEST_RELEASE_CONFIRMATION=wrong \
-    production_plan --mode release --without-release-budget --plan \
-    >"$REPO/wrong-confirmation.stdout" 2>"$REPO/wrong-confirmation.stderr"; then
-  printf 'quality gate accepted a mismatched release confirmation\n' >&2
-  exit 1
-fi
-grep -F 'requires matching exact release confirmation' \
-  "$REPO/wrong-confirmation.stderr" >/dev/null
-plan="$(DETACH_TEST_RELEASE_TIMING_OVERRIDE=example/detach@v1.2.4 \
-  production_plan --mode release --without-release-budget --plan)"
-[[ "$plan" != *'release-budget'* ]]
-plan="$(DETACH_TEST_RELEASE_TIMING_OVERRIDE=example/detach@v1.2.4 \
-  production_plan --mode repository --without-release-budget --plan)"
-[[ "$plan" != *'release-budget'* ]]
-if ! DETACH_TEST_RELEASE_TIMING_OVERRIDE=example/detach@v1.2.4 \
-    gate --mode repository --without-release-budget \
-    >"$REPO/override-run.stdout" 2>"$REPO/override-run.stderr"; then
-  cat "$REPO/override-run.stderr" >&2
-  exit 1
-fi
-grep -F $'release_timing_override\t1' "$RESULT_ROOT"/*/environment.tsv >/dev/null
 fi
 
 if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = execution ] || [ "$CONTRACT_SHARD" = failures ]; then
@@ -629,7 +582,6 @@ grep -F 'diagnostic rerun: scripts/quality-gate --stage swift' "$REPO/failure.ou
 grep -F 'diagnostic rerun: scripts/quality-gate --stage ui-e2e' \
   "$REPO/failure.out" >/dev/null
 grep -F $'ui-e2e\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-grep -F $'release-budget\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 [ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 12 ]
 
 setup_fixture ui-e2e-timeout
@@ -697,7 +649,7 @@ grep -R $'static\treused' "$RESULT_ROOT" >/dev/null
 [ "$(awk '$0 == "ui-e2e" { count += 1 } END { print count + 0 }' \
     "$ACTION_LOG")" = 2 ]
 grep -F $'result\tpassed' "$RESULT_ROOT"/*/manifest.tsv >/dev/null
-grep -F '<testsuite name="detach-quality-gate" tests="14" failures="0" skipped="10">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+grep -F '<testsuite name="detach-quality-gate" tests="13" failures="0" skipped="10">' "$RESULT_ROOT"/*/junit.xml >/dev/null
 grep -F $'resumed_from_run\t'"$(basename "$resume_dir")" "$resumed_run/manifest.tsv" >/dev/null
 expected_parent_digest="$(shasum -a 256 "$resume_dir/manifest.tsv" | awk '{print $1}')"
 grep -F $'resumed_from_manifest_sha256\t'"$expected_parent_digest" "$resumed_run/manifest.tsv" >/dev/null
@@ -727,7 +679,7 @@ fi
 [ "$(wc -l <"$ACTION_LOG" | tr -d ' ')" = 12 ]
 grep -F $'swift\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'codex\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-grep -F '<testsuite name="detach-quality-gate" tests="14" failures="2" skipped="2">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+grep -F '<testsuite name="detach-quality-gate" tests="13" failures="2" skipped="1">' "$RESULT_ROOT"/*/junit.xml >/dev/null
 
 setup_fixture environment-failure
 printf '#!/bin/bash\nprintf "error creating /tmp/test.sock (Operation not permitted)\\n" >&2\nexit 23\n' \
@@ -918,7 +870,7 @@ grep -F $'codex\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'tmux-runtime\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'ui-e2e\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'quality-contracts\tblocked' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-grep -F '<testsuite name="detach-quality-gate" tests="14" failures="1" skipped="6">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+grep -F '<testsuite name="detach-quality-gate" tests="13" failures="1" skipped="5">' "$RESULT_ROOT"/*/junit.xml >/dev/null
 
 setup_fixture parallel-lanes
 PARALLEL_ROOT="$REPO/parallel"
@@ -1127,79 +1079,28 @@ grep -F 'quality-gate: DIAGNOSTIC PASS' "$REPO/resource-order.out" >/dev/null
   printf 'bounded scheduler did not complete the provider-overlapped release workflow\n' >&2
   exit 1
 }
-
-setup_fixture release-budget-wall
-set_manifest_value "$REPO/tests/release-budget.tsv" wall_seconds_max 1
-if DETACH_QUALITY_GATE_TEST_WALL_SECONDS=2 gate --mode repository >"$REPO/release-budget-wall.out" 2>&1; then
-  printf 'quality gate accepted a wall-time regression\n' >&2
-  exit 1
-fi
-grep -F 'wall time regressed' "$RESULT_ROOT"/*/release-budget.log >/dev/null
-grep -F $'release-budget\tfailed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-
-setup_fixture resumed-release-budget-wall
-set_manifest_value "$REPO/tests/release-budget.tsv" wall_seconds_max 1
-if DETACH_QUALITY_GATE_TEST_WALL_SECONDS=2 gate --mode repository >"$REPO/resumed-budget-first.out" 2>&1; then
-  printf 'quality gate accepted the initial wall-time regression\n' >&2
-  exit 1
-fi
-resume_dir="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
-if DETACH_QUALITY_GATE_TEST_WALL_SECONDS=0 gate --mode repository --resume "$resume_dir" \
-    >"$REPO/resumed-budget-second.out" 2>&1; then
-  printf 'quality gate erased a wall-time regression through resume\n' >&2
-  exit 1
-fi
-grep -F $'inherited_wall_seconds\t2' "$RESULT_ROOT"/*/release-budget.log >/dev/null || {
-  cat "$REPO/resumed-budget-second.out" >&2
-  printf 'resumed quality gate did not retain inherited timing evidence\n' >&2
-  exit 1
-}
-grep -F 'wall time regressed: 2s > 1s' "$RESULT_ROOT"/*/release-budget.log >/dev/null
 fi
 
 if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = execution ] || \
    [ "$CONTRACT_SHARD" = evidence ] || [ "$CONTRACT_SHARD" = evidence-runtime ] || \
    [ "$CONTRACT_SHARD" = evidence-runtime-b ]; then
 
-setup_fixture static-only-budget
-printf '%s\n' docs >>"$REPO/README.md"
-if DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_STATIC=3 gate >"$REPO/static-only-budget.out" 2>&1; then
-  printf 'quality gate accepted a slow documentation-only static stage\n' >&2
-  exit 1
-fi
-grep -F 'stage budget: static regressed: 3s > 2s' "$RESULT_ROOT"/*/static.log >/dev/null
-grep -F $'static\tfailed\t3' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-
-setup_fixture github-no-timing-budgets
+setup_fixture github-impact-run
 commit_ci_merge .github/workflows/quality-gates.yml '# impact core'
 if ! GITHUB_ACTIONS=true DETACH_QUALITY_AUTHORITY=ci-merge \
     GITHUB_SHA="$CI_MERGE" \
-    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_STATIC=300 \
-    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_SWIFT=300 \
-    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_APP=300 \
-    DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_PUBLISH_PREFLIGHT=300 \
-    gate --mode impact --base "$BASE" --without-release-budget \
-      >"$REPO/github-no-budgets.out" 2>&1; then
-  cat "$REPO/github-no-budgets.out" >&2
-  printf 'quality gate enforced reference-machine timing in GitHub Actions\n' >&2
+    gate --mode impact --base "$BASE" \
+      >"$REPO/github-impact-run.out" 2>&1; then
+  cat "$REPO/github-impact-run.out" >&2
+  printf 'quality gate failed the hosted impact run\n' >&2
   exit 1
 fi
-! grep -F 'stage budget:' "$REPO/github-no-budgets.out" >/dev/null
 grep -F "quality-gate: PASS policy=$POLICY_VERSION authority=ci-merge" \
-  "$REPO/github-no-budgets.out" >/dev/null
+  "$REPO/github-impact-run.out" >/dev/null
 grep -F $'authority\tci-merge' "$RESULT_ROOT"/*/manifest.tsv >/dev/null
 grep -F $'swift\tpassed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'app\tpassed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F $'publish-preflight\tpassed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-! grep -F $'release-budget\t' "$RESULT_ROOT"/*/summary.tsv >/dev/null
-
-setup_fixture release-budget-stage
-set_manifest_value "$REPO/tests/release-budget.tsv" stage_codex_seconds_max 1
-if DETACH_QUALITY_GATE_TEST_CODEX_SECONDS=2 gate --mode repository >"$REPO/release-budget-stage.out" 2>&1; then
-  printf 'quality gate accepted a stage-time regression\n' >&2
-  exit 1
-fi
-grep -F 'codex regressed' "$RESULT_ROOT"/*/release-budget.log >/dev/null
 
 setup_fixture evidence
 printf '%s\n' docs >>"$REPO/README.md"

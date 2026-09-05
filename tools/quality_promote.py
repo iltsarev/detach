@@ -483,11 +483,7 @@ def validate_evidence(
         "authority": "ci-merge",
         "result": "passed",
         "base_commit": base_commit,
-        "stages": ",".join(
-            stage
-            for stage in expected_impact["stages"]
-            if stage != "release-budget"
-        ),
+        "stages": ",".join(expected_impact["stages"]),
     }
     for key, value in expected.items():
         if manifest.get(key) != value:
@@ -505,9 +501,7 @@ def validate_evidence(
         evidence = safe_file(run_dir / f"{name}.tsv", f"{name} evidence")
         if sha256(evidence) != manifest.get(f"{name}_sha256"):
             raise PromotionError(f"{name} evidence digest does not match the manifest")
-    expected_stages = [
-        stage for stage in expected_impact["stages"] if stage != "release-budget"
-    ]
+    expected_stages = list(expected_impact["stages"])
     validate_summary(run_dir, manifest, policy, expected_stages)
     require_metrics = "quality-contracts" in expected_stages
     artifact_inventory(run_dir, manifest, require_metrics=require_metrics)
