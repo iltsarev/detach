@@ -13,8 +13,13 @@ final class PowerHelperPlatformTests: XCTestCase {
         }
     }
 
-    func testBootSessionReaderCanBeConstructed() {
-        _ = SysctlBootSessionReader()
+    func testBootSessionReaderReturnsStableCanonicalIdentifier() throws {
+        let first = try SysctlBootSessionReader().currentBootSessionIdentifier()
+        let repeated = try SysctlBootSessionReader().currentBootSessionIdentifier()
+
+        let identifier = try XCTUnwrap(UUID(uuidString: first))
+        XCTAssertEqual(first, identifier.uuidString.lowercased())
+        XCTAssertEqual(repeated, first)
     }
 
     func testRootCommandRunnerTerminatesHungProcess() {
