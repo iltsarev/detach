@@ -1321,7 +1321,11 @@ class QualityGate:
         )
         if stage == "app" and exact_app:
             environment["DETACH_QUALITY_EXACT_APP"] = exact_app
-        if stage in ("swift", "app", "ui-e2e", "quality-contracts") and exact_products:
+        # Provider suites read tmux and detach-state from the exact runtime
+        # products when a hosted shard bound them.
+        if stage in (
+            "swift", "app", "ui-e2e", "quality-contracts", "codex", "claude"
+        ) and exact_products:
             environment["DETACH_QUALITY_EXACT_PRODUCTS"] = exact_products
         if not self.test_direct:
             environment["DETACH_RELEASE_TESTS_DETACHED"] = "1"
