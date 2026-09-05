@@ -1192,6 +1192,7 @@ class QualityGate:
                 or relative == "quality-metrics-swift.json"
                 or relative == "coverage-opportunities.json"
                 or relative == "spec-sizes.json"
+                or relative == "shards.tsv"
                 or relative == "scenarios.jsonl"
                 or relative == "scenarios.junit.xml"
                 or relative == "repair-bundle.json"
