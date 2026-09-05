@@ -205,6 +205,35 @@ final class QuickChatTests: XCTestCase {
         XCTAssertEqual(listCallCount, 2)
     }
 
+    func testQuickChatSelectsCompletedLaunchWhenObservationEndsWithoutASession() async throws {
+        let directory = try XCTUnwrap(
+            DirectoryPreference.existingDirectoryURL(path: "/tmp"))
+        let sessionID = "detach-codex-tmp-1"
+        let cli = QuickChatRecordingCLI()
+        cli.responses["list --json"] = CLIResult(
+            exitCode: 0,
+            stdout: #"{"schema":1,"provider":"codex","session_name":"\#(sessionID)","name":"tmp-1","effective_status":"running","project_dir":"\#(directory.path)"}"#,
+            stderr: "",
+            timedOut: false)
+        var selectedIDs: [String] = []
+
+        let result = await QuickChatLaunch.start(
+            store: SessionStore(cli: cli),
+            providerRawValue: Provider.codex.rawValue,
+            directoryPath: directory.path,
+            onSessionAvailable: { selectedIDs.append($0) },
+            createProjectDirectory: { directory, _ in directory },
+            waitForSession: { _, _, _, _ in nil })
+
+        XCTAssertEqual(result.sessionID, sessionID)
+        XCTAssertNil(result.message)
+        XCTAssertEqual(selectedIDs, [sessionID])
+        XCTAssertEqual(cli.calls.map(\.arguments), [
+            ["codex", "--detach"],
+            ["list", "--json"],
+        ])
+    }
+
     func testQuickChatRejectsAnUnavailableFolderWithoutCallingTheCLI() async {
         let cli = QuickChatRecordingCLI()
         let missing = "/tmp/detach-missing-\(UUID().uuidString)"

@@ -70,6 +70,14 @@ enum QuickChatLaunch {
         onSessionAvailable: (@MainActor (String) -> Void)? = nil,
         createProjectDirectory: (URL, FileManager) throws -> URL = {
             try QuickChatProjectDirectory.create(inside: $0, fileManager: $1)
+        },
+        waitForSession: @escaping @MainActor @Sendable (
+            SessionStore, Provider, URL, Set<String>
+        ) async -> String? = { store, provider, directory, existingIDs in
+            await store.waitForSession(
+                provider: provider,
+                projectDirectory: directory,
+                excluding: existingIDs)
         }
     ) async -> SessionStartResult {
         guard let directory = DirectoryPreference.existingDirectoryURL(
@@ -106,10 +114,8 @@ enum QuickChatLaunch {
                     prompt: nil))
             }
             group.addTask {
-                .session(await store.waitForSession(
-                    provider: provider,
-                    projectDirectory: projectDirectory,
-                    excluding: existingIDs))
+                .session(await waitForSession(
+                    store, provider, projectDirectory, existingIDs))
             }
 
             var selectedEarly = false
