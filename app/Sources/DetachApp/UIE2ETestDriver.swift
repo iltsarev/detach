@@ -368,6 +368,13 @@ enum UIE2ETestDriver {
                       let textView = scrollView.documentView as? NSTextView else { return false }
                 return textView.string.contains("UI fixture log for \(recoverableID)")
             }
+            try Data().write(to: configuration.root.appendingPathComponent(
+                "fake/disconnected-log-updated"), options: .atomic)
+            try await waitUntil("disconnected session log follows new output") {
+                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else { return false }
+                return textView.string.contains("Updated UI fixture log for \(recoverableID)")
+            }
             try await clickUntil(
                 reconnectButton,
                 name: "in-app reconnect action",

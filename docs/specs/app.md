@@ -65,6 +65,8 @@ a revision. Bursts keep active reads. The lifecycle ID blocks cache
 inheritance after name reuse; older rows use creation and provider identity.
 Detached live logs reread every 2 s. Cold attach uses one passive SwiftTerm
 overlay; cached bytes never enter the live buffer. Live switching keeps its PTY.
+The visible log view owns its read task. A terminal handoff cannot clear the
+reader of a returned log view. The returned view shows and refreshes its log.
 tmux holds the frame until a synchronized redraw.
 Metadata stays in one scrolling row. Selection keeps header, terminal, and
 action geometry. The model and context gauge stay in the metadata row. They

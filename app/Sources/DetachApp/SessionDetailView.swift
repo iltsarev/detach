@@ -134,40 +134,6 @@ struct SessionDetailView: View {
             attachRequested = false
             preparingAction = nil
         }
-        .task(id: logTaskID) {
-            guard !showsEmbeddedTerminal else {
-                logPoller = nil
-                logPollerSessionID = nil
-                return
-            }
-            let poller = cachedLog
-                ?? (logPollerSessionID == session.id ? logPoller : nil)
-                ?? LogPoller(
-                    cli: ProcessDetachCLI(executable: URL(fileURLWithPath: detachPath)),
-                    provider: session.provider,
-                    sessionName: session.sessionName)
-            if cachedLog == nil, logPoller !== poller {
-                logPoller = poller
-                logPollerSessionID = session.id
-            }
-            // The cache follows typed lifecycle revisions. An unchanged
-            // non-live tail is immutable, so revisiting it needs no process.
-            if cachedLog?.hasLoaded == true { return }
-            await poller.fetchOnce()
-            guard session.isLive else { return }
-            // Pane output of a disconnected live session has no event source.
-            // Follow it only while this surface is visible; selection changes
-            // and the embedded terminal cancel this task.
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(
-                        nanoseconds: SessionDetailLogRefresh.liveFallbackIntervalNanoseconds)
-                } catch {
-                    return
-                }
-                await poller.fetchOnce()
-            }
-        }
         .alert(L10n.string("Something went wrong"), isPresented: .init(
             get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
             Button(L10n.string("OK"), role: .cancel) {}
@@ -391,6 +357,37 @@ struct SessionDetailView: View {
             cachedLogIdentity: cachedLog.map(ObjectIdentifier.init))
     }
 
+    private func refreshVisibleLog() async {
+        guard !Task.isCancelled else { return }
+        let poller = cachedLog
+            ?? (logPollerSessionID == session.id ? logPoller : nil)
+            ?? LogPoller(
+                cli: ProcessDetachCLI(executable: URL(fileURLWithPath: detachPath)),
+                provider: session.provider,
+                sessionName: session.sessionName)
+        if cachedLog == nil, logPoller !== poller {
+            logPoller = poller
+            logPollerSessionID = session.id
+        }
+        // The cache follows typed lifecycle revisions. An unchanged
+        // non-live tail is immutable, so revisiting it needs no process.
+        if cachedLog?.hasLoaded == true { return }
+        await poller.fetchOnce()
+        guard session.isLive else { return }
+        // Pane output of a disconnected live session has no event source.
+        // Follow it only while this surface is visible; selection changes
+        // and the embedded terminal cancel this task.
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(
+                    nanoseconds: SessionDetailLogRefresh.liveFallbackIntervalNanoseconds)
+            } catch {
+                return
+            }
+            await poller.fetchOnce()
+        }
+    }
+
     private var logView: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -416,6 +413,7 @@ struct SessionDetailView: View {
                 } else {
                     LogTextView(text: logContent)
                         .frame(maxHeight: .infinity)
+                        .task(id: logTaskID) { await refreshVisibleLog() }
                         .onAppear {
                             // makeNSView applies and lays out cached text before
                             // it returns. Keep the passive outgoing frame for one
