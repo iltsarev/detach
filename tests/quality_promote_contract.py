@@ -138,7 +138,7 @@ def create_evidence(
     summary_lines = [
         "policy\tmode\tstage\tstatus\tduration_seconds\tlog\tlog_sha256\torigin_run"
     ]
-    stages = [stage for stage in impact.stages if stage != "release-budget"]
+    stages = list(impact.stages)
     for stage in stages:
         log = run_dir / f"{stage}.log"
         log.write_text(f"{stage} passed\n", encoding="utf-8")

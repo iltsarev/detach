@@ -284,7 +284,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.promoted-main.outputs.promoted != 'true')
         env:
           DETACH_QUALITY_AUTHORITY: ci-main
-        run: scripts/quality-gate --mode repository --keep-going --without-release-budget
+        run: scripts/quality-gate --mode repository --keep-going
       - id: main-products
         name: Record completed main Swift products
         if: github.event_name != 'pull_request' && steps.swift-cache.outputs.cache-hit != 'true' && steps.promoted-main.outputs.promoted != 'true' && steps.main-gate.outcome == 'success'

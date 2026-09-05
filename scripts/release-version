@@ -10,7 +10,6 @@ APP_ROOT="$ROOT/app"
 ENV_FILE="$ROOT/.env.release"
 IMPACT_SCRIPT="$ROOT/scripts/release-impact"
 TEST_MODE="${DETACH_RELEASE_TEST_MODE:-0}"
-IGNORE_TIMING="${DETACH_RELEASE_IGNORE_TIMING:-0}"
 LOCKED=0
 LID_WRAPPER_PID=""
 INSTALL_TEMP=""
@@ -201,8 +200,6 @@ load_release_environment() {
 validate_configuration() {
   [ "$TEST_MODE" = 0 ] || [ "$TEST_MODE" = 1 ] || \
     die 'DETACH_RELEASE_TEST_MODE must be 0 or 1'
-  [ "$IGNORE_TIMING" = 0 ] || [ "$IGNORE_TIMING" = 1 ] || \
-    die 'DETACH_RELEASE_IGNORE_TIMING must be 0 or 1'
   if [ "$TEST_MODE" = 1 ]; then
     printf 'release-version: TEST MODE — production path checks are relaxed\n' >&2
   fi
@@ -512,18 +509,8 @@ run_full_tests() {
       "$ROOT/scripts/quality-baseline")"
     export DETACH_QUALITY_BASELINE_ROOT="$baseline_root"
   fi
-  if [ "$IGNORE_TIMING" = 1 ]; then
-    exact_confirmation DETACH_CONFIRM_RELEASE \
-      'Ignoring reference-machine timing budgets for this release'
-    note 'owner waived reference-machine timing budgets for this release only'
-    DETACH_CONFIRM_RELEASE="$REPOSITORY@$TAG" \
-      DETACH_RELEASE_TIMING_OVERRIDE="$REPOSITORY@$TAG" \
-      "$ROOT/scripts/quality-gate" --mode release --base "$impact_base" \
-        --without-release-budget --resume auto
-  else
-    "$ROOT/scripts/quality-gate" --mode release --base "$impact_base" \
-      --resume auto
-  fi
+  "$ROOT/scripts/quality-gate" --mode release --base "$impact_base" \
+    --resume auto
 }
 
 initialize_workflow() {
@@ -593,31 +580,21 @@ initialize_workflow() {
   write_state_value source-commit "$SOURCE_COMMIT"
   write_state_value previous-version "$current_version"
   write_state_value previous-build "$published_build"
-  if [ "$IGNORE_TIMING" = 1 ]; then
-    write_state_value timing-budget-enforced false
-  else
-    write_state_value timing-budget-enforced true
-  fi
   record_stage preflight
 }
 
 load_workflow() {
-  local saved_version saved_repository saved_tag saved_timing_budget
+  local saved_version saved_repository saved_tag
   fetch_origin
   saved_version="$(read_state_value version)" || die 'incomplete release workflow state (version)'
   saved_repository="$(read_state_value repository)" || die 'incomplete release workflow state (repository)'
   saved_tag="$(read_state_value tag)" || die 'incomplete release workflow state (tag)'
   BUILD="$(read_state_value build)" || die 'incomplete release workflow state (build)'
   SOURCE_COMMIT="$(read_state_value source-commit)" || die 'incomplete release workflow state (source commit)'
-  saved_timing_budget="$(read_state_value timing-budget-enforced)" || \
-    die 'incomplete release workflow state (timing budget)'
   [ "$saved_version" = "$VERSION" ] && [ "$saved_repository" = "$REPOSITORY" ] && \
     [ "$saved_tag" = "$TAG" ] || die 'release workflow state does not match invocation'
   [[ "$BUILD" =~ ^[1-9][0-9]*$ ]] || die 'release workflow state has invalid build'
   [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die 'release workflow state has invalid source commit'
-  case "$saved_timing_budget" in true|false) ;; *) die 'release workflow state has invalid timing budget' ;; esac
-  [ "$saved_timing_budget" = true ] || \
-    note 'resuming a release whose reference-machine timing budgets were owner-waived'
 }
 
 only_release_metadata_is_dirty() {

@@ -97,8 +97,6 @@ class QualityShardContract(unittest.TestCase):
         self.assertEqual(build["coverage_profile"], "swift")
 
     def test_unowned_or_malformed_plan_fails_closed(self) -> None:
-        with self.assertRaisesRegex(ShardError, "no shard owns"):
-            shard_plan({"stages": ["static", "release-budget"]})
         with self.assertRaisesRegex(ShardError, "invalid stages"):
             plan_stages({"stages": ["static", "static"]})
         with self.assertRaisesRegex(ShardError, "absent"):

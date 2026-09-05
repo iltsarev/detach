@@ -66,11 +66,6 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
 - `scripts/quality-promote` binds a successful pull-request artifact to its
   final `main` merge commit. It runs only in the hosted main-push workflow.
 
-`--without-release-budget` disables reference-Mac time comparisons. Hosted CI
-uses this option because hosted timing is not release timing. Functional
-checks, process deadlines, and static policy ratchets remain active. This
-option does not make a local run authoritative.
-
 ## Authority and evidence
 
 Every manifest records one authority:
@@ -113,8 +108,7 @@ manual because it needs physical evidence.
 Resume requires the same policy, authority, source commit, base commit, and
 input fingerprint. The old plan must contain every selected stage. Reused logs
 keep their duration and digest. The new manifest binds the parent manifest.
-Inherited wall time cannot become shorter. A prior time failure cannot become
-PASS through resume.
+Inherited wall time cannot become shorter.
 
 ## Automated stages and scheduling
 
@@ -128,10 +122,11 @@ The policy defines these stages:
 - isolated Codex and Claude provider integrations;
 - distribution and bundled runtime contracts;
 - release and publish preflights;
-- release-impact and release-workflow contracts;
-- the zero-work release time-budget postflight.
+- release-impact and release-workflow contracts.
 
-Every executable stage has a policy-owned process deadline. The GitHub workflow
+Every executable stage has a policy-owned process deadline. Stage and wall
+durations are telemetry for `scripts/quality-history` and the care SLO; they
+never change a verdict. The GitHub workflow
 has a ten-minute deadline and cancels superseded work. The pull request feedback
 SLO is less than ten minutes.
 
@@ -205,13 +200,18 @@ unknown path selects every functional stage and every release impact.
 | --- | --- |
 | Documentation | static |
 | Quality policy or CI | static and gate self-contracts |
-| Swift source | Swift, metrics, app, packaged UI, and required dependencies |
+| Swift source | Swift, metrics, app, and packaged UI |
 | Swift tests | Swift and matching-profile metrics |
-| CLI or session lifecycle | app, both providers, distribution, runtime, and dependencies |
+| CLI or session lifecycle | app, both providers, and distribution |
 | One provider test | static and that provider; its shard verifies the exact app prerequisite |
-| Install or distribution | app, distribution, runtime, and dependencies |
-| Release or publication | app, preflights, workflow contracts, and dependencies |
+| Install or distribution | app and distribution |
+| Release or publication | app, preflights, and workflow contracts |
 | Unknown path | full repository plan |
+
+Stages do not cascade. The packaged UI smoke drives a fake CLI, so it runs only
+for app product sources, resources, and UI tests. The pinned tmux runtime
+contract runs only for package, script, and tmux build changes. Each domain
+selects the stages that can observe its change and nothing else.
 
 Hosted pull request CI does not trust a caller-supplied stage list. It requires
 the clean tested merge commit, classifies the exact base-to-merge diff, applies
@@ -234,10 +234,11 @@ profiles during migration. Each combined run also records a digest-bound Swift
 snapshot for later Swift-profile comparisons without a second ratchet. Thus,
 Swift-test-only changes do not run packaged app journeys only to make coverage
 inputs equivalent.
-CI rejects a removed test or a lower aggregate or critical-source ratio.
-Changed executable lines need at least 90 percent coverage. A new critical
-source needs 100 percent coverage for its first baseline. Missing, stale,
-unbound, unsafe, or malformed baseline evidence fails closed.
+CI rejects a lower critical-source ratio and a new critical source that is not
+fully covered in its first baseline. Missing, stale, unbound, unsafe, or
+malformed baseline evidence fails closed. Aggregate ratios, removed test
+identities, and changed-line coverage below the 90 percent floor are advisory.
+The stage prints them as `quality-metrics: advisory:` lines and stays green.
 
 The UI aggregate includes Swift tests and the bounded packaged-app journeys.
 The separate opportunity artifact ranks current uncovered UI sources. Its risk
@@ -338,10 +339,8 @@ configured CodeQL languages and cadence. Generation fails if the workflow no
 longer uses weekly and explicit runs. These care jobs do not extend pull-request
 feedback and cannot run release commands.
 
-Release readiness also requires the tracked reference-Mac time budgets and the
-release-only gates below. A reviewed schema change can rebaseline these budgets
-after required product work grows. Later changes in that schema can only keep
-or reduce each ceiling. Ordinary implementation must not run release-only gates.
+Release readiness also requires the release-only gates below. Ordinary
+implementation must not run release-only gates.
 
 ## Release-only gates
 

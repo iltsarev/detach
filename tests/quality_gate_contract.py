@@ -300,7 +300,6 @@ class QualityGateContract(unittest.TestCase):
             tests.mkdir()
             names = (
                 "docs-contract.sh",
-                "release-budget-ratchet.sh",
                 "shell-safety.sh",
                 "test-suite-contract.sh",
             )

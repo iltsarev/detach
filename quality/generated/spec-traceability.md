@@ -51,7 +51,6 @@ It lists current specification ownership and verification links.
 - `tests/docs-contract.sh`
 - `tests/quality-*`
 - `tests/quality_*`
-- `tests/release-budget*`
 - `tests/security-*`
 - `tests/security_*`
 - `tests/shell-safety*`
@@ -168,7 +167,7 @@ It lists current specification ownership and verification links.
 | `QC-POWER-AUTH` | `J-POWER-HELPER-LEASE` | `SC-POWER-HELPER` (legacy-stage, `swift`) | Helper authorization binds audit token, console user, signing, and deadline. |
 | `QC-POWER-LEASE` | `J-POWER-ENABLE`<br>`J-POWER-HELPER-LEASE` | `SC-POWER-UNIT` (legacy-stage, `swift`)<br>`SC-POWER-HELPER` (legacy-stage, `swift`) | The root helper lease is bounded and ownership safe. |
 | `QC-POWER-XPC` | `J-POWER-HELPER-LEASE` | `SC-POWER-HELPER` (legacy-stage, `swift`) | The helper accepts only the typed power protocol. |
-| `QC-POWER-PROTECTION` | `J-POWER-LOW-BATTERY`<br>`J-POWER-CLOSED-LID` | `SC-POWER-LOW-BATTERY` (legacy-stage, `swift`)<br>`SC-POWER-CLOSED-LID` (manual-release, `release-budget`) | Low battery fails safe. |
+| `QC-POWER-PROTECTION` | `J-POWER-LOW-BATTERY`<br>`J-POWER-CLOSED-LID` | `SC-POWER-LOW-BATTERY` (legacy-stage, `swift`)<br>`SC-POWER-CLOSED-LID` (manual-release, `release-preflight`) | Low battery fails safe. |
 | `QC-POWER-CLI` | `J-POWER-ENABLE` | `SC-POWER-UNIT` (legacy-stage, `swift`) | The power command reports and enforces typed protection state. |
 | `QC-POWER-PLATFORM` | `J-POWER-ENABLE` | `SC-POWER-UNIT` (legacy-stage, `swift`) | Platform power operations preserve the helper safety boundary. |
 

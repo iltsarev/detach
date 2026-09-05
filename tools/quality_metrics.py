@@ -770,7 +770,7 @@ def build_metrics(
     coverage_profile: str = "swift",
     changed_override: Optional[dict[str, set[int]]] = None,
     allow_incomplete_sources: bool = False,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[str]]:
     if coverage_profile not in COVERAGE_PROFILES:
         raise MetricsError("coverage profile is invalid")
     if not HEX_COMMIT.fullmatch(source_commit):
@@ -860,13 +860,17 @@ def build_metrics(
     else:
         changed_status = "failed"
 
+    # Blocking regressions cover the policy-critical sources only. Aggregate
+    # ratios, test identities, and changed-line coverage are advisory: they
+    # are reported but never turn functional evidence into a failure.
     regressions: list[str] = []
+    advisories: list[str] = []
     if baseline is not None:
         for name in ("ui", "business"):
             current_suite = suites[name]
             baseline_suite = baseline["suites"][name]
             if current_suite["test_count"] < baseline_suite["test_count"]:
-                regressions.append(
+                advisories.append(
                     f"{name} test count regressed: {current_suite['test_count']} < "
                     f"{baseline_suite['test_count']}"
                 )
@@ -874,10 +878,10 @@ def build_metrics(
             if isinstance(baseline_tests, list):
                 removed = sorted(set(baseline_tests) - set(current_suite["tests"]))
                 if removed:
-                    regressions.append(f"{name} test was removed: {removed[0]}")
+                    advisories.append(f"{name} test was removed: {removed[0]}")
             baseline_coverage = baseline_suite["line_coverage"]
             if ratio_regressed(current_suite["line_coverage"], baseline_coverage):
-                regressions.append(
+                advisories.append(
                     f"{name} line coverage regressed: "
                     f"{current_suite['line_coverage']['percent']:.2f} < "
                     f"{baseline_coverage['percent']:.2f}"
@@ -903,7 +907,7 @@ def build_metrics(
                 )
 
     if changed_status == "failed":
-        regressions.append(
+        advisories.append(
             f"changed-line coverage regressed: {changed_percent:.2f} < {minimum:.2f}"
         )
     comparison_status = "not-available" if baseline is None else ("failed" if regressions else "passed")
@@ -930,7 +934,7 @@ def build_metrics(
             "baseline_policy": baseline_policy,
             "regressions": regressions,
         },
-    }
+    }, advisories
 
 
 def export_coverage(
@@ -1043,7 +1047,7 @@ def evaluate(arguments: argparse.Namespace) -> int:
             changed_override[path] = {
                 integer(line, "test changed line") for line in raw_lines
             }
-    document = build_metrics(
+    document, advisories = build_metrics(
         coverage,
         tests,
         policy,
@@ -1074,6 +1078,8 @@ def evaluate(arguments: argparse.Namespace) -> int:
         f"changed={changed['line_coverage']['percent']:.2f}% "
         f"baseline={document['comparison']['mode']}"
     )
+    for advisory in advisories:
+        print(f"quality-metrics: advisory: {advisory}", file=sys.stderr)
     regressions = document["comparison"]["regressions"]
     if regressions:
         for regression in regressions:

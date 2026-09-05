@@ -32,8 +32,7 @@ for record in \
   'swift passed 8' \
   'quality-contracts passed 3' \
   'app passed 12' \
-  'ui-e2e passed 4' \
-  'release-budget passed 0'; do
+  'ui-e2e passed 4'; do
   read -r stage status duration <<<"$record"
   printf '%s\trepository\t%s\t%s\t%s\t%s.log\tdigest\t-\n' \
     "$POLICY_VERSION" "$stage" "$status" "$duration" "$stage" \
@@ -135,7 +134,7 @@ source_commit	0123456789abcdef0123456789abcdef01234567
 base_commit	fedcba9876543210fedcba9876543210fedcba98
 input_fingerprint	0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 fingerprint	abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
-stages	static,swift,quality-contracts,app,ui-e2e,release-budget
+stages	static,swift,quality-contracts,app,ui-e2e
 specs	app
 capabilities	onboarding
 journeys	J-ONBOARD-FIRST-RUN,J-ONBOARD-PROVIDER,J-ONBOARD-APPROVAL

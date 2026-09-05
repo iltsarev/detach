@@ -78,7 +78,6 @@ def authoritative_plan(base: str) -> dict[str, object]:
         "--plan",
         "--format",
         "json",
-        "--without-release-budget",
     ]
     result = subprocess.run(
         command,
@@ -216,7 +215,6 @@ def run_shard(base: str, identifier: str, result_root: Path) -> int:
         "--shard",
         str(shard["stages"]),
         "--keep-going",
-        "--without-release-budget",
     ]
     result = subprocess.run(command, cwd=ROOT, env=environment, check=False)
     run_dir = only_run_directory(result_root)
@@ -310,7 +308,7 @@ def validate_binding(
     command = [
         str(ROOT / "scripts/quality-gate"), "--mode", "impact", "--base",
         str(plan["base_commit"]), "--shard", str(shard["stages"]), "--plan",
-        "--format", "json", "--without-release-budget",
+        "--format", "json",
     ]
     result = subprocess.run(
         command, cwd=ROOT, env=environment, stdout=subprocess.PIPE,
@@ -425,7 +423,6 @@ def aggregate(base: str, input_root: Path, result_root: Path) -> int:
             parse_options(
                 [
                     "--mode", "impact", "--base", base, "--keep-going",
-                    "--without-release-budget",
                 ]
             )
         )

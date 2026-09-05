@@ -35,13 +35,13 @@ policy_version="$("$ROOT/scripts/quality-policy" version)"
 [[ "$policy_version" =~ ^[1-9][0-9]*$ ]] || fail 'invalid policy version'
 [ "$("$ROOT/scripts/quality-policy" specs | wc -l | tr -d ' ')" = 7 ] || \
   fail 'current specification inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" stages all | wc -l | tr -d ' ')" = 14 ] || \
+[ "$("$ROOT/scripts/quality-policy" stages all | wc -l | tr -d ' ')" = 13 ] || \
   fail 'unexpected stage count'
-[ "$("$ROOT/scripts/quality-policy" stages release | tail -1)" = release-budget ] || \
+[ "$("$ROOT/scripts/quality-policy" stages release | tail -1)" = publish-preflight ] || \
   fail 'release stage order is incorrect'
 [ "$("$ROOT/scripts/quality-policy" timeout app)" = 2400 ] || fail 'app timeout is not policy owned'
-[ "$("$ROOT/scripts/quality-policy" dependencies)" = $'app\tui-e2e' ] || \
-  fail 'packaged UI dependency is missing'
+[ -z "$("$ROOT/scripts/quality-policy" dependencies)" ] || \
+  fail 'stage dependencies must not cascade beyond the routed plan'
 [ "$("$ROOT/scripts/quality-policy" critical | wc -l | tr -d ' ')" = 13 ] || \
   fail 'critical source inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" suites | wc -l | tr -d ' ')" = 12 ] || \

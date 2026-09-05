@@ -43,8 +43,7 @@ Hosted CI is the merge-readiness authority.
   repository diagnostic respectively. Each supports `--plan`. No command in
   this group is merge-readiness evidence.
 - Resume evidence retains stage timing and digest-bound logs, binds its parent,
-  requires the same authority, and cannot turn a prior time-budget regression
-  into authoritative evidence.
+  and requires the same authority. Timing is telemetry, never a verdict.
 - Quality policy files contain current version and state; Git is history.
   Runtime tools do not decode old policy schemas. A last-green metrics artifact
   can use an earlier policy number only with the current evidence schema,
@@ -64,18 +63,17 @@ Hosted CI is the merge-readiness authority.
 - Instrumented scenarios emit begin and pass events. Evidence records their
   requirement and journey links, duration, result, and bounded rerun. A missing
   event fails a passed stage.
-- A local timing-budget failure creates performance work. Warm-cache and
-  variance reruns cannot prove readiness. Repeat an unchanged run only for a
-  recorded unrelated external transient. A reviewed budget-schema change can
-  rebaseline capacity after the required product work grows. Within one schema,
-  timing limits can only stay equal or decrease.
+- Stage and wall durations are telemetry, never a verdict. A slow stage is
+  performance work. Warm-cache and variance reruns cannot prove readiness.
+  Repeat an unchanged run only for a recorded unrelated external transient.
 - CI binds checks to the tested merge and first parent. Linux runs level 0
   planning and static work. Level 1 covers units and contracts. Level 2 covers
   packaged and runtime work on macOS. Every selected level is required.
 - Shards revalidate merge identity but have no merge authority. The final Linux
   job recomputes the plan and accepts only exact digest-bound shard evidence.
   Evidence roots are absolute. Ambiguity fails closed. A failed shard cancels peers.
-- CI keeps a ten-minute timing ratchet with no reference-Mac limit.
+- CI keeps a ten-minute workflow deadline and the care p95 SLO as its only
+  latency watch.
 - Gate contracts admit four heavy shards on eight CPUs and two on smaller
   hosts; light contracts stay concurrent and budgets expose overload.
 - Swift and release builds use separate caches and split at three CPUs;

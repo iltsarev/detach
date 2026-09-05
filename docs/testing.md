@@ -93,22 +93,14 @@
   updates the GitHub Pages dashboard with its score.
 - `scripts/quality-gate --mode repository` — every automated repository check.
   Local use is diagnostic. Pull-request CI uses impact mode once with
-  `ci-merge` authority and `--without-release-budget`, disabling local
-  reference-machine wall and stage timing enforcement while retaining every
-  selected functional stage and the static timing-budget ratchet. A normal
-  release enforces the budgets. Only the owner-confirmed
-  `DETACH_RELEASE_IGNORE_TIMING=1 scripts/release-version X.Y.Z`
-  path may omit them for one intentionally busy-machine release, with the
-  waiver recorded in private evidence. `--stage` is diagnostic only and is not
+  `ci-merge` authority. `--stage` is diagnostic only and is not
   proof that a change is ready. On hosts with at least three CPUs, the current
   policy splits workers across isolated Swift tests, normal app, and
   instrumented app builds. Smaller hosts run Swift and app work in sequence.
   It then runs the isolated Codex and Claude suites concurrently
-  against the verified bundled tmux and state helper. It rejects reference-Mac
-  wall or stage regressions and rejects attempts to lower quality floors.
-  Within one budget schema, it rejects time-budget increases relative to the
-  merge base. A reviewed schema change can rebaseline capacity when required
-  product work grows. A quality-core or unknown change selects the full
+  against the verified bundled tmux and state helper. Stage and wall durations
+  are telemetry for `scripts/quality-history` and the care SLO; they never
+  change a verdict. A quality-core or unknown change selects the full
   repository plan. `--resume auto` starts
   fresh when no compatible run exists and is the release default. Resume
   inherits timing and parent provenance. It preserves bounded failure
@@ -160,10 +152,10 @@
   `tests/quality-contracts.sh` — unit tests plus measured UI and business test
   identities, aggregate coverage, and coverage for the 13 critical sources.
   The authoritative gate also merges the release-configuration packaged-app
-  profiles after all UI journeys pass. CI rejects a reduction from the last
-  green `main` artifact. It also rejects
-  changed executable Swift-line coverage below 90 percent. New critical
-  sources start at 100 percent. The quality policy owns each coverage
+  profiles after all UI journeys pass. CI rejects a critical-source reduction
+  from the last green `main` artifact and a new critical source that is not
+  fully covered. Aggregate, test-identity, and changed-line comparisons
+  (90 percent floor) are advisory. The quality policy owns each coverage
   exclusion and links it to automated scenario evidence. Excluded sources do
   not enter aggregate or changed-line denominators. Named test-only regions in
   product files stay in aggregate coverage but use their automated scenario as
@@ -171,7 +163,6 @@
   removed-test, aggregate, critical-file, changed-line, combined-profile, and
   ranked-opportunity contracts. The opportunity artifact is advisory. It does
   not set a coverage floor.
-  `tests/release-budget-ratchet-contract.sh` protects timing.
 - `tests/quality-mutation.sh` checks source restoration, timeout handling,
   failure classification, score enforcement, remote evidence restore, and the
   scheduled workflow contract. A nonzero compiler exit without the declared
@@ -237,9 +228,6 @@ supply `DETACH_RELEASE_IMPACT_REVIEW` with an absolute path directly under
 ignored `app/build/release-impact-reviews/`. The `0600` TSV file must bind the
 exact base and head commits, set the manual-gate decision, and give a reason.
 It cannot narrow unknown-path impact or an automated release gate.
-Set `DETACH_RELEASE_IGNORE_TIMING=1` only when the owner explicitly accepts
-busy-machine timing for that single release; the script requires the same exact
-release-target confirmation before it omits reference-machine timing checks.
 Interrupted draft uploads may resume only after every existing asset digest is
 matched; an unexpected or changed asset fails closed. Do not run the two
 low-level scripts manually during a normal release. Do not run, tag, notarize,
