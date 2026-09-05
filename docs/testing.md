@@ -42,6 +42,10 @@
 - Pull-request CI validates that machine plan and runs static contracts before
   optional metrics and Swift cache downloads. The final gate recomputes both,
   so the early pass is fail-fast diagnosis and not readiness evidence.
+- `scripts/quality-evidence fetch --repository OWNER/REPOSITORY --commit <sha>`
+  downloads the green `main` evidence that proves one commit into ignored
+  `app/build/quality-evidence/`. The release gate passes it as
+  `--reuse-hosted <run-dir>` and runs only the stages it does not prove.
 - `scripts/quality-cache-warm` builds the three isolated Swift products for a
   missing promoted-`main` cache key. It emits no gate evidence and never
   replaces a selected stage. `--dependencies-only` materializes the shared

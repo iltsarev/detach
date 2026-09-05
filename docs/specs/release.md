@@ -77,8 +77,9 @@ change real power state, upload assets, or claim publication.
   signing, power, lid, and publication gate remains mandatory; no timing
   comparison can pass or fail a release.
 - The pre-release quality gate classifies the complete diff from the last
-  published tag to synchronized `main`. It runs that plan on the release Mac.
-  An empty or
+  published tag to synchronized `main`. It reuses the digest-bound hosted
+  evidence that proves the exact source tree and runs the remaining stages on
+  the release Mac. An empty or
   unknown diff selects the complete release plan. This selection does not omit
   later signing, notarization, hardware, artifact, or publication gates.
 - A resumed release automatically reuses digest-bound passed stages from the

@@ -36,6 +36,7 @@ It lists current specification ownership and verification links.
 - `scripts/quality-cache-warm`
 - `scripts/quality-care`
 - `scripts/quality-dashboard`
+- `scripts/quality-evidence`
 - `scripts/quality-gate`
 - `scripts/quality-history`
 - `scripts/quality-merge`
@@ -59,6 +60,7 @@ It lists current specification ownership and verification links.
 - `tools/quality_cache_warm.py`
 - `tools/quality_care.py`
 - `tools/quality_dashboard.py`
+- `tools/quality_evidence.py`
 - `tools/quality_gate.py`
 - `tools/quality_history.py`
 - `tools/quality_merge.py`

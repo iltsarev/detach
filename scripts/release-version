@@ -505,15 +505,26 @@ file_line() {
 }
 
 run_full_tests() {
-  local impact_base="$1" baseline_root=""
+  local impact_base="$1" baseline_root="" hosted_root="" source_commit
+  local gate_args=(--mode release --base "$impact_base" --resume auto)
   note "running the impact-selected pre-release test suite from $impact_base"
   if [ "$TEST_MODE" != 1 ]; then
     baseline_root="$(DETACH_QUALITY_REPOSITORY="$REPOSITORY" \
       "$ROOT/scripts/quality-baseline")"
     export DETACH_QUALITY_BASELINE_ROOT="$baseline_root"
+    # Hosted CI already proved this exact tree for the stages of its merge
+    # plan. The gate reuses that digest-bound evidence and runs the rest.
+    source_commit="$(git -C "$ROOT" rev-parse HEAD)"
+    if hosted_root="$(DETACH_QUALITY_REPOSITORY="$REPOSITORY" \
+        "$ROOT/scripts/quality-evidence" fetch --repository "$REPOSITORY" \
+          --commit "$source_commit")"; then
+      note "reusing hosted evidence for $source_commit: $hosted_root"
+      gate_args+=(--reuse-hosted "$hosted_root")
+    else
+      note "no hosted evidence proves $source_commit; running every selected stage locally"
+    fi
   fi
-  "$ROOT/scripts/quality-gate" --mode release --base "$impact_base" \
-    --resume auto
+  "$ROOT/scripts/quality-gate" "${gate_args[@]}"
 }
 
 initialize_workflow() {

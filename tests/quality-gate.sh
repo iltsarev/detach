@@ -664,6 +664,72 @@ reused_log_sha256="$(awk -F '\t' '$3 == "static" {print $7}' "$resumed_run/summa
 [ "$(shasum -a 256 "$resumed_run/$reused_log" | awk '{print $1}')" = "$reused_log_sha256" ]
 grep -F $'origin_run\n' "$resumed_run/summary.tsv" >/dev/null
 
+# Release mode reuses digest-bound hosted evidence for the exact source
+# commit. A ci-main run names the commit directly; a promoted ci-merge run
+# binds it through a promotion record with equal trees.
+setup_fixture hosted-reuse
+gate --mode repository >"$REPO/hosted-source.out"
+hosted_source="$(find "$RESULT_ROOT" -mindepth 1 -maxdepth 1 -type d -print | head -1)"
+mkdir -p "$REPO/hosted"
+cp -R "$hosted_source" "$REPO/hosted/"
+hosted_dir="$REPO/hosted/$(basename "$hosted_source")"
+rm -rf "$RESULT_ROOT"
+set_manifest_value "$hosted_dir/manifest.tsv" authority ci-main
+: >"$ACTION_LOG"
+gate --mode release --reuse-hosted "$hosted_dir" >"$REPO/hosted-reuse.out"
+grep -F "hosted evidence $(basename "$hosted_dir") proves static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight for" \
+  "$REPO/hosted-reuse.out" >/dev/null
+grep -F "reusing codex from hosted evidence $hosted_dir" "$REPO/hosted-reuse.out" >/dev/null
+grep -F "quality-gate: PASS policy=$POLICY_VERSION authority=release" \
+  "$REPO/hosted-reuse.out" >/dev/null
+[ ! -s "$ACTION_LOG" ]
+grep -F $'codex\treused\t' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F "$(basename "$hosted_dir")" "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F $'resumed_from_run\t' "$RESULT_ROOT"/*/manifest.tsv | grep -qv "$(basename "$hosted_dir")"
+if gate --mode change --reuse-hosted "$hosted_dir" --plan >"$REPO/hosted-change.out" 2>&1; then
+  printf 'quality gate accepted hosted reuse outside release mode\n' >&2
+  exit 1
+fi
+grep -F -- '--reuse-hosted requires release mode' "$REPO/hosted-change.out" >/dev/null
+rm -rf "$RESULT_ROOT"
+printf 'tampered\n' >>"$hosted_dir/codex.log"
+if gate --mode release --reuse-hosted "$hosted_dir" >"$REPO/hosted-tampered.out" 2>&1; then
+  printf 'quality gate reused a tampered hosted log\n' >&2
+  exit 1
+fi
+grep -F 'log digest does not match: codex' "$REPO/hosted-tampered.out" >/dev/null
+sed -i '' '$d' "$hosted_dir/codex.log"
+rm -rf "$RESULT_ROOT"
+git -C "$REPO" commit -q --allow-empty -m 'same tree, new commit'
+if gate --mode release --reuse-hosted "$hosted_dir" >"$REPO/hosted-unbound.out" 2>&1; then
+  printf 'quality gate reused hosted evidence for another commit\n' >&2
+  exit 1
+fi
+grep -F 'hosted evidence is not bound to the source commit' "$REPO/hosted-unbound.out" >/dev/null
+rm -rf "$RESULT_ROOT"
+set_manifest_value "$hosted_dir/manifest.tsv" authority ci-merge
+hosted_tree="$(git -C "$REPO" rev-parse HEAD^{tree})"
+printf '%s\n' \
+  $'schema\t1' $'authority\tci-main' $'result\tpassed' \
+  "repository	example/detach" \
+  "main_commit	$(git -C "$REPO" rev-parse HEAD)" \
+  "main_tree	$hosted_tree" \
+  "tested_commit	$BASE" \
+  "tested_tree	$hosted_tree" \
+  "source_manifest_sha256	$(shasum -a 256 "$hosted_dir/manifest.tsv" | awk '{print $1}')" \
+  >"$hosted_dir/promotion.tsv"
+: >"$ACTION_LOG"
+gate --mode release --reuse-hosted "$hosted_dir" >"$REPO/hosted-promoted.out"
+grep -F "reusing claude from hosted evidence" "$REPO/hosted-promoted.out" >/dev/null
+[ ! -s "$ACTION_LOG" ]
+rm -rf "$RESULT_ROOT"
+if DETACH_QUALITY_REPOSITORY=other/detach gate --mode release --reuse-hosted "$hosted_dir" \
+    >"$REPO/hosted-repository.out" 2>&1; then
+  printf 'quality gate reused hosted evidence from another repository\n' >&2
+  exit 1
+fi
+grep -F 'hosted promotion names another repository' "$REPO/hosted-repository.out" >/dev/null
+
 setup_fixture stale-resume
 if FAIL_STAGES=swift gate --mode repository >"$REPO/stale-first.out" 2>&1; then
   exit 1
