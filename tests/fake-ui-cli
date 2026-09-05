@@ -100,6 +100,10 @@ if [ "$#" -eq 4 ] && [ "$2" = logs ] && [ "$3" = --ansi ]; then
       : >"$ROOT/fake/recoverable-log-refresh-delayed"
       sleep 0.25
     fi
+    if [ -f "$ROOT/fake/disconnected-log-failure" ]; then
+      printf 'UI fixture log read failed\n' >&2
+      exit 1
+    fi
     printf '\033[32mUI fixture log for %s\033[0m\n' "$4"
     : >"$ROOT/fake/recoverable-log-ready"
     exit 0

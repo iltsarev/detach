@@ -566,6 +566,9 @@ palette slot. Detach never edits the global tmux configuration.
 Shells in user-created split panes close normally on `Ctrl-D` or exit. Only the
 managed Codex or Claude pane is retained after completion so that Detach can
 preserve output and exit status.
+When the provider exits, including after `Ctrl-C`, the external terminal returns
+to its original shell. A `Ctrl-C` that only interrupts work keeps the connection
+while the provider remains running. Logs and checkpoints stay available.
 
 Inside managed tmux, the mouse wheel scrolls one line at a time. Mouse selection
 copies to the macOS clipboard and keeps the highlight and scroll position. When
