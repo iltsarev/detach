@@ -32,6 +32,10 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   selected by the accumulated diff from `<tag>`. It omits the recursive
   `scripts/release-version` test. Release mode without a base fails safe to the
   complete release plan.
+- `scripts/quality-gate --mode release --reuse-hosted <run-dir>` also reuses
+  every selected stage that digest-bound hosted evidence already proved for
+  the exact source tree. `scripts/quality-evidence fetch --commit <sha>`
+  downloads that evidence from the green `main` workflow run of the commit.
 - `scripts/quality-gate --resume <run-dir>` reuses compatible passed stages.
   `--resume latest` selects the newest compatible local run.
   `--resume auto` starts fresh when no compatible run exists. Releases use
@@ -109,6 +113,14 @@ Resume requires the same policy, authority, source commit, base commit, and
 input fingerprint. The old plan must contain every selected stage. Reused logs
 keep their duration and digest. The new manifest binds the parent manifest.
 Inherited wall time cannot become shorter.
+
+Hosted reuse is separate. Release mode may reuse a passed stage from a
+`ci-main` run that names the source commit, or from a promoted `ci-merge` run
+whose promotion record names the source commit and proves equal tested and
+merged trees. The evidence must have the current policy, a passed result, and
+matching environment, artifact, summary, and log digests. Each reused stage
+records the hosted run as its origin. Stages the hosted plan did not cover run
+on the release Mac.
 
 ## Automated stages and scheduling
 

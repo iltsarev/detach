@@ -203,6 +203,7 @@ class Options:
     explain: bool
     resume: str
     keep_going: bool
+    reuse_hosted: str
     list_stages: bool
     stage: str
     shard: str
@@ -352,6 +353,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--explain", action="store_true")
     result.add_argument("--resume", default="")
     result.add_argument("--keep-going", action="store_true")
+    result.add_argument("--reuse-hosted", default="")
     result.add_argument("--list-stages", action="store_true")
     result.add_argument("--stage", default="")
     result.add_argument("--shard", default="")
@@ -368,6 +370,7 @@ def parse_options(arguments: list[str]) -> Options:
         explain=values.explain,
         resume=values.resume,
         keep_going=values.keep_going,
+        reuse_hosted=values.reuse_hosted,
         list_stages=values.list_stages,
         stage=values.stage,
         shard=values.shard,
@@ -420,6 +423,8 @@ class QualityGate:
         self.failure_count = 0
         self.prior_manifest: dict[str, str | None] = {}
         self.prior_results: dict[str, StageResult] = {}
+        self.hosted_dir: Path | None = None
+        self.hosted_results: dict[str, StageResult] = {}
         self.scenario_records: list[dict[str, object]] = []
 
     def validate_options(self) -> None:
@@ -465,6 +470,11 @@ class QualityGate:
         else:
             raise GateError(f"invalid quality authority: {self.authority}")
 
+        if self.options.reuse_hosted:
+            if self.options.mode != "release":
+                raise GateError("--reuse-hosted requires release mode")
+            if self.options.stage or self.options.shard:
+                raise GateError("--reuse-hosted cannot be combined with --stage or --shard")
         if self.options.output_format not in ("text", "json"):
             raise GateError(f"invalid format: {self.options.output_format}")
         if self.options.stage and (
@@ -1094,43 +1104,7 @@ class QualityGate:
             raise GateError("resume environment digest does not match its manifest")
         if sha256_file(resume / "artifacts.tsv") != values.get("artifacts_sha256"):
             raise GateError("resume artifact inventory digest does not match its manifest")
-        artifact_lines = (resume / "artifacts.tsv").read_text(encoding="utf-8").splitlines()
-        if not artifact_lines or artifact_lines[0] != "schema\t1":
-            raise GateError("resume artifact inventory schema is invalid")
-        for line in artifact_lines[1:]:
-            fields = line.split("\t")
-            if len(fields) != 3 or fields[0] != "file":
-                raise GateError("resume artifact inventory contains an unknown record")
-            _, relative, expected_digest = fields
-            if (
-                relative.startswith("/")
-                or relative.startswith("../")
-                or "/../" in relative
-                or "\n" in relative
-                or "\t" in relative
-            ):
-                raise GateError("resume artifact inventory path is unsafe")
-            if not (
-                relative == "quality-metrics.json"
-                or relative == "quality-metrics-swift.json"
-                or relative == "coverage-opportunities.json"
-                or relative == "spec-sizes.json"
-                or relative == "scenarios.jsonl"
-                or relative == "scenarios.junit.xml"
-                or relative == "repair-bundle.json"
-                or relative.startswith("stage-scenarios/")
-                or relative.startswith("ui-e2e-artifacts/")
-                or relative.startswith("codex-artifacts/")
-                or relative.startswith("claude-artifacts/")
-            ):
-                raise GateError("resume artifact inventory path is unapproved")
-            if not DIGEST.fullmatch(expected_digest):
-                raise GateError("resume artifact inventory digest is invalid")
-            artifact = resume / relative
-            if not artifact.is_file() or artifact.is_symlink():
-                raise GateError("resume diagnostic artifact is missing or unsafe")
-            if sha256_file(artifact) != expected_digest:
-                raise GateError("resume diagnostic artifact digest does not match")
+        self.validate_artifact_inventory(resume, "resume")
         timing_wall = values.get("timing_wall_seconds")
         if timing_wall is None or not NONNEGATIVE_INTEGER.fullmatch(timing_wall):
             raise GateError("resume evidence timing wall duration is invalid")
@@ -1196,6 +1170,133 @@ class QualityGate:
             resume / "summary.tsv", prior_stages, prior_mode
         )
 
+    def validate_artifact_inventory(self, root: Path, label: str) -> None:
+        artifact_lines = (root / "artifacts.tsv").read_text(encoding="utf-8").splitlines()
+        if not artifact_lines or artifact_lines[0] != "schema\t1":
+            raise GateError(f"{label} artifact inventory schema is invalid")
+        for line in artifact_lines[1:]:
+            fields = line.split("\t")
+            if len(fields) != 3 or fields[0] != "file":
+                raise GateError(f"{label} artifact inventory contains an unknown record")
+            _, relative, expected_digest = fields
+            if (
+                relative.startswith("/")
+                or relative.startswith("../")
+                or "/../" in relative
+                or "\n" in relative
+                or "\t" in relative
+            ):
+                raise GateError(f"{label} artifact inventory path is unsafe")
+            if not (
+                relative == "quality-metrics.json"
+                or relative == "quality-metrics-swift.json"
+                or relative == "coverage-opportunities.json"
+                or relative == "spec-sizes.json"
+                or relative == "scenarios.jsonl"
+                or relative == "scenarios.junit.xml"
+                or relative == "repair-bundle.json"
+                or relative.startswith("stage-scenarios/")
+                or relative.startswith("ui-e2e-artifacts/")
+                or relative.startswith("codex-artifacts/")
+                or relative.startswith("claude-artifacts/")
+            ):
+                raise GateError(f"{label} artifact inventory path is unapproved")
+            if not DIGEST.fullmatch(expected_digest):
+                raise GateError(f"{label} artifact inventory digest is invalid")
+            artifact = root / relative
+            if not artifact.is_file() or artifact.is_symlink():
+                raise GateError(f"{label} diagnostic artifact is missing or unsafe")
+            if sha256_file(artifact) != expected_digest:
+                raise GateError(f"{label} diagnostic artifact digest does not match")
+
+    def validate_hosted_reuse(self) -> None:
+        """Bind hosted ci-main evidence to the exact source commit before reuse.
+
+        Release mode may reuse a stage that hosted CI already proved for the
+        same tree. The evidence must be digest-bound, must have passed, and
+        must name this commit directly (ci-main) or through a promotion
+        record whose tested and merged trees are equal.
+        """
+        if not self.options.reuse_hosted:
+            return
+        hosted = Path(self.options.reuse_hosted).absolute()
+        if not hosted.is_dir() or hosted.is_symlink():
+            raise GateError("hosted evidence path must be a non-symlink run directory")
+        for name in ("manifest.tsv", "summary.tsv", "environment.tsv", "artifacts.tsv"):
+            path = hosted / name
+            if not path.is_file() or path.is_symlink():
+                raise GateError(f"hosted evidence {name} is missing or unsafe")
+        values = self.manifest_values(hosted / "manifest.tsv")
+        if values.get("schema") != "4":
+            raise GateError("hosted evidence schema is unsupported")
+        if values.get("policy") != str(self.policy_version):
+            raise GateError("hosted evidence uses another policy version")
+        if values.get("result") != "passed":
+            raise GateError("hosted evidence did not pass")
+        if values.get("mode") not in ("impact", "repository"):
+            raise GateError("hosted evidence mode is not a hosted plan")
+        authority = values.get("authority")
+        if authority not in ("ci-merge", "ci-main"):
+            raise GateError("hosted evidence authority is not hosted")
+        for name, key in (
+            ("environment.tsv", "environment_sha256"),
+            ("artifacts.tsv", "artifacts_sha256"),
+            ("summary.tsv", "summary_sha256"),
+        ):
+            if sha256_file(hosted / name) != values.get(key):
+                raise GateError(f"hosted evidence {name} digest does not match its manifest")
+        self.validate_artifact_inventory(hosted, "hosted evidence")
+        tested_commit = values.get("source_commit") or ""
+        if not (authority == "ci-main" and tested_commit == self.source_commit):
+            self.validate_hosted_promotion(hosted, values)
+        results = self.parse_summary(
+            hosted / "summary.tsv", values.get("stages") or "", values.get("mode") or ""
+        )
+        self.hosted_results = {
+            stage: result for stage, result in results.items() if result.status == "passed"
+        }
+        self.hosted_dir = hosted
+        proven = [
+            stage
+            for stage in self.selected
+            if stage in self.hosted_results and stage not in self.prior_results
+        ]
+        print(
+            f"quality-gate: hosted evidence {hosted.name} proves "
+            f"{','.join(proven) if proven else 'no selected stage'} for {self.source_commit}"
+        )
+
+    def validate_hosted_promotion(self, hosted: Path, values: dict[str, str | None]) -> None:
+        promotion = hosted / "promotion.tsv"
+        if not promotion.is_file() or promotion.is_symlink():
+            raise GateError("hosted evidence is not bound to the source commit")
+        record = self.manifest_values(promotion)
+        tree = git_text(["rev-parse", f"{self.source_commit}^{{tree}}"])
+        checks = (
+            ("schema", "1", "hosted promotion schema is unsupported"),
+            ("authority", "ci-main", "hosted promotion authority is not ci-main"),
+            ("result", "passed", "hosted promotion did not pass"),
+            ("main_commit", self.source_commit, "hosted promotion names another main commit"),
+            (
+                "tested_commit",
+                values.get("source_commit") or "",
+                "hosted promotion names another tested commit",
+            ),
+            (
+                "source_manifest_sha256",
+                sha256_file(hosted / "manifest.tsv"),
+                "hosted promotion does not bind this manifest",
+            ),
+            ("main_tree", tree, "hosted promotion tree does not match the source tree"),
+            ("tested_tree", tree, "hosted promotion tested tree does not match the source tree"),
+        )
+        for key, expected, message in checks:
+            if not expected or record.get(key) != expected:
+                raise GateError(message)
+        repository = os.environ.get("DETACH_QUALITY_REPOSITORY", "")
+        if repository and record.get("repository") != repository:
+            raise GateError("hosted promotion names another repository")
+
     def stage_result_path(self, stage: str) -> Path:
         return self.run_dir / f".stage-{stage}.result"
 
@@ -1240,13 +1341,30 @@ class QualityGate:
             ),
         )
 
+    def reuse_source(self, stage: str) -> tuple[Path, StageResult] | None:
+        prior = self.prior_results.get(stage)
+        if (
+            prior is not None
+            and prior.status in ("passed", "reused")
+            and self.resume_dir is not None
+        ):
+            return self.resume_dir, prior
+        hosted = self.hosted_results.get(stage)
+        if hosted is not None and self.hosted_dir is not None:
+            return self.hosted_dir, hosted
+        return None
+
     def reusable(self, stage: str) -> bool:
-        result = self.prior_results.get(stage)
+        source = self.reuse_source(stage)
+        if source is None:
+            return False
         if stage == "ui-e2e" and "quality-contracts" in self.selected:
-            metrics = self.prior_results.get("quality-contracts")
-            if metrics is None or metrics.status not in ("passed", "reused"):
+            # The UI profile only counts with the metrics that merged it, so
+            # both must come from the same evidence.
+            metrics = self.reuse_source("quality-contracts")
+            if metrics is None or metrics[0] != source[0]:
                 return False
-        return result is not None and result.status in ("passed", "reused")
+        return True
 
     def prerequisite_failed(self, stage: str) -> bool:
         prerequisites = EXECUTION_PREREQUISITES.get(stage)
@@ -1335,24 +1453,26 @@ class QualityGate:
         if stage not in self.selected or stage in self.results or stage in self.active:
             return
         if self.reusable(stage):
-            assert self.resume_dir is not None
-            prior = self.prior_results[stage]
-            print(f"quality-gate: reusing {stage} from matching evidence {self.resume_dir}")
-            origin = prior.origin_run if prior.origin_run != "-" else self.resume_dir.name
+            source = self.reuse_source(stage)
+            assert source is not None
+            source_dir, prior = source
+            kind = "hosted" if source_dir == self.hosted_dir else "matching"
+            print(f"quality-gate: reusing {stage} from {kind} evidence {source_dir}")
+            origin = prior.origin_run if prior.origin_run != "-" else source_dir.name
             reused_log = "-"
             if prior.log != "-":
                 reused_log = f"{stage}.reused.log"
-                shutil.copyfile(self.resume_dir / prior.log, self.run_dir / reused_log)
+                shutil.copyfile(source_dir / prior.log, self.run_dir / reused_log)
                 (self.run_dir / reused_log).chmod(0o600)
             if stage == "quality-contracts":
-                metrics = self.resume_dir / "quality-metrics.json"
+                metrics = source_dir / "quality-metrics.json"
                 if not metrics.is_file() or metrics.is_symlink():
                     raise GateError(
                         "reused quality-contracts evidence has no safe quality metrics"
                     )
                 shutil.copyfile(metrics, self.run_dir / "quality-metrics.json")
                 (self.run_dir / "quality-metrics.json").chmod(0o600)
-                swift_metrics = self.resume_dir / "quality-metrics-swift.json"
+                swift_metrics = source_dir / "quality-metrics-swift.json"
                 if swift_metrics.exists():
                     if not swift_metrics.is_file() or swift_metrics.is_symlink():
                         raise GateError(
@@ -1362,7 +1482,7 @@ class QualityGate:
                         swift_metrics, self.run_dir / "quality-metrics-swift.json"
                     )
                     (self.run_dir / "quality-metrics-swift.json").chmod(0o600)
-                opportunities = self.resume_dir / "coverage-opportunities.json"
+                opportunities = source_dir / "coverage-opportunities.json"
                 if not opportunities.is_file() or opportunities.is_symlink():
                     raise GateError(
                         "reused quality-contracts evidence has no safe coverage opportunities"
@@ -1374,7 +1494,7 @@ class QualityGate:
             self.record_result(
                 stage,
                 StageResult("reused", prior.duration, reused_log, 0, origin),
-                scenario_source=self.resume_dir / "stage-scenarios" / f"{stage}.jsonl",
+                scenario_source=source_dir / "stage-scenarios" / f"{stage}.jsonl",
             )
             return
         if self.prerequisite_failed(stage):
@@ -1749,6 +1869,7 @@ class QualityGate:
             return 0
         self.prepare_evidence()
         self.validate_resume()
+        self.validate_hosted_reuse()
         self.write_manifest("running")
 
         def signal_handler(_signum: int, _frame: object) -> None:
@@ -2154,6 +2275,7 @@ def run_static_stage(root: Path, run_dir: Path, mode: str, resolved_base: str) -
         "scripts/quality-metrics",
         "scripts/quality-mutation",
         "scripts/quality-baseline",
+        "scripts/quality-evidence",
         "scripts/quality-promote",
         "scripts/quality-history",
         "scripts/quality-care",
@@ -2239,6 +2361,12 @@ def gate_contract_definitions(
             [str(root / "tests/quality-baseline.sh")],
             {},
             "Quality baseline contracts passed",
+        ),
+        (
+            "quality-evidence.log",
+            [str(root / "tests/quality-evidence.sh")],
+            {},
+            "Quality evidence contracts passed",
         ),
         (
             "quality-promote.log",

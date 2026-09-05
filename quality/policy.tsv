@@ -1,5 +1,5 @@
 schema	1
-policy	58
+policy	59
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -110,6 +110,8 @@ route	1000	scripts/quality-metrics	policy	safe	docs/specs/documentation.md
 route	1000	tools/quality_metrics.py	policy	safe	docs/specs/documentation.md
 route	1000	scripts/quality-baseline	policy	safe	docs/specs/documentation.md
 route	1000	tools/quality_baseline.py	policy	safe	docs/specs/documentation.md
+route	1000	scripts/quality-evidence	policy	safe	docs/specs/documentation.md
+route	1000	tools/quality_evidence.py	policy	safe	docs/specs/documentation.md
 route	1000	scripts/quality-promote	policy	safe	docs/specs/documentation.md
 route	1000	tools/quality_promote.py	policy	safe	docs/specs/documentation.md
 route	1000	scripts/quality-merge	policy	safe	docs/specs/documentation.md

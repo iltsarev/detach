@@ -742,7 +742,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 58,
+  "policy": 59,
   "release_domains": [
     {
       "gates": "-",
@@ -1057,6 +1057,20 @@
     },
     {
       "pattern": "tools/quality_baseline.py",
+      "priority": 1000,
+      "release_domain": "safe",
+      "spec": "docs/specs/documentation.md",
+      "test_domain": "policy"
+    },
+    {
+      "pattern": "scripts/quality-evidence",
+      "priority": 1000,
+      "release_domain": "safe",
+      "spec": "docs/specs/documentation.md",
+      "test_domain": "policy"
+    },
+    {
+      "pattern": "tools/quality_evidence.py",
       "priority": 1000,
       "release_domain": "safe",
       "spec": "docs/specs/documentation.md",
@@ -2340,6 +2354,7 @@
         "scripts/quality-cache-warm",
         "scripts/quality-care",
         "scripts/quality-dashboard",
+        "scripts/quality-evidence",
         "scripts/quality-gate",
         "scripts/quality-history",
         "scripts/quality-merge",
@@ -2363,6 +2378,7 @@
         "tools/quality_cache_warm.py",
         "tools/quality_care.py",
         "tools/quality_dashboard.py",
+        "tools/quality_evidence.py",
         "tools/quality_gate.py",
         "tools/quality_history.py",
         "tools/quality_merge.py",

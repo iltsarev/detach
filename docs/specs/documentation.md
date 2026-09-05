@@ -44,6 +44,8 @@ Hosted CI is the merge-readiness authority.
   this group is merge-readiness evidence.
 - Resume evidence retains stage timing and digest-bound logs, binds its parent,
   and requires the same authority. Timing is telemetry, never a verdict.
+  Hosted reuse in release mode is separate: a passed `ci-main` or promoted
+  `ci-merge` stage counts only for the exact source tree it proved.
 - Quality policy files contain current version and state; Git is history.
   Runtime tools do not decode old policy schemas. A last-green metrics artifact
   can use an earlier policy number only with the current evidence schema,
