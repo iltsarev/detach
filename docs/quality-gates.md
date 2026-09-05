@@ -176,8 +176,12 @@ compiler, package, sources, tests, build scripts, and version metadata. A
 promoted `main` run warms only a missing exact product and emits no gate
 evidence. The packaged UI test uses a
 stripped process-private app, fake CLI, and private state. Provider tests use
-private state and socket roots plus the newly bundled `tmux` and
-`detach-state`. Each provider part has private state, socket, log, and failure
+private state and socket roots plus the bundled `tmux` and `detach-state`. A
+hosted provider shard binds the exact runtime products that the last green
+`main` published when the product cache has them, so a change that touches
+only the shell CLI does not rebuild the app in every shard. Without them the
+shard verifies or builds the packaged app first. Each provider part has
+private state, socket, log, and failure
 artifact roots. Parts run concurrently. The bounded large-host Codex lane
 starts the longest measured independent parts first, and still runs every
 part. Smaller hosts use three Codex parts and two Claude parts; larger hosts

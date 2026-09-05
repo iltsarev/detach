@@ -41,6 +41,7 @@ class QualityShardContract(unittest.TestCase):
                     "level": 0,
                     "needs_app": False,
                     "needs_cache": False,
+                    "needs_runtime": False,
                     "needs_metrics": False,
                     "coverage_profile": "",
                 }
@@ -84,9 +85,12 @@ class QualityShardContract(unittest.TestCase):
         )
         self.assertTrue(contracts["needs_app"])
         self.assertFalse(contracts["needs_cache"])
+        self.assertFalse(contracts["needs_runtime"])
         codex = shard_for({"stages": stages}, "codex")
-        self.assertTrue(codex["needs_app"])
-        self.assertFalse(codex["needs_cache"])
+        self.assertFalse(codex["needs_app"])
+        self.assertTrue(codex["needs_cache"])
+        self.assertTrue(codex["needs_runtime"])
+        self.assertFalse(build["needs_runtime"])
 
     def test_swift_only_metrics_shard_selects_swift_profile(self) -> None:
         build = shard_for(

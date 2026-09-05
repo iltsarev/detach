@@ -99,10 +99,15 @@ if [ "$app_bind_line" -le "$app_build_line" ]; then
   printf 'quality workflow bound a fresh app before its build completed\n' >&2
   exit 1
 fi
-grep -F 'key: detach-quality-products-v1-' \
+grep -F 'key: detach-quality-products-v2-' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 grep -F 'app/.build/quality-products-v1.json' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
+grep -F 'app/.build/quality-runtime/detach-state' \
+  "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
+printf '%s\n' "$quality_shards_job" | grep -F \
+  "if: matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true')" \
+  >/dev/null
 grep -F 'python3 tools/quality_products.py verify' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 grep -F 'DETACH_QUALITY_EXACT_PRODUCTS=1' \

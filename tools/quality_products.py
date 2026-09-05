@@ -17,6 +17,12 @@ from quality_cache_warm import product_fingerprint, product_inputs
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_RELATIVE = Path("app/.build/quality-products-v1.json")
+# The provider integrations need only the bundled tmux and detach-state. A
+# green main publishes both as exact runtime products so a pull request that
+# changes only the shell CLI does not rebuild the whole app in every shard.
+RUNTIME_PRODUCT_ROOT = Path("app/.build/quality-runtime")
+RUNTIME_SOURCE = Path("app/build/Detach.app/Contents/Resources/DetachCLI")
+RUNTIME_PRODUCTS = ("tmux", "detach-state")
 PRODUCT_PATHS = (
     (
         "swift-tests",
@@ -45,6 +51,8 @@ PRODUCT_PATHS = (
             "Sparkle.framework"
         ),
     ),
+    ("runtime-tmux", RUNTIME_PRODUCT_ROOT / "tmux"),
+    ("runtime-state", RUNTIME_PRODUCT_ROOT / "detach-state"),
 )
 EXECUTABLE_PATHS = (
     Path(
@@ -52,6 +60,8 @@ EXECUTABLE_PATHS = (
         "DetachAppPackageTests.xctest/Contents/MacOS/DetachAppPackageTests"
     ),
     Path("app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp"),
+    RUNTIME_PRODUCT_ROOT / "tmux",
+    RUNTIME_PRODUCT_ROOT / "detach-state",
 )
 
 
@@ -176,8 +186,29 @@ def manifest_path(root: Path) -> Path:
     return root / MANIFEST_RELATIVE
 
 
+def stage_runtime_products(root: Path) -> None:
+    """Copy the verified bundle's tmux and detach-state into the product root."""
+    source_root = root / RUNTIME_SOURCE
+    destination_root = root / RUNTIME_PRODUCT_ROOT
+    if destination_root.is_symlink():
+        raise ProductError("runtime product root is a symlink")
+    destination_root.mkdir(parents=True, exist_ok=True)
+    for name in RUNTIME_PRODUCTS:
+        source = source_root / name
+        if not source.is_file() or source.is_symlink() or not os.access(source, os.X_OK):
+            raise ProductError(f"bundled runtime product is missing or unsafe: {name}")
+        destination = destination_root / name
+        if destination.is_symlink():
+            raise ProductError(f"runtime product is a symlink: {name}")
+        temporary = destination_root / f".{name}.{os.getpid()}"
+        temporary.write_bytes(source.read_bytes())
+        temporary.chmod(0o755)
+        os.replace(temporary, destination)
+
+
 def publish(root: Path) -> int:
     root = root.resolve()
+    stage_runtime_products(root)
     validate_executables(root)
     document = {
         "schema": 1,

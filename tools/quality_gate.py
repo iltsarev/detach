@@ -1821,6 +1821,20 @@ def child_run(arguments: list[str], *, cwd: Path = ROOT, env: dict[str, str] | N
     return process.returncode
 
 
+RUNTIME_PRODUCT_ROOT = Path("app/.build/quality-runtime")
+
+
+def provider_runtime_payload(root: Path) -> Path:
+    """Return the directory that holds tmux and detach-state for provider suites.
+
+    Hosted shards that bind exact products from the last green main use the
+    published runtime products. Everything else uses the freshly verified app.
+    """
+    if exact_products_enabled():
+        return root / RUNTIME_PRODUCT_ROOT
+    return root / "app/build/Detach.app/Contents/Resources/DetachCLI"
+
+
 def exact_products_enabled() -> bool:
     value = os.environ.get("DETACH_QUALITY_EXACT_PRODUCTS", "")
     if value not in ("", "1"):
@@ -2727,16 +2741,22 @@ def run_stage_worker(stage: str) -> int:
                 print("quality-gate: UI e2e emitted no coverage profile", file=sys.stderr)
                 return 2
         return status
-    payload = root / "app/build/Detach.app/Contents/Resources/DetachCLI"
+    payload = provider_runtime_payload(root)
     tmux = payload / "tmux"
     state = payload / "detach-state"
     if stage in ("codex", "claude"):
-        if not tmux.is_file() or not os.access(tmux, os.X_OK):
-            print(f"quality-gate: {stage} gate requires the app stage bundled tmux", file=sys.stderr)
-            return 2
-        if not state.is_file() or not os.access(state, os.X_OK):
+        print(f"quality-gate: {stage} runtime payload {payload}", file=sys.stderr)
+        if not tmux.is_file() or tmux.is_symlink() or not os.access(tmux, os.X_OK):
             print(
-                f"quality-gate: {stage} gate requires the app stage bundled state helper",
+                f"quality-gate: {stage} gate requires bundled tmux from the app stage "
+                "or exact runtime products",
+                file=sys.stderr,
+            )
+            return 2
+        if not state.is_file() or state.is_symlink() or not os.access(state, os.X_OK):
+            print(
+                f"quality-gate: {stage} gate requires the bundled state helper from the "
+                "app stage or exact runtime products",
                 file=sys.stderr,
             )
             return 2
