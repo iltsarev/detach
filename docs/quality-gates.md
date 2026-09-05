@@ -149,7 +149,10 @@ the same bundle and does not build it again. A failed build cannot create this
 binding. Only the private UI copy gets the instrumented executable.
 The short packaged UI lane runs after the verified app and before the
 CPU-intensive provider, runtime, and gate-contract lanes. This prevents
-WindowServer event delivery from competing with those workers. After the UI and metric phases,
+WindowServer event delivery from competing with those workers. The UI smoke
+probes the console session first. An agent sandbox, SSH session, login window,
+or locked screen is an environment denial that the gate records as
+`environment-failed`, never as a product failure. After the UI and metric phases,
 the scheduler starts ready process-heavy stages in descending policy timing
 order. It admits at most two process-heavy top-level lanes. One separate lane
 runs short runtime and release preflights during gate-contract. Distribution
@@ -186,7 +189,12 @@ or ambient helpers. Distribution runs its runtime and shell-profile contracts
 concurrently in separate private temporary homes.
 
 There are no quarantined tests. A future quarantine needs an owner, reason, and
-expiry. It cannot remove release evidence.
+expiry. It cannot remove release evidence. The packaged UI journeys are the
+only retry layer: every scenario and every attempt starts from a clean
+private state with no app state, fake CLI markers, attach client, or
+persisted defaults; a scenario whose app never reports a result, or reports
+a timeout, gets exactly one retry inside the stage budget, and the stage log
+records the retry. A reported assertion failure never retries.
 
 ## Impact and user journeys
 

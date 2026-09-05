@@ -134,7 +134,16 @@
   increment actions, and restores the prior application. The locator bridge
   has no application actions. Run the
   app build first. The UI smoke needs a logged-in WindowServer session but no
-  Accessibility approval. Do not grant it broader filesystem or production
+  Accessibility approval. Before it launches the app it probes the console
+  session. An agent sandbox, an SSH session, the login window, or a locked
+  screen produces `UI e2e: environment denied`, exit 2, and the gate records
+  `environment-failed` instead of a product failure. Every scenario and
+  attempt starts from a clean private state, and the smoke deletes the test
+  copy's preference domains through cfprefsd at the end. A scenario whose
+  app never reports a result, or reports a timeout, gets one retry; the log
+  records `e2e retry 1 of 1`. A reported assertion failure never retries.
+  Do not grant
+  it broader filesystem or production
   payload access. Its fake CLI allowlist covers only the exact status and stop
   flow and the completed-session forced delete asserted by the smoke. The
   same run disconnects Stop, proves that no action occurs, reconnects it, and

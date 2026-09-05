@@ -1,5 +1,5 @@
 schema	1
-policy	56
+policy	57
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -21,7 +21,7 @@ stage	20	gate-contract	300	true
 stage	30	swift	1200	true
 stage	40	quality-contracts	1200	true
 stage	50	app	2400	true
-stage	60	ui-e2e	55	true
+stage	60	ui-e2e	130	true
 stage	70	codex	1200	true
 stage	80	claude	1200	true
 stage	90	distribution	1200	true

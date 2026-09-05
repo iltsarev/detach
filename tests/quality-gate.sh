@@ -692,6 +692,17 @@ fi
 grep -F $'codex\tenvironment-failed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
 grep -F 'codex environment-failed' "$REPO/environment-failure.out" >/dev/null
 grep -F '<failure message="environment-failed">' "$RESULT_ROOT"/*/junit.xml >/dev/null
+
+setup_fixture ui-environment-denial
+printf '#!/bin/bash\nprintf "UI e2e: environment denied: no interactive GUI session (no-session)\\n" >&2\nexit 2\n' \
+  >"$REPO/tests/quality-gate-fixtures/ui-e2e"
+chmod 0755 "$REPO/tests/quality-gate-fixtures/ui-e2e"
+if gate --mode repository >"$REPO/ui-environment-denial.out" 2>&1; then
+  printf 'quality gate accepted a UI smoke without a GUI session\n' >&2
+  exit 1
+fi
+grep -F $'ui-e2e\tenvironment-failed' "$RESULT_ROOT"/*/summary.tsv >/dev/null
+grep -F 'ui-e2e environment-failed' "$REPO/ui-environment-denial.out" >/dev/null
 fi
 
 if [ "$CONTRACT_SHARD" = all ] || [ "$CONTRACT_SHARD" = execution ] || \
