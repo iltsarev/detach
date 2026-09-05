@@ -2154,7 +2154,7 @@
     {
       "command": "scripts/release-lid-probe",
       "id": "SC-POWER-CLOSED-LID",
-      "stage": "release-preflight",
+      "stage": "publish-preflight",
       "status": "manual-release"
     },
     {
@@ -2781,7 +2781,7 @@
             {
               "command": "scripts/release-lid-probe",
               "id": "SC-POWER-CLOSED-LID",
-              "stage": "release-preflight",
+              "stage": "publish-preflight",
               "status": "manual-release"
             }
           ],

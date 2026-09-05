@@ -310,7 +310,7 @@ scenario	SC-SESSION-DELETE-CLAUDE	claude	instrumented	tests/run-claude.sh
 scenario	SC-POWER-UNIT	swift	legacy-stage	cd app && swift test --filter Power
 scenario	SC-POWER-LOW-BATTERY	swift	legacy-stage	cd app && swift test --filter PowerProtection
 scenario	SC-POWER-HELPER	swift	legacy-stage	cd app && swift test --filter PowerHelper
-scenario	SC-POWER-CLOSED-LID	release-preflight	manual-release	scripts/release-lid-probe
+scenario	SC-POWER-CLOSED-LID	publish-preflight	manual-release	scripts/release-lid-probe
 scenario	SC-APP-ONBOARDING-UNIT	swift	legacy-stage	cd app && swift test --filter Onboarding
 scenario	SC-APP-SETTINGS-UNIT	swift	legacy-stage	cd app && swift test --filter Settings
 scenario	SC-UI-DASHBOARD	ui-e2e	instrumented	tests/ui-e2e.sh
