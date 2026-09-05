@@ -151,7 +151,9 @@ the original copy tables immediately.
 
 Claude gets a wrapper-owned UUID via `--session-id`. Resume uses `--resume` with
 a valid transcript or matching checkpoint. It uses `--session-id` only if both
-are absent. A present invalid transcript fails closed. Codex binds identity
+are absent. A present invalid transcript fails closed. Startup companions such
+as `session-env/<uuid>` or `tasks/session-<short>` are not transcript evidence
+and do not block that path. Codex binds identity
 after launch by matching the run-token originator in rollout files and SQLite;
 an ambiguous first binding fails. If the provider switches to another run-owned
 user thread (for example `/clear`), discovery rebinds identity, transcript, and

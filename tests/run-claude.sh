@@ -1484,6 +1484,43 @@ grep -Fx -- "$empty_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 "$SCRIPT" claude stop "$empty_label"
 export CLAUDE_CONFIG_DIR="$claude_config_dir_with_history"
 
+# Claude creates session-env/<uuid> and tasks/session-<short> at startup,
+# before it writes any transcript. These startup companions must not block a
+# metadata-only Resume inside the populated Claude home.
+rm -rf \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/file-history/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/session-env/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/session-${empty_id:0:8}" \
+  "$CLAUDE_CONFIG_DIR/teams/session-${empty_id:0:8}"
+rm -f \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session.tar" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/transcript.jsonl"
+rm -rf \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-file-history" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/claude-session-env"
+"$STATE_HELPER" meta patch "$empty_meta" --null transcript_path --null last_checkpoint_at
+cp -p "$empty_meta" \
+  "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/meta.json"
+mkdir -p \
+  "$CLAUDE_CONFIG_DIR/session-env/$empty_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/session-${empty_id:0:8}"
+reset_fake_claude_ready
+: >"$FAKE_CLAUDE_ARGS_FILE"
+if ! "$SCRIPT" resume --detach "$empty_id"; then
+  printf 'metadata-only Resume rejected Claude startup companions\n' >&2
+  exit 1
+fi
+wait_for_fake_claude_ready
+grep -Fx -- '--session-id' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+! grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$empty_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$STATE_HELPER" meta matches "$empty_meta" claude "$empty_id"
+"$SCRIPT" claude stop "$empty_label"
+
 # If a later metadata-only Resume fails before readiness, Recover must still
 # select checkpoint A and launch its UUID with --session-id. No transcript or
 # provider payload exists yet for that generation.
