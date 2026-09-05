@@ -139,7 +139,16 @@ if [ "$#" -eq 10 ] && [ "$1" = client ] && [ "$2" = switch ] \
     printf 'fake attached client control channel is missing\n' >&2
     exit 65
   }
-  printf '%s\n' "$8" >"$ROOT/fake/attach-client-control"
+  # A dead attach client leaves its FIFO behind. Refuse instead of blocking
+  # forever on a write that nothing will read.
+  attach_pid="$(<"$ROOT/fake/attach-client-pid")" 2>/dev/null || attach_pid=""
+  [ -n "$attach_pid" ] && kill -0 "$attach_pid" 2>/dev/null || {
+    printf 'fake attached client is not running\n' >&2
+    exit 65
+  }
+  exec 3<>"$ROOT/fake/attach-client-control"
+  printf '%s\n' "$8" >&3
+  exec 3>&-
   attempts=0
   while [ "$attempts" -lt 50 ] \
       && [ "$(<"$ROOT/fake/attach-client-current")" != "$8" ]; do

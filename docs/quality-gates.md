@@ -190,9 +190,11 @@ concurrently in separate private temporary homes.
 
 There are no quarantined tests. A future quarantine needs an owner, reason, and
 expiry. It cannot remove release evidence. The packaged UI journeys are the
-only retry layer: a scenario whose app never reports a result gets exactly one
-retry from its starting state inside the stage budget, and the stage log
-records the retry. A reported failure never retries.
+only retry layer: every scenario and every attempt starts from a clean
+private state with no app state, fake CLI markers, attach client, or
+persisted defaults; a scenario whose app never reports a result, or reports
+a timeout, gets exactly one retry inside the stage budget, and the stage log
+records the retry. A reported assertion failure never retries.
 
 ## Impact and user journeys
 

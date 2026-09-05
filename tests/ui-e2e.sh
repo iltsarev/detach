@@ -11,6 +11,7 @@ COVERAGE_BINARY="${DETACH_UI_E2E_COVERAGE_BINARY:-}"
 TEST_ROOT=""
 APP_PID=""
 FAKE_CLI=""
+IDENTIFIER=""
 
 approved_invocation() {
   case "$1" in
@@ -49,7 +50,11 @@ fi
 
 preserve_failure_diagnostics() {
   local status="$1" source destination
-  [ "$status" -ne 0 ] && [ -n "$ARTIFACT_DIR" ] && [ -n "$TEST_ROOT" ] || return 0
+  [ -n "$ARTIFACT_DIR" ] && [ -n "$TEST_ROOT" ] || return 0
+  # A passed run that needed a retry still preserves its stall samples.
+  if [ "$status" -eq 0 ] && ! ls "$TEST_ROOT"/sample-*.txt >/dev/null 2>&1; then
+    return 0
+  fi
   case "$ARTIFACT_DIR" in /*) ;; *) printf 'UI e2e artifact directory must be absolute\n' >&2; return 0 ;; esac
   [ ! -e "$ARTIFACT_DIR" ] || [ -d "$ARTIFACT_DIR" ] && [ ! -L "$ARTIFACT_DIR" ] || {
     printf 'UI e2e artifact directory is unsafe\n' >&2
@@ -58,7 +63,7 @@ preserve_failure_diagnostics() {
   mkdir -p "$ARTIFACT_DIR"
   chmod 0700 "$ARTIFACT_DIR"
   for source in "$TEST_ROOT"/app-*.log "$TEST_ROOT"/result-*.json \
-      "$TEST_ROOT"/sample-*.txt \
+      "$TEST_ROOT"/sample-*.txt "$TEST_ROOT"/invocations-*.log \
       "$TEST_ROOT"/window-*.png "$FAKE_DIR/invocations.log"; do
     [ -f "$source" ] && [ ! -L "$source" ] || continue
     destination="$ARTIFACT_DIR/$(basename "$source")"
@@ -73,6 +78,19 @@ preserve_failure_diagnostics() {
   } >"$ARTIFACT_DIR/diagnostics.tsv"
   chmod 0600 "$ARTIFACT_DIR/diagnostics.tsv"
   printf 'UI e2e diagnostics preserved at %s\n' "$ARTIFACT_DIR" >&2
+}
+
+# cfprefsd keys preferences by user, not by HOME, so the test copy writes its
+# defaults into the real preference folder under its private identifier.
+forget_test_app_preferences() {
+  local domain preferences="$HOME/Library/Preferences"
+  [ -n "$IDENTIFIER" ] || return 0
+  # Delete through cfprefsd so a cached domain is not flushed back to disk
+  # after the files are gone.
+  for domain in "$IDENTIFIER" "$IDENTIFIER.preferences"; do
+    defaults delete "$domain" >/dev/null 2>&1 || true
+    rm -f "$preferences/$domain.plist"
+  done
 }
 
 # The app spawns the fake CLI (`watch --json`, attach clients). When the app
@@ -91,6 +109,7 @@ cleanup() {
     wait "$APP_PID" 2>/dev/null || true
   fi
   stop_fixture_processes
+  forget_test_app_preferences
   preserve_failure_diagnostics "$status"
   if [ "$KEEP" = 1 ] && [ -n "$TEST_ROOT" ]; then
     printf 'UI e2e fixture kept at %s\n' "$TEST_ROOT" >&2
@@ -296,24 +315,30 @@ chmod 0755 "$TEST_HOME/.local/bin/detach"
   SC-UI-ONBOARD-APPROVAL \
   SC-UI-SETTINGS
 
+# Every scenario and every attempt starts from the same clean state: no
+# app state, no fake CLI markers, no attach client, no persisted defaults.
+# A previous scenario's persisted terminal or selection otherwise makes the
+# next launch reconnect to a dead attach client and stall before the driver.
+prepare_scenario_state() {
+  local scenario="$1" fixture="$2"
+  stop_fixture_processes
+  forget_test_app_preferences
+  rm -rf "$TEST_ROOT/state" "$TEST_ROOT/power" "$FAKE_DIR"
+  mkdir -p "$TEST_ROOT/state" "$TEST_ROOT/power" "$FAKE_DIR"
+  install -m 0755 "$ROOT/tests/fake-ui-cli" "$FAKE_CLI"
+  printf '%s\n' "$fixture" >"$FIXTURE_STATE"
+  if [ "$scenario" = onboarding-first-run ]; then
+    printf '{"schema":1,"state":"ok","power_state":"protected","checked_at":"%s","thermal_state":"nominal","thermal_safety_active":false,"exit_status":0}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >"$TEST_ROOT/power/watchdog-status.json"
+  fi
+}
+
 # The packaged journeys are the e2e layer. A scenario whose app never reports
-# a result (launch stalled, process killed at the deadline) gets exactly one
-# retry from the state it started with. A reported failure never retries.
-snapshot_scenario_state() {
-  rm -rf "$TEST_ROOT/snapshot"
-  mkdir -p "$TEST_ROOT/snapshot"
-  cp -cR "$TEST_HOME" "$TEST_ROOT/state" "$TEST_ROOT/power" "$FAKE_DIR" \
-    "$TEST_ROOT/snapshot/"
-}
-
-restore_scenario_state() {
-  rm -rf "$TEST_HOME" "$TEST_ROOT/state" "$TEST_ROOT/power" "$FAKE_DIR"
-  cp -cR "$TEST_ROOT/snapshot/home" "$TEST_HOME"
-  cp -cR "$TEST_ROOT/snapshot/state" "$TEST_ROOT/state"
-  cp -cR "$TEST_ROOT/snapshot/power" "$TEST_ROOT/power"
-  cp -cR "$TEST_ROOT/snapshot/fake" "$FAKE_DIR"
-}
-
+# a result (launch stalled, process killed at the deadline) or whose report
+# is a timeout ("scenario budget expired", "timed out waiting") gets exactly
+# one retry from the same clean state. A reported assertion failure never
+# retries.
 run_app_scenario() {
   local scenario="$1" fixture="$2" scenario_budget="$3"
   local app_status check_index=0 actual check scenario_deadline driver_budget pass
@@ -327,15 +352,9 @@ run_app_scenario() {
   }
   RESULT="$TEST_ROOT/result-$scenario.json"
   APP_LOG="$TEST_ROOT/app-$scenario.log"
-  printf '%s\n' "$fixture" >"$FIXTURE_STATE"
-  if [ "$scenario" = onboarding-first-run ]; then
-    printf '{"schema":1,"state":"ok","power_state":"protected","checked_at":"%s","thermal_state":"nominal","thermal_safety_active":false,"exit_status":0}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      >"$TEST_ROOT/power/watchdog-status.json"
-  fi
-  snapshot_scenario_state
 
   while :; do
+  prepare_scenario_state "$scenario" "$fixture"
   scenario_deadline=$((SECONDS + scenario_budget))
   HOME="$TEST_HOME" \
   CFFIXED_USER_HOME="$TEST_HOME" \
@@ -369,6 +388,27 @@ run_app_scenario() {
     sleep 0.05
   done
   if [ -f "$RESULT" ]; then
+    if [ "$attempt" -eq 1 ] && [ "$(plutil -extract passed raw -o - "$RESULT" 2>/dev/null)" != true ] \
+        && [ $((SECONDS + scenario_budget)) -le "$UI_E2E_DEADLINE" ]; then
+      case "$(plutil -extract error raw -o - "$RESULT" 2>/dev/null || true)" in
+        'scenario budget expired'*|'timed out waiting'*)
+          printf 'UI e2e: %s reported a timeout: %s; e2e retry 1 of 1\n' \
+            "$scenario" "$(plutil -extract error raw -o - "$RESULT" 2>/dev/null || true)" >&2
+          for _ in $(seq 1 10); do
+            if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
+            sleep 0.05
+          done
+          kill -TERM "$APP_PID" 2>/dev/null || true
+          wait "$APP_PID" 2>/dev/null || true
+          APP_PID=""
+          mv -f "$APP_LOG" "$TEST_ROOT/app-$scenario-attempt1.log"
+          mv -f "$RESULT" "$TEST_ROOT/result-$scenario-attempt1.json"
+          cp -f "$FAKE_DIR/invocations.log" "$TEST_ROOT/invocations-$scenario-attempt1.log" 2>/dev/null || true
+          attempt=2
+          continue
+          ;;
+      esac
+    fi
     break
   fi
   kill -TERM "$APP_PID" 2>/dev/null || true
@@ -382,8 +422,7 @@ run_app_scenario() {
     printf 'UI e2e: %s produced no result within its %ss budget (status %s); e2e retry 1 of 1\n' \
       "$scenario" "$scenario_budget" "$app_status" >&2
     mv -f "$APP_LOG" "$TEST_ROOT/app-$scenario-attempt1.log"
-    stop_fixture_processes
-    restore_scenario_state
+    cp -f "$FAKE_DIR/invocations.log" "$TEST_ROOT/invocations-$scenario-attempt1.log" 2>/dev/null || true
     attempt=2
     continue
   fi
@@ -485,6 +524,7 @@ run_app_scenario() {
   if [ "${#passed_scenarios[@]}" -gt 0 ]; then
     "$ROOT/scripts/quality-scenarios" event pass "${passed_scenarios[@]}"
   fi
+  cp -f "$FAKE_DIR/invocations.log" "$TEST_ROOT/invocations-$scenario.log" 2>/dev/null || true
   stop_fixture_processes
   printf 'UI e2e: %s passed in %ss (attempt %s)\n' "$scenario" \
     "$((SECONDS - scenario_started))" "$attempt"
@@ -541,32 +581,34 @@ while IFS= read -r invocation; do
   fi
 done <"$FAKE_DIR/invocations.log"
 
+# Every scenario starts clean, so the main journey's records live in its
+# preserved per-scenario copy.
 recover_count="$(grep -Fxc 'codex recover --detach detach-codex-ui-recoverable' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 recover_attach_count="$(grep -Fxc \
   'codex attach --terminal-features sync detach-codex-ui-recoverable' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 running_attach_count="$(grep -Fxc \
   'codex attach --terminal-features sync detach-codex-ui-running' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 switch_count="$(grep -Fc 'client switch --pid ' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 claude_start_count="$(grep -Fxc 'claude --detach' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 codex_start_count="$(grep -Fxc 'codex --detach' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 quick_attach_count="$(grep -Fxc \
   'codex attach --terminal-features sync detach-codex-ui-quick' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 new_attach_count="$(grep -Fxc \
   'claude attach --terminal-features sync detach-claude-ui-new' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 quick_switch_count="$(grep -Fc \
   ' --to detach-codex-ui-quick --provider codex' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 new_switch_count="$(grep -Fc \
   ' --to detach-claude-ui-new --provider claude' \
-  "$FAKE_DIR/invocations.log" || true)"
+  "$TEST_ROOT/invocations-main.log" || true)"
 if [ "$recover_count" -lt 1 ] || [ "$recover_attach_count" -lt 2 ] \
     || [ "$switch_count" -lt 3 ] \
     || [ "$claude_start_count" -ne 1 ] || [ "$codex_start_count" -ne 1 ] \
