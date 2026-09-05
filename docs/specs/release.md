@@ -36,7 +36,11 @@ change real power state, upload assets, or claim publication.
   mandatory for every release. `scripts/release-impact` compares the last
   published tag with the release source. It selects supervised closed-lid
   testing only for power, helper, watchdog, lease, assertion, or lid-probe
-  impact. An unknown product path selects the closed-lid gate. Test-only,
+  impact. An unknown product path selects the closed-lid gate. A policy
+  `release-scan` row refines one lid-gated path: a plain modification whose
+  diff hunks (changed lines and the enclosing function names) contain no
+  power token reports `lid_test_scan_waived` and does not select the probe.
+  Added, deleted, renamed, or copied files keep the gate. Test-only,
   documentation-only, release-orchestrator, and known unrelated product paths
   do not select it.
 - Notary credential preflight gives `notarytool` a private PTY and captures its

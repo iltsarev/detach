@@ -1,5 +1,5 @@
 schema	1
-policy	57
+policy	58
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -71,6 +71,7 @@ release-domain	install	-	false
 release-domain	lid	lid	false
 release-domain	both	lid	false
 release-domain	unknown	lid	true
+release-scan	bin/detach-core	power|lid|clamshell|sleep|assert|lease|watchdog|pmset|caffeinate|thermal|battery|idle|helper
 coverage-exclusion	ui	app/Sources/DetachApp/UIE2E*.swift	SC-UI-DASHBOARD,SC-UI-SESSION-DETAIL,SC-UI-SESSION-DELETE,SC-UI-SESSION-STOP,SC-UI-NEW-SESSION,SC-UI-EMPTY,SC-UI-FAILURE,SC-UI-FOCUS,SC-UI-ONBOARD-FIRST-RUN,SC-UI-ONBOARD-PROVIDER,SC-UI-ONBOARD-APPROVAL,SC-UI-SETTINGS	The packaged real-control journeys own this test harness.
 coverage-exclusion	business	app/Sources/DetachKit/BoundedProcessRunner.swift	SC-POWER-UNIT	Process-group behavior uses bounded process integration evidence.
 coverage-exclusion	business	app/Sources/DetachKit/ClamshellLockRunner.swift	SC-POWER-UNIT	Platform lock behavior uses its dedicated process scenario.

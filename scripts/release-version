@@ -4,6 +4,9 @@ set -euo pipefail
 set +x
 umask 077
 export LC_ALL=C
+# The owner runs this in a terminal for the closed-lid confirmation. No Git
+# or GitHub output may wait in a pager.
+export GIT_PAGER=cat PAGER=cat GH_PAGER=cat
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 APP_ROOT="$ROOT/app"
