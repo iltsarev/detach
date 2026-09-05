@@ -13,6 +13,10 @@ final class PowerHelperPlatformTests: XCTestCase {
         }
     }
 
+    func testBootSessionReaderCanBeConstructed() {
+        _ = SysctlBootSessionReader()
+    }
+
     func testBootSessionReaderReturnsStableCanonicalIdentifier() throws {
         let first = try SysctlBootSessionReader().currentBootSessionIdentifier()
         let repeated = try SysctlBootSessionReader().currentBootSessionIdentifier()
