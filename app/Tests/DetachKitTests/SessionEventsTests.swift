@@ -121,6 +121,7 @@ final class SessionEventsTests: XCTestCase {
             queue: queue,
             output: pipe.fileHandleForWriting)
         let paths = [configuration.signalPath] as CFArray
+        let unrelatedPaths = [configuration.stateRoot + "/unrelated.json"] as CFArray
         var flag: FSEventStreamEventFlags = 0
 
         let delivery = withUnsafePointer(to: &flag) { flags in
@@ -139,9 +140,41 @@ final class SessionEventsTests: XCTestCase {
         XCTAssertEqual(
             delivery?.batch,
             SessionFileEventBatch(paths: [configuration.signalPath], flags: [0]))
+        let callback: FSEventStreamCallback = sessionFSEventsCallback
+        let stream = try XCTUnwrap(FSEventStreamCreate(
+            nil,
+            callback,
+            nil,
+            paths,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0,
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes)))
+        defer { FSEventStreamRelease(stream) }
+        var eventID: FSEventStreamEventId = 1
         queue.sync {
-            if let delivery {
-                delivery.watcher.receive(delivery.batch)
+            withUnsafePointer(to: &flag) { flags in
+                withUnsafePointer(to: &eventID) { eventIDs in
+                    callback(
+                        stream, nil, 1,
+                        Unmanaged.passUnretained(paths).toOpaque(),
+                        flags, eventIDs)
+                    callback(
+                        stream,
+                        Unmanaged.passUnretained(watcher).toOpaque(),
+                        1,
+                        Unmanaged.passUnretained(unrelatedPaths).toOpaque(),
+                        flags, eventIDs)
+                    var descriptor = pollfd(
+                        fd: pipe.fileHandleForReading.fileDescriptor,
+                        events: Int16(POLLIN), revents: 0)
+                    XCTAssertEqual(Darwin.poll(&descriptor, 1, 0), 0)
+                    callback(
+                        stream,
+                        Unmanaged.passUnretained(watcher).toOpaque(),
+                        1,
+                        Unmanaged.passUnretained(paths).toOpaque(),
+                        flags, eventIDs)
+                }
             }
         }
 
