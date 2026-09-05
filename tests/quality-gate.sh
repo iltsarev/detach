@@ -675,6 +675,13 @@ cp -R "$hosted_source" "$REPO/hosted/"
 hosted_dir="$REPO/hosted/$(basename "$hosted_source")"
 rm -rf "$RESULT_ROOT"
 set_manifest_value "$hosted_dir/manifest.tsv" authority ci-main
+# Aggregated hosted runs inventory their shard binding table too.
+printf 'schema\t1\nshard\tstatic\n' >"$hosted_dir/shards.tsv"
+printf 'file\tshards.tsv\t%s\n' \
+  "$(shasum -a 256 "$hosted_dir/shards.tsv" | awk '{print $1}')" \
+  >>"$hosted_dir/artifacts.tsv"
+set_manifest_value "$hosted_dir/manifest.tsv" artifacts_sha256 \
+  "$(shasum -a 256 "$hosted_dir/artifacts.tsv" | awk '{print $1}')"
 : >"$ACTION_LOG"
 gate --mode release --reuse-hosted "$hosted_dir" >"$REPO/hosted-reuse.out"
 grep -F "hosted evidence $(basename "$hosted_dir") proves static,gate-contract,swift,quality-contracts,app,ui-e2e,codex,claude,distribution,tmux-runtime,release-preflight,publish-preflight for" \
