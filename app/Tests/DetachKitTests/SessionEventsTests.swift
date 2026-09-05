@@ -122,6 +122,7 @@ final class SessionEventsTests: XCTestCase {
             output: pipe.fileHandleForWriting)
         let paths = [configuration.signalPath] as CFArray
         let unrelatedPaths = [configuration.stateRoot + "/unrelated.json"] as CFArray
+        let emptyPaths = [] as CFArray
         var flag: FSEventStreamEventFlags = 0
 
         let delivery = withUnsafePointer(to: &flag) { flags in
@@ -163,6 +164,12 @@ final class SessionEventsTests: XCTestCase {
                         Unmanaged.passUnretained(watcher).toOpaque(),
                         1,
                         Unmanaged.passUnretained(unrelatedPaths).toOpaque(),
+                        flags, eventIDs)
+                    callback(
+                        stream,
+                        Unmanaged.passUnretained(watcher).toOpaque(),
+                        0,
+                        Unmanaged.passUnretained(emptyPaths).toOpaque(),
                         flags, eventIDs)
                     var descriptor = pollfd(
                         fd: pipe.fileHandleForReading.fileDescriptor,
