@@ -381,7 +381,7 @@ final class SessionTranscriptFileMonitor: @unchecked Sendable {
     }
 }
 
-private func sessionFSEventsCallback(
+func sessionFSEventsCallback(
     _: ConstFSEventStreamRef,
     info: UnsafeMutableRawPointer?,
     count: Int,
