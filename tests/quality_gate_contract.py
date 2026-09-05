@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -35,10 +36,33 @@ from quality_gate import (  # noqa: E402
     split_swift_build_jobs,
     ui_coverage_binary,
 )
+from quality_gate import provider_runtime_payload  # noqa: E402
 from quality_policy import POLICY_FILE, Policy  # noqa: E402
 
 
 class QualityGateContract(unittest.TestCase):
+    def test_provider_payload_follows_exact_product_binding(self) -> None:
+        root = Path("/repo")
+        with patch.dict("os.environ", {}, clear=False):
+            for name in (
+                "DETACH_QUALITY_EXACT_PRODUCTS",
+                "GITHUB_ACTIONS",
+                "DETACH_QUALITY_GATE_AUTHORITY",
+            ):
+                os.environ.pop(name, None)
+            self.assertEqual(
+                provider_runtime_payload(root),
+                root / "app/build/Detach.app/Contents/Resources/DetachCLI",
+            )
+            os.environ["DETACH_QUALITY_EXACT_PRODUCTS"] = "1"
+            with self.assertRaisesRegex(GateError, "hosted CI authority"):
+                provider_runtime_payload(root)
+            os.environ["GITHUB_ACTIONS"] = "true"
+            os.environ["DETACH_QUALITY_GATE_AUTHORITY"] = "ci-shard"
+            self.assertEqual(
+                provider_runtime_payload(root), root / "app/.build/quality-runtime"
+            )
+
     def test_relative_result_root_becomes_absolute_evidence(self) -> None:
         relative = Path("app/build/relative-quality-evidence")
         with patch.dict(

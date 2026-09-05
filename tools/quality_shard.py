@@ -126,8 +126,12 @@ def shard_plan(plan: dict[str, object]) -> list[dict[str, object]]:
             raise ShardError(f"planned stage has more than one shard: {sorted(overlap)[0]}")
         owned.update(stages)
         remaining.difference_update(stages)
-        needs_app = bool({"app", "codex", "claude", "tmux-runtime"} & set(stages))
-        needs_cache = bool({"swift", "app", "ui-e2e"} & set(stages))
+        # Provider suites need only tmux and detach-state. They bind the exact
+        # runtime products from the last green main when the cache has them
+        # and fall back to the packaged app otherwise.
+        needs_runtime = bool({"codex", "claude"} & set(stages))
+        needs_app = bool({"app", "tmux-runtime"} & set(stages))
+        needs_cache = bool({"swift", "app", "ui-e2e"} & set(stages)) or needs_runtime
         needs_metrics = "quality-contracts" in stages
         shards.append(
             {
@@ -136,6 +140,7 @@ def shard_plan(plan: dict[str, object]) -> list[dict[str, object]]:
                 "level": level,
                 "needs_app": needs_app,
                 "needs_cache": needs_cache,
+                "needs_runtime": needs_runtime,
                 "needs_metrics": needs_metrics,
                 "coverage_profile": (
                     "combined" if needs_metrics and "ui-e2e" in stages

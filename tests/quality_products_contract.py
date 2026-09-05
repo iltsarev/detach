@@ -40,6 +40,7 @@ class QualityProductsContract(unittest.TestCase):
                 (("tests", Path("products/tests")), ("ui", Path("products/ui"))),
             ),
             patch.object(quality_products, "EXECUTABLE_PATHS", ()),
+            patch("quality_products.stage_runtime_products", return_value=None),
             patch("quality_products.source_fingerprint", return_value="a" * 64),
             patch(
                 "quality_products.toolchain_document",
@@ -57,7 +58,7 @@ class QualityProductsContract(unittest.TestCase):
             root = Path(temporary)
             self.fixture(root)
             patches = self.context()
-            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
                 self.assertEqual(quality_products.publish(root), 0)
                 self.assertEqual(quality_products.verify(root), 0)
                 manifest = json.loads(
@@ -79,7 +80,7 @@ class QualityProductsContract(unittest.TestCase):
             outside.write_text("outside\n", encoding="utf-8")
             (root / "products/tests/escape").symlink_to("../../outside")
             patches = self.context()
-            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
                 with self.assertRaisesRegex(
                     quality_products.ProductError, "symlink escapes"
                 ):
@@ -92,9 +93,28 @@ class QualityProductsContract(unittest.TestCase):
             (root / "products/manifest-target").write_text("{}\n", encoding="utf-8")
             (root / "products/manifest.json").symlink_to("manifest-target")
             patches = self.context()
-            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
                 with self.assertRaisesRegex(quality_products.ProductError, "symlink"):
                     quality_products.publish(root)
+
+    def test_runtime_products_are_staged_from_the_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / quality_products.RUNTIME_SOURCE
+            source.mkdir(parents=True)
+            for name in quality_products.RUNTIME_PRODUCTS:
+                (source / name).write_text(f"{name}\n", encoding="utf-8")
+                (source / name).chmod(0o755)
+            quality_products.stage_runtime_products(root)
+            for name in quality_products.RUNTIME_PRODUCTS:
+                staged = root / quality_products.RUNTIME_PRODUCT_ROOT / name
+                self.assertEqual(staged.read_text(encoding="utf-8"), f"{name}\n")
+                self.assertTrue(os.access(staged, os.X_OK))
+            (source / "tmux").unlink()
+            with self.assertRaisesRegex(
+                quality_products.ProductError, "missing or unsafe: tmux"
+            ):
+                quality_products.stage_runtime_products(root)
 
     def test_exact_coverage_inputs_fail_closed(self) -> None:
         environment = os.environ.copy()
