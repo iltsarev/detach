@@ -27,6 +27,14 @@ run_validation() {
 
 run_validation "$APP"
 
+if DETACH_TEST_APP="$APP" DETACH_UI_E2E_GUI_PROBE_RESULT=no-session \
+    "$ROOT/tests/ui-e2e.sh" >"$TMP_ROOT/no-gui-session.log" 2>&1; then
+  printf 'UI e2e ran without an interactive GUI session\n' >&2
+  exit 1
+fi
+grep -F 'UI e2e: environment denied: no interactive GUI session (no-session)' \
+  "$TMP_ROOT/no-gui-session.log" >/dev/null
+
 if DETACH_TEST_APP="$APP" DETACH_UI_E2E_VALIDATE_ONLY=1 \
     DETACH_UI_E2E_COVERAGE_BINARY="$TMP_ROOT/missing-coverage-binary" \
     "$ROOT/tests/ui-e2e.sh" >"$TMP_ROOT/missing-coverage.log" 2>&1; then

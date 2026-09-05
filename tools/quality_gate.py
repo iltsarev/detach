@@ -1435,7 +1435,8 @@ class QualityGate:
             )
             if re.search(
                 r"error creating .+\.sock \(Operation not permitted\)|"
-                r"sandbox\S* denied|deny\(1\)",
+                r"sandbox\S* denied|deny\(1\)|"
+                r"UI e2e: environment denied",
                 log,
             ):
                 result = "environment-failed"
