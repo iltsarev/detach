@@ -412,18 +412,18 @@ final class SessionAttachTerminalTests: XCTestCase {
             terminalScreens: SessionTerminalScreenCache(),
             cachedLog: poller)
 
-        XCTAssertEqual(view.logContent.string, "…")
+        XCTAssertEqual(view.logContentForTesting.string, "…")
         await poller.fetchOnce()
-        XCTAssertEqual(view.logContent.string, "⚠︎ Log read failed")
+        XCTAssertEqual(view.logContentForTesting.string, "⚠︎ Log read failed")
         XCTAssertEqual(
-            view.logContent.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+            view.logContentForTesting.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
             NSColor.systemOrange)
 
         await poller.fetchOnce()
-        XCTAssertEqual(view.logContent.string, "Restored log")
-        XCTAssertEqual(view.logContent, poller.attributed)
+        XCTAssertEqual(view.logContentForTesting.string, "Restored log")
+        XCTAssertEqual(view.logContentForTesting, poller.attributed)
         XCTAssertNotEqual(
-            view.logContent.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+            view.logContentForTesting.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
             NSColor.systemOrange)
     }
 
@@ -442,19 +442,19 @@ final class SessionAttachTerminalTests: XCTestCase {
             terminalScreens: SessionTerminalScreenCache(),
             cachedLog: poller)
 
-        let retired = Task { @MainActor in await view.refreshVisibleLog() }
+        let retired = Task { @MainActor in await view.refreshVisibleLogForTesting() }
         retired.cancel()
         await retired.value
         let retiredCalls = await cli.callCount
         XCTAssertEqual(retiredCalls, 0)
         XCTAssertFalse(poller.hasLoaded)
 
-        await view.refreshVisibleLog()
-        XCTAssertEqual(view.logContent.string, "Ready log")
-        await view.refreshVisibleLog()
+        await view.refreshVisibleLogForTesting()
+        XCTAssertEqual(view.logContentForTesting.string, "Ready log")
+        await view.refreshVisibleLogForTesting()
         let loadedCalls = await cli.callCount
         XCTAssertEqual(loadedCalls, 1)
-        XCTAssertEqual(view.logContent.string, "Ready log")
+        XCTAssertEqual(view.logContentForTesting.string, "Ready log")
     }
 
     func testDetachedLiveLogRefreshKeysOnSessionAndCacheIdentity() throws {

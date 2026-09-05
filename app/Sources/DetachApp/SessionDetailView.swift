@@ -328,7 +328,7 @@ struct SessionDetailView: View {
         .foregroundColor: NSColor(white: 0.85, alpha: 1),
     ]
 
-    var logContent: NSAttributedString {
+    private var logContent: NSAttributedString {
         let visiblePoller = cachedLog
             ?? (logPollerSessionID == session.id ? logPoller : nil)
         if let error = visiblePoller?.errorText {
@@ -357,7 +357,7 @@ struct SessionDetailView: View {
             cachedLogIdentity: cachedLog.map(ObjectIdentifier.init))
     }
 
-    func refreshVisibleLog() async {
+    private func refreshVisibleLog() async {
         guard !Task.isCancelled else { return }
         let poller = cachedLog
             ?? (logPollerSessionID == session.id ? logPoller : nil)
@@ -387,6 +387,12 @@ struct SessionDetailView: View {
             await poller.fetchOnce()
         }
     }
+
+#if DEBUG
+    var logContentForTesting: NSAttributedString { logContent }
+
+    func refreshVisibleLogForTesting() async { await refreshVisibleLog() }
+#endif
 
     private var logView: some View {
         ZStack {
