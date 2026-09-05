@@ -980,8 +980,6 @@ enum UIE2ETestDriver {
         guard visible.insetBy(dx: -2, dy: -2).contains(frame) else {
             throw Failure(message: "Settings window is off the hosting screen")
         }
-        try await verifySettingsTextGrowth(in: settingsWindow, visible: visible)
-        checks.append("settings-text-growth-stays-on-screen")
         checks.append("settings-window-stays-on-screen")
         let systemTab = try await buttonLabeled(
             L10n.string("System"), attempts: 40)
@@ -990,6 +988,15 @@ enum UIE2ETestDriver {
         try await revealGeometry(
             identifier: "settings-installation", name: "Installation")
         checks.append("settings-system-reveals-storage-and-installation")
+        let generalTab = try await buttonLabeled(
+            L10n.string("General"), attempts: 40)
+        _ = try await clickUntilElement(
+            generalTab, name: "General settings tab",
+            resultIdentifier: "settings-show-tips")
+        // Placement checks run last so no later control click consumes a
+        // cached accessibility frame from before a programmatic window move.
+        try await verifySettingsTextGrowth(in: settingsWindow, visible: visible)
+        checks.append("settings-text-growth-stays-on-screen")
         return checks
     }
 
