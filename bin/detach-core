@@ -3187,7 +3187,6 @@ claude_provider_entry_for_id_exists() {
   local configured_home
   local home
   local projects
-  local short_id
   local candidate
   local config
 
@@ -3200,15 +3199,14 @@ claude_provider_entry_for_id_exists() {
   if [ -e "$projects" ] || [ -L "$projects" ]; then
     [ -d "$projects" ] && [ ! -L "$projects" ] || return 2
   fi
-  short_id="${id:0:8}"
+  # Only transcript evidence proves that Claude bound conversation state to
+  # this UUID. Claude creates companion directories such as
+  # session-env/<uuid> and tasks/session-<short> at startup, before any
+  # transcript exists, and reuses them on a later --session-id launch. They
+  # must not block a metadata-only resume.
   for candidate in \
     "$projects"/*/"$id.jsonl" \
-    "$projects"/*/"$id" \
-    "$home/file-history/$id" \
-    "$home/session-env/$id" \
-    "$home/tasks/$id" \
-    "$home/tasks/session-$short_id" \
-    "$home/teams/session-$short_id"; do
+    "$projects"/*/"$id"; do
     if [ -e "$candidate" ] || [ -L "$candidate" ]; then
       return 0
     fi
