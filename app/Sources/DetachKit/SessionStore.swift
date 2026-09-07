@@ -595,7 +595,8 @@ public final class SessionStore {
         provider: Provider,
         projectDirectory: URL,
         name: String?,
-        prompt: String?
+        prompt: String?,
+        providerArguments: [String] = []
     ) async -> SessionStartResult {
         let existingIDs = Set(sessions.map(\.id))
         var arguments = [provider.rawValue]
@@ -603,8 +604,12 @@ public final class SessionStore {
             arguments += ["--name", name]
         }
         arguments.append("--detach")
-        if let prompt, !prompt.isEmpty {
-            arguments += ["--", prompt]
+        if !providerArguments.isEmpty || prompt?.isEmpty == false {
+            arguments.append("--")
+            arguments += providerArguments
+            if let prompt, !prompt.isEmpty {
+                arguments.append(prompt)
+            }
         }
 
         do {

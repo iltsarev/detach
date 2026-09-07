@@ -987,7 +987,7 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 4
+        static let currentSchema = 5
         private static let overlapByteCount: UInt64 = 64 * 1_024
 
         var schema: Int
@@ -1067,7 +1067,7 @@ public enum DetachStateCommand {
             guard let pendingToolUseID else { return true }
             return provider == Provider.claude.rawValue
                 && !pendingToolUseID.isEmpty
-                && agentTurnState == AgentTurnState.waiting.rawValue
+                && agentTurnState == AgentTurnState.needsInput.rawValue
                 && agentTurnID == pendingToolUseID
         }
     }

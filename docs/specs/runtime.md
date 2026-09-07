@@ -32,6 +32,14 @@ Tests inject paths through explicit `DETACH_*` environments. An app CLI strips
 them except in isolated UI tests. Production resolves tmux and state/power
 helpers only as immutable siblings. Providers resolve through `PATH`.
 
+Pet generation may start one Codex session with a session-scoped MCP server
+implemented by `detach-state mcp workspace-dependencies`. The server exposes
+only one read-only locator after validating `runtime.json`, required executable
+files, directories, and path containment beneath the local
+`codex-primary-runtime`. It does not change global Codex configuration.
+Settings refuses generation when the skill, helper, or validated runtime is
+missing.
+
 Bounded CLI calls drain outputs on dedicated threads and use process-group
 TERM then KILL. Parallel calls cannot starve drains. Truncation makes typed
 consumers keep the last valid state. Pipe descendants cannot extend deadlines.

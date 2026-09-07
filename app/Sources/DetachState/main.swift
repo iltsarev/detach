@@ -4,6 +4,11 @@ import Foundation
 
 _ = umask(0o077)
 
+if Array(CommandLine.arguments.dropFirst()) == ["mcp", "workspace-dependencies"] {
+    WorkspaceDependenciesMCPServer.serve()
+    exit(EXIT_SUCCESS)
+}
+
 do {
     let arguments = Array(CommandLine.arguments.dropFirst())
     if arguments.starts(with: ["events", "watch"]) {

@@ -18,6 +18,7 @@ SWIFTTERM_VERSION="${DETACH_SWIFTTERM_VERSION:-1.19.0}"
 SWIFTTERM_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
 SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424aeb951df6856"
 SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
+BUILTIN_PET_SPRITESHEET_SHA256="484a758e192a915354c5e63d5d230fae07a400c418fd40b2755eaaefa2d5f380"
 REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
 VERIFY_PRODUCTION="${DETACH_VERIFY_PRODUCTION:-0}"
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
@@ -30,6 +31,7 @@ POWER_HELPER_BINARY="$APP/Contents/MacOS/DetachPowerHelper"
 TMUX_THIRD_PARTY="$APP/Contents/Resources/ThirdParty/tmux"
 SPARKLE_LICENSE="$APP/Contents/Resources/ThirdParty/Sparkle/LICENSE.txt"
 SWIFTTERM_LICENSE="$APP/Contents/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
+BUILTIN_PET="$APP/Contents/Resources/Pets/lumi"
 BUILD_MARKER="$APP/Contents/Resources/BUILD_MARKER"
 BUNDLE_MODE_POLICY="$APP_ROOT/scripts/bundle-modes.sh"
 ENTITLEMENTS_DIR=""
@@ -92,6 +94,29 @@ for localization in en ru; do
   }
   plutil -lint "$LOCALIZABLE" "$INFO_PLIST_STRINGS" >/dev/null
 done
+BUILTIN_PET_MANIFEST="$BUILTIN_PET/pet.json"
+BUILTIN_PET_SPRITESHEET="$BUILTIN_PET/spritesheet.webp"
+for pet_file in "$BUILTIN_PET_MANIFEST" "$BUILTIN_PET_SPRITESHEET"; do
+  [ -f "$pet_file" ] && [ ! -L "$pet_file" ] || {
+    printf 'Missing or unsafe bundled pet resource: %s\n' "$pet_file" >&2
+    exit 1
+  }
+  [ "$(stat -f '%Lp' "$pet_file")" = 644 ] || {
+    printf 'Bundled pet resource must have mode 0644: %s\n' "$pet_file" >&2
+    exit 1
+  }
+done
+plutil -p "$BUILTIN_PET_MANIFEST" >/dev/null
+[ "$(plutil -extract id raw -o - "$BUILTIN_PET_MANIFEST")" = \
+  detach-random-0612d8f4-5985-4a21-a18c-12e624a36ebf ]
+[ "$(plutil -extract spriteVersionNumber raw -o - "$BUILTIN_PET_MANIFEST")" = 2 ]
+[ "$(plutil -extract spritesheetPath raw -o - "$BUILTIN_PET_MANIFEST")" = \
+  spritesheet.webp ]
+[ "$(shasum -a 256 "$BUILTIN_PET_SPRITESHEET" | awk '{print $1}')" = \
+  "$BUILTIN_PET_SPRITESHEET_SHA256" ] || {
+  printf 'Bundled pet spritesheet does not match the validated source\n' >&2
+  exit 1
+}
 for metadata in \
   "$INFO" \
   "$APP/Contents/Resources/en.lproj/InfoPlist.strings" \

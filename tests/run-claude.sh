@@ -369,8 +369,8 @@ if claude_part_selected lifecycle; then
 
 bash -n "$SCRIPT"
 bash -n "$ROOT/tests/fake-claude"
-[ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
-[ "$($SCRIPT config tmux-style)" = "detach" ]
+[ "$("$SCRIPT" __version)" = "$(<"$ROOT/VERSION")" ]
+[ "$("$SCRIPT" config tmux-style)" = "detach" ]
 [ "$("$SCRIPT" claude __session_color /fixtures/harness)" = "#C2410C" ]
 
 # Color allocation is shared across providers. A path-derived collision walks
@@ -612,7 +612,7 @@ grep -Fx -- "$power_activity_source" "$FAKE_POWER_ARGS_FILE" >/dev/null
 printf '{"type":"assistant","isSidechain":false,"sessionId":"%s","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","id":"ask-tool"}]},"uuid":"ask-user-question","timestamp":"2099-01-01T00:01:00.000Z"}\n' \
   "$session_id" >>"$transcript"
 json_line="$("$SCRIPT" list --json | grep -F "\"session_name\":\"$session\"")"
-[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "waiting" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "needs_input" ]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "ask-tool" ]
 wait_for_file_text "$power_activity" waiting
 printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ask-tool"}]},"uuid":"tool-result-event","timestamp":"2099-01-01T00:02:00.000Z"}\n' \

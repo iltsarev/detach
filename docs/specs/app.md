@@ -33,6 +33,30 @@ checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
 After a transcript file is replaced, registration of its new file observer
 emits a refresh hint. Writes before registration must not leave the UI stale.
 
+The optional floating pet consumes this same typed event-driven session
+snapshot. It never starts a poller or parses terminal text. Its activity order
+is Needs input, Blocked, Ready, then Running. Needs input requires a structured
+provider event. Reused session names cannot inherit unread or animation state
+from another lifecycle. A persisted observed-lifecycle baseline prevents an
+acknowledged same-second terminal alert from returning after relaunch. A
+requested stop does not create a blocked activity. Selecting the pet or one
+activity opens the exact Detach session. Dragging only moves the pet. Reduced
+Motion selects a stable frame.
+
+The pet library accepts regular v1 8x9 or v2 8x11 PNG/WebP packages. It reads
+compatible custom pets from the local Codex pets directory. A user package
+shadows a bundled package with the same ID. The bundled library is read-only,
+and import into the user library is atomic. Detach never redistributes Codex or
+ChatGPT preset assets. Settings labels each package source. Random generation
+checks its skill, helper, and workspace runtime before it starts. A lightweight
+app-scoped watcher checks only the requested package directory, survives
+Settings closure, never refreshes the typed session store, and never reloads
+the selected atlas on a miss. A known generation session remains directly
+reachable after completion; a missing session is reported. The watcher pauses
+after one hour without clearing its target and can resume. An invalid target
+shows its validation error, and tracking clears only after the atlas decodes.
+Stopping package tracking leaves the Codex session running.
+
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
 and semantic color. Clicking the UUID chip copies the full UUID and shows

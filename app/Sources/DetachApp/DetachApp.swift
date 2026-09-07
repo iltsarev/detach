@@ -171,10 +171,12 @@ enum AppSettings {
     static let defaultProjectsDirectoryKey = "defaultProjectsDirectory"
     static let quickChatDirectoryKey = "quickChatDirectory"
     static let quickChatProviderKey = "quickChatProvider"
+    static let petLibraryRoot = uiE2E?.root.appendingPathComponent(
+        "codex-pets", isDirectory: true) ?? PetLibraryLoader.defaultRoot()
 }
 
 /// App-level navigation requests from surfaces that live outside the main
-/// window (the menu bar item).
+/// window, including the menu bar item and floating pet.
 final class MainNavigation: ObservableObject {
     @Published var requestedSessionID: String?
     @Published var requestsNewSession = false
@@ -279,6 +281,11 @@ struct DetachApp: App {
     @StateObject private var settingsNavigation = SettingsNavigation()
     @StateObject private var mainNavigation = MainNavigation()
     @StateObject private var sessionShortcuts = SessionShortcutRegistry()
+    @StateObject private var petCoordinator = PetCoordinator(
+        defaults: AppSettings.defaults,
+        libraryRoot: AppSettings.petLibraryRoot)
+    @StateObject private var petWindowController = PetWindowController(
+        defaults: AppSettings.defaults)
 
     var body: some Scene {
         Window("Detach", id: "main") {
@@ -291,7 +298,9 @@ struct DetachApp: App {
                      navigation: mainNavigation,
                      shortcuts: sessionShortcuts,
                      notifications: notifications,
-                     tips: tips, settingsNavigation: settingsNavigation)
+                     tips: tips, settingsNavigation: settingsNavigation,
+                     petCoordinator: petCoordinator,
+                     petWindowController: petWindowController)
                 .id(activeDetachPath) // reattach tasks when the CLI path changes
         }
         .commands {
@@ -308,9 +317,11 @@ struct DetachApp: App {
                 installation: installation,
                 sessionStore: sessionStore,
                 storageStore: storageStore,
+                petCoordinator: petCoordinator,
                 updater: updater,
                 notifications: notifications,
-                navigation: settingsNavigation)
+                navigation: settingsNavigation,
+                mainNavigation: mainNavigation)
         }
         .windowResizability(.contentSize)
 

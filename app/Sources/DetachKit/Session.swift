@@ -20,6 +20,7 @@ public enum EffectiveStatus: String, Codable, Sendable {
 public enum AgentTurnState: String, Codable, Sendable {
     case working
     case waiting
+    case needsInput = "needs_input"
     case interrupted
     case unknown
 

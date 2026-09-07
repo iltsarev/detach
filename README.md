@@ -185,6 +185,47 @@ Power status is event-driven too. An atomic watchdog report wakes the app when
 it changes. One deadline marks a silent report stale. The menu bar, Settings,
 and notifications do not poll the same file on repeating timers.
 
+### Session pets
+
+Settings → Pets can wake an optional animated pet that stays above other
+windows and follows managed Codex and Claude Code sessions. The pet shows
+**Needs input**, **Blocked**, **Ready**, or **Running**; attention states take
+priority. If one session has the highest priority, clicking the pet opens that
+exact session. If several sessions share the highest priority, the pet asks you
+to choose first. The activity badge always opens the complete list.
+
+**Needs input** is deliberately narrow: it appears for a structured provider
+input request, such as Claude Code `AskUserQuestion` or a Codex
+elicitation/request event. A normally finished turn stays out of that pet
+state, and Detach does not guess from assistant text or terminal contents.
+Dragging the pet only moves it; opening a session requires a separate click.
+
+Detach reads compatible custom pet packages from
+`${CODEX_HOME:-$HOME/.codex}/pets/`. The same local pet can therefore be used
+by Codex and Detach, and Settings identifies whether a package came from that
+library or from Detach. **Add Pet…** accepts a folder containing
+`pet.json` and its PNG or WebP spritesheet, validates it, and atomically copies
+it into that shared library without changing the selected source folder. A
+duplicate pet ID is never overwritten. Detach includes the original generated
+pet Lumi as a read-only fallback and prefers a user's package when its ID
+matches. Built-in Codex and ChatGPT pet assets are not imported or bundled. Pet choice,
+visibility, and window position stay local. macOS Reduce Motion keeps the
+current pet on a still frame.
+
+When the local Codex installation has the `hatch-pet` skill and validated
+workspace runtime, **Generate Random Pet** asks for confirmation and starts a
+managed Codex CLI session containing a randomly chosen character, style,
+palette, and personality. For that session only, Detach exposes its
+validated bundled workspace runtime through a read-only local MCP tool; it does
+not change the user's global Codex configuration or open the desktop app. Codex
+performs the complete v2 visual generation and QA workflow. Detach does not call
+an image API or create placeholder animation rows. Detach checks only the
+requested package directory after Settings closes and selects the new package
+when it appears; it does not poll the session list or repeatedly decode the
+selected pet. After one hour the automatic check pauses without forgetting the
+target, and Settings can resume it. The generation session can be opened at any
+time. Stopping package tracking leaves it running.
+
 <details>
 <summary><strong>How a new in-app session starts</strong></summary>
 
@@ -218,11 +259,13 @@ Codex and Claude Code share one dashboard. Each managed session includes:
 A compact guide below the session list keeps `Cmd-N`, `Cmd-T`, `Cmd-,`, and
 `Cmd-F` visible without opening a help screen.
 
-Sessions that wait for your reply move into **Answer ready**, before agents
-that are still working. Detach reads structured provider lifecycle records for
-this signal. A completed Claude text answer enters **Answer ready** even when
-Claude omits its turn-duration record. Detach does not guess from terminal
-text. Mid-turn permission prompts are not currently part of the signal.
+Finished turns move into **Answer ready**, before agents that are still
+working. A completed Claude text answer enters **Answer ready** even when Claude
+omits its turn-duration record. This is separate from the pet's narrower
+**Needs input** state, which requires a structured provider input request.
+Detach derives both states from structured provider records, not terminal
+contents. Ordinary assistant prose and mid-turn permission prompts do not
+produce **Needs input**.
 
 The optional menu bar companion shows:
 

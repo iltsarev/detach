@@ -48,7 +48,12 @@ final class RootViewTests: XCTestCase {
             notifications: SessionNotificationService(
                 center: RootViewNotificationCenter()),
             tips: TipSession(defaults: defaults),
-            settingsNavigation: SettingsNavigation())
+            settingsNavigation: SettingsNavigation(),
+            petCoordinator: PetCoordinator(
+                defaults: defaults,
+                libraryRoot: powerStateRoot.appendingPathComponent("pets"),
+                bundledLibraryRoot: nil),
+            petWindowController: PetWindowController(defaults: defaults))
 
         _ = root.body
     }

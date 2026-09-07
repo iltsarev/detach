@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 import DetachKit
 
 @MainActor
@@ -16,6 +16,7 @@ enum AppRuntimeActivationSequence {
 @MainActor
 struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
     private var fontPointSize = AppFontSize.defaultValue
@@ -35,6 +36,8 @@ struct RootView: View {
     @ObservedObject var notifications: SessionNotificationService
     @ObservedObject var tips: TipSession
     @ObservedObject var settingsNavigation: SettingsNavigation
+    @ObservedObject var petCoordinator: PetCoordinator
+    let petWindowController: PetWindowController
 
     @State private var selectedID: String?
     @State private var shortcutAssignments: [SessionShortcutAssignment] = []
@@ -118,8 +121,9 @@ struct RootView: View {
             // keep notifications fed from the same event source. The
             // transition detector baselines on its first successful snapshot,
             // so historical sessions never fire as fresh notifications.
-            store.onSnapshot = { [weak notifications] sessions in
+            store.onSnapshot = { [weak notifications, weak petCoordinator] sessions in
                 notifications?.observeFromSessionStore(sessions)
+                petCoordinator?.observe(sessions)
             }
             // Activate the immutable payload before starting any long-lived
             // source. Otherwise an upgrade leaves the app's watcher on the
@@ -141,6 +145,21 @@ struct RootView: View {
                         executable: URL(fileURLWithPath: detachPath)))
                 })
             initialSetupComplete = true
+        }
+        .task {
+            petWindowController.configure(
+                coordinator: petCoordinator,
+                navigation: navigation,
+                openPetSettings: {
+                    settingsNavigation.select(.pets)
+                    NSApp.activate(ignoringOtherApps: true)
+                    openSettings()
+                },
+                openMainWindow: {
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                })
+            petCoordinator.reloadLibrary()
         }
         .task(id: notificationsEnabled) {
             guard AppSettings.uiE2E == nil else { return }

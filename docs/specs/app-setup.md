@@ -39,6 +39,20 @@ screen area. A window that already fits keeps its position.
 Temperature safety has its own warning shape and the
 text **Mac can sleep: temperature**.
 
+Settings → Pets separates visibility, library, Codex generation, and activity.
+The library labels bundled and local Codex packages and refreshes compatible
+custom packages from `${CODEX_HOME:-$HOME/.codex}/pets`; built-in Codex presets
+are not imported. Import validates and copies only the package files. Generation
+requires the `hatch-pet` skill, the active Detach runtime helper, and a valid
+Codex workspace runtime. It asks for confirmation, then opens one managed Codex
+session. Package discovery remains app-scoped when Settings closes, checks only
+the requested package directory, and never polls `list --json` or decodes the
+selected atlas on a miss. Running, attention, and finished states keep an
+existing generation session reachable; a missing session is explicit. After
+one hour the check pauses with its target intact and can resume. An invalid
+target reports its validation error and does not complete tracking until the
+atlas decodes. Stopping tracking does not stop that session.
+
 Settings → System owns the only **Mac Power** status and approval block. Helper
 Ready requires a doctor live XPC check. Registration alone is Needs attention.
 During doctor or reconciliation, show Checking, not failure. Power

@@ -2796,6 +2796,15 @@ grep -Fx -- '--activity-file' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$power_activity" "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- '--activity-source-file' "$FAKE_POWER_ARGS_FILE" >/dev/null
 grep -Fx -- "$power_activity_source" "$FAKE_POWER_ARGS_FILE" >/dev/null
+printf '{"timestamp":"2099-01-01T00:09:59Z","type":"event_msg","payload":{"type":"request_user_input","turn_id":"%s"}}\n' \
+  "$turn_id" >>"$turn_rollout"
+json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = "needs_input" ]
+[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = "$turn_id" ]
+wait_for_file_text "$power_activity" waiting
+printf '{"timestamp":"2099-01-01T00:09:59.500Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"%s"}}\n' \
+  "$turn_id" >>"$turn_rollout"
+wait_for_file_text "$power_activity" working
 printf '{"timestamp":"2099-01-01T00:10:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"%s"}}\n' \
   "$turn_id" >>"$turn_rollout"
 json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"

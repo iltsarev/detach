@@ -3,6 +3,7 @@ import Foundation
 /// Stable destinations used by tips that link directly to an app setting.
 public enum SettingsDestination: String, CaseIterable, Hashable, Sendable {
     case general
+    case pets
     case terminal
     case notifications
     case system
@@ -40,6 +41,10 @@ public enum TipCatalog {
             id: "interface",
             localizationKey: "Adjust text size and refresh frequency in General settings.",
             destination: .general),
+        DetachTip(
+            id: "pets",
+            localizationKey: "Wake a pet to follow Codex and Claude session activity.",
+            destination: .pets),
         DetachTip(
             id: "terminal-selection",
             localizationKey: "Choose which terminal opens Detach commands.",

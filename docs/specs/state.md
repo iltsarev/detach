@@ -77,12 +77,16 @@ Provider lifecycle records, never terminal text, supply turn state and the
 private activity file in `power.md`. Bounded append caching retains typed turns;
 an unseen oversized gap clears waiting to prevent stale Answer ready. A
 main-chain Claude `AskUserQuestion` with `stop_reason: tool_use` and a tool ID
-means waiting; only its matching user tool result restores working. Reducer
-changes invalidate old receipts so unchanged prompts are reclassified.
-A main-chain Claude assistant record with `stop_reason: end_turn` and nonempty
-text also means waiting. Thinking-only, metadata, and tool-use blocks do not
-prove a completed answer. Repeated final text and a later `turn_duration` keep
-the waiting turn ID. A new user request or an assistant `tool_use` continuation
-restores working. A pending `AskUserQuestion` still requires its matching
-result. Schema-4 summary receipts invalidate earlier cached turn states.
+means `needs_input`; only its matching user tool result restores working. A
+structured Codex elicitation or input-request event also means `needs_input`;
+an ordinary completed turn remains waiting. A main-chain Claude assistant
+record with `stop_reason: end_turn` and nonempty text also means waiting, even
+when `turn_duration` is omitted. Thinking-only, metadata, and tool-use blocks
+do not prove a completed answer. Repeated final text and a later
+`turn_duration` keep the waiting turn ID. A new plain user request or an
+assistant `tool_use` continuation other than `AskUserQuestion` restores working
+when no question is pending; a pending `AskUserQuestion` still requires its
+matching result. Schema-5 summary receipts invalidate earlier cached turn
+states so unchanged prompts are reclassified. The app treats `needs_input` as
+a narrower user-action signal than waiting.
 Typed cleanup uses `cleanup_eligible`.
