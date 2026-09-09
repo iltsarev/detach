@@ -23,6 +23,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", exact: "1.19.0"),
     ],
     targets: [
         .target(name: "DetachKit"),
@@ -40,6 +41,7 @@ let package = Package(
             dependencies: [
                 "DetachKit",
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
             linkerSettings: appLinkerSettings),
         .executableTarget(
@@ -54,6 +56,11 @@ let package = Package(
                 ]),
             ]),
         .testTarget(name: "DetachKitTests", dependencies: ["DetachKit"]),
-        .testTarget(name: "DetachAppTests", dependencies: ["DetachApp"]),
+        .testTarget(
+            name: "DetachAppTests",
+            dependencies: [
+                "DetachApp",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]),
     ]
 )

@@ -33,30 +33,34 @@ git -C "$ROOT" check-ignore --no-index -q -- docs/assets/internal.html || \
 python3 "$ROOT/tests/quality_policy_contract.py"
 policy_version="$("$ROOT/scripts/quality-policy" version)"
 [[ "$policy_version" =~ ^[1-9][0-9]*$ ]] || fail 'invalid policy version'
-[ "$("$ROOT/scripts/quality-policy" specs | wc -l | tr -d ' ')" = 5 ] || \
+[ "$("$ROOT/scripts/quality-policy" specs | wc -l | tr -d ' ')" = 7 ] || \
   fail 'current specification inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" stages all | wc -l | tr -d ' ')" = 14 ] || \
+[ "$("$ROOT/scripts/quality-policy" stages all | wc -l | tr -d ' ')" = 13 ] || \
   fail 'unexpected stage count'
-[ "$("$ROOT/scripts/quality-policy" stages release | tail -1)" = release-budget ] || \
+[ "$("$ROOT/scripts/quality-policy" stages release | tail -1)" = publish-preflight ] || \
   fail 'release stage order is incorrect'
 [ "$("$ROOT/scripts/quality-policy" timeout app)" = 2400 ] || fail 'app timeout is not policy owned'
-[ "$("$ROOT/scripts/quality-policy" dependencies)" = $'app\tui-e2e' ] || \
-  fail 'packaged UI dependency is missing'
+[ -z "$("$ROOT/scripts/quality-policy" dependencies)" ] || \
+  fail 'stage dependencies must not cascade beyond the routed plan'
+[ "$("$ROOT/scripts/quality-policy" release-scan bin/detach-core)" != - ] || \
+  fail 'bin/detach-core has no release scan pattern'
+[ "$("$ROOT/scripts/quality-policy" release-scan README.md)" = - ] || \
+  fail 'README.md must not have a release scan pattern'
 [ "$("$ROOT/scripts/quality-policy" critical | wc -l | tr -d ' ')" = 13 ] || \
   fail 'critical source inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" suites | wc -l | tr -d ' ')" = 12 ] || \
   fail 'required Swift suite inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" requirements | wc -l | tr -d ' ')" = 23 ] || \
   fail 'critical requirement inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" capabilities | wc -l | tr -d ' ')" = 11 ] || \
+[ "$("$ROOT/scripts/quality-policy" capabilities | wc -l | tr -d ' ')" = 12 ] || \
   fail 'capability inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" journeys | wc -l | tr -d ' ')" = 28 ] || \
+[ "$("$ROOT/scripts/quality-policy" journeys | wc -l | tr -d ' ')" = 30 ] || \
   fail 'journey inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" scenarios | wc -l | tr -d ' ')" = 44 ] || \
   fail 'scenario inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" coverage-exclusions | wc -l | tr -d ' ')" = 4 ] || \
   fail 'coverage exclusion inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" coverage-regions | wc -l | tr -d ' ')" = 9 ] || \
+[ "$("$ROOT/scripts/quality-policy" coverage-regions | wc -l | tr -d ' ')" = 12 ] || \
   fail 'coverage region inventory is incomplete'
 first_json="$("$ROOT/scripts/quality-policy" render-json | shasum -a 256 | awk '{print $1}')"
 second_json="$("$ROOT/scripts/quality-policy" render-json | shasum -a 256 | awk '{print $1}')"
@@ -72,12 +76,13 @@ grep -F '`QC-QUALITY-POLICY`' \
   fail 'generated specification view omits the policy requirement'
 
 expect_route docs/testing.md policy safe false
-expect_route app/Sources/DetachKit/DetachStateCommand.swift state-runtime safe false
+expect_route app/Sources/DetachKit/DetachStateCommand.swift state-source safe false
 expect_route app/Sources/DetachKit/PowerProtection.swift power both false
 expect_route app/Sources/DetachKit/TerminalLauncher.swift runtime-source safe false
 expect_route app/Sources/DetachApp/OnboardingView.swift onboarding-source install false
 expect_route app/Sources/DetachApp/FutureFlow.swift swift-source unknown true
 expect_route scripts/release-lid-probe release-tool lid false
+expect_route scripts/release-version release-tool safe false
 expect_route scripts/quality-metrics policy safe false
 expect_route scripts/quality-mutation policy safe false
 
@@ -86,9 +91,12 @@ onboarding="$("$ROOT/scripts/quality-policy" classify app/Sources/DetachApp/Onbo
 [[ "$(field "$onboarding" 11)" = *J-ONBOARD-FIRST-RUN* ]] || \
   fail 'onboarding journey impact is missing'
 session="$("$ROOT/scripts/quality-policy" classify app/Sources/DetachKit/SessionStore.swift)"
-[ "$(field "$session" 10)" = session-lifecycle ] || fail 'session capability impact is missing'
+[ "$(field "$session" 10)" = session-lifecycle,session-state ] || \
+  fail 'session capability impact is missing'
 [[ "$(field "$session" 11)" = *J-SESSION-RECOVER* ]] || \
   fail 'session recovery journey impact is missing'
+[[ "$(field "$session" 11)" = *J-SESSION-PERSIST* ]] || \
+  fail 'session persistence journey impact is missing'
 
 unknown="$("$ROOT/scripts/quality-policy" classify product/new-runtime)"
 [ "$(field "$unknown" 1)" = unknown ] || fail 'new product path must fail safe'

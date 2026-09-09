@@ -35,7 +35,7 @@ public extension Session {
     /// Whether the provider process is still expected to produce live output.
     /// This intentionally stays independent from the sidebar section: a live
     /// session can move between Working and Answer ready without stopping log
-    /// polling.
+    /// observation.
     var isLive: Bool {
         switch effectiveStatus {
         case .starting, .running, .recovering, .hung: true
@@ -134,12 +134,16 @@ public extension Session {
             L10n.string("The provider process exited while its worker remained alive.")
         case .providerPIDNotDescendant:
             L10n.string("The recorded provider PID is not owned by this worker.")
+        case .operationInProgress:
+            L10n.string("A session operation is in progress.")
         case .runtimeProcessWithoutTmux:
             L10n.string("A recorded runtime process is still alive without its managed tmux session; Detach will not signal it.")
+        case .runtimeQuiescenceUnproven:
+            L10n.string("Detach could not confirm that the replacement runtime stopped.")
         case .recoverableCheckpoint:
-            L10n.string("The live runtime disappeared, but a valid checkpoint can be recovered.")
+            L10n.string("The live runtime disappeared, but validated recovery data is available.")
         case .noRecoveryCheckpoint:
-            L10n.string("The live runtime disappeared without a valid recovery checkpoint.")
+            L10n.string("The live runtime disappeared without validated recovery data.")
         }
     }
 

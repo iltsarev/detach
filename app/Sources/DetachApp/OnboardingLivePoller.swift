@@ -25,6 +25,7 @@ final class OnboardingLivePoller {
     private let providerCheckPassed: @MainActor () -> Bool
     private let reconcile: @MainActor () async -> Bool
     private let locate: () async -> ProviderAvailability
+    private let refreshHeartbeat: @MainActor () -> Void
     private let heartbeatIsHealthy: @MainActor () -> Bool
     private let installedCopyExists: () -> Bool
     private let sleep: (UInt64) async throws -> Void
@@ -41,6 +42,7 @@ final class OnboardingLivePoller {
             providerCheckPassed: { store.providerCheckPassed },
             reconcile: { await store.refreshContext() },
             locate: { await locator.locate() },
+            refreshHeartbeat: { store.refreshPowerProtectionState() },
             heartbeatIsHealthy: { store.watchdogHeartbeat.healthy },
             installedCopyExists: {
                 FileManager.default.fileExists(
@@ -55,11 +57,10 @@ final class OnboardingLivePoller {
         providerCheckPassed: @escaping @MainActor () -> Bool,
         reconcile: @escaping @MainActor () async -> Bool,
         locate: @escaping () async -> ProviderAvailability,
+        refreshHeartbeat: @escaping @MainActor () -> Void = {},
         heartbeatIsHealthy: @escaping @MainActor () -> Bool,
         installedCopyExists: @escaping () -> Bool,
-        sleep: @escaping (UInt64) async throws -> Void = {
-            try await Task.sleep(nanoseconds: $0)
-        }
+        sleep: @escaping (UInt64) async throws -> Void = defaultSleep
     ) {
         self.refreshStatuses = refreshStatuses
         self.servicesEnabled = servicesEnabled
@@ -67,6 +68,7 @@ final class OnboardingLivePoller {
         self.providerCheckPassed = providerCheckPassed
         self.reconcile = reconcile
         self.locate = locate
+        self.refreshHeartbeat = refreshHeartbeat
         self.heartbeatIsHealthy = heartbeatIsHealthy
         self.installedCopyExists = installedCopyExists
         self.sleep = sleep
@@ -93,11 +95,18 @@ final class OnboardingLivePoller {
         case .autoSetup, .mainApp: return
         }
         task = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.tick(step)
-                guard let sleep = self?.sleep else { return }
-                do { try await sleep(interval) } catch { return }
-            }
+            await self?.run(step, interval: interval)
+        }
+    }
+
+    static func defaultSleep(nanoseconds: UInt64) async throws {
+        try await Task.sleep(nanoseconds: nanoseconds)
+    }
+
+    func run(_ step: OnboardingStep, interval: UInt64) async {
+        while !Task.isCancelled {
+            await tick(step)
+            do { try await sleep(interval) } catch { return }
         }
     }
 
@@ -146,6 +155,7 @@ final class OnboardingLivePoller {
             if heartbeatWaitStartedAt == nil {
                 heartbeatWaitStartedAt = Date()
             }
+            refreshHeartbeat()
             heartbeatHealthy = heartbeatIsHealthy()
             if heartbeatHealthy {
                 heartbeatWaitIsLong = false

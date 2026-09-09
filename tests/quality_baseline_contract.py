@@ -19,6 +19,7 @@ def invoke(
     output_root: Path,
     *,
     mode: str = "success",
+    profile: str = "combined",
     expected: int = 0,
     test_mode: bool = True,
 ) -> subprocess.CompletedProcess[str]:
@@ -33,6 +34,7 @@ def invoke(
         [
             str(SCRIPT), "--repository", "owner/repository",
             "--output-root", str(output_root),
+            "--profile", profile,
         ],
         cwd=ROOT,
         env=environment,
@@ -68,6 +70,8 @@ if arguments[0] == "api" and "workflows/quality-gates.yml/runs" in arguments[1]:
     if mode == "malformed": print("{")
     elif mode == "no-runs": print(json.dumps({"workflow_runs": []}))
     elif mode == "partial-latest": print(json.dumps({"workflow_runs": [{"id": 124}, {"id": 123}]}))
+    elif mode == "profile-selection": print(json.dumps({"workflow_runs": [{"id": 125}, {"id": 124}]}))
+    elif mode == "dual-profile": print(json.dumps({"workflow_runs": [{"id": 126}]}))
     else: print(json.dumps({"workflow_runs": [{"id": 123}]}))
 elif arguments[0] == "api" and "/artifacts" in arguments[1]:
     run_id = arguments[1].split("/actions/runs/")[1].split("/")[0]
@@ -82,7 +86,17 @@ elif arguments[:2] == ["run", "download"]:
         (destination / "manifest.tsv").write_text("schema\\t4\\n")
         run_id = arguments[2]
         if mode != "no-metrics" and not (mode == "partial-latest" and run_id == "124"):
-            (destination / "quality-metrics.json").write_text("{}\\n")
+            if mode == "legacy":
+                metrics = {"schema": 1}
+            elif mode == "invalid-profile":
+                metrics = {"schema": 2, "coverage_profile": "other"}
+            else:
+                profile = "swift" if mode == "profile-selection" and run_id == "125" else "combined"
+                metrics = {"schema": 2, "coverage_profile": profile}
+            (destination / "quality-metrics.json").write_text(json.dumps(metrics) + "\\n")
+            if mode == "dual-profile":
+                (destination / "quality-metrics-swift.json").write_text(
+                    json.dumps({"schema": 2, "coverage_profile": "swift"}) + "\\n")
 else:
     raise SystemExit(3)
 """,
@@ -106,6 +120,30 @@ else:
         if not (partial_root / "124/run/manifest.tsv").is_file():
             raise AssertionError("partial main evidence was not inspected")
 
+        profile_root = root / "profile-selection"
+        combined = invoke(
+            fake_gh, profile_root, mode="profile-selection", profile="combined")
+        if Path(combined.stdout.strip()) != profile_root / "124":
+            raise AssertionError("baseline did not skip a newer mismatched profile")
+        swift = invoke(
+            fake_gh, profile_root, mode="profile-selection", profile="swift")
+        if Path(swift.stdout.strip()) != profile_root / "125":
+            raise AssertionError("baseline did not select the newest Swift profile")
+
+        dual_root = root / "dual-profile"
+        dual_swift = invoke(
+            fake_gh, dual_root, mode="dual-profile", profile="swift")
+        if Path(dual_swift.stdout.strip()) != dual_root / "126":
+            raise AssertionError("baseline did not select the auxiliary Swift profile")
+        dual_combined = invoke(
+            fake_gh, dual_root, mode="dual-profile", profile="combined")
+        if Path(dual_combined.stdout.strip()) != dual_root / "126":
+            raise AssertionError("baseline did not select the primary combined profile")
+
+        legacy = invoke(fake_gh, root / "legacy", mode="legacy")
+        if Path(legacy.stdout.strip()) != root / "legacy/123":
+            raise AssertionError("schema-1 metrics did not retain combined continuity")
+
         malformed = invoke(fake_gh, root / "malformed", mode="malformed", expected=2)
         require(malformed, "response is malformed")
         missing = invoke(fake_gh, root / "no-runs", mode="no-runs", expected=2)
@@ -117,7 +155,10 @@ else:
         require(no_manifest, "no unique quality manifest")
         no_metrics = invoke(
             fake_gh, root / "no-metrics", mode="no-metrics", expected=2)
-        require(no_metrics, "no successful main quality run has quality metrics")
+        require(no_metrics, "no successful main quality run has combined quality metrics")
+        invalid_profile = invoke(
+            fake_gh, root / "invalid-profile", mode="invalid-profile", expected=2)
+        require(invalid_profile, "coverage profile is invalid")
         override = invoke(
             fake_gh, root / "production-override", expected=2, test_mode=False)
         require(override, "baseline output must use")

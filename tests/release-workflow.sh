@@ -14,10 +14,19 @@ cleanup() {
   if [ "${DETACH_RELEASE_WORKFLOW_TEST_KEEP:-0}" = 1 ]; then
     printf 'Kept release workflow test state: %s\n' "$TMP_ROOT" >&2
   else
+    cleanup_started="$SECONDS"
     rm -rf "$TMP_ROOT"
+    printf 'release-workflow: cleanup completed in %ss\n' \
+      "$((SECONDS - cleanup_started))"
   fi
 }
 trap cleanup EXIT
+
+grep -F 'export GIT_PAGER=cat PAGER=cat GH_PAGER=cat' \
+  "$ROOT/scripts/release-version" >/dev/null || {
+  printf 'release-version must disable pagers for terminal runs\n' >&2
+  exit 1
+}
 
 write_executable() {
   local path="$1"
@@ -37,9 +46,16 @@ setup_fixture() {
   RELEASE_EXISTS="$FIXTURE/release-exists"
   ACTION_LOG="$FIXTURE/actions.log"
   PUBLISHED_MANIFEST="$FIXTURE/published-manifest.json"
+  if [ -n "${FIXTURE_TEMPLATE:-}" ]; then
+    cp -cR "$FIXTURE_TEMPLATE" "$FIXTURE"
+    git -C "$REPO" remote set-url origin "$ORIGIN"
+    git -C "$REPO" config core.hooksPath "$FIXTURE/hooks"
+    return
+  fi
   mkdir -p "$REPO/scripts" "$REPO/tests/quality-gate-fixtures" "$REPO/app/scripts" \
-    "$REPO/app/.build/artifacts/sparkle/Sparkle/bin" "$REPO/quality" "$REPO/tools" \
-    "$BIN" "$APPS" \
+    "$REPO/app/.build/artifacts/sparkle/Sparkle/bin" "$REPO/docs/specs" \
+    "$REPO/quality" "$REPO/tools" \
+    "$BIN" "$APPS" "$FIXTURE/hooks" \
     "$REMOTE_ASSETS"
 
   install -m 0755 "$ROOT/scripts/release-version" "$REPO/scripts/release-version"
@@ -54,6 +70,7 @@ setup_fixture() {
   install -m 0644 "$ROOT/tools/quality_policy.py" "$REPO/tools/quality_policy.py"
   install -m 0644 "$ROOT/tools/release_sbom.py" "$REPO/tools/release_sbom.py"
   install -m 0644 "$ROOT/app/Package.resolved" "$REPO/app/Package.resolved"
+  install -m 0644 "$ROOT"/docs/specs/*.md "$REPO/docs/specs/"
   install -m 0644 "$ROOT/quality/policy.tsv" "$REPO/quality/policy.tsv"
   install -m 0755 "$ROOT/app/scripts/verify-appcast.sh" \
     "$REPO/app/scripts/verify-appcast.sh"
@@ -62,23 +79,6 @@ setup_fixture() {
   printf '%s\n' '.env.release' >"$REPO/.gitignore"
   printf '%s\n' '.build/' 'build/' >"$REPO/app/.gitignore"
   printf '%s\n' 'release workflow fixture' >"$REPO/README.md"
-  printf '%s\n' \
-    $'schema\t2' \
-    $'wall_seconds_max\t180' \
-    $'stage_static_seconds_max\t10' \
-    $'stage_gate_contract_seconds_max\t10' \
-    $'stage_swift_seconds_max\t10' \
-    $'stage_quality_contracts_seconds_max\t10' \
-    $'stage_app_seconds_max\t10' \
-    $'stage_ui_e2e_seconds_max\t10' \
-    $'stage_codex_seconds_max\t10' \
-    $'stage_claude_seconds_max\t10' \
-    $'stage_distribution_seconds_max\t10' \
-    $'stage_tmux_runtime_seconds_max\t10' \
-    $'stage_release_preflight_seconds_max\t10' \
-    $'stage_publish_preflight_seconds_max\t10' \
-    $'stage_release_workflow_seconds_max\t10' \
-    >"$REPO/tests/release-budget.tsv"
   {
     printf "DETACH_CODESIGN_IDENTITY='%s'\n" "$IDENTITY"
     printf '%s\n' 'DETACH_NOTARY_PROFILE=detach-tests'
@@ -392,6 +392,12 @@ case "${1:-} ${2:-}" in
     [ -f "${FAKE_RELEASE_EXISTS:?}" ] || exit 1
     case " $* " in
       *' --json tagName '*) printf '%s\n' "${FAKE_TARGET_TAG:?}" ;;
+      *' --json assets '*)
+        for path in "${FAKE_REMOTE_ASSETS:?}"/*; do
+          [ -f "$path" ] || continue
+          basename "$path"
+        done
+        ;;
     esac
     ;;
   *) exit 64 ;;
@@ -465,13 +471,14 @@ SH
   git -C "$REPO" tag -a v1.2.3 -m 'published fixture'
   git init -q --bare "$ORIGIN"
   git -C "$REPO" remote add origin "$ORIGIN"
+  git -C "$REPO" config core.hooksPath "$FIXTURE/hooks"
   git -C "$REPO" push -q -u origin main
   git -C "$REPO" push -q origin v1.2.3
 }
 
 run_workflow() {
   local fail_after="${1:-}" lid_confirmation="${2:-example/detach@$TARGET_TAG}"
-  local release_confirmation="${3:-}" ignore_timing="${4:-0}"
+  local release_confirmation="${3:-}"
   (
     cd -P "$REPO"
     PATH="$BIN:/usr/bin:/bin" \
@@ -484,11 +491,11 @@ run_workflow() {
       FAKE_TARGET_TAG="$TARGET_TAG" \
       FAKE_DMG_APP="$REPO/app/build/fake-dmg/Detach.app" \
       DETACH_RELEASE_TEST_MODE=1 \
+      DETACH_RELEASE_TEST_FIXTURE_ROOT="${DETACH_RELEASE_TEST_FIXTURE_ROOT-$FIXTURE}" \
       DETACH_QUALITY_GATE_TEST_MODE=1 \
       DETACH_RELEASE_TEST_APPLICATIONS_DIR="$APPS" \
       DETACH_RELEASE_TEST_LID_MIN_SECONDS=0 \
       DETACH_RELEASE_TEST_FAIL_AFTER="$fail_after" \
-      DETACH_RELEASE_IGNORE_TIMING="$ignore_timing" \
       DETACH_QUALITY_AUTHORITY= \
       DETACH_CONFIRM_RELEASE="$release_confirmation" \
       DETACH_CONFIRM_LID_TEST="$lid_confirmation" \
@@ -595,55 +602,37 @@ run_invalid_resume_artifact_credentials_case() {
   [ ! -f "$RELEASE_EXISTS" ]
 }
 
-run_timing_override_cases() {
-  setup_fixture timing-override-confirmation
-  expect_failure timing-override-confirmation \
-    "confirmation must exactly equal example/detach@$TARGET_TAG" \
-    run_workflow '' "example/detach@$TARGET_TAG" wrong-confirmation 1
-  [ ! -s "$ACTION_LOG" ]
-
-  setup_fixture timing-override-invalid
-  expect_failure timing-override-invalid 'DETACH_RELEASE_IGNORE_TIMING must be 0 or 1' \
-    run_workflow '' "example/detach@$TARGET_TAG" "example/detach@$TARGET_TAG" invalid
-  [ ! -s "$ACTION_LOG" ]
-
-  setup_fixture timing-override
-  expect_failure timing-override 'injected safe failure after preflight' \
-    run_workflow preflight "example/detach@$TARGET_TAG" "example/detach@$TARGET_TAG" 1
-  [ "$(<"$REPO/app/build/release-workflow/$TARGET_VERSION/timing-budget-enforced")" = false ]
-  grep -F $'release_timing_override\t1' \
-    "$REPO"/app/build/quality-gates/*/environment.tsv >/dev/null
-  ! grep -F $'\trelease-budget\t' \
-    "$REPO"/app/build/quality-gates/*/summary.tsv >/dev/null
-  run_workflow
-  [ "$(<"$REPO/VERSION")" = "$TARGET_VERSION" ]
-  [ "$(grep -c '^release$' "$ACTION_LOG")" = 1 ]
-  [ -f "$REPO/app/build/release-workflow/$TARGET_VERSION/stage-verified" ]
-}
-
-run_preflight_rejection_cases() {
+run_dirty_preflight_rejection_case() {
   setup_fixture dirty
   printf '%s\n' dirty >"$REPO/untracked-note.txt"
   expect_failure dirty 'release workflow requires a clean worktree' run_workflow
   [ ! -s "$ACTION_LOG" ]
+}
 
+run_stale_build_preflight_rejection_case() {
   setup_fixture stale-build
   printf '%s\n' 12 >"$REPO/BUILD"
   git -C "$REPO" add BUILD
   git -C "$REPO" commit -qm 'stale tracked build'
   git -C "$REPO" push -q origin main
   expect_failure stale-build 'tracked BUILD 12 does not match published build 13' run_workflow
+}
 
+run_diverged_preflight_rejection_case() {
   setup_fixture diverged
   printf '%s\n' local >>"$REPO/README.md"
   git -C "$REPO" add README.md
   git -C "$REPO" commit -qm 'local divergence'
   expect_failure diverged 'main must be synchronized with origin/main' run_workflow
+}
 
+run_duplicate_tag_preflight_rejection_case() {
   setup_fixture duplicate-tag
   git -C "$REPO" tag -a "$TARGET_TAG" -m duplicate
   expect_failure duplicate-tag "local tag already exists: $TARGET_TAG" run_workflow
+}
 
+run_duplicate_release_preflight_rejection_case() {
   setup_fixture duplicate-release
   : >"$RELEASE_EXISTS"
   expect_failure duplicate-release "GitHub release already exists: $TARGET_TAG" run_workflow
@@ -672,10 +661,36 @@ run_remote_hash_case() {
   [ ! -f "$REPO/app/build/release-workflow/$TARGET_VERSION/stage-verified" ]
 }
 
+run_test_mode_rejects_unproven_fixture_case() {
+  setup_fixture test-mode-rejects-unproven-fixture
+  export DETACH_RELEASE_TEST_FIXTURE_ROOT=
+  expect_failure test-mode-rejects-unproven-fixture \
+    'test-mode push and publication require an absolute hermetic fixture root' \
+    run_workflow
+  [ -f "$REPO/app/build/release-workflow/$TARGET_VERSION/stage-prepared" ]
+  [ ! -f "$REPO/app/build/release-workflow/$TARGET_VERSION/stage-pushed" ]
+  [ ! -f "$RELEASE_EXISTS" ]
+  [ -z "$(git -C "$REPO" ls-remote origin "refs/tags/$TARGET_TAG")" ]
+  [ -z "$(git -C "$REPO" ls-remote origin "refs/heads/detach-release/$TARGET_TAG")" ]
+  ! grep -q '^publish$' "$ACTION_LOG"
+}
+
+run_unexpected_remote_asset_case() {
+  setup_fixture unexpected-remote-asset
+  expect_failure unexpected-remote-asset-prep \
+    'injected safe failure after published' run_workflow published
+  printf '%s\n' extra >"$REMOTE_ASSETS/unexpected-notes.txt"
+  expect_failure unexpected-remote-asset \
+    'published release has unexpected asset: unexpected-notes.txt' \
+    run_workflow
+  [ -f "$REPO/app/build/release-workflow/$TARGET_VERSION/stage-published" ]
+  [ ! -f "$REPO/app/build/release-workflow/$TARGET_VERSION/stage-verified" ]
+}
+
 run_post_push_main_rejection_case() {
   setup_fixture post-push-main
-  expect_failure post-push-artifacts 'injected safe failure after artifacts' \
-    run_workflow artifacts
+  expect_failure post-push-source 'injected safe failure after pushed' \
+    run_workflow pushed
   mkdir -p "$REPO/app/Sources/DetachKit"
   printf '%s\n' 'product change' >"$REPO/app/Sources/DetachKit/TerminalLauncher.swift"
   git -C "$REPO" add app/Sources/DetachKit/TerminalLauncher.swift
@@ -686,32 +701,76 @@ run_post_push_main_rejection_case() {
   [ ! -f "$RELEASE_EXISTS" ]
 }
 
-# Each lane owns a separate repository below TMP_ROOT. Run the lanes together.
-# This keeps independent Git and fake-publication work out of the critical path.
+# Each lane owns a separate repository below TMP_ROOT. Admit a bounded set of
+# lanes so independent Git and fake-publication work do not saturate the disk.
+# Clone one immutable APFS fixture instead of rebuilding the same Git history
+# and fake tools in every lane.
+setup_fixture fixture-template
+FIXTURE_TEMPLATE="$FIXTURE"
+release_case_limit=5
 release_case_pids=()
 release_case_names=()
-for release_case in \
-  run_resume_case \
-  run_timing_override_cases \
-  run_preflight_rejection_cases \
-  run_hardware_rejection_case \
-  run_remote_hash_case \
-  run_post_push_main_rejection_case \
-  run_invalid_resume_artifact_credentials_case; do
-  "$release_case" &
+release_case_status=0
+release_cases=(
+  run_resume_case
+  run_unexpected_remote_asset_case
+  run_remote_hash_case
+  run_hardware_rejection_case
+  run_invalid_resume_artifact_credentials_case
+  run_post_push_main_rejection_case
+  run_test_mode_rejects_unproven_fixture_case
+  run_dirty_preflight_rejection_case
+  run_stale_build_preflight_rejection_case
+  run_diverged_preflight_rejection_case
+  run_duplicate_tag_preflight_rejection_case
+  run_duplicate_release_preflight_rejection_case
+)
+
+wait_for_release_case_slot() {
+  local index pid
+  while :; do
+    for index in "${!release_case_pids[@]}"; do
+      pid="${release_case_pids[$index]}"
+      if kill -0 "$pid" 2>/dev/null; then
+        continue
+      fi
+      if ! wait "$pid"; then
+        printf 'release workflow lane failed: %s\n' \
+          "${release_case_names[$index]}" >&2
+        release_case_status=1
+      fi
+      unset 'release_case_pids[index]' 'release_case_names[index]'
+      if [ "${#release_case_pids[@]}" -gt 0 ]; then
+        release_case_pids=("${release_case_pids[@]}")
+        release_case_names=("${release_case_names[@]}")
+      fi
+      return
+    done
+    sleep 0.05
+  done
+}
+
+for release_case in "${release_cases[@]}"; do
+  while [ "${#release_case_pids[@]}" -ge "$release_case_limit" ]; do
+    wait_for_release_case_slot
+  done
+  (
+    release_case_started="$SECONDS"
+    trap 'release_case_status=$?; printf "%s\n" "$((SECONDS - release_case_started))" >"$TMP_ROOT/$release_case.seconds"; exit "$release_case_status"' EXIT
+    "$release_case"
+  ) &
   release_case_pids+=("$!")
   release_case_names+=("$release_case")
 done
 
-release_case_status=0
-for release_case_index in "${!release_case_pids[@]}"; do
-  if ! wait "${release_case_pids[$release_case_index]}"; then
-    printf 'release workflow lane failed: %s\n' \
-      "${release_case_names[$release_case_index]}" >&2
-    release_case_status=1
-  fi
+while [ "${#release_case_pids[@]}" -gt 0 ]; do
+  wait_for_release_case_slot
 done
 [ "$release_case_status" -eq 0 ] || exit 1
+for release_case in "${release_cases[@]}"; do
+  printf 'release-workflow: %s completed in %ss\n' \
+    "$release_case" "$(<"$TMP_ROOT/$release_case.seconds")"
+done
 
 "$ROOT/scripts/quality-scenarios" event pass SC-RELEASE-WORKFLOW
 printf 'Detach release workflow tests passed\n'

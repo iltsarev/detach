@@ -24,13 +24,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Initialize workflow analysis
-        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           languages: actions
           build-mode: none
           queries: security-extended
       - name: Analyze workflows
-        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           category: /language:actions
 
@@ -59,7 +59,7 @@ jobs:
       - name: Remove cached products before tracing
         run: swift package --package-path app clean
       - name: Initialize Swift analysis
-        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           languages: swift
           build-mode: manual
@@ -78,7 +78,7 @@ jobs:
           -Xswiftc 3
           -Xswiftc -gnone
       - name: Analyze Swift source
-        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           category: /language:swift
 
@@ -142,37 +142,63 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           baseline_root="$(scripts/quality-baseline)"
-          printf 'root=%s\n' "$baseline_root" >>"$GITHUB_OUTPUT"
-          printf 'run_id=%s\n' "${baseline_root##*/}" >>"$GITHUB_OUTPUT"
+          delimiter="detach-$(uuidgen)"
+          {
+            printf 'root<<%s\n' "$delimiter"
+            printf '%s\n' "$baseline_root"
+            printf '%s\n' "$delimiter"
+            printf 'run_id<<%s\n' "$delimiter"
+            printf '%s\n' "${baseline_root##*/}"
+            printf '%s\n' "$delimiter"
+          } >>"$GITHUB_OUTPUT"
       - id: mutation-evidence
         name: Restore latest mutation score when available
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           summary="$(scripts/quality-mutation latest --optional)"
-          printf 'summary=%s\n' "$summary" >>"$GITHUB_OUTPUT"
+          delimiter="detach-$(uuidgen)"
+          {
+            printf 'summary<<%s\n' "$delimiter"
+            if [ -n "$summary" ]; then
+              printf '%s\n' "$summary"
+            fi
+            printf '%s\n' "$delimiter"
+          } >>"$GITHUB_OUTPUT"
       - id: care-evidence
         name: Restore latest quality-care summary when available
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           summary="$(scripts/quality-care latest --optional)"
-          printf 'summary=%s\n' "$summary" >>"$GITHUB_OUTPUT"
+          delimiter="detach-$(uuidgen)"
+          {
+            printf 'summary<<%s\n' "$delimiter"
+            if [ -n "$summary" ]; then
+              printf '%s\n' "$summary"
+            fi
+            printf '%s\n' "$delimiter"
+          } >>"$GITHUB_OUTPUT"
       - name: Generate dashboard with security result
+        env:
+          MUTATION_SUMMARY: ${{ steps.mutation-evidence.outputs.summary }}
+          CARE_SUMMARY: ${{ steps.care-evidence.outputs.summary }}
+          MAIN_EVIDENCE_ROOT: ${{ steps.main-evidence.outputs.root }}
+          DASHBOARD_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ steps.main-evidence.outputs.run_id }}
         run: |
           mutation_args=()
           care_args=()
-          if [ -n "${{ steps.mutation-evidence.outputs.summary }}" ]; then
-            mutation_args+=(--mutation-summary "${{ steps.mutation-evidence.outputs.summary }}")
+          if [ -n "$MUTATION_SUMMARY" ]; then
+            mutation_args+=(--mutation-summary "$MUTATION_SUMMARY")
           fi
-          if [ -n "${{ steps.care-evidence.outputs.summary }}" ]; then
-            care_args+=(--care-summary "${{ steps.care-evidence.outputs.summary }}")
+          if [ -n "$CARE_SUMMARY" ]; then
+            care_args+=(--care-summary "$CARE_SUMMARY")
           fi
           scripts/quality-dashboard generate \
-            --result-root "${{ steps.main-evidence.outputs.root }}" \
+            --result-root "$MAIN_EVIDENCE_ROOT" \
             --output app/build/quality-dashboard \
             --security-summary app/build/quality-security/summary.json \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ steps.main-evidence.outputs.run_id }}" \
+            --run-url "$DASHBOARD_RUN_URL" \
             "${mutation_args[@]}" \
             "${care_args[@]}"
       - name: Configure Pages
@@ -183,4 +209,4 @@ jobs:
           path: app/build/quality-dashboard
       - name: Deploy quality dashboard
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

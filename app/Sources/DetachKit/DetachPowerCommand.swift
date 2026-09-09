@@ -454,6 +454,18 @@ public struct DetachPowerStatusReport: Equatable, Codable, Sendable {
     }
 }
 
+/// Minimal list-only power state derived from the signed watchdog heartbeat.
+/// It deliberately omits live helper and lease claims that require XPC.
+public struct DetachPowerQuickStatusReport: Equatable, Codable, Sendable {
+    public let schema: Int
+    public let state: PowerProtectionState
+
+    public init(snapshot: PowerHeartbeatSnapshot) {
+        schema = 1
+        state = snapshot.effectivePowerState
+    }
+}
+
 public enum DetachPowerCommandResult: Equatable, Sendable {
     case statusJSON(Data)
     case child(ChildCommandResult)
@@ -533,6 +545,7 @@ private final class PowerRunThermalSafetyController: @unchecked Sendable {
         guard latch.isActive else { return }
         do {
             try reconcileLocked()
+            safetyReleaseFailure = nil
             transitionFailure = nil
         } catch {
             if latch.isActive {
@@ -551,6 +564,7 @@ private final class PowerRunThermalSafetyController: @unchecked Sendable {
         if latch.isActive {
             do {
                 try reconcileLocked()
+                safetyReleaseFailure = nil
             } catch {
                 if safetyReleaseFailure == nil { safetyReleaseFailure = error }
             }
@@ -573,6 +587,7 @@ private final class PowerRunThermalSafetyController: @unchecked Sendable {
         activityRequiresProtection = state.requiresProtection
         do {
             try reconcileLocked()
+            safetyReleaseFailure = nil
             transitionFailure = nil
         } catch {
             if latch.isActive {
@@ -586,13 +601,21 @@ private final class PowerRunThermalSafetyController: @unchecked Sendable {
     func refresh() throws {
         lock.lock()
         defer { lock.unlock() }
-        if let safetyReleaseFailure { throw safetyReleaseFailure }
+        // Advance the cooldown and retry a retained safety release before
+        // surfacing it, so one transient failure cannot wedge lease renewals
+        // or protection recovery for the rest of the run.
         _ = latch.observe(lastState, now: now(), cooldown: cooldown)
         do {
             try reconcileLocked()
+            safetyReleaseFailure = nil
             transitionFailure = nil
         } catch {
-            transitionFailure = error
+            if latch.isActive {
+                // A still-failing safety release stays retained and surfaced.
+                if safetyReleaseFailure == nil { safetyReleaseFailure = error }
+            } else {
+                transitionFailure = error
+            }
             throw error
         }
     }
@@ -717,6 +740,7 @@ public struct DetachPowerCommand: Sendable {
     private let thermalCooldown: TimeInterval
     private let clamshellLockRunner: ClamshellLockRunner
     private let readinessMarker: any PowerRunReadinessMarking
+    private let quickStatusReader: @Sendable () -> PowerHeartbeatSnapshot
 
     public init(
         helperClient: any PowerHelperClient,
@@ -730,7 +754,11 @@ public struct DetachPowerCommand: Sendable {
         thermalNow: @escaping @Sendable () -> Date = { Date() },
         thermalCooldown: TimeInterval = PowerThermalSafetyLatch.defaultCooldown,
         clamshellLockRunner: ClamshellLockRunner = ClamshellLockRunner(),
-        readinessMarker: any PowerRunReadinessMarking = FilePowerRunReadinessMarker()
+        readinessMarker: any PowerRunReadinessMarking = FilePowerRunReadinessMarker(),
+        quickStatusReader: @escaping @Sendable () -> PowerHeartbeatSnapshot = {
+            let url = PowerHeartbeatReader.defaultStatusURL()
+            return PowerHeartbeatReader(statusURL: url).read()
+        }
     ) {
         self.helperClient = helperClient
         self.assertionController = assertionController
@@ -742,17 +770,24 @@ public struct DetachPowerCommand: Sendable {
         self.thermalCooldown = max(0, thermalCooldown)
         self.clamshellLockRunner = clamshellLockRunner
         self.readinessMarker = readinessMarker
+        self.quickStatusReader = quickStatusReader
     }
 
     public func execute(arguments: [String]) throws -> DetachPowerCommandResult {
         switch arguments.first {
         case "status":
-            guard arguments == ["status", "--json"] else {
-                throw DetachPowerCommandError.usage("usage: detach-power status --json")
+            guard arguments == ["status", "--json"]
+                    || arguments == ["status", "--json", "--quick"] else {
+                throw DetachPowerCommandError.usage(
+                    "usage: detach-power status --json [--quick]")
             }
-            let report = DetachPowerStatusReport(status: try helperClient.status())
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
+            if arguments.last == "--quick" {
+                return .statusJSON(try encoder.encode(
+                    DetachPowerQuickStatusReport(snapshot: quickStatusReader())))
+            }
+            let report = DetachPowerStatusReport(status: try helperClient.status())
             return .statusJSON(try encoder.encode(report))
         case "run":
             let parsed = try parseRunArguments(Array(arguments.dropFirst()))

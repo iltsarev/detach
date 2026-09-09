@@ -102,3 +102,15 @@ fi
   arguments+=(--baseline-root "$DETACH_QUALITY_BASELINE_ROOT")
 
 "$ROOT/scripts/quality-metrics" "${arguments[@]}"
+
+if [ -n "${DETACH_UI_COVERAGE_BINARY:-}" ]; then
+  swift_output="${DETACH_QUALITY_SWIFT_METRICS_OUTPUT:-$(dirname "$output")/quality-metrics-swift.json}"
+  "$ROOT/scripts/quality-metrics" evaluate \
+    --test-binary "$test_binary" \
+    --profile "$profdata" \
+    --tests "$tests" \
+    --output "$swift_output" \
+    --source-commit "$source_commit" \
+    --coverage-profile swift \
+    --authority local-diagnostic
+fi

@@ -117,6 +117,7 @@ class Policy:
         self.dependencies: list[tuple[str, str]] = []
         self.test_domains: dict[str, tuple[str, str]] = {}
         self.release_domains: dict[str, tuple[str, bool]] = {}
+        self.release_scans: dict[str, str] = {}
         self.coverage_exclusions: list[tuple[str, str, str, str]] = []
         self.coverage_regions: list[tuple[str, str, str, str, str]] = []
         self.routes: list[Route] = []
@@ -247,6 +248,22 @@ class Policy:
                     raise PolicyError(f"line {line_number}: unknown release gate")
                 self._unique(self.release_domains, name, "release domain", line_number)
                 self.release_domains[name] = (gates, self._boolean(raw_unknown, line_number))
+            elif kind == "release-scan":
+                # A lid-gated path whose diff hunks are scanned for power
+                # tokens before the closed-lid probe is selected. The path is
+                # exact, and the pattern is a case-insensitive extended regex.
+                self._expect_count(kind, values, 2, line_number)
+                path, pattern = values
+                if not ROUTE_PATTERN.fullmatch(path) or "*" in path or not pattern:
+                    raise PolicyError(f"line {line_number}: invalid release scan")
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    raise PolicyError(
+                        f"line {line_number}: invalid release scan pattern: {error}"
+                    ) from error
+                self._unique(self.release_scans, path, "release scan", line_number)
+                self.release_scans[path] = pattern
             elif kind == "coverage-exclusion":
                 self._expect_count(kind, values, 4, line_number)
                 group, pattern, scenarios, summary = values
@@ -396,6 +413,14 @@ class Policy:
         if not self.specs:
             raise PolicyError("at least one current specification is required")
         registered_specs = {path for path, _ in self.specs.values()}
+        for required_limit in (
+            "routed_spec_warning_bytes",
+            "routed_spec_limit_bytes",
+        ):
+            if required_limit not in self.limits:
+                raise PolicyError(f"quality policy limit is missing: {required_limit}")
+        if self.limits["routed_spec_warning_bytes"] >= self.limits["routed_spec_limit_bytes"]:
+            raise PolicyError("routed spec warning must be below the hard limit")
         if "static" not in self.stages_by_name:
             raise PolicyError("static stage is required")
         if "unknown" not in self.test_domains or "unknown" not in self.release_domains:
@@ -427,6 +452,10 @@ class Policy:
                 raise PolicyError(f"route references unknown release domain: {route.release_domain}")
             if route.spec not in registered_specs:
                 raise PolicyError(f"route references unknown spec: {route.spec}")
+        for path in self.release_scans:
+            classification = self.classify(path)
+            if classification.status == "unknown" or "lid" not in classification.release_gates.split(","):
+                raise PolicyError(f"release scan path has no lid gate: {path}")
         for source, requirement in self.critical:
             if requirement not in self.requirements:
                 raise PolicyError(f"critical source {source} references unknown requirement: {requirement}")
@@ -874,6 +903,10 @@ class Policy:
                 {"id": identifier, "gates": gates, "unknown": unknown}
                 for identifier, (gates, unknown) in self.release_domains.items()
             ],
+            "release_scans": [
+                {"path": path, "pattern": pattern}
+                for path, pattern in self.release_scans.items()
+            ],
             "coverage_exclusions": [
                 {
                     "group": group,
@@ -956,6 +989,7 @@ def usage(stream: object = sys.stdout) -> None:
        scripts/quality-policy dependencies
        scripts/quality-policy specs
        scripts/quality-policy classify PATH
+       scripts/quality-policy release-scan PATH
        scripts/quality-policy critical
        scripts/quality-policy requirements
        scripts/quality-policy capabilities
@@ -1022,6 +1056,9 @@ def main(arguments: list[str]) -> int:
     elif command == "classify":
         require_count(values, 1, "classify requires one path")
         print(policy.classify(values[0]).tsv())
+    elif command == "release-scan":
+        require_count(values, 1, "release-scan requires one path")
+        print(policy.release_scans.get(values[0], "-"))
     elif command == "critical":
         require_count(values, 0, "critical takes no arguments")
         for source, requirement in policy.critical:

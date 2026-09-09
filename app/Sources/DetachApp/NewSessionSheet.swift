@@ -4,11 +4,10 @@ import DetachKit
 struct NewSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appFontPointSize) private var fontPointSize
-    @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
-    private var terminalBundleIdentifier =
-        TerminalCatalog.defaultBundleIdentifier
 
-    let detachPath: String
+    let store: SessionStore
+    @Binding var selectedID: String?
+    let projectPickerRoot: URL
 
     @State private var projectDir: URL?
     @State private var provider: Provider = .claude
@@ -16,17 +15,21 @@ struct NewSessionSheet: View {
     @State private var prompt = ""
     @State private var showAdvanced = false
     @FocusState private var promptFocused: Bool
-    @State private var launchFailure: TerminalLaunchFailure?
+    @State private var launchFailure: String?
     @State private var isLaunching = false
 
     init(
-        detachPath: String,
+        store: SessionStore,
+        selectedID: Binding<String?> = .constant(nil),
         initialName: String = "",
         showsAdvanced: Bool = false,
         initialProjectDir: URL? = nil,
-        initialLaunchFailure: TerminalLaunchFailure? = nil
+        initialLaunchFailure: String? = nil,
+        projectPickerRoot: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
-        self.detachPath = detachPath
+        self.store = store
+        self.projectPickerRoot = projectPickerRoot
+        _selectedID = selectedID
         _name = State(initialValue: initialName)
         _showAdvanced = State(initialValue: showsAdvanced)
         _projectDir = State(initialValue: initialProjectDir)
@@ -76,7 +79,7 @@ struct NewSessionSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(L10n.string("New session"))
                 .appFont(.title3, weight: .bold)
-            Text(L10n.string("Start a managed run in your terminal."))
+            Text(L10n.string("Start a managed run in Detach."))
                 .appFont(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -120,10 +123,6 @@ struct NewSessionSheet: View {
             }
             .buttonStyle(.plain)
         }
-    }
-
-    private var selectedTerminalDisplayName: String {
-        TerminalLaunchPresentation.displayName(for: terminalBundleIdentifier)
     }
 
     private var providerAndName: some View {
@@ -183,55 +182,40 @@ struct NewSessionSheet: View {
 // quality-coverage:end ui-e2e-instrumentation
 
             if showAdvanced {
-                VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        fieldLabel(L10n.string("Terminal"))
-                        TerminalPreferencePicker(
-                            bundleIdentifier: $terminalBundleIdentifier,
-                            accessibilityIdentifier: "new-session-terminal")
+                VStack(alignment: .leading, spacing: 5) {
+                    fieldLabel(L10n.string("Initial prompt (optional)"))
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: $prompt)
+                            .appFont(.body)
+                            .scrollContentBackground(.hidden)
+                            .focused($promptFocused)
+                            .padding(.horizontal, 6)
+                            .padding(.top, 6)
+                            .padding(.bottom, 10)
+                            .frame(height: max(84, fontPointSize * 5.4))
+                            .accessibilityIdentifier("new-session-prompt")
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
                             .background {
-                                uiE2EGeometryProbe(identifier: "new-session-terminal")
+                                uiE2EGeometryProbe(identifier: "new-session-prompt")
                             }
 #endif
 // quality-coverage:end ui-e2e-instrumentation
-                    }
-                    VStack(alignment: .leading, spacing: 5) {
-                        fieldLabel(L10n.string("Initial prompt (optional)"))
-                        ZStack(alignment: .topLeading) {
-                            TextEditor(text: $prompt)
+                        if prompt.isEmpty && !promptFocused {
+                            Text(L10n.string("Leave empty and type in the embedded terminal."))
                                 .appFont(.body)
-                                .scrollContentBackground(.hidden)
-                                .focused($promptFocused)
-                                .padding(.horizontal, 6)
-                                .padding(.top, 6)
-                                .padding(.bottom, 10)
-                                .frame(height: max(84, fontPointSize * 5.4))
-                                .accessibilityIdentifier("new-session-prompt")
-// quality-coverage:begin ui-e2e-instrumentation
-#if !DEBUG
-                                .background {
-                                    uiE2EGeometryProbe(identifier: "new-session-prompt")
-                                }
-#endif
-// quality-coverage:end ui-e2e-instrumentation
-                            if prompt.isEmpty && !promptFocused {
-                                Text(L10n.string("Leave empty and type in the terminal."))
-                                    .appFont(.body)
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 8)
-                                    .allowsHitTesting(false)
-                            }
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
                         }
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color(nsColor: .textBackgroundColor)))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(.quaternary, lineWidth: 1)
-                        }
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(nsColor: .textBackgroundColor)))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 1)
                     }
                 }
             }
@@ -241,20 +225,12 @@ struct NewSessionSheet: View {
     @ViewBuilder
     private var launchFailureBanner: some View {
         if let launchFailure {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(launchFailure.message).appFont(.caption).foregroundStyle(.red)
-                if launchFailure.requiresTerminalSelection {
-                    SettingsLink {
-                        Text(L10n.string("Choose another terminal"))
-                    }
-                    .appFont(.caption)
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.red.opacity(0.08)))
+            Text(launchFailure).appFont(.caption).foregroundStyle(.red)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.red.opacity(0.08)))
         }
     }
 
@@ -281,8 +257,7 @@ struct NewSessionSheet: View {
                     Task { await launch() }
                 } label: {
                     NewSessionLaunch.label(
-                        isLaunching: isLaunching,
-                        terminalDisplayName: selectedTerminalDisplayName)
+                        isLaunching: isLaunching)
                 }
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.tint(for: provider))
@@ -293,8 +268,7 @@ struct NewSessionSheet: View {
                     .background {
                         uiE2EGeometryProbe(
                             identifier: "new-session-launch",
-                            semanticLabel: TerminalLaunchPresentation.title(
-                                terminalDisplayName: selectedTerminalDisplayName),
+                            semanticLabel: L10n.string("Start"),
                             semanticRole: .button,
                             semanticEnabled: canLaunch)
                     }
@@ -335,7 +309,8 @@ struct NewSessionSheet: View {
     private func presentProjectChooser() {
         ProjectDirectoryChooser.present(
             from: PanelHostWindow.current(),
-            selectedProject: projectDir
+            selectedProject: projectDir,
+            defaultDirectory: projectPickerRoot
         ) { url in
             guard let url else { return }
             projectDir = url
@@ -343,25 +318,24 @@ struct NewSessionSheet: View {
     }
 
     @MainActor
-    private func launch() async {
-        guard !isLaunching, isNameValid, let projectDir else { return }
+    @discardableResult
+    func launch() async -> SessionStartResult? {
+        guard !isLaunching, isNameValid, let projectDir else { return nil }
         isLaunching = true
         defer { isLaunching = false }
-        let command = NewSessionLaunch.command(
-            detachPath: detachPath,
+        let result = await store.startDetached(
             provider: provider,
-            projectDir: projectDir.path,
+            projectDirectory: projectDir,
             name: normalizedName,
-            prompt: prompt)
+            prompt: NewSessionLaunch.trimmedPrompt(prompt))
         launchFailure = nil
-        let failure = await TerminalLauncher.open(
-            command: command,
-            terminalBundleIdentifier: terminalBundleIdentifier)
-        if let failure {
-            launchFailure = failure
+        if let message = result.message {
+            launchFailure = message
         } else {
+            if let sessionID = result.sessionID { selectedID = sessionID }
             dismiss()
         }
+        return result
     }
 }
 // quality-coverage:end sheet-appkit
@@ -372,32 +346,16 @@ enum NewSessionLaunch {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    static func command(
-        detachPath: String,
-        provider: Provider,
-        projectDir: String,
-        name: String?,
-        prompt: String
-    ) -> String {
-        TerminalCommand.start(
-            detachPath: detachPath,
-            provider: provider,
-            projectDir: projectDir,
-            name: name,
-            prompt: trimmedPrompt(prompt))
-    }
-
     @ViewBuilder
-    static func label(isLaunching: Bool, terminalDisplayName: String) -> some View {
+    static func label(isLaunching: Bool) -> some View {
         HStack(spacing: 7) {
             if isLaunching {
                 ProgressView()
                     .controlSize(.small)
-                Text(L10n.string("Launching…"))
+                Text(L10n.string("Starting…"))
             } else {
                 Image(systemName: "terminal")
-                Text(TerminalLaunchPresentation.title(
-                    terminalDisplayName: terminalDisplayName))
+                Text(L10n.string("Start"))
             }
         }
     }

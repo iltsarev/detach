@@ -45,6 +45,7 @@ final class DetachPowerCommandTests: XCTestCase {
         let events: EventLog
         var acquireError: Error?
         var releaseError: Error?
+        var onRelease: (() -> Void)?
         var acquisitionActivates = true
         private(set) var isActive = false
 
@@ -63,6 +64,7 @@ final class DetachPowerCommandTests: XCTestCase {
 
         func release() throws -> Bool {
             events.append("assertion.release")
+            defer { onRelease?() }
             if let releaseError { throw releaseError }
             let changed = isActive
             isActive = false
@@ -296,7 +298,15 @@ final class DetachPowerCommandTests: XCTestCase {
         thermalWatcher: any PowerThermalStateWatching = FakeThermalWatcher(),
         thermalNow: @escaping @Sendable () -> Date = { Date() },
         thermalCooldown: TimeInterval = PowerThermalSafetyLatch.defaultCooldown,
-        activityWatcher: any PowerRunActivityWatching = FakeActivityWatcher()
+        activityWatcher: any PowerRunActivityWatching = FakeActivityWatcher(),
+        quickStatusReader: @escaping @Sendable () -> PowerHeartbeatSnapshot = {
+            PowerHeartbeatSnapshot(
+                statusURL: URL(fileURLWithPath: "/tmp/watchdog-status.json"),
+                state: "ok",
+                powerState: .protected,
+                checkedAt: Date(),
+                isFresh: true)
+        }
     ) -> (
         DetachPowerCommand,
         EventLog,
@@ -319,7 +329,8 @@ final class DetachPowerCommandTests: XCTestCase {
                 activityWatcher: activityWatcher,
                 thermalWatcher: thermalWatcher,
                 thermalNow: thermalNow,
-                thermalCooldown: thermalCooldown),
+                thermalCooldown: thermalCooldown,
+                quickStatusReader: quickStatusReader),
             events,
             assertion,
             helper,
@@ -358,6 +369,67 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(events.values, ["helper.status"])
         XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testQuickStatusUsesFreshTypedHeartbeatWithoutHelperXPC() throws {
+        let (command, events, _, _, child, _) = fixture()
+
+        let result = try command.execute(arguments: [
+            "status", "--json", "--quick",
+        ])
+
+        guard case let .statusJSON(data) = result else {
+            return XCTFail("expected status JSON")
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object.count, 2)
+        XCTAssertEqual(object["schema"] as? Int, 1)
+        XCTAssertEqual(object["state"] as? String, "protected")
+        XCTAssertTrue(events.values.isEmpty)
+        XCTAssertTrue(child.commands.isEmpty)
+    }
+
+    func testQuickStatusFailsSafeForAnUnhealthyHeartbeat() throws {
+        let (command, events, _, _, _, _) = fixture(quickStatusReader: {
+            PowerHeartbeatSnapshot(
+                statusURL: URL(fileURLWithPath: "/tmp/watchdog-status.json"),
+                state: "status_failed",
+                powerState: .protected,
+                checkedAt: Date(),
+                isFresh: true)
+        })
+
+        let result = try command.execute(arguments: [
+            "status", "--json", "--quick",
+        ])
+
+        guard case let .statusJSON(data) = result else {
+            return XCTFail("expected status JSON")
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["state"] as? String, "unknown")
+        XCTAssertTrue(events.values.isEmpty)
+    }
+
+    func testDefaultQuickStatusReaderAlwaysReturnsTypedJSONWithoutHelperXPC() throws {
+        let events = EventLog()
+        let helper = FakeHelperClient(events: events)
+        let command = DetachPowerCommand(helperClient: helper)
+
+        let result = try command.execute(arguments: [
+            "status", "--json", "--quick",
+        ])
+
+        guard case let .statusJSON(data) = result else {
+            return XCTFail("expected status JSON")
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["schema"] as? Int, 1)
+        XCTAssertNotNil(object["state"] as? String)
+        XCTAssertTrue(events.values.isEmpty)
     }
 
     func testResultAndErrorContractsHaveStableExitCodesAndDescriptions() {
@@ -713,6 +785,34 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertTrue(child.commands.isEmpty)
     }
 
+    func testThermalLatchDuringLeaseAttachStagesInactiveLeaseAndRefusesLaunch() {
+        let thermal = FakeThermalWatcher()
+        let (command, events, assertion, helper, child, _) = fixture(
+            thermalWatcher: thermal)
+        helper.onAcquire = { thermal.emit(.critical) }
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DetachPowerCommandError,
+                .temperatureSafetyActive)
+        }
+
+        XCTAssertTrue(child.commands.isEmpty)
+        XCTAssertFalse(assertion.isActive)
+        XCTAssertEqual(helper.renewed.map(\.1), [false])
+        XCTAssertEqual(events.values, [
+            "assertion.acquire",
+            "helper.acquire",
+            "assertion.release",
+            "helper.renew",
+            "helper.release",
+            "assertion.release",
+        ])
+    }
+
     func testThermalProtectionReturnsOnlyAfterStableCooldown() throws {
         let thermal = FakeThermalWatcher()
         let clock = TestClock()
@@ -745,6 +845,100 @@ final class DetachPowerCommandTests: XCTestCase {
         XCTAssertEqual(
             events.values.filter { $0 == "assertion.acquire" }.count,
             2)
+    }
+
+    func testTransientThermalReleaseFailureClearsAndProtectionReturns() throws {
+        let thermal = FakeThermalWatcher()
+        let clock = TestClock()
+        let (command, events, assertion, helper, child, heartbeat) = fixture(
+            thermalWatcher: thermal,
+            thermalNow: { clock.date },
+            thermalCooldown: 30)
+        heartbeat.heartbeatCount = 3
+        assertion.releaseError = ExpectedFailure()
+        assertion.onRelease = { assertion.releaseError = nil }
+        var heartbeatIndex = 0
+        heartbeat.beforeHeartbeat = {
+            heartbeatIndex += 1
+            switch heartbeatIndex {
+            case 1:
+                thermal.emit(.critical)
+            case 2:
+                clock.date = Date(timeIntervalSince1970: 1_001)
+                thermal.emit(.nominal)
+            default:
+                clock.date = Date(timeIntervalSince1970: 1_032)
+            }
+        }
+        child.result = ChildCommandResult(exitCode: 7)
+
+        let result = try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])
+
+        XCTAssertEqual(result, .child(ChildCommandResult(exitCode: 7)))
+        XCTAssertEqual(helper.renewed.map(\.1), [false, false, false, false, true])
+        XCTAssertEqual(
+            events.values.filter { $0 == "assertion.acquire" }.count,
+            2)
+        XCTAssertEqual(
+            events.values.filter { $0 == "assertion.release" }.count,
+            3)
+        XCTAssertFalse(assertion.isActive)
+    }
+
+    func testStillFailingThermalReleaseStaysSurfaced() {
+        let thermal = FakeThermalWatcher()
+        let (command, events, assertion, helper, child, heartbeat) = fixture(
+            thermalWatcher: thermal)
+        heartbeat.heartbeatCount = 1
+        assertion.releaseError = ExpectedFailure()
+        heartbeat.beforeHeartbeat = { thermal.emit(.critical) }
+
+        XCTAssertThrowsError(try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])) { error in
+            XCTAssertTrue(error is ExpectedFailure)
+        }
+
+        XCTAssertTrue(child.commands.isEmpty)
+        XCTAssertTrue(assertion.isActive)
+        XCTAssertFalse(helper.renewed.isEmpty)
+        XCTAssertTrue(helper.renewed.allSatisfy { $0.1 == false })
+        XCTAssertEqual(
+            events.values.filter { $0 == "assertion.release" }.count,
+            3)
+    }
+
+    func testThermalLatchKeepsProtectionReleasedAcrossHeartbeats() throws {
+        let thermal = FakeThermalWatcher()
+        let clock = TestClock()
+        let (command, events, assertion, helper, child, heartbeat) = fixture(
+            thermalWatcher: thermal,
+            thermalNow: { clock.date },
+            thermalCooldown: 30)
+        heartbeat.heartbeatCount = 3
+        var heartbeatIndex = 0
+        heartbeat.beforeHeartbeat = {
+            heartbeatIndex += 1
+            if heartbeatIndex == 1 { thermal.emit(.critical) }
+            clock.date = clock.date.addingTimeInterval(10)
+        }
+        child.result = ChildCommandResult(exitCode: 3)
+
+        let result = try command.execute(arguments: [
+            "run", "--session", "session", "--run-token", "token",
+            "--", "/fixture/provider",
+        ])
+
+        XCTAssertEqual(result, .child(ChildCommandResult(exitCode: 3)))
+        XCTAssertEqual(helper.renewed.map(\.1), [false, false, false, false])
+        XCTAssertEqual(
+            events.values.filter { $0 == "assertion.acquire" }.count,
+            1)
+        XCTAssertFalse(assertion.isActive)
     }
 
     func testHeartbeatWithAlreadyReleasedAssertionReportsLowBatteryWithoutReacquire() throws {
@@ -1043,7 +1237,7 @@ final class DetachPowerCommandTests: XCTestCase {
 
     func testStatusHelperAndReleaseParserFailuresAreSpecific() {
         let cases: [([String], String)] = [
-            (["status"], "usage: detach-power status --json"),
+            (["status"], "usage: detach-power status --json [--quick]"),
             (["helper", "unknown"],
              "usage: detach-power helper prepare-unregistration|cancel-unregistration"),
             (["release", "--session"],

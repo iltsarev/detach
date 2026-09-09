@@ -48,7 +48,7 @@ public struct FilePowerRunActivityReader: PowerRunActivityReading {
     }
 
     static func openValidated(path: String, flags: Int32) -> Int32? {
-        let descriptor = Darwin.open(path, flags | O_NOFOLLOW)
+        let descriptor = Darwin.open(path, flags | O_NONBLOCK | O_NOFOLLOW)
         guard descriptor >= 0 else { return nil }
 
         var information = stat()
@@ -138,9 +138,21 @@ private struct FilePowerRunActivitySourceReader {
     }
 }
 
-private final class PowerRunActivitySourceWatchBox: @unchecked Sendable {
+final class PowerRunActivitySourceWatchBox: @unchecked Sendable {
     var source: (any DispatchSourceFileSystemObject)?
     var waiting = false
+
+    /// A transcript event applies only to the watch generation that delivered
+    /// it. An event from a cancelled generation can still run after its
+    /// replacement is installed; it must not consume the current watch.
+    func consumeEvent(
+        from eventSource: any DispatchSourceFileSystemObject
+    ) -> Bool {
+        guard waiting, source === eventSource else { return false }
+        waiting = false
+        source = nil
+        return true
+    }
 }
 
 public final class FilePowerRunActivityWatcher:
@@ -197,11 +209,9 @@ public final class FilePowerRunActivityWatcher:
                 eventMask: [.write, .delete, .rename, .revoke],
                 queue: eventQueue)
             sourceEvents.setEventHandler {
-                guard sourceWatch.waiting else { return }
-                sourceWatch.waiting = false
+                guard sourceWatch.consumeEvent(from: sourceEvents) else { return }
                 onStateChange(.working)
-                sourceWatch.source?.cancel()
-                sourceWatch.source = nil
+                sourceEvents.cancel()
             }
             sourceEvents.setCancelHandler {
                 Darwin.close(source.descriptor)

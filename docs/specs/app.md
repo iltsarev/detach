@@ -2,193 +2,137 @@
 
 ## Contract
 
-`app/` is a SwiftPM package containing `DetachKit`, `DetachApp`,
-`DetachWatchdog`, `DetachState`, `DetachPower`, and `DetachPowerHelper`. The app
-bundles and signs arm64-only executables, the immutable CLI
-payload, pinned tmux sources/licenses/provenance, Sparkle, and the
-pinned Sparkle license notice.
+`app/` is a SwiftPM package with app, runtime, state, power, watchdog, and
+helper targets. It bundles signed arm64 executables, the immutable CLI payload,
+pinned dependencies, provenance, and license notices.
 
-`ANSIParser` is the single terminal-preview decoder. It strips non-SGR control
-sequences and preserves terminal foreground/background colors, bold, dim,
-italic, underline, strikethrough, and reverse video. Reverse video swaps
-against `ANSIParser.terminalBackground`, which is also the `LogTextView`
-background; do not duplicate that canvas color. Font-size scaling may replace
-only the font attribute and must preserve every ANSI-derived attribute.
+`ANSIParser` strips non-SGR sequences and preserves colors, bold, dim, italic,
+underline, strikethrough, and reverse video. Reverse swaps colors against
+`ANSIParser.terminalBackground`, also the `LogTextView` background. Font
+scaling changes only the font.
 
-Onboarding uses the pure reducer in `SetupGuidance.step(for:)`; a setup failure
-outranks provider discovery. A bare
-`SMAppService.status == .enabled` read never completes the permissions step.
-The live poller reads status without side effects and reconciles once when it
-becomes enabled. Only confirmed readiness (a
-finished helper journal and an open root gate) advances the step. Registration
-can stay in `requiresApproval`; do not treat it as enabled before macOS does.
-The success card waits for a fresh watchdog heartbeat. Its dashboard action
-stays disabled until then. After a long wait, it offers a monitor retry, not a
-bypass. The store records completion only after that action, exactly once.
-If a doctor refresh fails or detects another runtime identity, the app
-withdraws the earlier helper-readiness confirmation.
-
-After onboarding completes, `.idle`, `.syncing`, `.updateDeferred`, and
-`.ready` present `.mainApp`. Bootstrap, refresh, and an update held by active
-leases keep the dashboard mounted. Only a completed `.actionRequired` or
-`.failed` result can show setup again. A missing provider also shows the
-dashboard. Provider installation uses the official command,
-launched visibly in the user's own terminal through the private `.command`
-mechanism; never claim a guided install failed (there is no outcome channel),
-only that the CLI is not detected yet. When helper/plist bytes change after an
-app update, unregister, await completion, then use the bounded retry for the
-transient SMAppService Code=1 race. Do not replace a helper with active leases:
-defer the update. Report a normal reconciliation outcome and retry on a later
-app activation.
-
-Each readiness build stores one `detach-app-build:<UUID>` in its executable and
-signed marker. UI smoke uses a stripped private copy at
-`/private/tmp/detach-ui-e2e.*`. It excludes production CLI, watchdog, helper,
-power, state, and tmux. Injections stay below its root. An escape,
-unsafe identity, build mismatch, or payload fails closed.
-
-Smoke restores focus and the pointer. It sends ordered AppKit down/up
-pairs to measured SwiftUI controls; semantic locators have no actions. Row
-clicks select sessions even after preview text takes focus.
-Each launch and stage stays within its deadline.
-Journeys cover main surfaces, Settings, onboarding, and focus. It disconnects
-Stop before proving that the real control invokes it.
-Only visible controls complete onboarding.
-
-Coverage builds the normal bundle, instrumented binary, and Swift tests in
-isolated paths. UI waits for the bundle. Metrics wait for UI and Swift tests.
-Only the copy gets it. The binary and profiles stay out of public artifacts.
-If an overlay scroller ignores a page event, the driver reveals the measured
-semantic control, then posts the action to it.
-
-The per-user watchdog has an additional launch-readiness rule. macOS can report
-an approved agent as enabled while no launchd job was loaded after the approval
-transition. During first onboarding, or an explicit Repair, an enabled watchdog
-without a fresh heartbeat must be replaced through the same durable
-unregister/barrier/register transaction. Ordinary activation refreshes must not
-force replacement merely because a heartbeat is temporarily stale.
-
-The menu bar item is display-only. Its Detach prompt mark uses a filled dot for
-protected, a dim mark for sleep allowed, an exclamation badge for attention,
-and an outline for unknown. With active sessions, green means working and
-orange means waiting. Waiting outranks working. A badge suppresses both tints
-so a power warning stays visible. Monochrome states remain template. Tinted
-states use label or system colors resolved at composite time. VoiceOver names
-the session state. The first menu line is `state · reason · freshness`.
+The menu bar is display-only. Its prompt mark is filled for protected, dim for
+sleep allowed, badged for attention, and outlined for unknown. Starting,
+running, and recovering sessions are active; hung sessions are not. Green means
+working and orange means waiting. Claude `AskUserQuestion` records with a
+`tool_use` stop reason enter waiting; their matching user tool-result records
+return to working. Waiting outranks working. A badge hides both tints so power
+warnings stay visible. Monochrome states remain template; tints resolve from
+label or system colors. VoiceOver names the session state. The first menu line
+is `state · reason · freshness`.
 Protected counts working sessions. Allowed names all-waiting or an unprotected
-working session and never claims no sessions. The shared `checked_at` heartbeat
-reader and session poller supply the glyph and words. UI never calls `pmset` or
-root XPC. Freshness uses the document timestamp, not file mtime. One
-`detach list --json` poller serves the window, notifications, and menu. It runs
-faster with a window and slower without one. It never stops. Closing the last
-window keeps the app and icon.
-⌘Q and Quit end the app while sessions, checkpoints, and protection continue.
-Settings → General owns both menu bar toggles. Settings → System keeps the only
-Mac Power status and approval controls. The Settings window follows the hosting
-screen; System scrolls. Temperature safety has its own warning shape and the
-text **Mac can sleep: temperature**.
+working session and never claims no sessions. Typed heartbeat and
+`detach watch --json` sources supply them. A schema-1 hint, activation, or
+`resync` starts a serialized `list --json`. Hints during a read share one ordered
+trailing read. Stop discards queued reads and prevents old results from updating
+the store. A new explicit read remains serialized with an active old read.
+No list timer runs. Dead or unready watchers and failed lists retry
+with 2–60 s backoff. Cold start waits 1 s for `ready`; a late `ready` repeats the
+snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
+checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
+After a transcript file is replaced, registration of its new file observer
+emits a refresh hint. Writes before registration must not leave the UI stale.
 
-The dashboard shows identity, status, and Mac Power separately. Identity is a
-thin tmux-colored capsule. Status is a filled circle. Power has a neutral
-surface and semantic color. The UUID chip is one copy control. Any click copies
-the full UUID and shows **Copied**.
+An active session operation can report `operation_in_progress` while it sets
+up its runtime identity. This is a starting state with no mutation actions.
+It is not a Problems row. A failed or completed operation restores the normal
+typed health rules. A failed coherent List read keeps the previous rows.
+
+The dashboard separates identity, status, and Mac Power. Identity is a thin
+tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
+and semantic color. Clicking the UUID chip copies the full UUID and shows
+**Copied**.
 
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
 
-Every app CLI invocation runs in a fresh process group that drains stdout and
-stderr. Its deadline sends TERM then KILL to the group. A pipe-only descendant
-cannot hold the caller past the drain deadline. GUI PATH orders NVM and mise
-Node directories by semantic version.
+A first-run setup card stays mounted during retry. App Start uses `--detach`,
+keeps sheet errors, and selects the new session. Start, Resume, and Recover open
+`detach <provider> attach --terminal-features sync <session>` in one visible
+PTY. Live-to-live selection keeps it and asks the public CLI to switch its exact
+tmux client. Closing the view ends the client.
+The PTY starts after the terminal has a window and a nonzero size. Selection
+changes during cold attach wait for the first tmux frame before client lookup.
+The latest selected session wins. A removed host cannot start a delayed PTY.
+Resume uses the selected project, provider, managed name, and provider UUID.
+If the project is missing, the public UUID resolver finds it. Resume and
+Recover can open the terminal from a fresh attachable snapshot of the new run
+before the command completes. The lifecycle ID must change, or a legacy row
+must have a later creation time. An old or unidentified run waits for command
+completion. An exited early client does not reconnect during preparation.
+The preparation command still reports readiness failures.
+Resume and Recover pass the visible terminal size before the provider starts.
+The app measures this size with the terminal font and SwiftTerm layout. This
+prevents initial output from wrapping at the default detached window width.
+If an older CLI rejects the size prefix before startup, the app retries without
+the hint. No startup failure or timeout permits this retry.
 
-Helper replacement is a durable fail-closed transaction. One versioned JSON
-journal records `preparing`, `unregisterSubmitted`, `removed`, or `registering`,
-the install/remove goal, target digest, boot UUID, and lifetime-barrier contract.
-Each transition uses atomic rename and file/directory fsync before its side
-effect. A per-user `flock` protects the journal. In addition, the root helper
-creates a stable root-owned `0644` inode
-under `/var/run`; every app user opens it read-only and holds one exclusive
-kernel `flock` across the complete asynchronous SMAppService transaction. This
-is the machine-wide single-writer barrier across Fast User Switching, and the
-kernel releases it if the app crashes. Only the current non-root console user's
-app may perform register or unregister mutations, checked again immediately
-before each mutation. Root persists `unregistration_pending`, blocks
-acquire/renew without a wall-clock expiry, and restores and reads back only the
-setting Detach owns.
+Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
+steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide
+native copy, paste, and find. `Ctrl-C` and `Ctrl-V` reach providers as
+conventional control bytes. An empty native selection cannot clear the
+clipboard; tmux copies its mouse selection on release. Explicit and detected
+links show an underline on hover and open on a plain click. A selection drag
+does not open a link. A Finder drop sends shell-safe paths without
+reading files. Live views move Mac Power to metadata. An exited client offers
+Reconnect.
 
-The helper takes an exclusive, root-owned lifetime `flock` before its listener
-can answer prepare and holds it until process exit. An enabled job with no
-lifetime barrier this boot is dead; unregister may proceed. The app writes
-`unregisterSubmitted` only after observing that lock. A fresh successful async
-SMAppService callback is the normal process-reaped barrier. If a crash loses the
-callback, exact `notRegistered` status plus acquisition of the released lifetime
-lock (or a changed boot UUID) is required before registration; generic
-`unavailable` is not sufficient. An unregister error keeps the journal and root
-gate closed for retry rather than reopening it while a callback may still be
-pending. If a different user acquires the system lock after the original app
-crashed and has no local journal, the existing root-created lock/lifetime files
-prove this is not a pristine install: it bootstraps at `unregisterSubmitted`,
-replays asynchronous unregister, and cannot register until that fresh callback
-or the exact absent-job plus released-lifetime recovery barrier completes.
+The embedded attach client always uses a UTF-8 character locale. A conflicting
+inherited locale cannot change how tmux encodes its output. Native paste sends
+Unicode text and line breaks with the provider's bracketed paste framing.
 
-Before registering a replacement the app fsyncs `registering` with the target
-digest. After macOS reports the new helper enabled, a successful cancel XPC
-reply proves launch readiness and reopens the gate; only then is the definition
-recorded and the journal cleared. Approval and retry failures remain pending for
-the next launch. An ordinary helper SIGTERM/SIGINT uses only the process-local
-termination gate and must not create this persistent update state.
+Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
+rows grant no action, ownership, PID, cleanup, or power claim until a fresh
+list arrives. A failed refresh keeps them visible but not authoritative. Only
+presentation is stored.
 
-Settings → System owns one **Mac Power** block. It shows the sleep state,
-component health, the 10% battery rule, and the correct action. Helper Ready
-requires a doctor-confirmed live XPC connection. Registration alone is Needs
-attention. Power state comes from a healthy watchdog heartbeat no older than
-three minutes. A missing, stale, or malformed snapshot means `unknown`. Refresh
-the installation context when Settings appears or the app becomes active.
-While this tab is visible, publish a heartbeat snapshot every ten seconds so
-the state does not remain stale when SwiftUI does not re-render.
+Timer-free caches preload 12 non-live 500-line logs (three at once) and nine
+live screens (two at once), with no PTY. Empty and failed reads wait for
+a revision. Bursts keep active reads. The lifecycle ID blocks cache
+inheritance after name reuse; older rows use creation and provider identity.
+Detached live logs reread every 2 s. Cold attach uses one passive SwiftTerm
+overlay; cached bytes never enter the live buffer. Live switching keeps its PTY.
+The visible log view owns its read task. A terminal handoff cannot clear the
+reader of a returned log view. The returned view shows and refreshes its log.
+A failed read shows the error. The next successful read replaces it.
+tmux holds the frame until a synchronized redraw.
+Metadata stays in one scrolling row. Selection keeps header, terminal, and
+action geometry. The model and context gauge stay in the metadata row. They
+cannot reduce the title to zero width in a narrow window or with large text.
+A cold passive screen leaves within one second.
+New session accepts an optional printable UTF-8 name up to 100 bytes and
+rejects invalid input. Launch runs in Detach. Advanced holds the prompt
+below a fixed top. Titles use `display_name`, then the project or internal name.
+Command-N opens New session. Its chooser starts at the default project or the
+selection's parent. Command-T starts the chosen provider in a private 0700
+`detach-chat-<UUID>` below its folder (`/tmp` default). An event
+selects an unambiguous `starting` session before readiness, without polling.
+Invalid folders block launch.
+Command-1 through Command-9 open main and select numbered Working or Answer
+ready sessions. Numbers appear in rows and stay stable across both sections.
+When a session leaves them, the earliest waiting session gets its number;
+extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
+Command-comma, and terminal Command-F.
+Notifications are opt-in and deduplicated. Stop intent is not failure;
+`interrupted` and `hung` get one 350 ms recheck. Snapshot bursts do not restart
+that deadline. A new transition waits for the pending recheck, then gets its
+own deadline. Stable state cancels an obsolete recheck. Each observation
+lifetime confirms its own transitions. Status and session lifecycle changes
+require a new confirmation, even when the session name stays the same.
+Ordered detection never waits for delivery.
 
-The watchdog heartbeat carries both the effective power state and typed raw
-thermal state/latch. When notifications are enabled, the app emits one
-localized temperature-safety warning on each inactive-to-active latch
-transition, including when borrowed external protection makes the effective
-power state unavailable; repeated polls never duplicate the warning.
+SwiftTerm 1.19.0 is pinned. The exact SwiftTerm shader bundle is shipped and
+verified.
 
-The watchdog is a signed per-user LaunchAgent with its own embedded
-`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` at runtime, calls
-`detach power status --json` through the same process-group runner with a
-five-second deadline, and writes private health state. The privileged
-daemon is a distinct demand-launched LaunchDaemon. Neither plist may contain a
-user-specific path. Native power protection requires no Apple Events or
-Automation entitlement.
+Each readiness build puts one `detach-app-build:<UUID>` in its executable and
+signed marker. UI smoke uses a stripped private copy below
+`/private/tmp/detach-ui-e2e.*` without production payloads. An escaped path,
+unsafe identity, build mismatch, or payload fails closed.
 
-Distribution bootstrap runs only from `/Applications`, never a DMG or App
-Translocation path. Terminal actions use `NSWorkspace`, not Apple Events. They
-open a private self-deleting `.command` file and reuse a running terminal app.
-If none runs, the launch environment sets a private `.zshenv` as outer
-`ZDOTDIR`. It blocks startup prompts until payload removal, then restores the
-original `ZDOTDIR` for that process. Open, Resume, and Recover use the selected
-terminal, with Terminal as fallback.
-The new-session sheet accepts an optional UTF-8 name up to 100 bytes. It rejects
-control characters, blocks launch, and passes one `--name`. The launch button
-names the selected terminal. Advanced holds terminal choice and the prompt and
-grows down, top fixed. The app uses `display_name` as the title, with
-the project/internal name fallback for old records.
-Notifications are opt-in. One poller deduplicates baseline and transitions.
-
-Sparkle 2 is pinned in `Package.resolved`, embedded with its symlink layout
-intact, and signed inside-out before the outer app. Ad-hoc development builds
-alone use `com.apple.security.cs.disable-library-validation`; it must never
-appear in a Developer ID build. `UpdaterService` starts only for a packaged app
-in `/Applications` with a valid HTTPS feed URL and 32-byte Ed25519 public key.
-A generated or published appcast must contain exactly one arm64 hardware
-requirement so Intel clients are never offered the update.
-A Sparkle update replaces only the app; bootstrap atomically activates its new
-immutable CLI payload without rewriting live-session binaries. Sparkle errors
-for a disk image or App Translocation tell the user to move Detach to
-`/Applications`. Temporary-directory and download errors tell the user to
-check the network and free disk space, then try again. Archive, signature,
-validation, and installation errors provide the manual DMG path and the
-Settings > System Repair path. These errors state that the active CLI did not
-change. If replacement completes but CLI or helper sync fails, the prior CLI
-stays active and Repair remains available. Background sync keeps
-the dashboard. A later activation retries it.
+Smoke restores focus and the pointer, then sends ordered AppKit events to
+controls. Each mouse click uses one event number for both events.
+Slider changes use the native control's Accessibility increment
+action. It covers all main surfaces, focus, session actions, and
+onboarding. Stop disconnects first. Stages have deadlines. Coverage isolates
+the normal bundle, instrumented copy, tests, binary, and profiles. The driver
+detects clipped controls before an action.

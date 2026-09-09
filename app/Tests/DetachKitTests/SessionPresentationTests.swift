@@ -110,7 +110,7 @@ final class SessionPresentationTests: XCTestCase {
             .runTokenMissing, .runTokenMismatch, .workerPIDMissing, .workerProcessLost,
             .workerPIDMismatch, .providerPIDMissing, .providerProcessLost,
             .providerPIDNotDescendant, .runtimeProcessWithoutTmux,
-            .recoverableCheckpoint, .noRecoveryCheckpoint,
+            .runtimeQuiescenceUnproven, .recoverableCheckpoint, .noRecoveryCheckpoint,
         ]
 
         for reason in reasons {
@@ -123,6 +123,15 @@ final class SessionPresentationTests: XCTestCase {
             }
         }
         XCTAssertNil(make(.running).healthReasonLabel)
+    }
+
+    func testUnprovenRuntimeQuiescenceHasAnAccurateDiagnosticLabel() {
+        var session = make(.hung)
+        session.healthReason = .runtimeQuiescenceUnproven
+
+        XCTAssertEqual(
+            session.healthReasonLabel,
+            L10n.string("Detach could not confirm that the replacement runtime stopped."))
     }
 
     func testContextUsageHandlesMissingInvalidAndSaturatedWindows() {

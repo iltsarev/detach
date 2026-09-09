@@ -11,12 +11,13 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Optional
 
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / "app/build/quality-baseline"
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+COVERAGE_PROFILES = ("swift", "combined")
 
 
 class BaselineError(Exception):
@@ -87,8 +88,43 @@ def evidence_artifact(value: dict[str, Any], run_id: int) -> str:
     return matches[0]
 
 
+def metrics_profile(path: Path) -> str:
+    if not path.is_file() or path.is_symlink():
+        raise BaselineError("quality metrics are missing or unsafe")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise BaselineError(f"quality metrics are malformed: {error}") from error
+    if not isinstance(value, dict):
+        raise BaselineError("quality metrics are malformed")
+    if value.get("schema") == 1:
+        return "combined"
+    profile = value.get("coverage_profile")
+    if value.get("schema") != 2 or profile not in COVERAGE_PROFILES:
+        raise BaselineError("quality metrics coverage profile is invalid")
+    return profile
+
+
+def matching_metrics(run_dir: Path, coverage_profile: str) -> Optional[Path]:
+    matches = []
+    for name in ("quality-metrics.json", "quality-metrics-swift.json"):
+        candidate = run_dir / name
+        if candidate.exists() and metrics_profile(candidate) == coverage_profile:
+            matches.append(candidate)
+    if len(matches) > 1:
+        raise BaselineError(
+            f"quality evidence contains duplicate {coverage_profile} metrics"
+        )
+    return matches[0] if matches else None
+
+
 def restore(
-    repository: str, output_root: Path, executable: str, *, test_mode: bool
+    repository: str,
+    output_root: Path,
+    executable: str,
+    coverage_profile: str,
+    *,
+    test_mode: bool,
 ) -> Path:
     if not REPOSITORY.fullmatch(repository):
         raise BaselineError("repository must identify owner/repository")
@@ -140,11 +176,12 @@ def restore(
         if len(manifests) != 1:
             raise BaselineError("downloaded evidence has no unique quality manifest")
         run_dir = manifests[0].parent
-        metrics = run_dir / "quality-metrics.json"
-        if metrics.is_file() and not metrics.is_symlink():
+        if matching_metrics(run_dir, coverage_profile) is not None:
             print(destination)
             return destination
-    raise BaselineError("no successful main quality run has quality metrics")
+    raise BaselineError(
+        f"no successful main quality run has {coverage_profile} quality metrics"
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -157,6 +194,9 @@ def parser() -> argparse.ArgumentParser:
         "--output-root",
         type=Path,
         default=Path(os.environ.get("DETACH_QUALITY_BASELINE_OUTPUT", DEFAULT_OUTPUT)),
+    )
+    result.add_argument(
+        "--profile", choices=COVERAGE_PROFILES, default="combined"
     )
     return result
 
@@ -171,6 +211,7 @@ def main() -> int:
         arguments.repository,
         arguments.output_root,
         executable,
+        arguments.profile,
         test_mode=test_mode,
     )
     return 0

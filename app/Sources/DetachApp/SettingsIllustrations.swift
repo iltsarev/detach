@@ -45,16 +45,30 @@ enum SettingsTabIcon {
     }
 }
 
-/// Dot-plus-word component status, teal when healthy, orange otherwise.
+/// Dot-plus-word component status for a completed or in-flight check.
 struct StatusIndicator: View {
-    let healthy: Bool
+    let status: DiagnosticCheck.Status
 
-    private var color: Color { healthy ? Brand.teal : .orange }
+    private var color: Color {
+        switch status {
+        case .ok: Brand.teal
+        case .unknown: .secondary
+        case .warning, .error: .orange
+        }
+    }
+
+    private var label: String {
+        switch status {
+        case .ok: L10n.string("Ready")
+        case .unknown: L10n.string("Checking…")
+        case .warning, .error: L10n.string("Needs attention")
+        }
+    }
 
     var body: some View {
         HStack(spacing: 5) {
             Circle().fill(color).frame(width: 7, height: 7)
-            Text(healthy ? L10n.string("Ready") : L10n.string("Needs attention"))
+            Text(label)
                 .appFont(.caption, weight: .semibold)
                 .foregroundStyle(color)
         }

@@ -136,6 +136,10 @@ private struct UIE2EConfigurationError: LocalizedError {
 
 enum AppSettings {
     static let defaultDetachPath = ("~/.local/bin/detach" as NSString).expandingTildeInPath
+    static let defaultProjectsDirectoryPath =
+        FileManager.default.homeDirectoryForCurrentUser.path
+    static let defaultQuickChatDirectoryPath = "/tmp"
+    static let defaultQuickChatProvider = Provider.claude.rawValue
     static let uiE2E = UIE2EConfiguration.fromEnvironment()
     static let initialDetachPath = uiE2E?.cli.path ?? defaultDetachPath
     static let defaults = makeDefaults(
@@ -153,7 +157,6 @@ enum AppSettings {
             return .standard
         }
         defaults.set(uiE2E.cli.path, forKey: "detachPath")
-        defaults.set(0.5, forKey: "pollInterval")
         defaults.set(false, forKey: notificationsEnabledKey)
         defaults.set(false, forKey: tipsEnabledKey)
         defaults.set(false, forKey: menuBarIconEnabledKey)
@@ -165,6 +168,9 @@ enum AppSettings {
     static let lastShownTipIdentifierKey = "lastShownTipIdentifier"
     static let menuBarIconEnabledKey = "menuBarIconEnabled"
     static let menuBarShowsSessionCountKey = "menuBarShowsSessionCount"
+    static let defaultProjectsDirectoryKey = "defaultProjectsDirectory"
+    static let quickChatDirectoryKey = "quickChatDirectory"
+    static let quickChatProviderKey = "quickChatProvider"
 }
 
 /// App-level navigation requests from surfaces that live outside the main
@@ -172,6 +178,62 @@ enum AppSettings {
 final class MainNavigation: ObservableObject {
     @Published var requestedSessionID: String?
     @Published var requestsNewSession = false
+    @Published var quickChatRequestID: UUID?
+
+    func requestNewSession() {
+        requestsNewSession = true
+    }
+
+    func requestQuickChat() {
+        quickChatRequestID = UUID()
+    }
+
+    func requestSession(_ sessionID: String) {
+        requestedSessionID = sessionID
+    }
+}
+
+struct SessionCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject var navigation: MainNavigation
+    let store: SessionStore
+    let shortcuts: SessionShortcutRegistry
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button(L10n.string("New session")) {
+                navigation.requestNewSession()
+                showMainWindow()
+            }
+            .keyboardShortcut("n", modifiers: .command)
+
+            Button(L10n.string("Quick chat")) {
+                navigation.requestQuickChat()
+                showMainWindow()
+            }
+            .keyboardShortcut("t", modifiers: .command)
+        }
+
+        CommandMenu(L10n.string("Sessions")) {
+            ForEach(Array(SessionShortcutRegistry.slots), id: \.self) { slot in
+                Button(L10n.format("Session %d", slot)) {
+                    shortcuts.reconcile(store.sessions)
+                    guard let sessionID = shortcuts.sessionID(
+                        for: slot) else { return }
+                    navigation.requestSession(sessionID)
+                    showMainWindow()
+                }
+                .keyboardShortcut(
+                    KeyEquivalent(Character(String(slot))),
+                    modifiers: .command)
+            }
+        }
+    }
+
+    private func showMainWindow() {
+        openWindow(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
+    }
 }
 
 /// Closing the last window must not terminate the app while the menu bar item
@@ -190,7 +252,6 @@ struct DetachApp: App {
     private var appDelegate
     @AppStorage("detachPath", store: AppSettings.defaults)
     private var detachPath = AppSettings.initialDetachPath
-    @AppStorage("pollInterval", store: AppSettings.defaults) private var pollInterval = 2.0
     @AppStorage(AppSettings.menuBarIconEnabledKey, store: AppSettings.defaults)
     private var menuBarIconEnabled = true
     @AppStorage(AppSettings.menuBarShowsSessionCountKey, store: AppSettings.defaults)
@@ -201,7 +262,14 @@ struct DetachApp: App {
         defaults: AppSettings.defaults)
     @State private var sessionStore = SessionStore(
         cli: ProcessDetachCLI(executable: URL(
-            fileURLWithPath: AppSettings.initialDetachPath)))
+            fileURLWithPath: AppSettings.initialDetachPath)),
+        snapshotCache: UserDefaultsSessionSnapshotCache(
+            defaults: AppSettings.defaults))
+    @State private var sessionLogSnapshots = SessionLogSnapshotCache(
+        cli: ProcessDetachCLI(executable: URL(
+            fileURLWithPath: AppSettings.initialDetachPath)),
+        configurationID: AppSettings.initialDetachPath)
+    @State private var terminalScreens = SessionTerminalScreenCache()
     @State private var storageStore = StorageStore(
         cli: ProcessDetachCLI(executable: URL(
             fileURLWithPath: AppSettings.initialDetachPath)))
@@ -210,19 +278,27 @@ struct DetachApp: App {
     @StateObject private var tips = TipSession(defaults: AppSettings.defaults)
     @StateObject private var settingsNavigation = SettingsNavigation()
     @StateObject private var mainNavigation = MainNavigation()
+    @StateObject private var sessionShortcuts = SessionShortcutRegistry()
 
     var body: some Scene {
         Window("Detach", id: "main") {
             let activeDetachPath = installation.hasDistributionPayload
                 ? AppSettings.defaultDetachPath : detachPath
-            RootView(detachPath: activeDetachPath, pollInterval: pollInterval,
+            RootView(detachPath: activeDetachPath,
                      installation: installation, store: sessionStore,
+                     sessionLogSnapshots: sessionLogSnapshots,
+                     terminalScreens: terminalScreens,
                      navigation: mainNavigation,
+                     shortcuts: sessionShortcuts,
                      notifications: notifications,
                      tips: tips, settingsNavigation: settingsNavigation)
                 .id(activeDetachPath) // reattach tasks when the CLI path changes
         }
         .commands {
+            SessionCommands(
+                navigation: mainNavigation,
+                store: sessionStore,
+                shortcuts: sessionShortcuts)
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesCommand(updater: updater)
             }

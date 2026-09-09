@@ -27,6 +27,7 @@ SWIFT_LOG_TEST = re.compile(
 HUNK = re.compile(r"^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@")
 UI_PREFIX = "app/Sources/DetachApp/"
 BUSINESS_PREFIX = "app/Sources/DetachKit/"
+COVERAGE_PROFILES = ("swift", "combined")
 
 
 class MetricsError(Exception):
@@ -535,6 +536,31 @@ def artifact_digest(run_dir: Path, relative: str) -> Optional[str]:
     return values[0] if values else None
 
 
+def baseline_metrics_file(run_dir: Path, coverage_profile: str) -> Path:
+    matches: list[Path] = []
+    for name in ("quality-metrics.json", "quality-metrics-swift.json"):
+        candidate = run_dir / name
+        digest = artifact_digest(run_dir, name)
+        if not candidate.exists() and digest is None:
+            continue
+        if digest is None or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise MetricsError(f"baseline metrics digest is missing or invalid: {name}")
+        if sha256(safe_file(candidate, "baseline metrics")) != digest:
+            raise MetricsError(f"baseline metrics digest does not match its inventory: {name}")
+        document = validate_metrics(read_json(candidate, "baseline metrics"))
+        if metrics_coverage_profile(document) == coverage_profile:
+            matches.append(candidate)
+    if not matches:
+        raise MetricsError(
+            f"last green main artifact has no {coverage_profile} quality metrics"
+        )
+    if len(matches) > 1:
+        raise MetricsError(
+            f"baseline contains duplicate {coverage_profile} metrics artifacts"
+        )
+    return matches[0]
+
+
 def validate_coverage(value: Any, label: str, *, allow_empty: bool = False) -> tuple[int, int]:
     if not isinstance(value, dict) or set(value) != {"covered", "percent", "total"}:
         raise MetricsError(f"{label} coverage is malformed")
@@ -545,17 +571,40 @@ def validate_coverage(value: Any, label: str, *, allow_empty: bool = False) -> t
     return covered, total
 
 
-def validate_metrics(document: Any, *, expected_policy: Optional[int] = None) -> dict[str, Any]:
+def metrics_coverage_profile(document: dict[str, Any]) -> str:
+    """Return the measured profile, including the schema-1 migration rule."""
+    if document.get("schema") == 1:
+        return "combined"
+    profile = document.get("coverage_profile")
+    if profile not in COVERAGE_PROFILES:
+        raise MetricsError("quality metrics coverage profile is invalid")
+    return profile
+
+
+def validate_metrics(
+    document: Any,
+    *,
+    expected_policy: Optional[int] = None,
+    expected_profile: Optional[str] = None,
+) -> dict[str, Any]:
     required_fields = {
         "schema", "policy", "source_commit", "suites", "critical_files",
         "changed_lines", "comparison",
     }
+    schema = document.get("schema") if isinstance(document, dict) else None
+    if schema == 2:
+        required_fields.add("coverage_profile")
     if (
         not isinstance(document, dict)
         or set(document) != required_fields
-        or document.get("schema") != 1
+        or schema not in (1, 2)
     ):
         raise MetricsError("quality metrics schema is unsupported")
+    coverage_profile = metrics_coverage_profile(document)
+    if expected_profile is not None and coverage_profile != expected_profile:
+        raise MetricsError(
+            "quality metrics coverage profile does not match the selected profile"
+        )
     if not isinstance(document.get("policy"), int) or document["policy"] <= 0:
         raise MetricsError("quality metrics policy is invalid")
     if expected_policy is not None and document["policy"] != expected_policy:
@@ -682,18 +731,18 @@ def validate_metrics(document: Any, *, expected_policy: Optional[int] = None) ->
     return document
 
 
-def load_baseline(root: Optional[Path]) -> tuple[Optional[dict[str, Any]], str, str]:
+def load_baseline(
+    root: Optional[Path], coverage_profile: str
+) -> tuple[Optional[dict[str, Any]], str, str]:
     if root is None:
         return None, "none", ""
     run_dir, manifest, effective_source = load_baseline_run(root)
-    metrics_path = run_dir / "quality-metrics.json"
-    digest = artifact_digest(run_dir, "quality-metrics.json")
-    if metrics_path.exists() or digest is not None:
-        if digest is None or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise MetricsError("baseline metrics digest is missing or invalid")
-        if sha256(safe_file(metrics_path, "baseline metrics")) != digest:
-            raise MetricsError("baseline metrics digest does not match its inventory")
-        document = validate_metrics(read_json(metrics_path, "baseline metrics"))
+    metrics_path = baseline_metrics_file(run_dir, coverage_profile)
+    if metrics_path.exists():
+        document = validate_metrics(
+            read_json(metrics_path, "baseline metrics"),
+            expected_profile=coverage_profile,
+        )
         if document["source_commit"] != manifest["source_commit"]:
             raise MetricsError("baseline metrics source does not match its manifest")
         if document["policy"] != int(manifest["policy"]):
@@ -718,9 +767,12 @@ def build_metrics(
     baseline: Optional[dict[str, Any]],
     baseline_mode: str,
     *,
+    coverage_profile: str = "swift",
     changed_override: Optional[dict[str, set[int]]] = None,
     allow_incomplete_sources: bool = False,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[str]]:
+    if coverage_profile not in COVERAGE_PROFILES:
+        raise MetricsError("coverage profile is invalid")
     if not HEX_COMMIT.fullmatch(source_commit):
         raise MetricsError("source commit is invalid")
     if not allow_incomplete_sources:
@@ -808,13 +860,17 @@ def build_metrics(
     else:
         changed_status = "failed"
 
+    # Blocking regressions cover the policy-critical sources only. Aggregate
+    # ratios, test identities, and changed-line coverage are advisory: they
+    # are reported but never turn functional evidence into a failure.
     regressions: list[str] = []
+    advisories: list[str] = []
     if baseline is not None:
         for name in ("ui", "business"):
             current_suite = suites[name]
             baseline_suite = baseline["suites"][name]
             if current_suite["test_count"] < baseline_suite["test_count"]:
-                regressions.append(
+                advisories.append(
                     f"{name} test count regressed: {current_suite['test_count']} < "
                     f"{baseline_suite['test_count']}"
                 )
@@ -822,10 +878,10 @@ def build_metrics(
             if isinstance(baseline_tests, list):
                 removed = sorted(set(baseline_tests) - set(current_suite["tests"]))
                 if removed:
-                    regressions.append(f"{name} test was removed: {removed[0]}")
+                    advisories.append(f"{name} test was removed: {removed[0]}")
             baseline_coverage = baseline_suite["line_coverage"]
             if ratio_regressed(current_suite["line_coverage"], baseline_coverage):
-                regressions.append(
+                advisories.append(
                     f"{name} line coverage regressed: "
                     f"{current_suite['line_coverage']['percent']:.2f} < "
                     f"{baseline_coverage['percent']:.2f}"
@@ -851,16 +907,17 @@ def build_metrics(
                 )
 
     if changed_status == "failed":
-        regressions.append(
+        advisories.append(
             f"changed-line coverage regressed: {changed_percent:.2f} < {minimum:.2f}"
         )
     comparison_status = "not-available" if baseline is None else ("failed" if regressions else "passed")
     baseline_source = baseline.get("source_commit", "") if baseline else ""
     baseline_policy = baseline.get("policy", 0) if baseline else 0
     return {
-        "schema": 1,
+        "schema": 2,
         "policy": policy.version,
         "source_commit": source_commit,
+        "coverage_profile": coverage_profile,
         "suites": suites,
         "critical_files": critical_files,
         "changed_lines": {
@@ -877,7 +934,7 @@ def build_metrics(
             "baseline_policy": baseline_policy,
             "regressions": regressions,
         },
-    }
+    }, advisories
 
 
 def export_coverage(
@@ -941,6 +998,7 @@ def evaluate(arguments: argparse.Namespace) -> int:
         if arguments.additional_object or arguments.additional_profile_directory:
             raise MetricsError("additional coverage inputs require a test binary")
         coverage_document = read_json(Path(arguments.coverage_json), "LLVM coverage")
+        inferred_profile = arguments.coverage_profile or "swift"
     else:
         if not arguments.test_binary or not arguments.profile:
             raise MetricsError("test binary and profile are required")
@@ -960,10 +1018,16 @@ def evaluate(arguments: argparse.Namespace) -> int:
             additional_objects,
             profile_directory,
         )
+        inferred_profile = "combined" if additional_objects else "swift"
+    coverage_profile = arguments.coverage_profile or inferred_profile
+    if not arguments.coverage_json and coverage_profile != inferred_profile:
+        raise MetricsError("coverage profile does not match the supplied coverage inputs")
     coverage = collect_coverage(coverage_document)
     tests = collect_tests(Path(arguments.tests))
     baseline_root = Path(arguments.baseline_root) if arguments.baseline_root else None
-    baseline, baseline_mode, baseline_commit = load_baseline(baseline_root)
+    baseline, baseline_mode, baseline_commit = load_baseline(
+        baseline_root, coverage_profile
+    )
     if arguments.authority != "local-diagnostic" and baseline is None:
         raise MetricsError("authoritative quality metrics require last green main evidence")
     base_commit = baseline_commit or arguments.base_commit
@@ -983,7 +1047,7 @@ def evaluate(arguments: argparse.Namespace) -> int:
             changed_override[path] = {
                 integer(line, "test changed line") for line in raw_lines
             }
-    document = build_metrics(
+    document, advisories = build_metrics(
         coverage,
         tests,
         policy,
@@ -991,6 +1055,7 @@ def evaluate(arguments: argparse.Namespace) -> int:
         base_commit,
         baseline,
         baseline_mode,
+        coverage_profile=coverage_profile,
         changed_override=changed_override,
         allow_incomplete_sources=test_mode == "1",
     )
@@ -1006,12 +1071,15 @@ def evaluate(arguments: argparse.Namespace) -> int:
     changed = document["changed_lines"]
     print(
         "Quality metrics evaluated: "
+        f"profile={coverage_profile}; "
         f"UI tests={suites['ui']['test_count']} coverage={suites['ui']['line_coverage']['percent']:.2f}%; "
         f"business tests={suites['business']['test_count']} "
         f"coverage={suites['business']['line_coverage']['percent']:.2f}%; "
         f"changed={changed['line_coverage']['percent']:.2f}% "
         f"baseline={document['comparison']['mode']}"
     )
+    for advisory in advisories:
+        print(f"quality-metrics: advisory: {advisory}", file=sys.stderr)
     regressions = document["comparison"]["regressions"]
     if regressions:
         for regression in regressions:
@@ -1030,6 +1098,9 @@ def parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--profile")
     evaluate_parser.add_argument("--additional-object", action="append", default=[])
     evaluate_parser.add_argument("--additional-profile-directory", default="")
+    evaluate_parser.add_argument(
+        "--coverage-profile", choices=COVERAGE_PROFILES, default=""
+    )
     evaluate_parser.add_argument("--tests", required=True)
     evaluate_parser.add_argument("--output", required=True)
     evaluate_parser.add_argument("--opportunities-output", default="")

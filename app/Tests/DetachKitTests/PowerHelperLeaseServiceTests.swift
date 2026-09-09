@@ -34,8 +34,11 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
     private final class FakeStore: PowerHelperStateStoring {
         var state: PowerHelperPersistentState?
         var failNextSave = false
+        var loadError: Error?
+        var quarantineError: Error?
         private(set) var loadCount = 0
         private(set) var saveCount = 0
+        private(set) var quarantineCount = 0
         let events: EventLog
 
         init(state: PowerHelperPersistentState? = nil, events: EventLog = EventLog()) {
@@ -45,6 +48,7 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
 
         func load() throws -> PowerHelperPersistentState? {
             loadCount += 1
+            if let loadError { throw loadError }
             return state
         }
 
@@ -56,6 +60,27 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
             }
             self.state = state
             events.values.append("save:\(state.ownsClosedLidProtection):\(state.leases.count)")
+        }
+
+        func quarantineUnreadableState() throws {
+            quarantineCount += 1
+            if let quarantineError { throw quarantineError }
+        }
+    }
+
+    /// Store without a durable file: it relies on the protocol's default
+    /// no-op quarantine.
+    private final class MinimalStore: PowerHelperStateStoring {
+        var state: PowerHelperPersistentState?
+        var loadError: Error?
+
+        func load() throws -> PowerHelperPersistentState? {
+            if let loadError { throw loadError }
+            return state
+        }
+
+        func save(_ state: PowerHelperPersistentState) throws {
+            self.state = state
         }
     }
 
@@ -403,6 +428,113 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertEqual(store.state?.leases, [])
         XCTAssertEqual(try service.status().state, .protected)
         XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testAcquireIgnoresAnotherSessionsStagedInactiveLease() throws {
+        let stagedLease = PowerLease(
+            id: "staged", sessionName: "claude-review", runToken: "run-9",
+            renewedAt: now, assertionActive: false)
+        let store = FakeStore(state: PowerHelperPersistentState(
+            leases: [stagedLease], bootSessionIdentifier: "test-boot"))
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend)
+
+        let status = try service.acquireLease(identity, assertionActive: true)
+
+        XCTAssertEqual(status.state, .protected)
+        XCTAssertEqual(status.leaseCount, 2)
+        XCTAssertEqual(backend.writes, [true])
+        XCTAssertEqual(store.state?.leases.count, 2)
+        // The read-only snapshot keeps the honest global aggregate; only the
+        // acquire confirmation is scoped to the requesting identity.
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertFalse(cached.assertionActive)
+    }
+
+    func testRenewalIgnoresAnotherSessionsStagedInactiveLease() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend)
+        let other = PowerLeaseIdentity(
+            sessionName: "claude-review", runToken: "run-9")
+        _ = try service.acquireLease(identity, assertionActive: true)
+        _ = try service.acquireLease(other, assertionActive: true)
+
+        // The wrapper stages its lease assertion-inactive before a waiting
+        // release; the staging report itself stays honest.
+        let staged = try service.renewLease(other, assertionActive: false)
+        XCTAssertEqual(staged.state, .unavailable)
+
+        let renewed = try service.renewLease(identity, assertionActive: true)
+
+        XCTAssertEqual(renewed.state, .protected)
+        XCTAssertEqual(renewed.leaseCount, 2)
+        XCTAssertEqual(backend.writes, [true])
+        XCTAssertEqual(store.state?.leases.count, 2)
+    }
+
+    func testLowBatteryStillRefusesAcquireDespiteAnotherStagedInactiveLease() throws {
+        let stagedLease = PowerLease(
+            id: "staged", sessionName: "claude-review", runToken: "run-9",
+            renewedAt: now, assertionActive: false)
+        let store = FakeStore(state: PowerHelperPersistentState(
+            leases: [stagedLease], bootSessionIdentifier: "test-boot"))
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(
+            store: store, backend: backend,
+            battery: FakeBatteryReader(lowBattery: true))
+
+        let status = try service.acquireLease(identity, assertionActive: true)
+
+        XCTAssertEqual(status.state, .lowBattery)
+        XCTAssertEqual(store.state?.leases, [stagedLease])
+        XCTAssertFalse(backend.enabled)
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testThermalSafetyStillRefusesAcquireDespiteAnotherStagedInactiveLease() throws {
+        let stagedLease = PowerLease(
+            id: "staged", sessionName: "claude-review", runToken: "run-9",
+            renewedAt: now, assertionActive: false)
+        let store = FakeStore(state: PowerHelperPersistentState(
+            leases: [stagedLease], bootSessionIdentifier: "test-boot"))
+        let backend = FakeBackend(enabled: false)
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: FakeBatteryReader(lowBattery: false),
+            thermalReader: MutableThermalReader(.serious),
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now })
+
+        let status = try service.acquireLease(identity, assertionActive: true)
+
+        XCTAssertEqual(status.state, .temperature)
+        XCTAssertTrue(status.thermalSafetyActive)
+        XCTAssertEqual(store.state?.leases, [stagedLease])
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testLowBatteryStillRefusesRenewalConfirmation() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        _ = try service.acquireLease(identity, assertionActive: true)
+        battery.lowBattery = true
+
+        let status = try service.renewLease(identity, assertionActive: true)
+
+        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertTrue(status.lowBattery)
+        XCTAssertEqual(backend.writes, [true, false])
     }
 
     func testReleaseRestoresNormalSleepOnlyWhenDetachOwnedTheMutation() throws {
@@ -876,6 +1008,200 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
             battery: FakeBatteryReader(lowBattery: false, failure: ExpectedFailure.battery))
 
         XCTAssertThrowsError(try service.acquireLease(identity, assertionActive: true))
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testReconcileIsRefusedOnceTerminating() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend)
+        _ = try service.acquireLease(identity, assertionActive: true)
+        try service.prepareForTermination()
+        let savesAfterTermination = store.saveCount
+
+        XCTAssertThrowsError(try service.reconcile()) { error in
+            XCTAssertEqual(
+                error as? PowerHelperLeaseServiceError,
+                .serviceQuiescing)
+        }
+
+        // The retained live lease must not re-persist ownership or turn the
+        // restored setting back on behind the shutdown hook.
+        XCTAssertEqual(backend.writes, [true, false])
+        XCTAssertFalse(backend.enabled)
+        XCTAssertEqual(store.saveCount, savesAfterTermination)
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
+        XCTAssertEqual(store.state?.leases.count, 1)
+        XCTAssertEqual(try service.status().state, .unavailable)
+    }
+
+    func testUnreadableStoreStateIsQuarantinedAndServiceStartsClean() throws {
+        let store = FakeStore()
+        store.loadError = ExpectedFailure.store
+        let backend = FakeBackend(enabled: false)
+
+        let service = try makeService(store: store, backend: backend)
+
+        XCTAssertEqual(store.quarantineCount, 1)
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        XCTAssertEqual(store.state?.leases.count, 1)
+    }
+
+    func testQuarantineFailureDoesNotPreventACleanStart() throws {
+        let store = FakeStore()
+        store.loadError = ExpectedFailure.store
+        store.quarantineError = ExpectedFailure.store
+        let backend = FakeBackend(enabled: false)
+
+        let service = try makeService(store: store, backend: backend)
+
+        XCTAssertEqual(store.quarantineCount, 1)
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        XCTAssertEqual(store.state?.leases.count, 1)
+    }
+
+    func testDefaultQuarantineIsANoOpForStoresWithoutDurableFiles() throws {
+        let store = MinimalStore()
+        store.loadError = ExpectedFailure.store
+        let backend = FakeBackend(enabled: false)
+
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: FakeBatteryReader(lowBattery: false),
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        XCTAssertEqual(store.state?.leases.count, 1)
+    }
+
+    func testCorruptStateFileIsQuarantinedAndServiceStartsClean() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-lease-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let stateURL = root.appendingPathComponent("state.json")
+        let corrupt = Data("not-json".utf8)
+        try corrupt.write(to: stateURL)
+        let store = SecureFilePowerHelperStateStore(fileURL: stateURL)
+        let backend = FakeBackend(enabled: false)
+
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: FakeBatteryReader(lowBattery: false),
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
+        let quarantined = try XCTUnwrap(
+            try FileManager.default.contentsOfDirectory(atPath: root.path)
+                .first { $0.hasPrefix("state.json.corrupt-") })
+        XCTAssertEqual(
+            try Data(contentsOf: root.appendingPathComponent(quarantined)),
+            corrupt)
+        XCTAssertEqual(try service.reconcile().state, .allowed)
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        // The next save repairs the state path with a readable file.
+        XCTAssertEqual(try store.load()?.leases.count, 1)
+    }
+
+    func testFutureSchemaStateFileIsQuarantinedWithoutClaimingOwnership() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-lease-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let stateURL = root.appendingPathComponent("state.json")
+        try Data(
+            #"{"schema":2,"owns_closed_lid_protection":true,"leases":[]}"#.utf8
+        ).write(to: stateURL)
+        let store = SecureFilePowerHelperStateStore(fileURL: stateURL)
+        // The unreadable file claimed ownership of a setting that is still
+        // enabled. A clean start must treat it as borrowed and never
+        // disable it.
+        let backend = FakeBackend(enabled: true)
+
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: FakeBatteryReader(lowBattery: false),
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+
+        // Quarantine happens at load time, before any reconciliation can
+        // rewrite the state path.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(atPath: root.path)
+                .contains { $0.hasPrefix("state.json.corrupt-") })
+
+        let status = try service.reconcile()
+
+        XCTAssertEqual(status.state, .protected)
+        XCTAssertTrue(status.closedLidProtectionActive)
+        XCTAssertTrue(backend.enabled)
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testAcquireSucceedsWhenLeaseTableIsFullOfExpiredLeases() throws {
+        let expired = (0..<PowerHelperLeaseService.maximumLeaseCount).map {
+            PowerLease(
+                id: "expired-\($0)", sessionName: "session-\($0)",
+                runToken: "run-\($0)",
+                renewedAt: now.addingTimeInterval(-121),
+                assertionActive: true)
+        }
+        let store = FakeStore(state: PowerHelperPersistentState(
+            leases: expired))
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend, timeout: 120)
+
+        let status = try service.acquireLease(identity, assertionActive: true)
+
+        XCTAssertEqual(status.state, .protected)
+        XCTAssertEqual(status.leaseCount, 1)
+        XCTAssertEqual(store.state?.leases.count, 1)
+        XCTAssertEqual(
+            store.state?.leases.first?.sessionName, identity.sessionName)
+    }
+
+    func testAcquireStillRejectsWhenLeaseTableIsFullOfLiveLeases() throws {
+        let live = (0..<PowerHelperLeaseService.maximumLeaseCount).map {
+            PowerLease(
+                id: "live-\($0)", sessionName: "session-\($0)",
+                runToken: "run-\($0)",
+                renewedAt: now,
+                assertionActive: true)
+        }
+        let store = FakeStore(state: PowerHelperPersistentState(
+            ownsClosedLidProtection: true,
+            leases: live,
+            bootSessionIdentifier: "test-boot"))
+        let backend = FakeBackend(enabled: true)
+        let service = try makeService(store: store, backend: backend, timeout: 120)
+
+        XCTAssertThrowsError(
+            try service.acquireLease(identity, assertionActive: true)
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperLeaseServiceError,
+                .tooManyLeases)
+        }
+        XCTAssertEqual(store.state?.leases.count, 256)
         XCTAssertTrue(backend.writes.isEmpty)
     }
 

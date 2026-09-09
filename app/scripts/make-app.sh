@@ -17,6 +17,10 @@ SPARKLE_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/Sparkle/LICENSE.txt"
 SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
 SWIFT_BUILD_JOBS="${DETACH_SWIFT_BUILD_JOBS:-}"
 QUALITY_APP_SCRATCH="${DETACH_QUALITY_APP_SCRATCH:-0}"
+SWIFTTERM_VERSION="${DETACH_SWIFTTERM_VERSION:-1.19.0}"
+SWIFTTERM_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
+SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424aeb951df6856"
+SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
 APP="$APP_ROOT/build/Detach.app"
 PAYLOAD="$APP/Contents/Resources/DetachCLI"
 LAUNCH_AGENTS="$APP/Contents/Library/LaunchAgents"
@@ -38,6 +42,7 @@ BUILD_MARKER_ROOT="/private/tmp/detach-app-build-marker.$$"
 BUILD_MARKER_FILE="$BUILD_MARKER_ROOT/marker.txt"
 TMUX_THIRD_PARTY="$APP/Contents/Resources/ThirdParty/tmux"
 SPARKLE_LICENSE="$APP/Contents/Resources/ThirdParty/Sparkle/LICENSE.txt"
+SWIFTTERM_LICENSE="$APP/Contents/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
 BUNDLE_MODE_POLICY="$APP_ROOT/scripts/bundle-modes.sh"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$APP_ROOT/.build/module-cache}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$APP_ROOT/.build/module-cache}"
@@ -129,6 +134,17 @@ source "$BUNDLE_MODE_POLICY"
     "$SPARKLE_VERSION" >&2
   exit 1
 }
+[ -f "$SWIFTTERM_LICENSE_SOURCE" ] || {
+  printf 'Pinned SwiftTerm license notice is missing: %s\n' \
+    "$SWIFTTERM_LICENSE_SOURCE" >&2
+  exit 1
+}
+[ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_LICENSE_SOURCE" | /usr/bin/awk '{print $1}')" = \
+  "$SWIFTTERM_LICENSE_SHA256" ] || {
+  printf 'Pinned SwiftTerm license notice does not match SwiftTerm %s\n' \
+    "$SWIFTTERM_VERSION" >&2
+  exit 1
+}
 
 codesign_args=(--force --options runtime --sign "$IDENTITY")
 if [ "$IDENTITY" != "-" ]; then
@@ -144,6 +160,28 @@ cp "$APP_ROOT/Resources/DetachWatchdog-Info.plist" "$WATCHDOG_INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$WATCHDOG_INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$WATCHDOG_INFO_PLIST"
 export DETACH_WATCHDOG_INFO_PLIST="$WATCHDOG_INFO_PLIST"
+
+install_swiftterm_resources() {
+  local bin_path="$1"
+  local bundle="$bin_path/SwiftTerm_SwiftTerm.bundle"
+  local shader="$bundle/Shaders.metal"
+
+  [ -d "$bundle" ] && [ ! -L "$bundle" ] || {
+    printf 'SwiftPM did not produce SwiftTerm_SwiftTerm.bundle\n' >&2
+    exit 1
+  }
+  [ -f "$shader" ] && [ ! -L "$shader" ] || {
+    printf 'SwiftPM did not produce the pinned SwiftTerm Metal shader\n' >&2
+    exit 1
+  }
+  [ "$(/usr/bin/shasum -a 256 "$shader" | /usr/bin/awk '{print $1}')" = \
+    "$SWIFTTERM_SHADER_SHA256" ] || {
+    printf 'SwiftTerm Metal shader does not match SwiftTerm %s\n' \
+      "$SWIFTTERM_VERSION" >&2
+    exit 1
+  }
+  ditto "$bundle" "$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
+}
 
 find_sparkle_framework() {
   local scratch="$1"
@@ -366,6 +404,9 @@ cp "$APP_ROOT/Resources/Detach.icns" "$APP/Contents/Resources/Detach.icns"
 install -m 0644 "$BUILD_MARKER_FILE" "$APP/Contents/Resources/BUILD_MARKER"
 install -d -m 0755 "$(dirname "$SPARKLE_LICENSE")"
 install -m 0644 "$SPARKLE_LICENSE_SOURCE" "$SPARKLE_LICENSE"
+install -d -m 0755 "$(dirname "$SWIFTTERM_LICENSE")"
+install -m 0644 "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE"
+install_swiftterm_resources "$arm_bin"
 cp "$APP_ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 for localization in en ru; do
   source_lproj="$APP_ROOT/Resources/$localization.lproj"

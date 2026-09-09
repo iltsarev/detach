@@ -122,4 +122,39 @@ final class ClamshellLockRunnerTests: XCTestCase {
         XCTAssertTrue(messages.values[0].contains(
             "could not lock the screen after the lid closed"))
     }
+
+    func testScreenLockRequestHonorsTimeoutAndEscalatesToKill() {
+        let requester = PMSetScreenLockRequester(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "trap '' TERM; exec /bin/sleep 5"],
+            timeout: 0.05,
+            terminationGrace: 0.05)
+
+        XCTAssertThrowsError(try requester.requestLock()) { error in
+            XCTAssertEqual(error as? PMSetScreenLockError, .timedOut)
+        }
+    }
+
+    func testScreenLockRequestSucceedsForPromptCommand() {
+        let requester = PMSetScreenLockRequester(
+            executableURL: URL(fileURLWithPath: "/usr/bin/true"),
+            arguments: [],
+            timeout: 2,
+            terminationGrace: 1)
+
+        XCTAssertNoThrow(try requester.requestLock())
+    }
+
+    func testScreenLockRequestReportsNonzeroExitStatus() {
+        let requester = PMSetScreenLockRequester(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exit 7"],
+            timeout: 2,
+            terminationGrace: 1)
+
+        XCTAssertThrowsError(try requester.requestLock()) { error in
+            XCTAssertEqual(
+                error as? PMSetScreenLockError, .failed(exitCode: 7))
+        }
+    }
 }

@@ -23,6 +23,68 @@ final class DetachStateTests: XCTestCase {
             expectedSessionName: "detach-codex-project"))
     }
 
+    func testRecoveryHandoffMetadataFieldsKeepTheirJSONTypes() throws {
+        let base: [String: Any] = [
+            "schema": 1,
+            "session_name": "detach-codex-project",
+            "project_dir": "/tmp/project",
+        ]
+        let validFields: [[String: Any]] = [
+            [:],
+            [
+                "preserve_recovery_until_ready": NSNull(),
+                "runtime_ready_at": NSNull(),
+                "runtime_shutdown_observed_at": NSNull(),
+            ],
+            [
+                "preserve_recovery_until_ready": true,
+                "runtime_ready_at": "2026-09-04T12:00:00Z",
+                "runtime_shutdown_observed_at": "2026-09-04T13:00:00Z",
+            ],
+        ]
+        for fields in validFields {
+            let data = try JSONSerialization.data(
+                withJSONObject: base.merging(fields) { _, new in new })
+            XCTAssertTrue(SessionMetadataDocument.isUsable(
+                data, expectedSessionName: "detach-codex-project"))
+        }
+
+        let invalidFields: [(String, Any)] = [
+            ("preserve_recovery_until_ready", "false"),
+            ("preserve_recovery_until_ready", 0),
+            ("runtime_ready_at", false),
+            ("runtime_ready_at", ["timestamp"]),
+            ("runtime_shutdown_observed_at", 0),
+            ("runtime_shutdown_observed_at", ["value": "timestamp"]),
+        ]
+        for (field, value) in invalidFields {
+            let data = try JSONSerialization.data(
+                withJSONObject: base.merging([field: value]) { _, new in new })
+            XCTAssertFalse(SessionMetadataDocument.isUsable(
+                data, expectedSessionName: "detach-codex-project"))
+        }
+
+        XCTAssertThrowsError(try SessionMetadataDocument.create(changes: [
+            .init(
+                key: "preserve_recovery_until_ready",
+                value: .string("false")),
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidMetadata)
+        }
+        let corrupt = try JSONSerialization.data(withJSONObject: base.merging([
+            "runtime_ready_at": false,
+        ]) { _, new in new })
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            corrupt,
+            changes: [.init(key: "status", value: .string("running"))]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidMetadata)
+        }
+        XCTAssertNoThrow(try SessionMetadataDocument.patch(
+            corrupt,
+            changes: [.init(key: "runtime_ready_at", value: .null)]))
+    }
+
     func testMetadataCreateRoundTripsEverySupportedScalar() throws {
         let data = try SessionMetadataDocument.create(changes: [
             .init(key: "text", value: .string("value")),
@@ -37,6 +99,54 @@ final class DetachStateTests: XCTestCase {
         XCTAssertEqual(try SessionMetadataDocument.scalar(in: data, paths: ["number"]), .number(1.5))
         XCTAssertEqual(try SessionMetadataDocument.scalar(in: data, paths: ["flag"]), .bool(true))
         XCTAssertNil(try SessionMetadataDocument.scalar(in: data, paths: ["nothing"]))
+    }
+
+    func testMetadataCreateAcceptsNullAndRejectsUnknownLifecyclePhase() throws {
+        let legacy = try SessionMetadataDocument.create(changes: [
+            .init(key: "lifecycle_phase", value: .null),
+        ])
+        XCTAssertNil(try SessionMetadataDocument.scalar(
+            in: legacy, paths: ["lifecycle_phase"]))
+
+        XCTAssertThrowsError(try SessionMetadataDocument.create(changes: [
+            .init(key: "lifecycle_phase", value: .string("unknown")),
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecyclePhase)
+        }
+    }
+
+    func testLifecycleValidationRejectsInvalidCurrentPhaseAndStopInvariants() throws {
+        let invalidCurrent = Data(#"{"status":"running","lifecycle_phase":"unknown"}"#.utf8)
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            invalidCurrent,
+            changes: [.init(key: "lifecycle_phase", value: .string("terminal"))]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecyclePhase)
+        }
+
+        let legacyRunning = Data(#"{"status":"running"}"#.utf8)
+        XCTAssertNoThrow(try SessionMetadataDocument.patch(
+            legacyRunning,
+            changes: [
+                .init(key: "stop_requested_at", value: .string("now")),
+                .init(key: "status", value: .string("stopped")),
+                .init(key: "lifecycle_phase", value: .string("stopping")),
+            ]))
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            legacyRunning,
+            changes: [.init(key: "lifecycle_phase", value: .string("stopping"))]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecycleTransition)
+        }
+        XCTAssertThrowsError(try SessionMetadataDocument.patch(
+            legacyRunning,
+            changes: [
+                .init(key: "stop_requested_at", value: .string("now")),
+                .init(key: "lifecycle_phase", value: .string("finalizing")),
+            ]
+        )) { error in
+            XCTAssertEqual(error as? DetachStateError, .invalidLifecycleTransition)
+        }
     }
 
     func testMetadataOperationsDistinguishMalformedJSONFromNonObjectJSON() {
@@ -286,7 +396,10 @@ final class DetachStateTests: XCTestCase {
         let root = Data(#"{"payload":{"id":"session-1"}}"#.utf8)
         let event = Data(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#.utf8)
         var chunkIndex = 0
-        let eventCount = 100_000
+        // Twenty thousand independently supplied records are large enough to
+        // distinguish streaming from a one-shot parser without dominating the
+        // full coverage run on every change.
+        let eventCount = 20_000
 
         let valid = try TranscriptDocument.isValid(
             provider: .codex,
@@ -432,5 +545,135 @@ final class DetachStateTests: XCTestCase {
                 contextWindow: nil,
                 agentTurnState: .waiting,
                 agentTurnID: "real-user"))
+    }
+
+    func testClaudeSummaryCompletesFinalTextWithoutTurnDuration() {
+        let thinking = Data("""
+        {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"thinking","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"done"}]}}
+        """.utf8)
+        let working = TranscriptDocument.summary(ofTail: thinking, provider: .claude)
+        XCTAssertEqual(working.agentTurnState, .working)
+
+        let answer = Data("""
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+        """.utf8)
+        let waiting = TranscriptDocument.summary(
+            ofTail: answer, provider: .claude, startingFrom: working)
+        XCTAssertEqual(waiting.agentTurnState, .waiting)
+        XCTAssertEqual(waiting.agentTurnID, "answer")
+        // A cold bounded tail can contain only the final answer.
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: answer, provider: .claude), waiting)
+
+        let trailing = Data("""
+        {"type":"assistant","uuid":"answer-fragment","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"More detail."}]}}
+        {"type":"system","subtype":"turn_duration","uuid":"duration"}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(
+                ofTail: trailing, provider: .claude, startingFrom: waiting), waiting)
+    }
+
+    func testClaudeSummaryRejectsUnprovenFinalAnswers() throws {
+        let unsupported: [[String: Any]] = [
+            ["isSidechain": true], ["isMeta": true], ["uuid": ""],
+            ["message": ["role": "user"]],
+            ["message": ["stop_reason": "max_tokens"]],
+            ["message": ["stop_reason": NSNull()]],
+            ["message": ["content": NSNull()]],
+            ["message": ["content": [["type": "text", "text": ""]]]],
+            ["message": ["content": [["type": "text", "text": "Done"],
+                                      ["type": "tool_use", "name": "Bash"]]]],
+        ]
+        for overrides in unsupported {
+            var message: [String: Any] = [
+                "role": "assistant", "stop_reason": "end_turn",
+                "content": [["type": "text", "text": "Done"]],
+            ]
+            message.merge(overrides["message"] as? [String: Any] ?? [:]) { _, new in new }
+            var record: [String: Any] = ["type": "assistant", "uuid": "answer"]
+            record.merge(overrides) { _, new in new }
+            record["message"] = message
+            let summary = TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: record),
+                provider: .claude,
+                startingFrom: TranscriptSummary(
+                    agentTurnState: .working, agentTurnID: "request"))
+            XCTAssertEqual(summary.agentTurnState, .working, "\(overrides)")
+            XCTAssertEqual(summary.agentTurnID, "request", "\(overrides)")
+        }
+    }
+
+    func testClaudeSummaryResumesAfterFinalAnswer() {
+        let waiting = TranscriptSummary(agentTurnState: .waiting, agentTurnID: "answer")
+        let continuations = [
+            """
+            {"type":"user","uuid":"next","message":{"role":"user","content":"continue"}}
+            """,
+            """
+            {"type":"assistant","uuid":"next","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","id":"tool"}]}}
+            """,
+        ]
+        for continuation in continuations {
+            let working = TranscriptDocument.summary(
+                ofTail: Data(continuation.utf8), provider: .claude, startingFrom: waiting)
+            XCTAssertEqual(working.agentTurnState, .working)
+            XCTAssertEqual(working.agentTurnID, "next")
+            let answer = Data("""
+            {"type":"assistant","uuid":"next-answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done again."}]}}
+            """.utf8)
+            let completed = TranscriptDocument.summary(
+                ofTail: answer, provider: .claude, startingFrom: working)
+            XCTAssertEqual(completed.agentTurnState, .waiting)
+            XCTAssertEqual(completed.agentTurnID, "next-answer")
+        }
+    }
+
+    func testClaudeSummaryTracksAskUserQuestionUntilItsMatchingResult() {
+        let contradictoryTail = Data("""
+        {"type":"user","uuid":"real-user","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"missing-stop","message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion","id":"ask-without-stop"}]}}
+        {"type":"assistant","uuid":"wrong-stop","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"tool_use","name":"AskUserQuestion","id":"ask-after-end"}]}}
+        """.utf8)
+
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: contradictoryTail, provider: .claude),
+            TranscriptSummary(
+                contextUsed: 0,
+                agentTurnState: .working,
+                agentTurnID: "real-user"))
+
+        let waitingTail = Data("""
+        {"type":"user","uuid":"real-user","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"ordinary-tool","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"bash-1"}]}}
+        {"type":"assistant","uuid":"sidechain-ask","isSidechain":true,"message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","id":"sidechain-1"}]}}
+        {"type":"assistant","uuid":"malformed-ask","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}
+        {"type":"assistant","uuid":"ask-record","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","id":"ask-1"}]}}
+        {"type":"user","uuid":"unrelated-result","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bash-1"}]}}
+        {"type":"user","uuid":"plain-user","message":{"role":"user","content":"this must not clear a pending tool result"}}
+        {"type":"assistant","uuid":"final-text","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Choose an option."}]}}
+        {"type":"system","subtype":"turn_duration","uuid":"duration"}
+        {"type":"assistant","uuid":"other-tool","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","id":"bash-2"}]}}
+        """.utf8)
+
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: waitingTail, provider: .claude),
+            TranscriptSummary(
+                contextUsed: 0,
+                agentTurnState: .waiting,
+                agentTurnID: "ask-1"))
+
+        var answeredTail = waitingTail
+        answeredTail.append(Data("""
+
+        {"type":"user","uuid":"answer-record","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ask-1"}]}}
+        """.utf8))
+        XCTAssertEqual(
+            TranscriptDocument.summary(ofTail: answeredTail, provider: .claude),
+            TranscriptSummary(
+                contextUsed: 0,
+                agentTurnState: .working,
+                agentTurnID: "answer-record"))
     }
 }

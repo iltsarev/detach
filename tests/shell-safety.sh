@@ -16,7 +16,7 @@ failures=0
 while IFS= read -r -d '' file; do
   case "$file" in
     tests/shell-safety-contract.sh) continue ;;
-    *.sh|bin/detach|bin/detach-core|scripts/quality-gate|scripts/quality-scenarios|scripts/quality-policy|scripts/quality-metrics|scripts/quality-mutation|scripts/quality-baseline|scripts/quality-promote|scripts/quality-history|scripts/quality-care|scripts/quality-merge|scripts/release-version|scripts/release-impact|scripts/release-lid-probe|scripts/release-pr|scripts/release-sbom) ;;
+    *.sh|bin/detach|bin/detach-core|scripts/quality-gate|scripts/quality-scenarios|scripts/quality-policy|scripts/quality-metrics|scripts/quality-mutation|scripts/quality-baseline|scripts/quality-evidence|scripts/quality-promote|scripts/quality-history|scripts/quality-care|scripts/quality-merge|scripts/release-version|scripts/release-impact|scripts/release-lid-probe|scripts/release-pr|scripts/release-sbom) ;;
     *) continue ;;
   esac
   [ -f "$ROOT/$file" ] || continue

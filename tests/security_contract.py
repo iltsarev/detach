@@ -118,12 +118,22 @@ def main() -> None:
             "the security dashboard does not consume the exact current artifact")
     require("timeout-minutes: 3" in dashboard_zone,
             "security dashboard deadline is missing")
-    for path in PAGES_WORKFLOWS:
+    dashboard_workflows = (WORKFLOW, *PAGES_WORKFLOWS)
+    for path in dashboard_workflows:
         pages_workflow = path.read_text(encoding="utf-8")
-        require("scripts/quality-security latest --optional" in pages_workflow,
-                f"{path.name} does not preserve the latest security result")
+        if path in PAGES_WORKFLOWS:
+            require("scripts/quality-security latest --optional" in pages_workflow,
+                    f"{path.name} does not preserve the latest security result")
         require("--security-summary" in pages_workflow,
                 f"{path.name} does not pass security evidence to the dashboard")
+        require('delimiter="detach-$(uuidgen)"' in pages_workflow
+                and "printf 'summary<<%s\\n'" in pages_workflow,
+                f"{path.name} writes summary outputs without a safe delimiter")
+        require("<<EOF" not in pages_workflow,
+                f"{path.name} uses a predictable output delimiter")
+        require('if [ -n "${{' not in pages_workflow
+                and "printf 'summary=%s\\n'" not in pages_workflow,
+                f"{path.name} interpolates downloaded paths into the shell")
     require("release-version" not in workflow and "notary" not in workflow,
             "security care can enter a release path")
     require("version: 2" in dependabot, "Dependabot schema is missing")

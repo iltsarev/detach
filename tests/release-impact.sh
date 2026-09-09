@@ -56,8 +56,14 @@ assert_value "$TMP_ROOT/safe.tsv" lid_test_required false
 assert_value "$TMP_ROOT/safe.tsv" unknown_impact false
 ! grep -F 'install_matrix' "$TMP_ROOT/safe.tsv" >/dev/null
 
+QUICK_CHAT_HEAD="$(commit_path app/Sources/DetachApp/QuickChat.swift quick-chat)"
+"$REPO/scripts/release-impact" "$SAFE_HEAD" "$QUICK_CHAT_HEAD" \
+  >"$TMP_ROOT/quick-chat.tsv"
+assert_value "$TMP_ROOT/quick-chat.tsv" lid_test_required false
+assert_value "$TMP_ROOT/quick-chat.tsv" unknown_impact false
+
 MATRIX_HEAD="$(commit_path app/Sources/DetachApp/OnboardingView.swift onboarding)"
-"$REPO/scripts/release-impact" "$SAFE_HEAD" "$MATRIX_HEAD" >"$TMP_ROOT/matrix.tsv"
+"$REPO/scripts/release-impact" "$QUICK_CHAT_HEAD" "$MATRIX_HEAD" >"$TMP_ROOT/matrix.tsv"
 assert_value "$TMP_ROOT/matrix.tsv" lid_test_required false
 assert_value "$TMP_ROOT/matrix.tsv" unknown_impact false
 
@@ -70,6 +76,58 @@ CORE_HEAD="$(commit_path bin/detach-core core)"
 "$REPO/scripts/release-impact" "$DMG_HEAD" "$CORE_HEAD" >"$TMP_ROOT/core.tsv"
 assert_value "$TMP_ROOT/core.tsv" lid_test_required true
 assert_value "$TMP_ROOT/core.tsv" unknown_impact false
+! grep -F 'lid_test_scan_waived' "$TMP_ROOT/core.tsv" >/dev/null
+
+# A plain modification of bin/detach-core is scanned. Hunks without a power
+# token waive the closed-lid probe and say so.
+CORE_SAFE_HEAD="$(commit_path bin/detach-core 'core resume companion directories')"
+"$REPO/scripts/release-impact" "$CORE_HEAD" "$CORE_SAFE_HEAD" >"$TMP_ROOT/core-safe.tsv"
+assert_value "$TMP_ROOT/core-safe.tsv" lid_test_required false
+assert_value "$TMP_ROOT/core-safe.tsv" unknown_impact false
+assert_value "$TMP_ROOT/core-safe.tsv" lid_test_scan_waived bin/detach-core
+! grep -F 'lid_test_reason' "$TMP_ROOT/core-safe.tsv" >/dev/null
+
+# A changed line that mentions a power token keeps the probe.
+CORE_POWER_HEAD="$(commit_path bin/detach-core 'core closed lid protection')"
+"$REPO/scripts/release-impact" "$CORE_SAFE_HEAD" "$CORE_POWER_HEAD" \
+  >"$TMP_ROOT/core-power.tsv"
+assert_value "$TMP_ROOT/core-power.tsv" lid_test_required true
+assert_value "$TMP_ROOT/core-power.tsv" lid_test_reason bin/detach-core
+! grep -F 'lid_test_scan_waived' "$TMP_ROOT/core-power.tsv" >/dev/null
+
+# A change inside a power function keeps the probe through the hunk header
+# even when the changed line itself has no token.
+printf '%s\n' 'power_refresh_state() {' '  local sample=1' '}' 'list_sessions() {' '  local rows=1' '}' \
+  >"$REPO/bin/detach-core"
+git -C "$REPO" add bin/detach-core
+git -C "$REPO" commit -qm 'core functions'
+CORE_FUNCTIONS_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+printf '%s\n' 'power_refresh_state() {' '  local sample=2' '}' 'list_sessions() {' '  local rows=1' '}' \
+  >"$REPO/bin/detach-core"
+git -C "$REPO" add bin/detach-core
+git -C "$REPO" commit -qm 'core power function body'
+CORE_CONTEXT_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+"$REPO/scripts/release-impact" "$CORE_FUNCTIONS_HEAD" "$CORE_CONTEXT_HEAD" \
+  >"$TMP_ROOT/core-context.tsv"
+assert_value "$TMP_ROOT/core-context.tsv" lid_test_required true
+printf '%s\n' 'power_refresh_state() {' '  local sample=2' '}' 'list_sessions() {' '  local rows=2' '}' \
+  >"$REPO/bin/detach-core"
+git -C "$REPO" add bin/detach-core
+git -C "$REPO" commit -qm 'core plain function body'
+CORE_PLAIN_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+"$REPO/scripts/release-impact" "$CORE_CONTEXT_HEAD" "$CORE_PLAIN_HEAD" \
+  >"$TMP_ROOT/core-plain.tsv"
+assert_value "$TMP_ROOT/core-plain.tsv" lid_test_required false
+assert_value "$TMP_ROOT/core-plain.tsv" lid_test_scan_waived bin/detach-core
+
+# Deleting the scanned file is not a modification and keeps the gate.
+git -C "$REPO" rm -q bin/detach-core
+git -C "$REPO" commit -qm 'core removed'
+CORE_REMOVED_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+"$REPO/scripts/release-impact" "$CORE_PLAIN_HEAD" "$CORE_REMOVED_HEAD" \
+  >"$TMP_ROOT/core-removed.tsv"
+assert_value "$TMP_ROOT/core-removed.tsv" lid_test_required true
+CORE_HEAD="$(commit_path bin/detach-core core)"
 
 SHARED_POWER_HEAD="$(commit_path app/Sources/DetachKit/BoundedProcessRunner.swift runner)"
 "$REPO/scripts/release-impact" "$CORE_HEAD" "$SHARED_POWER_HEAD" \
@@ -153,6 +211,14 @@ assert_value "$TMP_ROOT/new-app.tsv" lid_test_required true
 assert_value "$TMP_ROOT/new-app.tsv" unknown_impact true
 grep -F $'unknown_reason\tapp/Sources/DetachApp/FutureFlow.swift' \
   "$TMP_ROOT/new-app.tsv" >/dev/null
+
+ORCHESTRATOR_HEAD="$(commit_path scripts/release-version release-orchestrator)"
+"$REPO/scripts/release-impact" "$NEW_APP_HEAD" "$ORCHESTRATOR_HEAD" \
+  >"$TMP_ROOT/orchestrator.tsv"
+assert_value "$TMP_ROOT/orchestrator.tsv" lid_test_required false
+assert_value "$TMP_ROOT/orchestrator.tsv" unknown_impact false
+! grep -F $'lid_test_reason\tscripts/release-version' \
+  "$TMP_ROOT/orchestrator.tsv" >/dev/null
 
 git -C "$REPO" checkout -qb unrelated "$BASE"
 UNRELATED_HEAD="$(commit_path docs/note.md unrelated)"

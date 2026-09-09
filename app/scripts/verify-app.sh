@@ -14,6 +14,10 @@ EXPECTED_MINIMUM_SYSTEM_VERSION="26.0"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.9.6}"
 SPARKLE_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/Sparkle/LICENSE.txt"
 SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
+SWIFTTERM_VERSION="${DETACH_SWIFTTERM_VERSION:-1.19.0}"
+SWIFTTERM_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
+SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424aeb951df6856"
+SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
 REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
 VERIFY_PRODUCTION="${DETACH_VERIFY_PRODUCTION:-0}"
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
@@ -25,6 +29,7 @@ POWER_BINARY="$APP/Contents/MacOS/detach-power"
 POWER_HELPER_BINARY="$APP/Contents/MacOS/DetachPowerHelper"
 TMUX_THIRD_PARTY="$APP/Contents/Resources/ThirdParty/tmux"
 SPARKLE_LICENSE="$APP/Contents/Resources/ThirdParty/Sparkle/LICENSE.txt"
+SWIFTTERM_LICENSE="$APP/Contents/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
 BUILD_MARKER="$APP/Contents/Resources/BUILD_MARKER"
 BUNDLE_MODE_POLICY="$APP_ROOT/scripts/bundle-modes.sh"
 ENTITLEMENTS_DIR=""
@@ -225,6 +230,46 @@ cmp -s "$SPARKLE_LICENSE_SOURCE" "$SPARKLE_LICENSE" || {
 }
 [ "$(stat -f '%Lp' "$SPARKLE_LICENSE")" = 644 ] || {
   printf 'Bundled Sparkle license notice must have mode 0644\n' >&2
+  exit 1
+}
+[ -f "$SWIFTTERM_LICENSE_SOURCE" ] && [ -f "$SWIFTTERM_LICENSE" ] || {
+  printf 'Missing pinned SwiftTerm license notice\n' >&2
+  exit 1
+}
+[ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_LICENSE_SOURCE" | /usr/bin/awk '{print $1}')" = \
+  "$SWIFTTERM_LICENSE_SHA256" ] || {
+  printf 'Pinned SwiftTerm license notice does not match SwiftTerm %s\n' \
+    "$SWIFTTERM_VERSION" >&2
+  exit 1
+}
+[ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_LICENSE" | /usr/bin/awk '{print $1}')" = \
+  "$SWIFTTERM_LICENSE_SHA256" ] || {
+  printf 'Bundled SwiftTerm license notice does not match SwiftTerm %s\n' \
+    "$SWIFTTERM_VERSION" >&2
+  exit 1
+}
+cmp -s "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE" || {
+  printf 'Bundled SwiftTerm license notice does not match the pinned source\n' >&2
+  exit 1
+}
+[ "$(stat -f '%Lp' "$SWIFTTERM_LICENSE")" = 644 ] || {
+  printf 'Bundled SwiftTerm license notice must have mode 0644\n' >&2
+  exit 1
+}
+SWIFTTERM_BUNDLE="$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
+SWIFTTERM_SHADER="$SWIFTTERM_BUNDLE/Shaders.metal"
+[ -d "$SWIFTTERM_BUNDLE" ] && [ ! -L "$SWIFTTERM_BUNDLE" ] || {
+  printf 'Missing bundled SwiftTerm resource bundle\n' >&2
+  exit 1
+}
+[ -f "$SWIFTTERM_SHADER" ] && [ ! -L "$SWIFTTERM_SHADER" ] || {
+  printf 'Missing or unsafe SwiftTerm Metal shader\n' >&2
+  exit 1
+}
+[ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
+  "$SWIFTTERM_SHADER_SHA256" ] || {
+  printf 'Bundled SwiftTerm Metal shader does not match SwiftTerm %s\n' \
+    "$SWIFTTERM_VERSION" >&2
   exit 1
 }
 plutil -p "$TMUX_THIRD_PARTY/provenance.json" >/dev/null

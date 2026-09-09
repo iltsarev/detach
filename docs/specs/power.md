@@ -12,21 +12,49 @@ Power protection has two required layers and one observable combined state:
    It manages only the machine-wide closed-lid setting through absolute
    `/usr/bin/pmset` invocations and a renewable lease registry.
 
+Root commands use the same bounded process-group runner as CLI reads. Each
+command has a two-second default deadline and a one-second TERM grace.
+Dedicated readers bound each output stream. An inherited pipe cannot keep the
+helper waiting after command exit. Incomplete output cannot prove power state.
+The command environment keeps a fixed system PATH and the C locale.
+
 The wrapper must acquire both layers before provider launch. It watches a
 private, run-token-scoped activity file. Before it accepts `waiting`, it also
 validates a recorded inode/mtime/size snapshot and starts an event watcher on the
 exact provider transcript. It then stages the helper lease as
 assertion-inactive, releases the IOKit assertion, and releases the helper lease.
 Any transcript change immediately means `working` and reacquires both layers;
-it does not wait for the idle runtime heartbeat. Missing, changed, or malformed
-handoff state stays `working`. Transition failures are surfaced and must not
-claim that sleep is safe. The provider continues while waiting.
+it does not wait for the idle runtime heartbeat. A transcript event belongs to
+the watch generation that delivered it: an event from a cancelled watch must
+not cancel its replacement or change the reported state. Missing, changed, or
+malformed handoff state stays `working`. Transition failures are surfaced and
+must not claim that sleep is safe. A Claude `AskUserQuestion` record with a
+`tool_use` stop reason and its matching user tool-result response provide the
+structured waiting and working transitions. The provider continues while
+waiting.
+
+When requested, the wrapper writes the run-token ready marker after both power
+layers are active and before provider launch. It writes the provider PID
+atomically after a successful spawn. A ready marker without a provider PID is
+an unknown launch state while wrapper completion is not known. Runtime recovery
+must not treat the marker as proof that the provider stopped. A dead worker
+with neither file is also unknown because the foreground wrapper can outlive
+that worker. Exact provider death proves shutdown. A normal wrapper error after
+spawn or PID publication failure also proves shutdown because the launcher
+kills and waits for the child. Before the starter invokes `respawn-pane`, it can
+record that no wrapper or provider exists after it removes the placeholder tmux
+session. A `respawn-pane` attempt ends this local proof. A signal exit does not
+provide shutdown proof.
 
 Each working session owns a separate helper lease. Outside the low-battery and
 thermal fail-safe states, the helper keeps the machine-wide closed-lid setting
 active while at least one working lease exists. Detach can permit normal sleep
 only after every live session is waiting or stopped. One waiting session must
-never release another working session's protection.
+never release another working session's protection. Acquire and renewal
+confirmation are scoped to the requesting lease. A staged assertion-inactive
+lease from another session must not fail an unrelated acquire or renewal. The
+low-battery and thermal fail-safe refusals still fail closed for every
+request.
 
 The root helper installs a listener-level Foundation code-signing requirement
 before accepting XPC or reconciling power state. It accepts only valid code
@@ -37,6 +65,62 @@ do not replace either audit-token check with PID-based validation. Its XPC
 surface is limited to status, acquire, renew, release, and the typed
 prepare/cancel unregistration lifecycle; it must never execute arbitrary paths,
 shell strings, or provider commands as root.
+
+App updates replace the helper through a durable `SMAppService` handoff. Only
+the complete Developer ID release bundle may register or unregister the helper
+or watchdog. The app, helper, and watchdog must have their exact code
+identifiers and the same valid Team ID. An ad-hoc build or preview stays
+read-only at this boundary.
+
+An enabled registration needs a held root lifetime lock before the app calls
+the helper's prepare method. A missing or released lifetime lock proves that no
+helper process can answer. The app then skips XPC preparation and replays the
+submitted unregister phase under the system and per-user transaction locks.
+Only a busy lifetime lock permits the prepare call. A replacement is not
+registered until the old lifetime lock is released or an exact absent-job
+callback provides the required completion barrier.
+Lifetime and system handoff probes reject special files without waiting for
+a FIFO writer. File validation precedes lock acquisition. Activity and source
+handoff readers also reject special files without blocking and keep the
+session working.
+
+An enabled registration with a matching bundled-definition digest is not
+enough to prove liveness. At startup, a missing or released lifetime lock that
+stays unheld after a three-second grace also forces the durable replacement
+flow. The grace covers login, when the app and the service start together.
+This repairs a stale Background Task Management parent UUID after an app
+bundle is replaced with the same version. For a legacy watchdog without a
+lifetime lock, the exact bundled executable may prove that the old
+registration is still live.
+
+Helper replacement is a durable fail-closed transaction. One versioned journal
+records the phase, goal, target digest, boot UUID, and lifetime-barrier contract.
+Each transition uses atomic rename and file/directory fsync before its side
+effect. A per-user `flock` protects the journal. The root helper also creates a
+stable root-owned `0644` inode under `/var/run`; every app user opens it read-only and holds one exclusive
+kernel `flock` across the complete asynchronous SMAppService transaction. This
+is the machine-wide single-writer barrier across Fast User Switching, and the
+kernel releases it if the app crashes. Only the current non-root console user's
+app may perform register or unregister mutations, checked again immediately
+before each mutation. Root persists `unregistration_pending`, blocks
+acquire/renew without a wall-clock expiry, and restores and reads back only the
+setting Detach owns.
+
+The helper takes a root-owned lifetime `flock` before its listener answers and
+holds it until exit. An enabled job without this boot's lock is dead. The app
+writes `unregisterSubmitted` only after it observes that lock. Registration
+needs the fresh unregister callback, or exact `notRegistered` status plus the
+released lock or a changed boot UUID; `unavailable` is insufficient. Errors
+keep the journal and root gate closed. After an app crash, another console user
+uses the root-created files to resume at `unregisterSubmitted`, never as a
+pristine install.
+
+Before registering a replacement the app fsyncs `registering` with the target
+digest. After macOS reports the new helper enabled, a successful cancel XPC
+reply proves launch readiness and reopens the gate; only then is the definition
+recorded and the journal cleared. Approval and retry failures remain pending for
+the next launch. An ordinary helper SIGTERM/SIGINT uses only the process-local
+termination gate and must not create persistent update state.
 
 Before it creates the listener or changes power state, the helper must pass a
 strict check of its own signature with Security network access enabled. This
@@ -57,7 +141,12 @@ private `0700` directory, `0600` regular file, symlink rejection, atomic writes,
 and file/directory fsync. Ownership intent is persisted before changing power
 state. A pre-existing enabled setting is borrowed and never disabled. A setting
 Detach enabled is restored after the last live lease, a stale lease, low
-battery, or orderly SIGTERM/SIGINT handling. The state records the current
+battery, or orderly SIGTERM/SIGINT handling. After shutdown begins, the helper
+refuses queued reconciliations, so a retained live lease cannot re-enable the
+setting before exit. A state file that cannot be loaded is renamed aside with
+a `.corrupt-<timestamp>` suffix, and the helper starts from a clean state
+instead of a launchd crash loop. Unreadable state never proves
+ownership, so a borrowed setting stays untouched. The state records the current
 `kern.bootsessionuuid`; a different boot clears every old lease before power is
 reconciled, and implausibly future renewal timestamps expire rather than live
 forever. Do not manually change the same machine-wide boolean while Detach owns
@@ -65,13 +154,41 @@ it.
 
 The client lease heartbeat remains every 30 seconds while protected; the helper
 reconciles machine power state every 10 seconds. Leases expire after 120 seconds
-without renewal, with a maximum of 256. The runtime health loop slows from ten
+without renewal, with a maximum of 256 live leases. Expired leases are pruned
+before the count limit is enforced. The runtime health loop slows from ten
 to 30 seconds while waiting, below its 45-second stale limit. Transient renewal
 failures are retried; an active failure is surfaced rather than silently
 reporting protection. Read-only
 status returns a cached snapshot refreshed at startup, after mutations, and by
 the reconciler. It must never invoke `pmset` or wait behind the root mutation
-lock, so UI, watchdog, and tmux polling remain nonblocking.
+lock, so watchdog and explicit status reads remain nonblocking.
+The combined session list reads the private typed watchdog heartbeat once and
+shares its effective state across both providers. This list-only quick read
+does not open XPC. A missing, unhealthy, malformed, or older-than-three-minutes
+heartbeat reports `unknown` without delaying the session snapshot. Full status,
+start preflight, doctor, acquire, renewal, and mutation keep their live XPC
+contracts and existing deadlines.
+
+The app observes atomic watchdog heartbeat replacements from the nearest
+existing parent directory. It moves the watch closer as missing state
+directories appear. Each document replaces one freshness deadline; the
+deadline publishes `unknown` if the watchdog stops. Menu bar, Settings, and
+temperature notifications share this state and run no repeating heartbeat
+reader.
+
+The watchdog heartbeat carries the effective power state and typed raw
+thermal state/latch. With notifications enabled, the app emits one
+localized temperature-safety warning on each inactive-to-active latch
+transition, including when borrowed external protection makes the effective
+power state unavailable; repeated documents never duplicate the warning.
+
+The watchdog is a signed per-user LaunchAgent with an embedded
+`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` at runtime, calls
+`detach power status --json` through the same process-group runner with a
+five-second deadline, and writes private health state. The privileged
+daemon is a distinct demand-launched LaunchDaemon. Neither plist may contain a
+user-specific path. Native power protection requires no Apple Events or
+Automation entitlement.
 
 The default initial acquire carries an eight-second absolute server deadline.
 If protection is not confirmed before it, root rolls back only that request's
@@ -79,7 +196,8 @@ persisted lease, restores a previous matching lease when applicable, and
 reconciles the owned setting before returning failure. This prevents a timed-out
 caller from activating protection later. The outer XPC timeout remains 30
 seconds so rollback can finish. Root `pmset` invocations have bounded output and
-a two-second timeout. The readable tmux power label refreshes every ten seconds
+a two-second timeout; truncation fails closed. The readable tmux power label
+refreshes every ten seconds
 while working and every 30 seconds while waiting, rather than spawning one root
 status request every two seconds per session.
 
@@ -95,9 +213,12 @@ Thermal safety uses only public `ProcessInfo.thermalState`. `serious` and
 closed-lid sleep, the wrapper releases its IOKit assertion without waiting for
 a checkpoint, and initial acquisition is refused. A notification-time release
 failure is retained and surfaced by the next heartbeat or protected-run result;
-it must never disappear behind best-effort cleanup. `nominal` and `fair` must
-remain stable for 30 seconds before protection can return; the helper persists
-this cooldown across restart, and an unknown reading cannot clear it. The raw
+it must never disappear behind best-effort cleanup. Each heartbeat retries the
+safety release and advances the cooldown. Only a confirmed release clears the
+retained failure; a release that still fails stays surfaced. `nominal` and
+`fair` must remain stable for 30 seconds before protection can return; the
+helper persists this cooldown across restart, and an unknown reading cannot
+clear it. The raw
 `nominal|fair|serious|critical|unknown` value and latch cross helper status, CLI
 JSON, watchdog, tmux, and app. Low battery wins the combined reason when both
 guards are active, while the thermal fields remain visible. Borrowed external
@@ -108,7 +229,10 @@ While the wrapper holds a confirmed protected run, it observes the documented
 IOPMrootDomain clamshell notification. Each physical open-to-closed transition
 requests `/usr/bin/pmset displaysleepnow` as the unprivileged console user so
 macOS follows the user's normal Lock Screen policy without Apple Events,
-Automation, or synthetic input. The initial clamshell state is only a baseline:
+Automation, or synthetic input. The lock request has bounded execution: a
+two-second timeout with SIGTERM-to-SIGKILL escalation. A hung `pmset` must not
+block the clamshell monitor or delay wrapper cleanup. The initial clamshell
+state is only a baseline:
 starting a run while the lid is already closed must not lock an external-display
 workflow. Repeated closed notifications lock only once until the lid reopens.
 This does not rewrite the user's password-delay setting. A MacBook run must

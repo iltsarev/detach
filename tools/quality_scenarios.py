@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -93,7 +94,7 @@ def read_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
 
 def append_event(path: Path, record: dict[str, Any]) -> None:
     safe_output(path, "scenario event file")
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    flags = os.O_RDWR | os.O_APPEND | os.O_CREAT
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -101,10 +102,36 @@ def append_event(path: Path, record: dict[str, Any]) -> None:
     except OSError as error:
         raise ScenarioError(f"cannot open scenario event file: {error}") from error
     try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        prior = read_jsonl(path, "scenario events")
+        scenario_id = record["id"]
+        kind = record["kind"]
+        kinds = [
+            event.get("kind") for event in prior
+            if event.get("id") == scenario_id
+        ]
+        if kind == "begin" and kinds:
+            raise ScenarioError(f"scenario {scenario_id} began more than once")
+        if kind == "pass" and kinds != ["begin"]:
+            raise ScenarioError(
+                f"scenario {scenario_id} passed without one begin event")
+        record["time_ns"] = next_event_time_ns(prior)
         os.write(descriptor, (canonical(record) + "\n").encode("utf-8"))
+        os.fchmod(descriptor, 0o600)
     finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
-    path.chmod(0o600)
+
+
+def next_event_time_ns(prior: list[dict[str, Any]]) -> int:
+    """Return a cross-process timestamp that stays ordered in the event file."""
+    now = time.time_ns()
+    if not prior:
+        return now
+    previous = prior[-1].get("time_ns")
+    if isinstance(previous, int) and previous > 0:
+        return max(now, previous + 1)
+    return now
 
 
 def scenario_context(policy: Policy) -> dict[str, dict[str, list[str]]]:
@@ -147,12 +174,6 @@ def record_event(kind: str, scenario_id: str) -> None:
     if policy_status != "instrumented":
         raise ScenarioError(f"scenario {scenario_id} is not instrumented in policy")
     path = Path(raw_path)
-    prior = read_jsonl(path, "scenario events")
-    kinds = [event.get("kind") for event in prior if event.get("id") == scenario_id]
-    if kind == "begin" and kinds:
-        raise ScenarioError(f"scenario {scenario_id} began more than once")
-    if kind == "pass" and kinds != ["begin"]:
-        raise ScenarioError(f"scenario {scenario_id} passed without one begin event")
     append_event(
         path,
         {
@@ -160,7 +181,6 @@ def record_event(kind: str, scenario_id: str) -> None:
             "id": scenario_id,
             "stage": stage,
             "kind": kind,
-            "time_ns": time.monotonic_ns(),
         },
     )
 
@@ -557,7 +577,7 @@ def parser() -> argparse.ArgumentParser:
     subparsers = result.add_subparsers(dest="command", required=True)
     event = subparsers.add_parser("event")
     event.add_argument("kind", choices=sorted(EVENT_KINDS))
-    event.add_argument("scenario_id")
+    event.add_argument("scenario_ids", nargs="+")
     rerun_parser = subparsers.add_parser("rerun")
     rerun_parser.add_argument("scenario_id")
     return result
@@ -566,7 +586,8 @@ def parser() -> argparse.ArgumentParser:
 def main(arguments: list[str]) -> int:
     options = parser().parse_args(arguments)
     if options.command == "event":
-        record_event(options.kind, options.scenario_id)
+        for scenario_id in options.scenario_ids:
+            record_event(options.kind, scenario_id)
         return 0
     if options.command == "rerun":
         return rerun(options.scenario_id)

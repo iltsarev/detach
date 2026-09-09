@@ -43,7 +43,15 @@ def main() -> None:
         assert value["spdxVersion"] == "SPDX-2.3"
         assert value["documentDescribes"] == ["SPDXRef-Package-Detach"]
         names = {package["name"] for package in value["packages"]}
-        assert names == {"Detach", "sparkle", "tmux", "libevent", "utf8proc"}
+        assert names == {
+            "Detach",
+            "sparkle",
+            "swift-argument-parser",
+            "swiftterm",
+            "tmux",
+            "libevent",
+            "utf8proc",
+        }
         assert invoke(["validate", *identity, "--input", str(first)]).returncode == 0
 
         value["packages"][0]["externalRefs"][0]["referenceLocator"] = "git+wrong"

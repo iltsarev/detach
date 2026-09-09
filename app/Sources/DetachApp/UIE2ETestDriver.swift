@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import DetachKit
 import Foundation
+import SwiftTerm
 
 @MainActor
 enum UIE2EControlFault {
@@ -151,34 +152,65 @@ enum UIE2ETestDriver {
     }
 
     private static var started = false
+    private static var scenarioStartedAt = ProcessInfo.processInfo.systemUptime
     private static var scenarioDeadline = TimeInterval.greatestFiniteMagnitude
     private static var nextMouseEventNumber = Int(
         ProcessInfo.processInfo.systemUptime * 1_000)
+    private static let mouseClickInterval: TimeInterval = 0.03
     private static var cursorRestorePoint: CGPoint?
 
     static func runIfRequested(
         installation: InstallationStore,
-        store: SessionStore
+        store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
+        shortcuts: SessionShortcutRegistry
     ) async {
         guard let configuration = AppSettings.uiE2E, !started else { return }
         started = true
         Task { @MainActor in
-            scenarioDeadline = ProcessInfo.processInfo.systemUptime
+            scenarioStartedAt = ProcessInfo.processInfo.systemUptime
+            scenarioDeadline = scenarioStartedAt
                 + Double(configuration.driverBudgetSeconds)
-            trace(
-                "\(configuration.scenario) driver started "
-                    + "(budget \(configuration.driverBudgetSeconds)s)")
-            let report = await runScenario(
-                configuration: configuration,
-                installation: installation,
-                store: store)
+            while !store.hasFreshSnapshot {
+                guard ProcessInfo.processInfo.systemUptime < scenarioDeadline else {
+                    break
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                } catch {
+                    return
+                }
+            }
+            let report: Report
+            if store.hasFreshSnapshot {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                scenarioStartedAt = ProcessInfo.processInfo.systemUptime
+                scenarioDeadline = scenarioStartedAt
+                    + Double(configuration.driverBudgetSeconds)
+                trace(
+                    "\(configuration.scenario) driver started "
+                        + "(budget \(configuration.driverBudgetSeconds)s)")
+                report = await runScenario(
+                    configuration: configuration,
+                    installation: installation,
+                    store: store,
+                    sessionLogSnapshots: sessionLogSnapshots,
+                    shortcuts: shortcuts)
+            } else {
+                report = Report(
+                    schema: 1,
+                    passed: false,
+                    checks: [],
+                    error: "initial typed session snapshot timed out",
+                    accessibilityTree: snapshots())
+            }
             trace("\(configuration.scenario) driver finished: \(report.passed)")
             try? write(report, to: configuration.result)
             NSApp.terminate(nil)
             // A SwiftUI sheet can defer normal termination even after it is
             // dismissed. The validated test copy owns no durable state, so keep
             // the harness bounded after the atomic report is safely on disk.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
                 _exit(EXIT_SUCCESS)
             }
         }
@@ -187,7 +219,9 @@ enum UIE2ETestDriver {
     private static func runScenario(
         configuration: UIE2EConfiguration,
         installation: InstallationStore,
-        store: SessionStore
+        store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
+        shortcuts: SessionShortcutRegistry
     ) async -> Report {
         cursorRestorePoint = CGEvent(source: nil)?.location
         defer {
@@ -214,13 +248,17 @@ enum UIE2ETestDriver {
         default:
             return await runMainScenario(
                 configuration: configuration,
-                store: store)
+                store: store,
+                sessionLogSnapshots: sessionLogSnapshots,
+                shortcuts: shortcuts)
         }
     }
 
     private static func runMainScenario(
         configuration: UIE2EConfiguration,
-        store: SessionStore
+        store: SessionStore,
+        sessionLogSnapshots: SessionLogSnapshotCache,
+        shortcuts: SessionShortcutRegistry
     ) async -> Report {
         var checks: [String] = []
         let previousFrontmost = NSWorkspace.shared.frontmostApplication
@@ -244,13 +282,122 @@ enum UIE2ETestDriver {
                 throw Failure(message: "cannot enable test app activation")
             }
             try await activate(mainWindow)
-            try await Task.sleep(nanoseconds: 200_000_000)
             trace("test app activated")
 
             let dashboard = try await element(role: .splitGroup)
             try requireGeometry(dashboard, name: "dashboard")
             checks.append("dashboard-accessible")
             trace("dashboard accessible")
+            let shortcutGuide = try await element(
+                identifier: "sidebar-shortcut-guide")
+            try requireGeometry(shortcutGuide, name: "sidebar shortcut guide")
+            checks.append("sidebar-shortcut-guide-visible")
+
+            let recoverableID = "detach-codex-ui-recoverable"
+            let recoverableRow = try await element(
+                identifier: "session-row-\(recoverableID)")
+            try requireSemanticControl(
+                recoverableRow, name: "recoverable session row")
+            guard let recoverableSession = store.sessions.first(where: {
+                $0.id == recoverableID
+            }) else {
+                throw Failure(message: "recoverable session is missing")
+            }
+            try await waitUntil("recoverable log snapshot warm-up") {
+                sessionLogSnapshots.poller(for: recoverableSession).hasLoaded
+            }
+            _ = try await clickUntilElement(
+                recoverableRow,
+                name: "recoverable session row",
+                resultIdentifier: "session-detail-\(recoverableID)")
+            // Prove that selection uses the snapshot warmed above. A wall-clock
+            // bound here also measures the synthetic click, Accessibility, and
+            // runner scheduling, none of which can distinguish a cache miss.
+            try await waitUntil("warm recoverable log without a reread", attempts: 5) {
+                guard let scrollView = find(identifier: "session-preview-log")
+                        as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else {
+                    return false
+                }
+                let invocations = try? String(
+                    contentsOf: configuration.root
+                        .appendingPathComponent("fake/invocations.log"),
+                    encoding: .utf8)
+                let logReads = invocations?
+                    .split(separator: "\n")
+                    .filter { $0 == "codex logs --ansi \(recoverableID)" }
+                    .count ?? 0
+                return logReads == 1 && textView.string.contains(
+                    "UI fixture log for \(recoverableID)")
+            }
+            checks.append("non-live-session-switch-uses-warm-cache")
+            try await verifySessionTitleAtMinimumWindowSize(mainWindow)
+            checks.append("session-title-survives-narrow-window-and-large-text")
+            let recoverButton = try await element(
+                identifier: "session-action-recover-in-app")
+            let recoverFallback = try await element(
+                identifier: "session-action-recover-external")
+            try requireSemanticControl(
+                recoverButton, name: "in-app recover action")
+            try requireSemanticControl(
+                recoverFallback, name: "external recover fallback")
+            let logFailure = configuration.root.appendingPathComponent(
+                "fake/disconnected-log-failure")
+            try Data().write(to: logFailure, options: .atomic)
+            try await clickUntil(
+                recoverButton,
+                name: "in-app recover action",
+                outcome: "public detached recover reaches fake CLI") {
+                let actions = try? String(
+                    contentsOf: configuration.root
+                        .appendingPathComponent("fake/actions.log"),
+                    encoding: .utf8)
+                return actions?.contains(
+                    "codex recover --detach \(recoverableID)") == true
+            }
+            let reconnectButton = try await element(
+                identifier: "session-action-attach-in-app")
+            let reconnectFallback = try await element(
+                identifier: "session-action-attach-external")
+            try requireSemanticControl(
+                reconnectButton, name: "in-app reconnect action")
+            try requireSemanticControl(
+                reconnectFallback, name: "external reconnect fallback")
+            guard label(reconnectButton) == L10n.string("Reconnect") else {
+                throw Failure(message: "exited attach client does not offer Reconnect")
+            }
+            try await waitUntil("disconnected session log shows a read failure") {
+                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else { return false }
+                return textView.string.contains("UI fixture log read failed")
+            }
+            try FileManager.default.removeItem(at: logFailure)
+            try await waitUntil("disconnected session log recovers after read failure") {
+                guard let scrollView = find(identifier: "session-preview-log") as? NSScrollView,
+                      let textView = scrollView.documentView as? NSTextView else { return false }
+                return textView.string.contains("UI fixture log for \(recoverableID)")
+            }
+            try await clickUntil(
+                reconnectButton,
+                name: "in-app reconnect action",
+                outcome: "second attach client reaches fake CLI") {
+                let invocations = try? String(
+                    contentsOf: configuration.root
+                        .appendingPathComponent("fake/invocations.log"),
+                    encoding: .utf8)
+                let attachCount = invocations?
+                    .split(separator: "\n")
+                    .filter {
+                        $0 == "codex attach --terminal-features sync \(recoverableID)"
+                    }
+                    .count ?? 0
+                return attachCount >= 2
+            }
+            try await waitUntil("reconnected session terminal", attempts: 80) {
+                find(identifier: "session-preview-terminal") != nil
+            }
+            checks.append(
+                "recover-and-reconnect-run-in-app-with-terminal-fallback")
 
             let completedID = "detach-claude-ui-completed"
             let completedRow = try await element(
@@ -261,6 +408,9 @@ enum UIE2ETestDriver {
                 name: "completed session row",
                 resultIdentifier: "session-detail-\(completedID)")
             try requireGeometry(completedDetail, name: "completed session detail")
+            let completedLogSurface = try await measuredFrame(
+                identifier: "session-detail-log-surface",
+                name: "completed session log surface")
             let deleteButton = try await element(identifier: "session-action-delete")
             try requireSemanticControl(deleteButton, name: "delete action")
             checks.append("sidebar-selects-completed-session")
@@ -275,40 +425,211 @@ enum UIE2ETestDriver {
                 name: "session UUID chip text",
                 offset: CGSize(width: 24, height: 0),
                 size: CGSize(width: 36, height: 18))
-            try await waitUntil("copied full UUID and confirmation", attempts: 15) {
+            try await waitUntil("copied full UUID and confirmation", attempts: 30) {
                 find(identifier: "session-uuid-chip").flatMap(label)
                     == L10n.string("Copied")
                     && NSPasteboard.general.changeCount > pasteboardGeneration
                     && NSPasteboard.general.string(forType: .string) == copiedUUID
             }
-            try await waitUntil("UUID copy confirmation reset", attempts: 25) {
+            try await waitUntil("UUID copy confirmation reset", attempts: 50) {
                 find(identifier: "session-uuid-chip").flatMap(label)
                     == L10n.string("Copy session UUID")
             }
             checks.append("session-uuid-copies-from-text-side")
+            let resumeButton = try await element(
+                identifier: "session-action-resume-in-app")
+            let resumeFallback = try await element(
+                identifier: "session-action-resume-external")
+            try requireSemanticControl(resumeButton, name: "in-app resume action")
+            try requireSemanticControl(resumeFallback, name: "external resume fallback")
+            try await clickUntil(
+                resumeButton,
+                name: "in-app resume action",
+                outcome: "public detached resume reaches fake CLI") {
+                let actions = try? String(
+                    contentsOf: configuration.root
+                        .appendingPathComponent("fake/actions.log"),
+                    encoding: .utf8)
+                return actions?.contains(
+                    "claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9") == true
+            }
+            try await waitUntil("resumed session attaches in app", attempts: 80) {
+                let invocations = try? String(
+                    contentsOf: configuration.root.appendingPathComponent("fake/invocations.log"),
+                    encoding: .utf8)
+                return find(identifier: "session-preview-terminal") != nil
+                    && invocations?.contains(
+                        "claude attach --terminal-features sync detach-claude-ui-completed") == true
+            }
+            let resumeCompleted = configuration.root.appendingPathComponent("fake/resume-completed")
+            guard !FileManager.default.fileExists(atPath: resumeCompleted.path) else {
+                throw Failure(message:
+                    "Resume must show its terminal before the readiness command completes")
+            }
+            let initialSize = try String(
+                contentsOf: configuration.root.appendingPathComponent("fake/initial-terminal-size"),
+                encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let terminal = find(identifier: "session-preview-terminal")
+                as? LocalProcessTerminalView,
+                initialSize.split(separator: "x").first.flatMap({ Int($0) }) == terminal.terminal.cols
+            else {
+                throw Failure(message: "Resume must pass the visible terminal width before startup")
+            }
+            try Data().write(to: configuration.root.appendingPathComponent("fake/release-resume"))
+            try await waitUntil("resume readiness completes") {
+                FileManager.default.fileExists(atPath: resumeCompleted.path)
+            }
+            checks.append("resume-runs-in-app-with-terminal-fallback")
             let runningID = "detach-codex-ui-running"
             let runningRow = try await element(
                 identifier: "session-row-\(runningID)")
             try requireSemanticControl(runningRow, name: "running session row")
+            try await waitUntil("running session Command-1 assignment") {
+                shortcuts.slot(for: runningID) == 1
+            }
+            let shortcutBadge = try await element(
+                identifier: "session-shortcut-\(runningID)")
+            try requireGeometry(shortcutBadge, name: "running session shortcut")
+            guard label(shortcutBadge) == "Command-1" else {
+                throw Failure(message: "running session badge is not Command-1")
+            }
+            try await keyPress("1", keyCode: 18, modifiers: [.command])
+            _ = try await element(identifier: "session-detail-\(runningID)")
+            checks.append("session-shortcut-selects-assigned-session")
+            try await waitUntil("live attach terminal", attempts: 80) {
+                find(identifier: "session-preview-terminal") != nil
+            }
+            checks.append("live-session-hosts-attach-client")
+            let runningLogSurface = try await measuredFrame(
+                identifier: "session-detail-log-surface",
+                name: "running session log surface")
+            guard abs(runningLogSurface.minY - completedLogSurface.minY) <= 1,
+                  abs(runningLogSurface.height - completedLogSurface.height) <= 1 else {
+                throw Failure(message:
+                    "session selection changed the terminal frame from "
+                    + "\(completedLogSurface) to \(runningLogSurface)")
+            }
+            checks.append("session-switch-keeps-terminal-layout-stable")
+            try await waitUntil("event-driven terminal renderer", attempts: 80) {
+                guard let terminal = find(
+                    identifier: "session-preview-terminal")
+                    as? LocalProcessTerminalView else {
+                    return false
+                }
+                return SessionAttachRendering
+                    .hasEnergyEfficientRenderer(in: terminal)
+            }
+            guard let liveTerminal = find(
+                identifier: "session-preview-terminal")
+                as? LocalProcessTerminalView else {
+                throw Failure(message: "live terminal is not a SwiftTerm view")
+            }
+            let liveClientPID = liveTerminal.process.shellPid
+            guard liveClientPID > 1 else {
+                throw Failure(message: "live terminal client PID is missing")
+            }
+            liveTerminal.terminal.setCursorStyle(.blinkUnderline)
+            guard liveTerminal.terminal.options.cursorStyle.tagName
+                    == CursorStyle.steadyUnderline.tagName,
+                  SessionAttachRendering.hasEnergyEfficientRenderer(
+                    in: liveTerminal) else {
+                throw Failure(message: "live terminal retained a blinking cursor timer")
+            }
+            checks.append("live-terminal-renders-on-demand")
+            try await waitUntil("live terminal input readiness", attempts: 80) {
+                FileManager.default.fileExists(atPath: configuration.root
+                    .appendingPathComponent("fake/control-v-ready").path)
+            }
+            try await keyPress("v", keyCode: 9, modifiers: [.control])
+            try await waitUntil("raw control-V reaches attach PTY", attempts: 80) {
+                (try? Data(contentsOf: configuration.root
+                    .appendingPathComponent("fake/control-v.bin"))) == Data([0x16])
+            }
+            checks.append("live-terminal-routes-control-v")
+
+            try await waitUntil("running terminal frame") {
+                String(decoding: liveTerminal.terminal.getBufferAsData(), as: UTF8.self)
+                    .contains(runningID)
+            }
+            let invocationsURL = configuration.root
+                .appendingPathComponent("fake/invocations.log")
+            let attachCountBefore = try String(
+                contentsOf: invocationsURL,
+                encoding: .utf8)
+                .split(separator: "\n")
+                .filter { $0.contains(" attach --terminal-features sync ") }
+                .count
+
+            // Both rows are live. Selection must preserve the exact SwiftTerm
+            // object and PTY while the public client-switch command is delayed.
+            let resumedRow = try await element(
+                identifier: "session-row-\(completedID)")
+            let toCompleted = "client switch --pid \(liveClientPID)"
+                + " --from \(runningID) --to \(completedID) --provider claude"
             _ = try await clickUntilElement(
-                runningRow,
-                name: "running session row",
-                resultIdentifier: "session-detail-\(runningID)")
+                resumedRow,
+                name: "resumed session row",
+                resultIdentifier: "session-detail-\(completedID)")
+            guard let terminalDuringSwitch = find(
+                    identifier: "session-preview-terminal")
+                    as? LocalProcessTerminalView,
+                  terminalDuringSwitch === liveTerminal,
+                  terminalDuringSwitch.process.shellPid == liveClientPID,
+                  String(decoding: terminalDuringSwitch.terminal.getBufferAsData(), as: UTF8.self)
+                    .contains(runningID) else {
+                throw Failure(message:
+                    "live switch replaced the terminal or cleared its complete frame")
+            }
+            try await waitUntil("ownership-safe client switch starts", attempts: 20) {
+                let invocations = try? String(
+                    contentsOf: invocationsURL,
+                    encoding: .utf8)
+                return invocations?.split(separator: "\n")
+                    .contains(Substring(toCompleted)) == true
+            }
+            try await waitUntil("synchronized completed redraw", attempts: 40) {
+                String(decoding: liveTerminal.terminal.getBufferAsData(), as: UTF8.self)
+                    .contains(completedID)
+            }
+
+            let toRunning = "client switch --pid \(liveClientPID)"
+                + " --from \(completedID) --to \(runningID) --provider codex"
+            try await keyPress("1", keyCode: 18, modifiers: [.command])
+            try await waitUntil("same client switches back", attempts: 40) {
+                guard let terminal = find(identifier: "session-preview-terminal")
+                        as? LocalProcessTerminalView,
+                      terminal === liveTerminal,
+                      terminal.process.shellPid == liveClientPID else { return false }
+                let invocations = try? String(
+                    contentsOf: invocationsURL,
+                    encoding: .utf8)
+                return invocations?.split(separator: "\n")
+                    .contains(Substring(toRunning)) == true
+                    && String(decoding: terminal.terminal.getBufferAsData(), as: UTF8.self)
+                        .contains(runningID)
+            }
+            let attachCountAfter = try String(
+                contentsOf: invocationsURL,
+                encoding: .utf8)
+                .split(separator: "\n")
+                .filter { $0.contains(" attach --terminal-features sync ") }
+                .count
+            guard attachCountAfter == attachCountBefore else {
+                throw Failure(message:
+                    "live switches launched a replacement attach client")
+            }
+            checks.append("live-session-switch-reuses-synchronized-client")
             let identityMarker = try await measuredFrame(
                 identifier: "session-detail-identity-marker",
                 name: "session identity marker")
             guard identityMarker.height >= identityMarker.width * 3 else {
                 throw Failure(message: "session identity marker reads as a status dot")
             }
-            let previewIdentity = try await measuredFrame(
-                identifier: "session-preview-identity",
-                name: "session preview identity")
             let previewPower = try await measuredFrame(
                 identifier: "session-preview-power",
                 name: "session preview power")
-            guard previewIdentity.intersection(previewPower).width <= 1,
-                  previewIdentity.maxX <= previewPower.minX + 1 else {
-                throw Failure(message: "session identity and power share one surface")
+            guard identityMarker.intersection(previewPower).isNull else {
+                throw Failure(message: "session identity and power overlap")
             }
             checks.append("session-signals-stay-distinct")
             let stopButton = try await element(identifier: "session-action-stop")
@@ -362,19 +683,20 @@ enum UIE2ETestDriver {
                 selectionMode,
                 name: "finished selection mode",
                 resultIdentifier: "finished-select-all-button")
-            let completedSelectionID = "finished-selection-\(completedID)"
-            var completedSelection = try await element(identifier: completedSelectionID)
+            let stoppedID = "detach-codex-ui-stopped"
+            let stoppedSelectionID = "finished-selection-\(stoppedID)"
+            var stoppedSelection = try await element(identifier: stoppedSelectionID)
             try requireSemanticControl(
-                completedSelection, name: "completed session selection")
-            try await click(completedSelection, name: "select completed session")
-            try await waitUntil("selected completed session") {
-                find(identifier: completedSelectionID)
+                stoppedSelection, name: "stopped session selection")
+            try await click(stoppedSelection, name: "select stopped session")
+            try await waitUntil("selected stopped session") {
+                find(identifier: stoppedSelectionID)
                     .flatMap(label)?.hasPrefix("Deselect") == true
             }
-            completedSelection = try await element(identifier: completedSelectionID)
-            try await click(completedSelection, name: "deselect completed session")
-            try await waitUntil("deselected completed session") {
-                find(identifier: completedSelectionID)
+            stoppedSelection = try await element(identifier: stoppedSelectionID)
+            try await click(stoppedSelection, name: "deselect stopped session")
+            try await waitUntil("deselected stopped session") {
+                find(identifier: stoppedSelectionID)
                     .flatMap(label)?.hasPrefix("Select") == true
             }
 
@@ -418,15 +740,13 @@ enum UIE2ETestDriver {
             try await clickUntil(
                 confirmDelete,
                 name: "delete confirmation",
-                outcome: "fake CLI records both delete actions") {
+                outcome: "fake CLI records stopped-session delete") {
                 let actions = try? String(
                     contentsOf: configuration.root
                         .appendingPathComponent("fake/actions.log"),
                     encoding: .utf8)
                 return actions?.contains(
-                    "claude delete --force \(completedID)") == true
-                    && actions?.contains(
-                        "codex delete --force detach-codex-ui-stopped") == true
+                    "codex delete --force \(stoppedID)") == true
             }
             checks.append("bulk-delete-reaches-fake-cli")
             trace("bulk delete reached fake CLI")
@@ -434,11 +754,13 @@ enum UIE2ETestDriver {
             try await waitUntil("post-delete session refresh") {
                 store.lastUpdated.map { $0 >= deleteObservedAt } == true
             }
+            try await waitUntil("finished selection closes after delete") {
+                find(identifier: "finished-select-all-button") == nil
+            }
             try await waitUntil("delete confirmation dismissal") {
                 NSApp.windows.allSatisfy(\.sheets.isEmpty)
             }
             try await activate(mainWindow)
-            try await Task.sleep(nanoseconds: 200_000_000)
 
             let newSession = try await element(identifier: "new-session-button")
             try requireSemanticControl(newSession, name: "new session action")
@@ -449,9 +771,7 @@ enum UIE2ETestDriver {
                 throw Failure(message: "Advanced prompt is visible while collapsed")
             }
             let launchControl = try await element(identifier: "new-session-launch")
-            let expectedLaunch = TerminalLaunchPresentation.title(
-                terminalDisplayName: TerminalLaunchPresentation.displayName(
-                    for: TerminalCatalog.defaultBundleIdentifier))
+            let expectedLaunch = L10n.string("Start")
             guard label(launchControl) == expectedLaunch else {
                 throw Failure(
                     message: "launch button is \(label(launchControl) ?? "nil"), expected \(expectedLaunch)")
@@ -467,16 +787,22 @@ enum UIE2ETestDriver {
             let collapsedHeight = sheet.frame.height
             let advanced = try await element(identifier: "new-session-advanced")
             try requireSemanticControl(advanced, name: "new session Advanced")
-            try await click(advanced, name: "new session Advanced")
+            try await clickUntil(
+                advanced,
+                name: "new session Advanced",
+                outcome: "new session prompt geometry") {
+                UIE2EGeometryRegistry.frame(for: "new-session-prompt") != nil
+            }
             _ = try await measuredFrame(
                 identifier: "new-session-prompt", name: "new session prompt")
-            _ = try await measuredFrame(
-                identifier: "new-session-terminal", name: "new session terminal")
-            checks.append("new-session-hosts-terminal-picker")
+            guard UIE2EGeometryRegistry.frame(for: "new-session-terminal") == nil else {
+                throw Failure(message: "new-session sheet still hosts a terminal picker")
+            }
+            checks.append("new-session-starts-without-outer-terminal")
             var lastMaxY = pinnedTop
             var lastFrame = sheet.frame
             do {
-                try await waitUntil("new-session top edge stays fixed", attempts: 20) {
+                try await waitUntil("new-session top edge stays fixed", attempts: 40) {
                     guard let current = NSApp.windows.flatMap(\.sheets).first else {
                         return false
                     }
@@ -493,18 +819,51 @@ enum UIE2ETestDriver {
             try await clickMeasuredControl(
                 identifier: "new-session-launch",
                 name: "disabled new session launch")
-            try await Task.sleep(nanoseconds: 200_000_000)
             guard NSApp.windows.contains(where: { !$0.sheets.isEmpty }) else {
                 throw Failure(message: "new-session launch is active without a project")
             }
-            try await clickMeasuredControl(
+            try await clickMeasuredUntil(
                 identifier: "new-session-cancel",
-                name: "new session cancel")
-            try await waitUntil("new-session sheet closes") {
+                name: "new session cancel",
+                outcome: "new-session sheet closes") {
                 NSApp.windows.allSatisfy(\.sheets.isEmpty)
             }
             checks.append("new-session-sheet-semantics")
             trace("new-session sheet closed")
+
+            try Data().write(to: configuration.root.appendingPathComponent(
+                "fake/enable-new-session-project"), options: .atomic)
+            try await activate(mainWindow)
+            try await keyPress("n", keyCode: 45, modifiers: [.command])
+            _ = try await measuredFrame(
+                identifier: "new-session-sheet", name: "new session sheet")
+            checks.append("new-session-command-opens-sheet")
+            try await waitUntil("enabled new session launch") {
+                find(identifier: "new-session-launch").map(isEnabled) == true
+            }
+            let enabledLaunch = try await element(
+                identifier: "new-session-launch")
+            try requireSemanticControl(
+                enabledLaunch, name: "enabled new session launch")
+            try await clickUntil(
+                enabledLaunch,
+                name: "enabled new session launch",
+                outcome: "new session start reaches fake CLI") {
+                FileManager.default.fileExists(atPath: configuration.root
+                    .appendingPathComponent("fake/new-session-started").path)
+            }
+            let startedID = "detach-claude-ui-new"
+            try await waitUntil("new session selection") {
+                find(identifier: "session-detail-\(startedID)") != nil
+            }
+            try await waitUntil("new session embedded terminal", attempts: 80) {
+                find(identifier: "session-preview-terminal") != nil
+                    && FileManager.default.fileExists(atPath: configuration.root
+                        .appendingPathComponent(
+                            "fake/new-session-attach-ready").path)
+            }
+            checks.append("new-session-start-opens-embedded-terminal")
+            trace("new session selected and attached inside Detach")
 
             try Data("empty\n".utf8).write(
                 to: configuration.fixtureState, options: .atomic)
@@ -517,6 +876,34 @@ enum UIE2ETestDriver {
                 to: configuration.fixtureState, options: .atomic)
             checks.append(try await verifyFailurePresentation(in: mainWindow))
             checks.append(contentsOf: try await verifySettings(in: mainWindow))
+
+            try Data("sessions\n".utf8).write(
+                to: configuration.fixtureState, options: .atomic)
+            try await activate(mainWindow)
+            try await keyPress("t", keyCode: 17, modifiers: [.command])
+            try await waitUntil("quick chat reaches fake CLI") {
+                FileManager.default.fileExists(atPath: configuration.root
+                    .appendingPathComponent("fake/quick-chat-started").path)
+            }
+            try await waitUntil("quick chat selection") {
+                find(identifier: "session-detail-detach-codex-ui-quick") != nil
+            }
+            checks.append("quick-chat-command-starts-session")
+
+            guard let shortcutID = shortcuts.sessionID(for: 1) else {
+                throw Failure(message: "no session has the first window-reopen shortcut")
+            }
+            mainWindow.close()
+            try await waitUntil("main window closes") { !mainWindow.isVisible }
+            NSApp.activate(ignoringOtherApps: true)
+            try await keyPress("1", keyCode: 18, modifiers: [.command])
+            _ = try await element(identifier: "session-detail-\(shortcutID)")
+            guard NSApp.windows.contains(where: {
+                $0.identifier?.rawValue == "main" && $0.isVisible
+            }) else {
+                throw Failure(message: "session shortcut did not reopen the main window")
+            }
+            checks.append("session-shortcut-reopens-closed-main-window")
 
             try await restoreFocus(
                 to: previousFrontmost, policy: previousActivationPolicy)
@@ -572,6 +959,48 @@ enum UIE2ETestDriver {
                     forKey: AppSettings.tipsEnabledKey) != priorTips
             }
         checks.append("settings-change-persists")
+        let defaultProjectFolder = try await element(
+            identifier: "settings-default-project-folder")
+        let quickChatProvider = try await element(
+            identifier: "settings-quick-chat-provider")
+        let quickChatFolder = try await element(
+            identifier: "settings-quick-chat-folder")
+        try requireSemanticControl(
+            defaultProjectFolder, name: "default project folder")
+        try requireSemanticControl(
+            quickChatProvider, name: "quick chat provider")
+        try requireSemanticControl(
+            quickChatFolder, name: "quick chat folder")
+        checks.append("settings-session-defaults-visible")
+        let codexProvider = try await buttonLabeled("Codex", attempts: 40)
+        try await clickUntil(
+            codexProvider,
+            name: "Codex quick chat provider",
+            outcome: "quick chat provider persists") {
+                AppSettings.defaults.string(
+                    forKey: AppSettings.quickChatProviderKey)
+                    == Provider.codex.rawValue
+            }
+        checks.append("settings-quick-chat-provider-persists")
+        _ = try await clickUntilElement(
+            quickChatFolder,
+            name: "quick chat folder",
+            resultIdentifier: "open-panel")
+        let openPanels = (NSApp.windows + NSApp.windows.flatMap(\.sheets))
+            .compactMap { $0 as? NSOpenPanel }
+        guard let openPanel = openPanels.first else {
+            throw Failure(message: "quick chat folder panel is not an open panel")
+        }
+        openPanel.cancel(nil)
+        trace("cancelled folder panel: visible=\(openPanel.isVisible), "
+            + "attached=\(openPanel.sheetParent != nil)")
+        try await waitUntil("quick chat folder panel closes") {
+            !openPanel.isVisible && openPanel.sheetParent == nil
+                && NSApp.modalWindow !== openPanel
+                && find(identifier: "open-panel") == nil
+                && NSApp.windows.allSatisfy(\.sheets.isEmpty)
+        }
+        checks.append("settings-quick-chat-folder-panel")
         guard let settingsWindow = UIE2EEventWindowResolver.owner(of: tipsToggle)
         else {
             throw Failure(message: "Settings window is missing")
@@ -585,13 +1014,118 @@ enum UIE2ETestDriver {
         }
         checks.append("settings-window-stays-on-screen")
         let systemTab = try await buttonLabeled(
-            L10n.string("System"), attempts: 20)
+            L10n.string("System"), attempts: 40)
         try await click(systemTab, name: "System settings tab")
         try await revealGeometry(identifier: "settings-storage", name: "Storage")
         try await revealGeometry(
             identifier: "settings-installation", name: "Installation")
         checks.append("settings-system-reveals-storage-and-installation")
+        let generalTab = try await buttonLabeled(
+            L10n.string("General"), attempts: 40)
+        _ = try await clickUntilElement(
+            generalTab, name: "General settings tab",
+            resultIdentifier: "settings-show-tips")
+        // Placement checks run last so no later control click consumes a
+        // cached accessibility frame from before a programmatic window move.
+        try await verifySettingsTextGrowth(in: settingsWindow, visible: visible)
+        checks.append("settings-text-growth-stays-on-screen")
         return checks
+    }
+
+    private static func verifySettingsTextGrowth(
+        in window: NSWindow,
+        visible: CGRect
+    ) async throws {
+        let originalPreference = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        let originalFont = originalPreference as? Double ?? AppFontSize.defaultValue
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        let originalFrame = window.frame
+        var completed = false
+        defer {
+            if !completed { captureSettingsFailure(window) }
+            AppSettings.defaults.set(originalPreference, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        try await activate(window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        try await revealGeometry(
+            identifier: "settings-text-size", name: "settings text size slider")
+        let sliderFrame = try await measuredFrame(
+            identifier: "settings-text-size", name: "settings text size slider")
+        try await incrementSliderToMaximum(in: sliderFrame)
+        let apply = try await element(identifier: "settings-apply-text-size")
+        try await waitUntil("text size draft can be applied") { isEnabled(apply) }
+        guard AppSettings.defaults.double(forKey: AppFontSize.storageKey) == originalFont,
+              abs(window.frame.width - originalFrame.width) < 1 else {
+            throw Failure(message: "text size draft resized Settings before Apply")
+        }
+        try await revealGeometry(
+            identifier: "settings-apply-text-size", name: "text size Apply")
+        try await clickMeasuredControl(
+            identifier: "settings-apply-text-size", name: "apply maximum text size")
+        try await waitUntil("Settings grows within the hosting screen") {
+            AppSettings.defaults.double(forKey: AppFontSize.storageKey)
+                == AppFontSize.allowedRange.upperBound
+                && window.frame.width > originalFrame.width + 100
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings restores its original text size") {
+            abs(window.frame.width - originalFrame.width) < 1
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        trace("Settings Apply changed the font and window size")
+        // Exercise screen-edge growth separately from control input. A
+        // programmatic window move must not race the real Apply click.
+        window.setFrameOrigin(CGPoint(
+            x: visible.maxX - window.frame.width, y: visible.minY))
+        AppSettings.defaults.set(
+            AppFontSize.allowedRange.upperBound, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings grows from the screen edge") {
+            window.frame.width > originalFrame.width + 100
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+        try await waitUntil("Settings restores its size at the screen edge") {
+            abs(window.frame.width - originalFrame.width) < 1
+                && visible.insetBy(dx: -2, dy: -2).contains(window.frame)
+        }
+        completed = true
+    }
+
+    private static func incrementSliderToMaximum(in measuredFrame: CGRect) async throws {
+        let slider = try await element(role: .slider)
+        guard frame(slider).intersects(measuredFrame),
+              let maximum = slider.accessibilityMaxValue() as? NSNumber else {
+            throw Failure(message: "text size slider has no native range or matching frame")
+        }
+        // Invoke the real control's standard increment action. The locator
+        // probe supplies geometry only and cannot change the slider value.
+        for _ in 0...Int(AppFontSize.allowedRange.upperBound - AppFontSize.allowedRange.lowerBound) {
+            guard let previous = value(slider) as? NSNumber else {
+                throw Failure(message: "text size slider has no native value")
+            }
+            if previous.doubleValue >= maximum.doubleValue { return }
+            // SwiftUI can return false even when its native value changes.
+            // Require the observable change instead of that return flag.
+            _ = slider.accessibilityPerformIncrement()
+            try await waitUntil("native text size slider increment", attempts: 20) {
+                (value(slider) as? NSNumber)?.doubleValue != previous.doubleValue
+            }
+        }
+        throw Failure(message: "text size slider did not reach its maximum")
+    }
+
+    private static func captureSettingsFailure(_ window: NSWindow) {
+        guard let configuration = AppSettings.uiE2E,
+              let view = window.contentView,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+        else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? data.write(to: configuration.root.appendingPathComponent(
+            "window-settings-failure.png"), options: .atomic)
     }
 
     private static func runOnboardingFirstRun(
@@ -669,7 +1203,9 @@ enum UIE2ETestDriver {
     }
 
     private static func trace(_ message: String) {
-        FileHandle.standardError.write(Data("UI e2e: \(message)\n".utf8))
+        let elapsed = ProcessInfo.processInfo.systemUptime - scenarioStartedAt
+        FileHandle.standardError.write(Data(String(
+            format: "UI e2e: +%.3fs %@\n", elapsed, message).utf8))
     }
 
     private static func captureGeneralPasteboard() -> [[NSPasteboard.PasteboardType: Data]] {
@@ -699,7 +1235,7 @@ enum UIE2ETestDriver {
 
     private static func buttonLabeled(
         _ name: String,
-        attempts: Int = 100
+        attempts: Int = 200
     ) async throws -> any NSAccessibilityProtocol {
         var result: (any NSAccessibilityProtocol)?
         try await waitUntil("button \(name)", attempts: attempts) {
@@ -755,7 +1291,7 @@ enum UIE2ETestDriver {
 
     private static func sheetButton(
         label: String,
-        attempts: Int = 100
+        attempts: Int = 200
     ) async throws
         -> any NSAccessibilityProtocol
     {
@@ -781,7 +1317,7 @@ enum UIE2ETestDriver {
         for _ in 0..<3 {
             try await click(control, name: name)
             do {
-                return try await sheetButton(label: label, attempts: 10)
+                return try await sheetButton(label: label, attempts: 20)
             } catch {
                 continue
             }
@@ -791,7 +1327,7 @@ enum UIE2ETestDriver {
 
     private static func waitUntil(
         _ description: String,
-        attempts: Int = 100,
+        attempts: Int = 200,
         condition: () -> Bool
     ) async throws {
         for _ in 0..<attempts {
@@ -800,7 +1336,7 @@ enum UIE2ETestDriver {
                 throw Failure(
                     message: "scenario budget expired while waiting for \(description)")
             }
-            try await Task.sleep(nanoseconds: 100_000_000)
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         throw Failure(message: "timed out waiting for \(description)")
     }
@@ -869,8 +1405,11 @@ enum UIE2ETestDriver {
     private static func usesMeasuredGeometry(_ identifier: String) -> Bool {
         identifier == "new-session-button"
             || identifier == "settings-show-tips"
+            || identifier.hasPrefix("settings-default-project-")
+            || identifier.hasPrefix("settings-quick-chat-")
             || identifier.hasPrefix("new-session-")
             || identifier.hasPrefix("onboarding-")
+            || identifier.hasPrefix("finished-")
             || identifier.hasPrefix("session-row-")
             || identifier.hasPrefix("session-action-")
     }
@@ -909,7 +1448,7 @@ enum UIE2ETestDriver {
                 name: "scroll toward \(name)",
                 owningWindow: measuredView.window)
             do {
-                try await waitUntil("visible \(name)", attempts: 10) {
+                try await waitUntil("visible \(name)", attempts: 4) {
                     measuredView.publishFrame()
                     guard let moved = UIE2EGeometryRegistry.frame(for: identifier)
                     else { return false }
@@ -924,7 +1463,7 @@ enum UIE2ETestDriver {
                 if let scrollView = measuredView.enclosingScrollView {
                     scrollView.reflectScrolledClipView(scrollView.contentView)
                 }
-                try await waitUntil("fallback reveal for \(name)", attempts: 10) {
+                try await waitUntil("fallback reveal for \(name)", attempts: 20) {
                     measuredView.publishFrame()
                     guard let moved = UIE2EGeometryRegistry.frame(for: identifier)
                     else { return false }
@@ -952,7 +1491,7 @@ enum UIE2ETestDriver {
             try await click(control, name: name)
             do {
                 try await waitUntil(
-                    "accessibility element \(resultIdentifier)", attempts: 10
+                    "accessibility element \(resultIdentifier)", attempts: 20
                 ) {
                     result = find(identifier: resultIdentifier)
                     return result != nil
@@ -965,6 +1504,42 @@ enum UIE2ETestDriver {
         throw Failure(message: "\(name) did not produce \(resultIdentifier)")
     }
 
+    private static func verifySessionTitleAtMinimumWindowSize(
+        _ window: NSWindow
+    ) async throws {
+        let originalFrame = window.frame
+        let originalFont = AppSettings.defaults.object(forKey: AppFontSize.storageKey)
+        defer {
+            AppSettings.defaults.set(originalFont, forKey: AppFontSize.storageKey)
+            window.setFrame(originalFrame, display: true)
+        }
+        for font in [AppFontSize.defaultValue, AppFontSize.allowedRange.upperBound] {
+            AppSettings.defaults.set(font, forKey: AppFontSize.storageKey)
+            try await waitUntil("session title uses font \(font)") {
+                guard let title = UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                else { return false }
+                let pointSize = AppFontRole.title2.pointSize(base: font)
+                return title.height >= pointSize && title.height < pointSize + 12
+            }
+            window.setContentSize(AppFontSize.minimumWindowSize(for: font))
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await waitUntil("session title is inside the resized window") {
+                elements().compactMap { $0 as? UIE2EGeometryView }
+                    .filter { $0.identifierValue == "session-detail-title" }
+                    .forEach { $0.publishFrame() }
+                return UIE2EGeometryRegistry.frame(for: "session-detail-title")
+                    .map { window.frame.contains($0) } == true
+            }
+            let title = try await measuredFrame(
+                identifier: "session-detail-title", name: "session title")
+            guard title.width >= font * 5, title.height >= font,
+                  window.frame.contains(title) else {
+                throw Failure(message:
+                    "session title disappeared or collapsed at font \(font): \(title)")
+            }
+        }
+    }
+
     private static func clickUntil(
         _ control: any NSAccessibilityProtocol,
         name: String,
@@ -974,7 +1549,7 @@ enum UIE2ETestDriver {
         for _ in 0..<3 {
             try await click(control, name: name)
             do {
-                try await waitUntil(outcome, attempts: 10, condition: condition)
+                try await waitUntil(outcome, attempts: 20, condition: condition)
                 return
             } catch {
                 continue
@@ -1017,12 +1592,30 @@ enum UIE2ETestDriver {
         try await click(frame: screen, name: name, owningWindow: window)
     }
 
+    private static func clickMeasuredUntil(
+        identifier: String,
+        name: String,
+        outcome: String,
+        condition: () -> Bool
+    ) async throws {
+        for _ in 0..<3 {
+            try await clickMeasuredControl(identifier: identifier, name: name)
+            do {
+                try await waitUntil(outcome, attempts: 20, condition: condition)
+                return
+            } catch {
+                continue
+            }
+        }
+        throw Failure(message: "\(name) did not produce \(outcome)")
+    }
+
     private static func revealGeometry(
         identifier: String,
         name: String
     ) async throws {
         var view: UIE2EGeometryView?
-        try await waitUntil("\(name) geometry", attempts: 20) {
+        try await waitUntil("\(name) geometry", attempts: 40) {
             view = elements().compactMap { $0 as? UIE2EGeometryView }.first {
                 $0.identifierValue == identifier
             }
@@ -1038,6 +1631,9 @@ enum UIE2ETestDriver {
     ) async throws -> CGRect {
         var result: CGRect?
         try await waitUntil("real control geometry for \(name)") {
+            elements().compactMap { $0 as? UIE2EGeometryView }
+                .filter { $0.identifierValue == identifier }
+                .forEach { $0.publishFrame() }
             result = UIE2EGeometryRegistry.frame(for: identifier)
             return result?.isEmpty == false
         }
@@ -1054,6 +1650,35 @@ enum UIE2ETestDriver {
         }
         trace("measured \(name): \(result!)")
         return result!
+    }
+
+    static func mouseClickEvents(
+        at windowPoint: CGPoint,
+        windowNumber: Int,
+        name: String
+    ) throws -> [NSEvent] {
+        var events: [NSEvent] = []
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        let eventNumber = nextMouseEventNumber
+        nextMouseEventNumber += 1
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(
+                with: type,
+                location: windowPoint,
+                modifierFlags: [],
+                timestamp: timestamp + Double(events.count) * mouseClickInterval,
+                windowNumber: windowNumber,
+                context: nil,
+                eventNumber: eventNumber,
+                clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0)
+            else { continue }
+            events.append(event)
+        }
+        guard events.count == 2 else {
+            throw Failure(message: "cannot create mouse pair for \(name)")
+        }
+        return events
     }
 
     private static func click(
@@ -1089,40 +1714,20 @@ enum UIE2ETestDriver {
             }
             trace("hit chain for \(name): \(names.joined(separator: " > "))")
         }
-        var events: [NSEvent] = []
-        let timestamp = ProcessInfo.processInfo.systemUptime
-        let clickInterval: TimeInterval = 0.03
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let eventNumber = nextMouseEventNumber
-            nextMouseEventNumber += 1
-            guard let event = NSEvent.mouseEvent(
-                with: type,
-                location: windowPoint,
-                modifierFlags: [],
-                timestamp: timestamp + Double(events.count) * clickInterval,
-                windowNumber: window.windowNumber,
-                context: nil,
-                eventNumber: eventNumber,
-                clickCount: 1,
-                pressure: type == .leftMouseDown ? 1 : 0)
-            else { continue }
-            events.append(event)
-        }
-        guard events.count == 2 else {
-            throw Failure(message: "cannot create mouse pair for \(name)")
-        }
+        let events = try mouseClickEvents(
+            at: windowPoint, windowNumber: window.windowNumber, name: name)
         // AppKit permits postEvent from a subthread. Delay mouseUp so SwiftUI
         // receives a physical-duration click even inside a tracking loop. Put
         // mouseUp at the queue tail so a busy main thread cannot process it
         // before the mouseDown event at the queue head.
         let mouseUp = UIE2EDeferredMouseUp(application: NSApp, event: events[1])
         DispatchQueue.global(qos: .userInitiated).asyncAfter(
-            deadline: .now() + clickInterval
+            deadline: .now() + mouseClickInterval
         ) {
             mouseUp.post()
         }
         NSApp.postEvent(events[0], atStart: true)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 60_000_000)
     }
 
     private static func moveCursor(
@@ -1169,7 +1774,7 @@ enum UIE2ETestDriver {
                 keyCode: keyCode)
             else { throw Failure(message: "cannot create settings keyboard event") }
             NSApp.postEvent(event, atStart: false)
-            try await Task.sleep(nanoseconds: 100_000_000)
+            try await Task.sleep(nanoseconds: 60_000_000)
         }
     }
 

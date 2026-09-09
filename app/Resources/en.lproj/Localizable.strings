@@ -22,7 +22,13 @@
 
 /* DetachKit errors */
 "detach list timed out" = "detach list timed out";
+"detach returned incomplete output" = "detach returned incomplete output";
 "Internal error: %@ must run in Terminal" = "Internal error: %@ must run in Terminal";
+"Internal error: %@ is not an in-app start action" = "Internal error: %@ is not an in-app start action";
+"The session has no provider UUID to resume." = "The session has no provider UUID to resume.";
+"detach resume timed out" = "detach resume timed out";
+"detach recover timed out" = "detach recover timed out";
+"detach start timed out" = "detach start timed out";
 "detach exited with status %d" = "detach exited with status %d";
 "Could not run detach: %@" = "Could not run detach: %@";
 "Session is not eligible for deletion from Finished." = "Session is not eligible for deletion from Finished.";
@@ -77,6 +83,7 @@
 "Check for updates…" = "Check for updates…";
 "Check the %@ path in Settings." = "Check the %@ path in Settings.";
 "Checking the system permission…" = "Checking the system permission…";
+"Checking…" = "Checking…";
 "Choose Another App…" = "Choose Another App…";
 "Choose another terminal" = "Choose another terminal";
 "Choose a project to launch." = "Choose a project to launch.";
@@ -112,10 +119,9 @@
 "Install Manifest" = "Install Manifest";
 "Install and authenticate Codex CLI or Claude CLI, then retry setup." = "Install and authenticate Codex CLI or Claude CLI, then retry setup.";
 "Installation" = "Installation";
-"Launch Codex or Claude in Terminal" = "Launch Codex or Claude in Terminal";
 "Launch in %@" = "Launch in %@";
-"Launching…" = "Launching…";
-"Leave empty and type in the terminal." = "Leave empty and type in the terminal.";
+"Leave empty and type in the embedded terminal." = "Leave empty and type in the embedded terminal.";
+"Live session terminal" = "Live session terminal";
 "Model context used" = "Model context used";
 "Move Detach to Applications" = "Move Detach to Applications";
 "Move Detach.app to Applications and open the installed copy" = "Move Detach.app to Applications and open the installed copy";
@@ -144,9 +150,10 @@
 "Provider" = "Provider";
 "Provider CLI" = "Provider CLI";
 "Ready — we'll notify you about ready responses, completed sessions, or session problems." = "Ready — we'll notify you about ready responses, completed sessions, or session problems.";
-"Recovery from the latest checkpoint is available" = "Recovery from the latest checkpoint is available";
+"Validated recovery data is available" = "Validated recovery data is available";
+"Recover" = "Recover";
+"Reconnect" = "Reconnect";
 "Recover in %@" = "Recover in %@";
-"Refresh interval" = "Refresh interval";
 "Refresh terminal list" = "Refresh terminal list";
 "Reinstall command-line tools" = "Reinstall command-line tools";
 "Remove everything, including checkpoints…" = "Remove everything, including checkpoints…";
@@ -156,6 +163,7 @@
 "Remove the CLI and all saved sessions?" = "Remove the CLI and all saved sessions?";
 "Remove, keeping checkpoints" = "Remove, keeping checkpoints";
 "Resume in %@" = "Resume in %@";
+"Resume" = "Resume";
 "Retry Setup" = "Retry Setup";
 "Running from a DMG or temporary copy is unreliable." = "Running from a DMG or temporary copy is unreliable.";
 "Select a session" = "Select a session";
@@ -169,7 +177,10 @@
 "Setting Up Detach…" = "Setting Up Detach…";
 "Something went wrong" = "Something went wrong";
 "Sparkle checks in the background on its own schedule." = "Sparkle checks in the background on its own schedule.";
-"Start a managed run in your terminal." = "Start a managed run in your terminal.";
+"Start a managed run in Detach." = "Start a managed run in Detach.";
+"Start Codex or Claude in Detach" = "Start Codex or Claude in Detach";
+"Start" = "Start";
+"Starting…" = "Starting…";
 "Start your first session" = "Start your first session";
 "Stop" = "Stop";
 "Technical Details" = "Technical Details";
@@ -267,7 +278,6 @@
 "Text size preview" = "Text size preview";
 "Apply" = "Apply";
 "%d pt" = "%d pt";
-"%d sec" = "%d sec";
 "Command line" = "Command line";
 "Answer ready · 2 min ago" = "Answer ready · 2 min ago";
 "tmux status line" = "tmux status line";
@@ -404,8 +414,28 @@
 "The provider process exited while its worker remained alive." = "The provider process exited while its worker remained alive.";
 "The recorded provider PID is not owned by this worker." = "The recorded provider PID is not owned by this worker.";
 "A recorded runtime process is still alive without its managed tmux session; Detach will not signal it." = "A recorded runtime process is still alive without its managed tmux session; Detach will not signal it.";
-"The live runtime disappeared, but a valid checkpoint can be recovered." = "The live runtime disappeared, but a valid checkpoint can be recovered.";
-"The live runtime disappeared without a valid recovery checkpoint." = "The live runtime disappeared without a valid recovery checkpoint.";
+"Detach could not confirm that the replacement runtime stopped." = "Detach could not confirm that the replacement runtime stopped.";
+"The live runtime disappeared, but validated recovery data is available." = "The live runtime disappeared, but validated recovery data is available.";
+"The live runtime disappeared without validated recovery data." = "The live runtime disappeared without validated recovery data.";
+
+/* Session shortcuts and defaults */
+"Quick chat" = "Quick chat";
+"Sessions" = "Sessions";
+"Session %d" = "Session %d";
+"%@, Command-%d" = "%@, Command-%d";
+"Switch to %@ with Command-%d" = "Switch to %@ with Command-%d";
+"Settings" = "Settings";
+"Find output" = "Find output";
+"Keyboard shortcuts" = "Keyboard shortcuts";
+"Session defaults" = "Session defaults";
+"Default project folder" = "Default project folder";
+"Quick chat provider" = "Quick chat provider";
+"Quick chat folder" = "Quick chat folder";
+"⌘N opens New session. ⌘T starts Quick chat immediately." = "⌘N opens New session. ⌘T starts Quick chat immediately.";
+"Could not start quick chat" = "Could not start quick chat";
+"Quick chat folder is unavailable: %@" = "Quick chat folder is unavailable: %@";
+"Could not identify the active terminal client" = "Could not identify the active terminal client";
+"Could not switch the terminal session" = "Could not switch the terminal session";
 
 /* Menu bar item */
 "Open Detach" = "Open Detach";
@@ -420,3 +450,7 @@
 "Show Detach in the menu bar" = "Show Detach in the menu bar";
 "Show active session count next to the icon" = "Show active session count next to the icon";
 "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own." = "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own.";
+"Only a signed Detach release can update the background monitor." = "Only a signed Detach release can update the background monitor.";
+"Only a signed Detach release can update the power helper." = "Only a signed Detach release can update the power helper.";
+
+"A session operation is in progress." = "A session operation is in progress.";

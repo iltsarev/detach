@@ -59,6 +59,7 @@ struct OnboardingView: View {
                 providerCheckPassed: { false },
                 reconcile: { false },
                 locate: { ProviderAvailability(codex: true) },
+                refreshHeartbeat: { store.refreshPowerProtectionState() },
                 heartbeatIsHealthy: { store.watchdogHeartbeat.healthy },
                 installedCopyExists: { false }))
         } else {

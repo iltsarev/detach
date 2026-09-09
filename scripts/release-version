@@ -4,13 +4,15 @@ set -euo pipefail
 set +x
 umask 077
 export LC_ALL=C
+# The owner runs this in a terminal for the closed-lid confirmation. No Git
+# or GitHub output may wait in a pager.
+export GIT_PAGER=cat PAGER=cat GH_PAGER=cat
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 APP_ROOT="$ROOT/app"
 ENV_FILE="$ROOT/.env.release"
 IMPACT_SCRIPT="$ROOT/scripts/release-impact"
 TEST_MODE="${DETACH_RELEASE_TEST_MODE:-0}"
-IGNORE_TIMING="${DETACH_RELEASE_IGNORE_TIMING:-0}"
 LOCKED=0
 LID_WRAPPER_PID=""
 INSTALL_TEMP=""
@@ -201,8 +203,6 @@ load_release_environment() {
 validate_configuration() {
   [ "$TEST_MODE" = 0 ] || [ "$TEST_MODE" = 1 ] || \
     die 'DETACH_RELEASE_TEST_MODE must be 0 or 1'
-  [ "$IGNORE_TIMING" = 0 ] || [ "$IGNORE_TIMING" = 1 ] || \
-    die 'DETACH_RELEASE_IGNORE_TIMING must be 0 or 1'
   if [ "$TEST_MODE" = 1 ]; then
     printf 'release-version: TEST MODE — production path checks are relaxed\n' >&2
   fi
@@ -490,7 +490,7 @@ download_latest_manifest() {
     "https://github.com/$REPOSITORY/releases/latest/download/release-manifest.json" \
     --output "$destination"
   chmod 0600 "$destination"
-  plutil -p "$destination" >/dev/null
+  plutil -convert json -o /dev/null "$destination"
 }
 
 manifest_value() {
@@ -505,24 +505,26 @@ file_line() {
 }
 
 run_full_tests() {
-  local impact_base="$1" baseline_root=""
+  local impact_base="$1" baseline_root="" hosted_root="" source_commit
+  local gate_args=(--mode release --base "$impact_base" --resume auto)
   note "running the impact-selected pre-release test suite from $impact_base"
   if [ "$TEST_MODE" != 1 ]; then
     baseline_root="$(DETACH_QUALITY_REPOSITORY="$REPOSITORY" \
       "$ROOT/scripts/quality-baseline")"
     export DETACH_QUALITY_BASELINE_ROOT="$baseline_root"
+    # Hosted CI already proved this exact tree for the stages of its merge
+    # plan. The gate reuses that digest-bound evidence and runs the rest.
+    source_commit="$(git -C "$ROOT" rev-parse HEAD)"
+    if hosted_root="$(DETACH_QUALITY_REPOSITORY="$REPOSITORY" \
+        "$ROOT/scripts/quality-evidence" fetch --repository "$REPOSITORY" \
+          --commit "$source_commit")"; then
+      note "reusing hosted evidence for $source_commit: $hosted_root"
+      gate_args+=(--reuse-hosted "$hosted_root")
+    else
+      note "no hosted evidence proves $source_commit; running every selected stage locally"
+    fi
   fi
-  if [ "$IGNORE_TIMING" = 1 ]; then
-    exact_confirmation DETACH_CONFIRM_RELEASE \
-      'Ignoring reference-machine timing budgets for this release'
-    note 'owner waived reference-machine timing budgets for this release only'
-    DETACH_RELEASE_TIMING_OVERRIDE="$REPOSITORY@$TAG" \
-      "$ROOT/scripts/quality-gate" --mode release --base "$impact_base" \
-        --without-release-budget --resume auto
-  else
-    "$ROOT/scripts/quality-gate" --mode release --base "$impact_base" \
-      --resume auto
-  fi
+  "$ROOT/scripts/quality-gate" "${gate_args[@]}"
 }
 
 initialize_workflow() {
@@ -592,31 +594,21 @@ initialize_workflow() {
   write_state_value source-commit "$SOURCE_COMMIT"
   write_state_value previous-version "$current_version"
   write_state_value previous-build "$published_build"
-  if [ "$IGNORE_TIMING" = 1 ]; then
-    write_state_value timing-budget-enforced false
-  else
-    write_state_value timing-budget-enforced true
-  fi
   record_stage preflight
 }
 
 load_workflow() {
-  local saved_version saved_repository saved_tag saved_timing_budget
+  local saved_version saved_repository saved_tag
   fetch_origin
   saved_version="$(read_state_value version)" || die 'incomplete release workflow state (version)'
   saved_repository="$(read_state_value repository)" || die 'incomplete release workflow state (repository)'
   saved_tag="$(read_state_value tag)" || die 'incomplete release workflow state (tag)'
   BUILD="$(read_state_value build)" || die 'incomplete release workflow state (build)'
   SOURCE_COMMIT="$(read_state_value source-commit)" || die 'incomplete release workflow state (source commit)'
-  saved_timing_budget="$(read_state_value timing-budget-enforced)" || \
-    die 'incomplete release workflow state (timing budget)'
   [ "$saved_version" = "$VERSION" ] && [ "$saved_repository" = "$REPOSITORY" ] && \
     [ "$saved_tag" = "$TAG" ] || die 'release workflow state does not match invocation'
   [[ "$BUILD" =~ ^[1-9][0-9]*$ ]] || die 'release workflow state has invalid build'
   [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die 'release workflow state has invalid source commit'
-  case "$saved_timing_budget" in true|false) ;; *) die 'release workflow state has invalid timing budget' ;; esac
-  [ "$saved_timing_budget" = true ] || \
-    note 'resuming a release whose reference-machine timing budgets were owner-waived'
 }
 
 only_release_metadata_is_dirty() {
@@ -713,9 +705,69 @@ remove_release_ci_branch() {
     die 'remote release CI branch still exists after cleanup'
 }
 
+verify_test_mode_publication_boundary() {
+  local fixture_root fixture_repo fixture_origin fixture_bin fixture_hooks
+  local remote_url remote_push_url configured_hooks tool tool_path hook
+
+  [ "$TEST_MODE" = 1 ] || return 0
+  fixture_root="${DETACH_RELEASE_TEST_FIXTURE_ROOT:-}"
+  [ -n "$fixture_root" ] && [[ "$fixture_root" = /* ]] || \
+    die 'test-mode push and publication require an absolute hermetic fixture root'
+  [ -d "$fixture_root" ] && [ ! -L "$fixture_root" ] || \
+    die 'test-mode fixture root must be a non-symlink directory'
+  fixture_root="$(cd -P "$fixture_root" && pwd)"
+  fixture_repo="$fixture_root/repo"
+  fixture_origin="$fixture_root/origin.git"
+  fixture_bin="$fixture_root/bin"
+  fixture_hooks="$fixture_root/hooks"
+
+  [ -d "$fixture_repo" ] && [ ! -L "$fixture_repo" ] && \
+    [ "$(cd -P "$fixture_repo" && pwd)" = "$ROOT" ] || \
+    die 'test-mode fixture repository does not match the release root'
+  [ -d "$fixture_origin" ] && [ ! -L "$fixture_origin" ] && \
+    [ "$(cd -P "$fixture_origin" && pwd)" = "$fixture_origin" ] || \
+    die 'test-mode fixture origin must be a local non-symlink directory'
+  remote_url="$(git -C "$ROOT" remote get-url origin)"
+  remote_push_url="$(git -C "$ROOT" remote get-url --push origin)"
+  [[ "$remote_url" = /* ]] && [[ "$remote_push_url" = /* ]] && \
+    [ -d "$remote_url" ] && [ ! -L "$remote_url" ] && \
+    [ -d "$remote_push_url" ] && [ ! -L "$remote_push_url" ] && \
+    [ "$(cd -P "$remote_url" && pwd)" = "$fixture_origin" ] && \
+    [ "$(cd -P "$remote_push_url" && pwd)" = "$fixture_origin" ] || \
+    die 'test-mode fixture origin does not match the Git remote'
+  [ "$REPOSITORY" = example/detach ] || \
+    die 'test-mode publication requires the placeholder repository'
+
+  configured_hooks="$(git -C "$ROOT" config --get core.hooksPath || true)"
+  [ -d "$fixture_hooks" ] && [ ! -L "$fixture_hooks" ] && \
+    [ -z "$(find "$fixture_hooks" -mindepth 1 -maxdepth 1 -print -quit)" ] && \
+    [[ "$configured_hooks" = /* ]] && [ -d "$configured_hooks" ] && \
+    [ ! -L "$configured_hooks" ] && \
+    [ "$(cd -P "$configured_hooks" && pwd)" = "$fixture_hooks" ] || \
+    die 'test-mode fixture must use its empty hooks directory'
+  for hook in "$fixture_origin"/hooks/*; do
+    [ -e "$hook" ] || continue
+    case "$hook" in
+      *.sample) ;;
+      *) die 'test-mode fixture origin contains an active hook' ;;
+    esac
+  done
+
+  [ -d "$fixture_bin" ] && [ ! -L "$fixture_bin" ] || \
+    die 'test-mode fixture tool directory must be a non-symlink directory'
+  for tool in gh curl security xcrun hdiutil ditto open swift; do
+    tool_path="$(type -P "$tool" || true)"
+    [ -x "$tool_path" ] && [ ! -L "$tool_path" ] && \
+      [ "$(basename "$tool_path")" = "$tool" ] && \
+      [ "$(cd -P "$(dirname "$tool_path")" && pwd)" = "$fixture_bin" ] || \
+      die "test-mode fixture does not own the $tool command"
+  done
+}
+
 push_release_source() {
   local remote_ci remote_main remote_tag merge_output parents tag_commit tag_type
   local -a release_pr_args
+  verify_test_mode_publication_boundary
   if has_stage pushed; then
     RELEASE_HEAD="$(read_state_value release-head)" || die 'release head is missing'
     RELEASE_COMMIT="$(read_state_value release-commit)" || die 'release commit is missing'
@@ -1021,6 +1073,7 @@ run_publish_preflight() {
 }
 
 publish_release() {
+  verify_test_mode_publication_boundary
   if ! has_stage published; then
     release_api_status "$STATE_DIR/release-before-publish.json" >/dev/null
     run_publish_preflight
@@ -1045,7 +1098,7 @@ download_remote_asset() {
 
 verify_published_release() {
   local remote_root="$STATE_DIR/remote-assets" latest_tag http_status
-  local local_asset remote_asset name
+  local local_asset remote_asset name remote_assets remote_name expected
   local -a assets
 
   rm -rf "$remote_root"
@@ -1066,8 +1119,23 @@ verify_published_release() {
     "$APP_ROOT/build/update-assets/release-manifest.json"
     "$APP_ROOT/build/update-assets/release-manifest.json.sha256"
   )
+  remote_assets="$(gh release view "$TAG" --repo "$REPOSITORY" \
+    --json assets --jq '.assets[].name')"
+  while IFS= read -r remote_name; do
+    [ -n "$remote_name" ] || continue
+    expected=0
+    for local_asset in "${assets[@]}"; do
+      if [ "$remote_name" = "$(basename "$local_asset")" ]; then
+        expected=1
+        break
+      fi
+    done
+    [ "$expected" = 1 ] || die "published release has unexpected asset: $remote_name"
+  done <<<"$remote_assets"
   for local_asset in "${assets[@]}"; do
     name="$(basename "$local_asset")"
+    grep -Fx "$name" <<<"$remote_assets" >/dev/null || \
+      die "published release is missing asset: $name"
     remote_asset="$remote_root/$name"
     download_remote_asset "$name" "$remote_asset"
     [ "$(shasum -a 256 "$local_asset" | awk '{print $1}')" = \

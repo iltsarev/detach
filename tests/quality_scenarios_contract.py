@@ -22,6 +22,8 @@ from quality_scenarios import (  # noqa: E402
     ScenarioError,
     assemble,
     finalize_stage,
+    main as scenario_main,
+    next_event_time_ns,
     read_jsonl,
     record_event,
     rerun,
@@ -93,6 +95,31 @@ class QualityScenarioContract(unittest.TestCase):
             with patch.dict("os.environ", environment, clear=False):
                 with self.assertRaisesRegex(ScenarioError, "passed without one begin"):
                     record_event("pass", "SC-UPDATE-CHECK")
+
+    def test_event_time_stays_ordered_across_process_clock_origins(self) -> None:
+        prior = [{"time_ns": 200}]
+        with patch("quality_scenarios.time.time_ns", return_value=100):
+            self.assertEqual(next_event_time_ns(prior), 201)
+
+    def test_event_command_records_multiple_scenarios_in_one_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events.jsonl"
+            environment = {
+                "DETACH_QUALITY_SCENARIO_EVENTS": str(events),
+                "DETACH_QUALITY_SCENARIO_STAGE": "ui-e2e",
+            }
+            with patch.dict("os.environ", environment, clear=False):
+                self.assertEqual(scenario_main([
+                    "event",
+                    "begin",
+                    "SC-UI-DASHBOARD",
+                    "SC-UI-SESSION-DETAIL",
+                ]), 0)
+            records = read_jsonl(events, "events")
+        self.assertEqual(
+            [record["id"] for record in records],
+            ["SC-UI-DASHBOARD", "SC-UI-SESSION-DETAIL"],
+        )
 
     def test_missing_marker_is_a_contract_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

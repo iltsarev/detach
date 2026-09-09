@@ -205,33 +205,76 @@ private let clamshellInterestCallback: IOServiceInterestCallback = {
 
 public enum PMSetScreenLockError: LocalizedError, Equatable {
     case failed(exitCode: Int32)
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
         case let .failed(exitCode):
             "pmset displaysleepnow exited with status \(exitCode)"
+        case .timedOut:
+            "pmset displaysleepnow did not exit before its timeout"
         }
     }
 }
 
 /// `pmset displaysleepnow` is a documented, unprivileged macOS operation. It
 /// turns the displays off immediately; macOS then applies the user's normal
-/// Lock Screen policy, including Touch ID and Apple Watch unlock.
+/// Lock Screen policy, including Touch ID and Apple Watch unlock. The command
+/// runs with the same bounded execution as the root command runner: a timeout
+/// with SIGTERM-to-SIGKILL escalation, so a hung `pmset` cannot block the
+/// clamshell queue or delay wrapper cleanup.
 public struct PMSetScreenLockRequester: ScreenLockRequesting {
-    public init() {}
+    public static let defaultTimeout: TimeInterval = 2
+    public static let defaultTerminationGrace: TimeInterval = 1
+
+    private let executableURL: URL
+    private let arguments: [String]
+    private let timeout: TimeInterval
+    private let terminationGrace: TimeInterval
+    private let runner: BoundedProcessRunner
+
+    public init(
+        timeout: TimeInterval = PMSetScreenLockRequester.defaultTimeout,
+        terminationGrace: TimeInterval =
+            PMSetScreenLockRequester.defaultTerminationGrace
+    ) {
+        self.init(
+            executableURL: URL(fileURLWithPath: "/usr/bin/pmset"),
+            arguments: ["displaysleepnow"],
+            timeout: timeout,
+            terminationGrace: terminationGrace)
+    }
+
+    init(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        terminationGrace: TimeInterval,
+        runner: BoundedProcessRunner = BoundedProcessRunner()
+    ) {
+        self.executableURL = executableURL
+        self.arguments = arguments
+        self.timeout = timeout
+        self.terminationGrace = terminationGrace
+        self.runner = runner
+    }
 
     public func requestLock() throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        process.arguments = ["displaysleepnow"]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw PMSetScreenLockError.failed(
-                exitCode: process.terminationStatus)
+        let result = try runner.run(BoundedProcessRequest(
+            executableURL: executableURL,
+            arguments: arguments,
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "LC_ALL": "C",
+            ],
+            timeout: timeout,
+            terminationGrace: terminationGrace,
+            maximumOutputBytes: 1_024))
+        if result.timedOut {
+            throw PMSetScreenLockError.timedOut
+        }
+        guard result.exitCode == 0 else {
+            throw PMSetScreenLockError.failed(exitCode: result.exitCode)
         }
     }
 }

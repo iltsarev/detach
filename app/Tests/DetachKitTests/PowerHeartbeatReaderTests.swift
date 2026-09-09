@@ -175,6 +175,84 @@ final class PowerHeartbeatReaderTests: XCTestCase {
             "/tmp/home/.local/state/detach/power/watchdog-status.json")
     }
 
+    func testMonitorPublishesAtomicHeartbeatReplacement() throws {
+        let initial = try write(document(
+            powerState: "allowed",
+            checkedAt: ISO8601DateFormatter().string(from: Date())))
+        defer { remove(initial) }
+        let updated = expectation(description: "event-driven heartbeat")
+        let monitor = PowerHeartbeatMonitor(
+            reader: PowerHeartbeatReader(statusURL: initial)
+        ) { snapshot in
+            if snapshot.effectivePowerState == .protected {
+                updated.fulfill()
+            }
+        }
+        monitor.start()
+        defer { monitor.stop() }
+
+        try Data(self.document(
+            powerState: "protected",
+            checkedAt: ISO8601DateFormatter().string(from: Date())).utf8)
+            .write(to: initial, options: .atomic)
+
+        wait(for: [updated], timeout: 1)
+    }
+
+    func testMonitorWatchesClosestExistingParentUntilPowerDirectoryAppears()
+        throws
+    {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let status = root
+            .appendingPathComponent("nested/power", isDirectory: true)
+            .appendingPathComponent("watchdog-status.json")
+        let created = expectation(description: "late heartbeat directory")
+        let monitor = PowerHeartbeatMonitor(
+            reader: PowerHeartbeatReader(statusURL: status)
+        ) { snapshot in
+            if snapshot.effectivePowerState == .protected {
+                created.fulfill()
+            }
+        }
+        monitor.start()
+        defer { monitor.stop() }
+
+        try FileManager.default.createDirectory(
+            at: status.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data(self.document(
+            checkedAt: ISO8601DateFormatter().string(from: Date())).utf8)
+            .write(to: status, options: .atomic)
+
+        wait(for: [created], timeout: 1)
+    }
+
+    func testMonitorSchedulesOnlyTheFreshnessDeadline() throws {
+        let checkedAt = referenceDate.addingTimeInterval(-30)
+        let fresh = PowerHeartbeatSnapshot(
+            statusURL: URL(fileURLWithPath: "/tmp/power.json"),
+            state: "ok",
+            powerState: .protected,
+            checkedAt: checkedAt,
+            isFresh: true)
+        let delay = try XCTUnwrap(PowerHeartbeatMonitor.expirationDelay(
+            for: fresh, now: referenceDate))
+        XCTAssertEqual(delay, 150.05, accuracy: 0.001)
+
+        let stale = PowerHeartbeatSnapshot(
+            statusURL: fresh.statusURL,
+            state: "ok",
+            powerState: .protected,
+            checkedAt: checkedAt,
+            isFresh: false)
+        XCTAssertNil(PowerHeartbeatMonitor.expirationDelay(
+            for: stale, now: referenceDate))
+    }
+
     private func document(
         state: String = "ok",
         powerState: String = "protected",

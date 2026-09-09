@@ -136,6 +136,12 @@ private final class RecordingSessionUUIDPasteboard: SessionUUIDPasteboardWriting
 }
 
 final class SessionActionPresentationTests: XCTestCase {
+    func testInAppActionTitlesDoNotNameAnOuterTerminal() {
+        XCTAssertEqual(SessionActionPresentation.inAppTitle(for: .attach), "Reconnect")
+        XCTAssertEqual(SessionActionPresentation.inAppTitle(for: .resume), "Resume")
+        XCTAssertEqual(SessionActionPresentation.inAppTitle(for: .recover), "Recover")
+    }
+
     func testTerminalActionTitlesNameTheSelectedApplication() {
         XCTAssertEqual(
             SessionActionPresentation.terminalTitle(

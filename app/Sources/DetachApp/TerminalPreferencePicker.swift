@@ -323,9 +323,12 @@ enum ProjectDirectoryChooser {
             prompt: L10n.string("Choose…"))
     }
 
-    static func startingDirectory(selectedProject: URL?) -> URL {
+    static func startingDirectory(
+        selectedProject: URL?,
+        defaultDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
         selectedProject?.deletingLastPathComponent()
-            ?? FileManager.default.homeDirectoryForCurrentUser
+            ?? defaultDirectory
     }
 }
 
@@ -394,9 +397,12 @@ extension ProjectDirectoryChooser {
     static func present(
         from window: NSWindow?,
         selectedProject: URL?,
+        defaultDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         completion: @escaping (URL?) -> Void
     ) {
-        let panel = makeOpenPanel(startingAt: startingDirectory(selectedProject: selectedProject))
+        let panel = makeOpenPanel(startingAt: startingDirectory(
+            selectedProject: selectedProject,
+            defaultDirectory: defaultDirectory))
         let finish: (NSApplication.ModalResponse) -> Void = { response in
             let url = OpenPanelPresentation.selectedURL(response: response, url: panel.url)
             DispatchQueue.main.async {

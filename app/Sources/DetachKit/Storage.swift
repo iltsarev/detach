@@ -585,7 +585,8 @@ private struct StorageScanner {
     }
 
     private func readOwnedRegularFile(_ path: String, maximumBytes: Int) -> Data? {
-        let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        // Open must not wait on a special file before fstat can reject it.
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
         defer { close(descriptor) }
         var item = stat()

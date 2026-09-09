@@ -102,7 +102,9 @@ else:
     path.chmod(0o755)
 
 
-def invoke(root: Path, fake: Path, mode: str) -> subprocess.CompletedProcess[str]:
+def invoke(
+    root: Path, fake: Path, mode: str, *, test_mode: bool = True
+) -> subprocess.CompletedProcess[str]:
     output = root / f"{mode}.json"
     environment = os.environ.copy()
     environment.update(
@@ -116,6 +118,10 @@ def invoke(root: Path, fake: Path, mode: str) -> subprocess.CompletedProcess[str
             "RELEASE_PR_STATE": str(root / f"state-{mode}"),
         }
     )
+    if not test_mode:
+        environment.pop("DETACH_RELEASE_PR_TEST_MODE", None)
+        environment.pop("DETACH_QUALITY_MERGE_TEST_MODE", None)
+        environment["PATH"] = str(fake.parent) + os.pathsep + environment.get("PATH", "")
     return subprocess.run(
         [
             str(ROOT / "scripts/release-pr"),
@@ -140,6 +146,22 @@ def main() -> None:
         root = Path(directory)
         fake = root / "gh"
         fake_gh(fake)
+        forbidden = invoke(root, fake, "forbidden-output", test_mode=False)
+        assert forbidden.returncode == 2, forbidden.stdout
+        assert "release PR evidence must use app/build/release-pr.json" in forbidden.stdout
+        assert not (root / "state-forbidden-output/calls").exists()
+
+        for mode in ["directory-output", "dangling-output"]:
+            output = root / f"{mode}.json"
+            if mode == "directory-output":
+                output.mkdir()
+            else:
+                output.symlink_to(root / "absent-target")
+            invalid = invoke(root, fake, mode)
+            assert invalid.returncode == 2, invalid.stdout
+            assert "release PR evidence output is unsafe" in invalid.stdout
+            assert not (root / f"state-{mode}/calls").exists()
+
         success = invoke(root, fake, "success")
         assert success.returncode == 0, success.stdout
         summary = json.loads((root / "success.json").read_text(encoding="utf-8"))

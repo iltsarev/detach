@@ -86,17 +86,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          baseline_root="$(scripts/quality-baseline)"
+          baseline_root="$(scripts/quality-baseline --profile '${{ matrix.coverage_profile }}')"
           printf 'DETACH_QUALITY_BASELINE_ROOT=%s\n' "$baseline_root" >>"$GITHUB_ENV"
-      - name: Restore exact packaged test app
-        id: app-cache
-        if: matrix.needs_app
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            app/build/Detach.app
-            app/.build/tmux-runtime/arm64/product
-          key: detach-app-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Resources/**/*', 'app/scripts/make-app.sh', 'app/scripts/bundle-modes.sh', 'app/scripts/verify-app.sh', 'bin/detach', 'bin/detach-core', 'scripts/install.sh', 'scripts/build-tmux.sh', 'VERSION', 'BUILD') }}
       - name: Restore exact executable quality products
         id: product-cache
         if: matrix.needs_cache
@@ -108,10 +99,21 @@ jobs:
             app/.build/quality-swift-tests/arm64-apple-macosx/debug/Sparkle.framework
             app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp
             app/.build/quality-ui-release/arm64-apple-macosx/release/Sparkle.framework
-          key: detach-quality-products-v1-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
+            app/.build/quality-runtime/tmux
+            app/.build/quality-runtime/detach-state
+          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
+      - name: Restore exact packaged test app
+        id: app-cache
+        if: matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true')
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            app/build/Detach.app
+            app/.build/tmux-runtime/arm64/product
+          key: detach-app-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Resources/**/*', 'app/scripts/make-app.sh', 'app/scripts/bundle-modes.sh', 'app/scripts/verify-app.sh', 'bin/detach', 'bin/detach-core', 'scripts/install.sh', 'scripts/build-tmux.sh', 'VERSION', 'BUILD') }}
       - name: Restore exact Swift and tmux inputs
         id: swift-cache
-        if: (matrix.needs_cache && steps.product-cache.outputs.cache-hit != 'true') || (matrix.needs_app && steps.app-cache.outputs.cache-hit != 'true')
+        if: (matrix.needs_cache && steps.product-cache.outputs.cache-hit != 'true') || ((matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true')) && steps.app-cache.outputs.cache-hit != 'true')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -131,15 +133,17 @@ jobs:
           python3 tools/quality_products.py verify
           printf 'DETACH_QUALITY_EXACT_PRODUCTS=1\n' >>"$GITHUB_ENV"
       - name: Verify and bind exact packaged test app
-        if: matrix.needs_app && steps.app-cache.outputs.cache-hit == 'true'
+        if: (matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true')) && steps.app-cache.outputs.cache-hit == 'true'
         run: |
           app/scripts/verify-app.sh
           printf 'DETACH_QUALITY_EXACT_APP=1\n' >>"$GITHUB_ENV"
-      - name: Prepare packaged provider runtime
-        if: matrix.needs_app && steps.app-cache.outputs.cache-hit != 'true'
+      - name: Build and bind exact packaged test app
+        if: (!matrix.builds_app && (matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true'))) && steps.app-cache.outputs.cache-hit != 'true'
         env:
           DETACH_QUALITY_APP_SCRATCH: 1
-        run: app/scripts/make-app.sh
+        run: |
+          app/scripts/make-app.sh
+          printf 'DETACH_QUALITY_EXACT_APP=1\n' >>"$GITHUB_ENV"
       - name: Run exact quality shard
         run: |
           BASE_SHA="$(git rev-parse HEAD^1)"
@@ -239,7 +243,9 @@ jobs:
             app/.build/quality-swift-tests/arm64-apple-macosx/debug/Sparkle.framework
             app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp
             app/.build/quality-ui-release/arm64-apple-macosx/release/Sparkle.framework
-          key: detach-quality-products-v1-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
+            app/.build/quality-runtime/tmux
+            app/.build/quality-runtime/detach-state
+          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
       - name: Restore Swift and tmux caches
         id: swift-cache
         if: github.event_name != 'pull_request' && (steps.product-cache.outputs.cache-hit != 'true' || steps.app-cache.outputs.cache-hit != 'true')
@@ -282,7 +288,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.promoted-main.outputs.promoted != 'true')
         env:
           DETACH_QUALITY_AUTHORITY: ci-main
-        run: scripts/quality-gate --mode repository --keep-going --without-release-budget
+        run: scripts/quality-gate --mode repository --keep-going
       - id: main-products
         name: Record completed main Swift products
         if: github.event_name != 'pull_request' && steps.swift-cache.outputs.cache-hit != 'true' && steps.promoted-main.outputs.promoted != 'true' && steps.main-gate.outcome == 'success'
@@ -316,7 +322,9 @@ jobs:
             app/.build/quality-swift-tests/arm64-apple-macosx/debug/Sparkle.framework
             app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp
             app/.build/quality-ui-release/arm64-apple-macosx/release/Sparkle.framework
-          key: detach-quality-products-v1-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
+            app/.build/quality-runtime/tmux
+            app/.build/quality-runtime/detach-state
+          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
       - name: Publish gate summary
         if: always()
         shell: bash
@@ -378,47 +386,79 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           root="$(scripts/quality-baseline)"
-          printf 'root=%s\n' "$root" >>"$GITHUB_OUTPUT"
+          delimiter="detach-$(uuidgen)"
+          {
+            printf 'root<<%s\n' "$delimiter"
+            printf '%s\n' "$root"
+            printf '%s\n' "$delimiter"
+          } >>"$GITHUB_OUTPUT"
       - id: mutation-evidence
         name: Restore latest mutation score when available
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           summary="$(scripts/quality-mutation latest --optional)"
-          printf 'summary=%s\n' "$summary" >>"$GITHUB_OUTPUT"
+          delimiter="detach-$(uuidgen)"
+          {
+            printf 'summary<<%s\n' "$delimiter"
+            if [ -n "$summary" ]; then
+              printf '%s\n' "$summary"
+            fi
+            printf '%s\n' "$delimiter"
+          } >>"$GITHUB_OUTPUT"
       - id: care-evidence
         name: Restore latest quality-care summary when available
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           summary="$(scripts/quality-care latest --optional)"
-          printf 'summary=%s\n' "$summary" >>"$GITHUB_OUTPUT"
+          delimiter="detach-$(uuidgen)"
+          {
+            printf 'summary<<%s\n' "$delimiter"
+            if [ -n "$summary" ]; then
+              printf '%s\n' "$summary"
+            fi
+            printf '%s\n' "$delimiter"
+          } >>"$GITHUB_OUTPUT"
       - id: security-evidence
         name: Restore latest security result when available
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           summary="$(scripts/quality-security latest --optional)"
-          printf 'summary=%s\n' "$summary" >>"$GITHUB_OUTPUT"
+          delimiter="detach-$(uuidgen)"
+          {
+            printf 'summary<<%s\n' "$delimiter"
+            if [ -n "$summary" ]; then
+              printf '%s\n' "$summary"
+            fi
+            printf '%s\n' "$delimiter"
+          } >>"$GITHUB_OUTPUT"
       - name: Generate quality dashboard
+        env:
+          MUTATION_SUMMARY: ${{ steps.mutation-evidence.outputs.summary }}
+          CARE_SUMMARY: ${{ steps.care-evidence.outputs.summary }}
+          SECURITY_SUMMARY: ${{ steps.security-evidence.outputs.summary }}
+          METRICS_BASELINE: ${{ steps.metrics-baseline.outputs.root }}
+          DASHBOARD_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mutation_args=()
           care_args=()
           security_args=()
-          if [ -n "${{ steps.mutation-evidence.outputs.summary }}" ]; then
-            mutation_args+=(--mutation-summary "${{ steps.mutation-evidence.outputs.summary }}")
+          if [ -n "$MUTATION_SUMMARY" ]; then
+            mutation_args+=(--mutation-summary "$MUTATION_SUMMARY")
           fi
-          if [ -n "${{ steps.care-evidence.outputs.summary }}" ]; then
-            care_args+=(--care-summary "${{ steps.care-evidence.outputs.summary }}")
+          if [ -n "$CARE_SUMMARY" ]; then
+            care_args+=(--care-summary "$CARE_SUMMARY")
           fi
-          if [ -n "${{ steps.security-evidence.outputs.summary }}" ]; then
-            security_args+=(--security-summary "${{ steps.security-evidence.outputs.summary }}")
+          if [ -n "$SECURITY_SUMMARY" ]; then
+            security_args+=(--security-summary "$SECURITY_SUMMARY")
           fi
           scripts/quality-dashboard generate \
             --result-root app/build/quality-gates \
             --output app/build/quality-dashboard \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --metrics-baseline "${{ steps.metrics-baseline.outputs.root }}" \
+            --run-url "$DASHBOARD_RUN_URL" \
+            --metrics-baseline "$METRICS_BASELINE" \
             "${mutation_args[@]}" \
             "${care_args[@]}" \
             "${security_args[@]}"
@@ -430,4 +470,4 @@ jobs:
           path: app/build/quality-dashboard
       - name: Deploy quality dashboard
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

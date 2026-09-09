@@ -23,8 +23,7 @@
           "tmux-runtime",
           "release-preflight",
           "publish-preflight",
-          "release-workflow",
-          "release-budget"
+          "release-workflow"
         ],
         "specs": [
           "documentation"
@@ -33,6 +32,7 @@
           "quality-system",
           "documentation",
           "session-lifecycle",
+          "session-state",
           "power-protection",
           "app-experience",
           "onboarding",
@@ -47,6 +47,8 @@
           "J-DOCS-CONSISTENCY",
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE",
@@ -87,18 +89,20 @@
         "status": "known",
         "stages": [
           "static",
-          "codex",
-          "release-budget"
+          "codex"
         ],
         "specs": [
           "runtime"
         ],
         "capabilities": [
-          "session-lifecycle"
+          "session-lifecycle",
+          "session-state"
         ],
         "journeys": [
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE"
@@ -119,22 +123,22 @@
         "stages": [
           "static",
           "app",
-          "ui-e2e",
           "codex",
           "claude",
-          "distribution",
-          "tmux-runtime",
-          "release-budget"
+          "distribution"
         ],
         "specs": [
           "runtime"
         ],
         "capabilities": [
-          "session-lifecycle"
+          "session-lifecycle",
+          "session-state"
         ],
         "journeys": [
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE"
@@ -159,19 +163,21 @@
           "swift",
           "quality-contracts",
           "app",
-          "ui-e2e",
-          "release-budget"
+          "ui-e2e"
         ],
         "specs": [
           "app"
         ],
         "capabilities": [
           "session-lifecycle",
+          "session-state",
           "app-experience"
         ],
         "journeys": [
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE",
@@ -200,10 +206,7 @@
           "swift",
           "quality-contracts",
           "app",
-          "ui-e2e",
-          "distribution",
-          "tmux-runtime",
-          "release-budget"
+          "ui-e2e"
         ],
         "specs": [
           "power"
@@ -238,10 +241,7 @@
           "swift",
           "quality-contracts",
           "app",
-          "ui-e2e",
-          "distribution",
-          "tmux-runtime",
-          "release-budget"
+          "ui-e2e"
         ],
         "specs": [
           "documentation",
@@ -286,20 +286,22 @@
           "tmux-runtime",
           "release-preflight",
           "publish-preflight",
-          "release-workflow",
-          "release-budget"
+          "release-workflow"
         ],
         "specs": [
           "documentation",
           "runtime",
+          "state",
           "power",
           "app",
+          "app-setup",
           "release"
         ],
         "capabilities": [
           "quality-system",
           "documentation",
           "session-lifecycle",
+          "session-state",
           "power-protection",
           "app-experience",
           "onboarding",
@@ -314,6 +316,8 @@
           "J-DOCS-CONSISTENCY",
           "J-SESSION-CREATE",
           "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER",
           "J-SESSION-RECOVER",
           "J-SESSION-STOP",
           "J-SESSION-DELETE",

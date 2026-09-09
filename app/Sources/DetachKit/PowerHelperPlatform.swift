@@ -21,43 +21,26 @@ public struct RootCommandResult: Equatable, Sendable {
     public let exitCode: Int32
     public let standardOutput: String
     public let standardError: String
+    public let standardOutputTruncated: Bool
+    public let standardErrorTruncated: Bool
 
     public init(
         exitCode: Int32,
         standardOutput: String = "",
-        standardError: String = ""
+        standardError: String = "",
+        standardOutputTruncated: Bool = false,
+        standardErrorTruncated: Bool = false
     ) {
         self.exitCode = exitCode
         self.standardOutput = standardOutput
         self.standardError = standardError
+        self.standardOutputTruncated = standardOutputTruncated
+        self.standardErrorTruncated = standardErrorTruncated
     }
 }
 
 public protocol RootCommandRunning: Sendable {
     func run(_ command: RootCommand) throws -> RootCommandResult
-}
-
-private final class BoundedRootCommandOutput: @unchecked Sendable {
-    private let lock = NSLock()
-    private let maximumBytes: Int
-    private var data = Data()
-
-    init(maximumBytes: Int) {
-        self.maximumBytes = max(0, maximumBytes)
-    }
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard data.count < maximumBytes else { return }
-        data.append(chunk.prefix(maximumBytes - data.count))
-    }
-
-    var string: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self)
-    }
 }
 
 public struct RootProcessCommandRunner: RootCommandRunning {
@@ -82,69 +65,26 @@ public struct RootProcessCommandRunner: RootCommandRunning {
     }
 
     public func run(_ command: RootCommand) throws -> RootCommandResult {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: command.executable)
-        process.arguments = command.arguments
-        process.environment = [
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "LC_ALL": "C",
-        ]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-
-        let output = BoundedRootCommandOutput(
-            maximumBytes: maximumOutputBytes)
-        let errorOutput = BoundedRootCommandOutput(
-            maximumBytes: maximumOutputBytes)
-        let readers = DispatchGroup()
-        Self.drain(stdout.fileHandleForReading, into: output, group: readers)
-        Self.drain(stderr.fileHandleForReading, into: errorOutput, group: readers)
-
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            usleep(10_000)
-        }
-        let timedOut = process.isRunning
-        if timedOut {
-            process.terminate()
-            let killDeadline = Date().addingTimeInterval(terminationGrace)
-            while process.isRunning && Date() < killDeadline {
-                usleep(10_000)
-            }
-            if process.isRunning {
-                Darwin.kill(process.processIdentifier, SIGKILL)
-            }
-        }
-        process.waitUntilExit()
-        readers.wait()
-        if timedOut {
+        let result = try BoundedProcessRunner().run(BoundedProcessRequest(
+            executableURL: URL(fileURLWithPath: command.executable),
+            arguments: command.arguments,
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "LC_ALL": "C",
+            ],
+            timeout: timeout,
+            terminationGrace: terminationGrace,
+            maximumOutputBytes: maximumOutputBytes))
+        if result.timedOut {
             throw PowerHelperPlatformError.commandTimedOut(
                 executable: command.executable)
         }
         return RootCommandResult(
-            exitCode: process.terminationStatus,
-            standardOutput: output.string,
-            standardError: errorOutput.string)
-    }
-
-    private static func drain(
-        _ handle: FileHandle,
-        into output: BoundedRootCommandOutput,
-        group: DispatchGroup
-    ) {
-        group.enter()
-        DispatchQueue.global(qos: .utility).async {
-            defer { group.leave() }
-            while true {
-                guard let chunk = try? handle.read(upToCount: 4_096),
-                      !chunk.isEmpty else { return }
-                output.append(chunk)
-            }
-        }
+            exitCode: result.exitCode,
+            standardOutput: String(decoding: result.standardOutput, as: UTF8.self),
+            standardError: String(decoding: result.standardError, as: UTF8.self),
+            standardOutputTruncated: result.standardOutputTruncated,
+            standardErrorTruncated: result.standardErrorTruncated)
     }
 }
 
@@ -274,7 +214,7 @@ public struct PowerHelperLifetimeBarrier: Sendable {
     /// its separately persisted boot-session evidence to accept `.missing`.
     public func status() throws -> PowerHelperLifetimeBarrierStatus {
         let descriptor = Darwin.open(
-            fileURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             let code = errno
             if code == ENOENT { return .missing }
@@ -459,7 +399,7 @@ public struct PowerHelperSystemHandoffLock: Sendable {
     /// handled separately by the app; an existing file is never recreated.
     public func acquire() throws -> PowerHelperSystemHandoffLease? {
         let descriptor = Darwin.open(
-            fileURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             let code = errno
             if code == ENOENT { return nil }
@@ -581,6 +521,10 @@ public struct PMSetClosedLidProtectionController: ClosedLidProtectionControlling
                 message: String(result.standardError.prefix(512))
                     .trimmingCharacters(in: .whitespacesAndNewlines))
         }
+        guard !result.standardOutputTruncated,
+              !result.standardErrorTruncated else {
+            throw PowerHelperPlatformError.unrecognizedPMSetOutput
+        }
         return result
     }
 }
@@ -612,6 +556,10 @@ public struct PMSetBatterySafetyReader: PowerBatterySafetyReading {
                 message: String(result.standardError.prefix(512))
                     .trimmingCharacters(in: .whitespacesAndNewlines))
         }
+        guard !result.standardOutputTruncated,
+              !result.standardErrorTruncated else {
+            throw PowerHelperPlatformError.unrecognizedPMSetOutput
+        }
         let output = result.standardOutput
         if output.contains("'AC Power'") { return false }
         guard output.contains("'Battery Power'") else {
@@ -642,13 +590,28 @@ public final class SecureFilePowerHelperStateStore:
 
     private let fileURL: URL
     private let fileManager: FileManager
+    private let directorySyncer: (Int32) -> Int32
 
-    public init(
+    public convenience init(
         fileURL: URL = SecureFilePowerHelperStateStore.defaultFileURL,
         fileManager: FileManager = .default
     ) {
+        self.init(
+            fileURL: fileURL,
+            fileManager: fileManager,
+            directorySyncer: Darwin.fsync)
+    }
+
+    /// Test seam for the directory-sync failure path, which hardware cannot
+    /// raise on demand.
+    init(
+        fileURL: URL,
+        fileManager: FileManager,
+        directorySyncer: @escaping (Int32) -> Int32
+    ) {
         self.fileURL = fileURL
         self.fileManager = fileManager
+        self.directorySyncer = directorySyncer
     }
 
     public func load() throws -> PowerHelperPersistentState? {
@@ -666,6 +629,39 @@ public final class SecureFilePowerHelperStateStore:
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         return try decoder.decode(PowerHelperPersistentState.self, from: data)
+    }
+
+    /// Moves an unloadable state file aside for later diagnosis and leaves
+    /// the state path empty so the helper starts from a clean state instead
+    /// of crash-looping. The rename acts on the path itself: a symlink is
+    /// moved aside, never followed.
+    public func quarantineUnreadableState() throws {
+        var metadata = stat()
+        guard Darwin.lstat(fileURL.path, &metadata) == 0 else {
+            let code = errno
+            if code == ENOENT { return }
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "lstat", code: code)
+        }
+        let milliseconds = Int(Date().timeIntervalSince1970 * 1_000)
+        let quarantineURL = fileURL.appendingPathExtension(
+            "corrupt-\(milliseconds)")
+        guard Darwin.rename(fileURL.path, quarantineURL.path) == 0 else {
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "rename", code: errno)
+        }
+        let directoryDescriptor = Darwin.open(
+            fileURL.deletingLastPathComponent().path,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directoryDescriptor >= 0 else {
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "open directory", code: errno)
+        }
+        defer { Darwin.close(directoryDescriptor) }
+        guard directorySyncer(directoryDescriptor) == 0 else {
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "fsync directory", code: errno)
+        }
     }
 
     public func save(_ state: PowerHelperPersistentState) throws {

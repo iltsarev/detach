@@ -58,6 +58,13 @@ public struct PowerHelperPersistentState: Codable, Equatable, Sendable {
 public protocol PowerHelperStateStoring: AnyObject {
     func load() throws -> PowerHelperPersistentState?
     func save(_ state: PowerHelperPersistentState) throws
+    /// Moves an unloadable durable state file aside so the next launch does
+    /// not fail on it again. Ephemeral stores have nothing to quarantine.
+    func quarantineUnreadableState() throws
+}
+
+extension PowerHelperStateStoring {
+    public func quarantineUnreadableState() throws {}
 }
 
 public protocol PowerBatterySafetyReading {
@@ -155,7 +162,17 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
         self.now = now
         self.leaseTimeout = max(1, leaseTimeout)
         self.thermalCooldown = max(0, thermalCooldown)
-        state = try store.load() ?? PowerHelperPersistentState()
+        do {
+            state = try store.load() ?? PowerHelperPersistentState()
+        } catch {
+            // A state file that cannot be loaded must not crash-loop the
+            // daemon under launchd demand relaunch. Move it aside for
+            // diagnosis and start clean. Ownership is never inferred from
+            // unreadable state, so a borrowed setting is never disabled;
+            // still-running providers recover through renew-as-reacquire.
+            try? store.quarantineUnreadableState()
+            state = PowerHelperPersistentState()
+        }
     }
 
     public func status() throws -> PowerProtectionStatus {
@@ -277,7 +294,9 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
                         identity, previousLease: previousLease)
                     throw PowerHelperLeaseServiceError.requestExpired
                 }
-                guard status.state == .protected else {
+                let confirmation = Self.confirmationStatus(
+                    for: identity, liveLeases: state.leases, status: status)
+                guard confirmation.state == .protected else {
                     let rollbackStatus = try rollbackInitialAcquireLocked(
                         identity, previousLease: previousLease)
                     // Usually the rollback snapshot is the most truthful
@@ -302,7 +321,7 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
                         thermalSafetyActive:
                             rollbackStatus.thermalSafetyActive)
                 }
-                return status
+                return confirmation
             }
         }
     }
@@ -324,7 +343,9 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
                 try upsertLeaseLocked(
                     identity, renewedAt: instant,
                     assertionActive: assertionActive)
-                return try reconcileAndCacheLocked()
+                let status = try reconcileAndCacheLocked()
+                return Self.confirmationStatus(
+                    for: identity, liveLeases: state.leases, status: status)
             }
         }
     }
@@ -354,6 +375,14 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
     private func reconcileLocked(
         requestDeadline: Date? = nil
     ) throws -> PowerProtectionStatus {
+        // Orderly shutdown restores the owned setting and deliberately
+        // retains live leases for the next helper generation. A
+        // reconciliation queued behind the shutdown hook must never
+        // re-persist ownership or turn the machine setting back on before
+        // the process exits.
+        guard !isTerminating else {
+            throw PowerHelperLeaseServiceError.serviceQuiescing
+        }
         let instant = now()
         try reconcileBootSessionLocked()
         let thermalState = thermalReader.thermalState()
@@ -479,9 +508,15 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
                 assertionActive: assertionActive,
                 existingID: candidate.leases[index].id)
         } else {
-            guard candidate.leases.count < Self.maximumLeaseCount else {
+            // The cap applies to live leases only. Prune expired entries
+            // first so a table full of stale leases cannot reject a
+            // legitimate acquire before the next periodic reconciliation.
+            let liveLeases = PowerLeaseRegistry.liveLeases(
+                candidate.leases, now: renewedAt, timeout: leaseTimeout)
+            guard liveLeases.count < Self.maximumLeaseCount else {
                 throw PowerHelperLeaseServiceError.tooManyLeases
             }
+            candidate.leases = liveLeases
             candidate.leases.append(Self.lease(
                 identity, renewedAt: renewedAt,
                 assertionActive: assertionActive))
@@ -510,6 +545,44 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
             throw PowerHelperLeaseServiceError.closedLidRestorationFailed
         }
         return status
+    }
+
+    /// Confirmation view of a reconcile result for one acquiring or renewing
+    /// identity.
+    ///
+    /// The global aggregate requires every live lease to hold its idle-sleep
+    /// assertion, so one session's staged assertion-inactive lease — a
+    /// waiting transition, or a failed release that survives until its TTL —
+    /// would otherwise fail an unrelated identity's acquire or renewal even
+    /// though that identity's own lease and the machine-wide setting are both
+    /// active. The scoped aggregate keeps every assertion-active lease plus
+    /// the requesting identity and drops unrelated staged-inactive leases.
+    /// The fail-safes are preserved: `derive` never reports `.protected`
+    /// while low battery or thermal safety is active, the requesting
+    /// identity's own staged-inactive lease still blocks its confirmation,
+    /// and the read-only cached status keeps the honest global aggregate.
+    private static func confirmationStatus(
+        for identity: PowerLeaseIdentity,
+        liveLeases: [PowerLease],
+        status: PowerProtectionStatus
+    ) -> PowerProtectionStatus {
+        let scopedLeases = liveLeases.filter {
+            $0.assertionActive
+                || ($0.sessionName == identity.sessionName
+                    && $0.runToken == identity.runToken)
+        }
+        let assertionActive = !scopedLeases.isEmpty
+            && scopedLeases.allSatisfy(\.assertionActive)
+        guard assertionActive != status.assertionActive else { return status }
+        return PowerProtectionStatus.derive(
+            leaseCount: status.leaseCount,
+            assertionActive: assertionActive,
+            closedLidProtectionActive: status.closedLidProtectionActive,
+            helperReachable: status.helperReachable,
+            transitionInProgress: status.transitionInProgress,
+            lowBattery: status.lowBattery,
+            thermalState: status.thermalState,
+            thermalSafetyActive: status.thermalSafetyActive)
     }
 
     private func reconcileAndCacheLocked(

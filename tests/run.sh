@@ -32,24 +32,16 @@ case "$CODEX_TEST_PART" in
 esac
 
 codex_part_selected() {
-  [ "$CODEX_TEST_PART" = all ] || [ "$CODEX_TEST_PART" = "$1" ] || {
-    [ "$CODEX_TEST_PART" = preflight ] && {
-      [ "$1" = history ] || [ "$1" = configuration ]
-    } ||
-    [ "$CODEX_TEST_PART" = recovery ] && [ "$1" = restart ] ||
-    [ "$CODEX_TEST_PART" = guardrails ] && {
-      case "$1" in preflight|crash|history) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = lifecycle-recovery ] && {
-      case "$1" in configuration|lifecycle|recovery|restart) return 0 ;; esac
-      return 1
-    } ||
-    [ "$CODEX_TEST_PART" = resume-identity ] && {
-      case "$1" in resume|identity|delete) return 0 ;; esac
-      return 1
-    }
-  }
+  [ "$CODEX_TEST_PART" != all ] && [ "$CODEX_TEST_PART" != "$1" ] || return 0
+  case "$CODEX_TEST_PART:$1" in
+    preflight:history|preflight:configuration|recovery:restart|\
+    guardrails:preflight|guardrails:crash|guardrails:history|\
+    lifecycle-recovery:configuration|lifecycle-recovery:lifecycle|\
+    lifecycle-recovery:recovery|lifecycle-recovery:restart|\
+    resume-identity:resume|resume-identity:identity|resume-identity:delete)
+      return 0 ;;
+  esac
+  return 1
 }
 
 codex_scenario_event() {
@@ -314,6 +306,40 @@ wait_for_file_text() {
   return 1
 }
 
+saved_resume_args_path() {
+  local metadata="$1"
+  local state_dir="$2"
+  local name
+  local token
+
+  name="$("$STATE_HELPER" meta get "$metadata" resume_args_file 2>/dev/null || true)"
+  if [ -n "$name" ]; then
+    case "$name" in *[!A-Za-z0-9._-]*|resume-args-.bin) return 1 ;; esac
+    case "$name" in resume-args-*.bin) ;; *) return 1 ;; esac
+    token="${name#resume-args-}"
+    token="${token%.bin}"
+    [ "$token" = "$("$STATE_HELPER" meta get "$metadata" run_token)" ] || return 1
+    [ -f "$state_dir/$name" ] && [ ! -L "$state_dir/$name" ] || return 1
+    printf '%s\n' "$state_dir/$name"
+    return
+  fi
+  [ -f "$state_dir/resume-args.bin" ] && \
+    [ ! -L "$state_dir/resume-args.bin" ] || return 1
+  printf '%s\n' "$state_dir/resume-args.bin"
+}
+
+require_nul_file_arg() {
+  local file="$1"
+  local expected="$2"
+  local arg
+
+  while IFS= read -r -d '' arg; do
+    [ "$arg" != "$expected" ] || return 0
+  done <"$file"
+  printf 'missing saved argument %s in %s\n' "$expected" "$file" >&2
+  return 1
+}
+
 require_file_line() {
   local file="$1" expected="$2"
   grep -Fx -- "$expected" "$file" >/dev/null || {
@@ -329,10 +355,17 @@ FAKE_POWER_BIN="$TMP_ROOT/fake-detach-power"
 FAKE_ENV_BIN="$TMP_ROOT/fake-env"
 export FAKE_ENV_ARGS_FILE="$TMP_ROOT/env-args.txt"
 export FAKE_POWER_ARGS_FILE="$TMP_ROOT/power-args.txt"
+export FAKE_POWER_STATUS_FILE="$TMP_ROOT/power-status.txt"
 export FAKE_POWER_RELEASES_FILE="$TMP_ROOT/power-releases.txt"
+export FAKE_POWER_DELAY_SESSION="detach-codex-startup-health"
+export FAKE_POWER_DELAY_RELEASE_FILE="$TMP_ROOT/startup-health-release"
+export FAKE_POWER_FAIL_ARM_FILE="$TMP_ROOT/fail-next-power-run"
+export FAKE_POWER_FAIL_RELEASE_FILE="$TMP_ROOT/release-failed-power-run"
+export FAKE_POWER_FAIL_ENTERED_FILE="$TMP_ROOT/entered-failed-power-run"
 printf '%s\n' \
   '#!/bin/bash' \
   'if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then' \
+  '  printf '\''%s\n'\'' "$*" >>"$FAKE_POWER_STATUS_FILE"' \
   '  printf '\''{"schema":1,"state":"%s","helper_reachable":true}\n'\'' "${FAKE_POWER_STATE:-protected}"' \
   '  exit 0' \
   'fi' \
@@ -344,14 +377,35 @@ printf '%s\n' \
   '  printf '\''%s\n'\'' "$@" >"$FAKE_POWER_ARGS_FILE"' \
   '  ready_file=' \
   '  pid_file=' \
+  '  managed_session=' \
   '  shift' \
   '  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do' \
+  '    if [ "$1" = --session ]; then managed_session="$2"; shift 2; continue; fi' \
   '    if [ "$1" = --ready-file ]; then ready_file="$2"; shift 2; continue; fi' \
   '    if [ "$1" = --pid-file ]; then pid_file="$2"; shift 2; continue; fi' \
   '    shift' \
   '  done' \
   '  [ "${1:-}" = -- ] || exit 2' \
+  '  if [ -f "${FAKE_POWER_FAIL_ARM_FILE:-}" ]; then' \
+  '    [ -z "${FAKE_POWER_FAIL_ENTERED_FILE:-}" ] || printf '\''entered\n'\'' >"$FAKE_POWER_FAIL_ENTERED_FILE"' \
+  '    delay_attempts=0' \
+  '    while [ ! -f "${FAKE_POWER_FAIL_RELEASE_FILE:-}" ] && [ "$delay_attempts" -lt 200 ]; do' \
+  '      delay_attempts=$((delay_attempts + 1))' \
+  '      sleep 0.05' \
+  '    done' \
+  '    [ -f "${FAKE_POWER_FAIL_RELEASE_FILE:-}" ] || exit 124' \
+  '    if [ "${FAKE_POWER_FAIL_AFTER_READY:-0}" = 1 ] && [ -n "$ready_file" ]; then : >"$ready_file"; fi' \
+  '    exit 1' \
+  '  fi' \
   '  [ "${FAKE_POWER_FAIL_RUN:-0}" != 1 ] || exit 1' \
+  '  if [ "$managed_session" = "${FAKE_POWER_DELAY_SESSION:-}" ]; then' \
+  '    delay_attempts=0' \
+  '    while [ ! -f "$FAKE_POWER_DELAY_RELEASE_FILE" ] && [ "$delay_attempts" -lt 200 ]; do' \
+  '      delay_attempts=$((delay_attempts + 1))' \
+  '      sleep 0.05' \
+  '    done' \
+  '    [ -f "$FAKE_POWER_DELAY_RELEASE_FILE" ] || exit 124' \
+  '  fi' \
   '  [ -z "$ready_file" ] || : >"$ready_file"' \
   '  [ -z "$pid_file" ] || printf '\''%s\n'\'' "$$" >"$pid_file"' \
   '  shift' \
@@ -364,15 +418,23 @@ printf '%s\n' \
   'printf '\''%s\n'\'' "$@" >"$FAKE_ENV_ARGS_FILE"' \
   'exit 0' >"$FAKE_ENV_BIN"
 chmod 0755 "$FAKE_ENV_BIN"
+write_releasable_fake_codex() {
+  local output="$1"
+  local release="$2"
+
+  printf '%s\n' \
+    '#!/bin/bash' \
+    "trap '' HUP" \
+    'export FAKE_CODEX_INIT_DELAY=0' \
+    "export FAKE_CODEX_RELEASE_FILE='$release'" \
+    'export FAKE_CODEX_EXIT=0' \
+    "exec \"$ROOT/tests/fake-codex\" \"\$@\"" >"$output"
+  chmod 0755 "$output"
+}
+
 FAKE_CODEX_LONG_BIN="$TMP_ROOT/fake-codex-long"
-printf '%s\n' \
-  '#!/bin/bash' \
-  "trap '' HUP" \
-  'export FAKE_CODEX_INIT_DELAY=0' \
-  'export FAKE_CODEX_SLEEP=20' \
-  'export FAKE_CODEX_EXIT=0' \
-  "exec \"$ROOT/tests/fake-codex\" \"\$@\"" >"$FAKE_CODEX_LONG_BIN"
-chmod 0755 "$FAKE_CODEX_LONG_BIN"
+write_releasable_fake_codex \
+  "$FAKE_CODEX_LONG_BIN" "$TMP_ROOT/fake-codex-long-release"
 FAKE_GIT_BIN_DIR="$TMP_ROOT/fake-bin"
 export FAKE_GIT_MARKER="$TMP_ROOT/ambient-git-was-invoked"
 mkdir -p "$FAKE_GIT_BIN_DIR"
@@ -401,6 +463,7 @@ export CODEX_HOME="$TMP_ROOT/codex-home"
 export CLAUDE_CONFIG_DIR="$TMP_ROOT/claude-home"
 export DETACH_CLAUDE_STATE_ROOT="$TMP_ROOT/claude-state"
 export FAKE_CODEX_ARGS_FILE="$TMP_ROOT/args.txt"
+export FAKE_CODEX_COLORTERM_FILE="$TMP_ROOT/codex-colorterm.txt"
 export FAKE_CODEX_SLEEP=4
 export FAKE_CODEX_EXIT=7
 export FAKE_CODEX_FOREIGN_FIRST=1
@@ -423,9 +486,310 @@ test_sqlite() {
 }
 
 if codex_part_selected preflight; then
+for size in 0x24 80x0 1000x24 80x1000 080x24 80X24 '80x24;exit'; do
+  if "$DETACH" --terminal-size "$size" codex start --detach >"$TMP_ROOT/invalid-size.out" 2>&1; then
+    printf 'accepted invalid startup terminal size: %s\n' "$size" >&2
+    exit 1
+  fi
+  grep -F 'terminal size must be COLSxROWS' "$TMP_ROOT/invalid-size.out" >/dev/null
+done
+if "$DETACH" --terminal-size 80x24 codex stop >"$TMP_ROOT/invalid-size-command.out" 2>&1; then
+  printf 'accepted a startup terminal size on Stop\n' >&2
+  exit 1
+fi
+grep -F 'requires an explicit start, resume, or recover command' "$TMP_ROOT/invalid-size-command.out" >/dev/null
   bash -n "$SCRIPT"
   bash -n "$ROOT/bin/detach-core"
   [ "$($SCRIPT __version)" = "$(<"$ROOT/VERSION")" ]
+
+  : >"$FAKE_POWER_STATUS_FILE"
+  "$DETACH" list --json >/dev/null
+  [ "$(wc -l <"$FAKE_POWER_STATUS_FILE" | tr -d '[:space:]')" = 1 ]
+  grep -Fx 'status --json --quick' "$FAKE_POWER_STATUS_FILE" >/dev/null
+
+  # The public JSON list overlaps independent provider reads but must publish
+  # complete records in Codex-then-Claude order and remove its private files.
+  public_list_tmp="$TMP_ROOT/public-list-tmp"
+  public_codex_root="$TMP_ROOT/public-list-codex"
+  public_claude_root="$TMP_ROOT/public-list-claude"
+  public_list_state_wrapper="$TMP_ROOT/public-list-state"
+  public_list_started="$TMP_ROOT/public-list-started"
+  mkdir -p \
+    "$public_list_tmp" \
+    "$public_codex_root/sessions/detach-codex-public-order" \
+    "$public_claude_root/sessions/detach-claude-public-order"
+  "$STATE_HELPER" meta create \
+    "$public_codex_root/sessions/detach-codex-public-order/meta.json" \
+    --integer schema 1 \
+    --string session_name detach-codex-public-order \
+    --string project_dir "$ROOT" \
+    --string status stopped
+  "$STATE_HELPER" meta create \
+    "$public_claude_root/sessions/detach-claude-public-order/meta.json" \
+    --integer schema 1 \
+    --string session_name detach-claude-public-order \
+    --string project_dir "$ROOT" \
+    --string status stopped
+  printf '%s\n' \
+    '#!/bin/bash' \
+    'set -u' \
+    'if [ "${1:-} ${2:-}" = "meta snapshots" ]; then' \
+    '  printf "started\n" >>"$DETACH_PARALLEL_LIST_STARTED"' \
+    '  attempts=0' \
+    '  while [ "$attempts" -lt 200 ]; do' \
+    '    [ "$(wc -l <"$DETACH_PARALLEL_LIST_STARTED" | tr -d "[:space:]")" -ge 2 ] && break' \
+    '    sleep 0.01' \
+    '    attempts=$((attempts + 1))' \
+    '  done' \
+    '  [ "$attempts" -lt 200 ] || exit 91' \
+    'fi' \
+    'exec "$DETACH_PARALLEL_LIST_STATE_HELPER" "$@"' \
+    >"$public_list_state_wrapper"
+  chmod 0755 "$public_list_state_wrapper"
+  public_list_output="$(
+    TMPDIR="$public_list_tmp" \
+    DETACH_CODEX_STATE_ROOT="$public_codex_root" \
+    DETACH_CLAUDE_STATE_ROOT="$public_claude_root" \
+    DETACH_STATE_BIN="$public_list_state_wrapper" \
+    DETACH_PARALLEL_LIST_STARTED="$public_list_started" \
+    DETACH_PARALLEL_LIST_STATE_HELPER="$STATE_HELPER" \
+    DETACH_POWER_BIN=/usr/bin/false \
+      "$DETACH" list --json
+  )"
+  [ "$(wc -l <"$public_list_started" | tr -d '[:space:]')" = 2 ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin provider)" = codex ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '2p' | \
+    "$STATE_HELPER" meta get /dev/stdin provider)" = claude ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
+  [ -z "$(find "$public_list_tmp" -mindepth 1 -print -quit)" ]
+
+  # A caller can terminate the public frontend by PID (for example during app
+  # cancellation). Its cleanup must terminate the two exact provider jobs, not
+  # only the background shell functions that launched them.
+  cancel_list_payload="$TMP_ROOT/cancel-list-payload"
+  cancel_list_pids="$TMP_ROOT/cancel-list-pids"
+  mkdir -p "$cancel_list_payload"
+  : >"$cancel_list_pids"
+  install -m 0755 "$ROOT/bin/detach" "$cancel_list_payload/detach"
+  printf '%s\n' \
+    '#!/bin/bash' \
+    '[ "${DETACH_CORE_ENTRYPOINT:-}" = 1 ] || exit 2' \
+    'printf '\''%s\n'\'' "$$" >>"$DETACH_CANCEL_LIST_PIDS"' \
+    'trap '\''exit 0'\'' HUP INT TERM' \
+    'while :; do sleep 0.05; done' \
+    >"$cancel_list_payload/detach-core"
+  chmod 0755 "$cancel_list_payload/detach-core"
+  DETACH_CANCEL_LIST_PIDS="$cancel_list_pids" \
+  DETACH_POWER_BIN=/usr/bin/false \
+    "$cancel_list_payload/detach" list --json >/dev/null 2>&1 &
+  cancel_list_frontend_pid=$!
+  attempts=0
+  # The full gate overlaps this process-start proof with release contracts.
+  # Keep the poll short, but allow bounded scheduler contention.
+  while [ "$(wc -l <"$cancel_list_pids" 2>/dev/null || printf 0)" -lt 2 ] && \
+        [ "$attempts" -lt 300 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.01
+  done
+  [ "$attempts" -lt 300 ]
+  kill -TERM "$cancel_list_frontend_pid"
+  wait "$cancel_list_frontend_pid" 2>/dev/null || true
+  cancel_list_survivors=""
+  attempts=0
+  while [ "$attempts" -lt 100 ]; do
+    cancel_list_survivors=""
+    while IFS= read -r cancel_list_pid; do
+      kill -0 "$cancel_list_pid" 2>/dev/null && \
+        cancel_list_survivors="$cancel_list_survivors $cancel_list_pid"
+    done <"$cancel_list_pids"
+    [ -n "$cancel_list_survivors" ] || break
+    attempts=$((attempts + 1))
+    sleep 0.01
+  done
+  if [ -n "$cancel_list_survivors" ]; then
+    for cancel_list_pid in $cancel_list_survivors; do
+      kill -KILL "$cancel_list_pid" 2>/dev/null || true
+    done
+    printf 'public list cancellation left provider jobs alive:%s\n' \
+      "$cancel_list_survivors" >&2
+    exit 1
+  fi
+
+  # The app's long-lived source must be the public CLI, backed by one native
+  # process. Prove lifecycle and transcript writes produce leading/trailing
+  # typed hints on a normal user-data volume (FSEvents excludes some temporary
+  # filesystem implementations).
+  (
+    event_root="$ROOT/app/build/session-events-$$"
+    event_output="$event_root/events.jsonl"
+    event_pid=""
+    cleanup_event_probe() {
+      [ -z "$event_pid" ] || kill "$event_pid" 2>/dev/null || true
+      [ -z "$event_pid" ] || wait "$event_pid" 2>/dev/null || true
+      rm -rf "$event_root"
+    }
+    trap cleanup_event_probe EXIT
+    event_session="detach-codex-event"
+    event_managed_transcript="$event_root/codex/sessions/managed.jsonl"
+    mkdir -p \
+      "$event_root/state/codex/sessions/$event_session" \
+      "$event_root/codex/sessions"
+    touch "$event_managed_transcript"
+    "$STATE_HELPER" meta create \
+      "$event_root/state/codex/sessions/$event_session/meta.json" \
+      --integer schema 1 \
+      --string session_name "$event_session" \
+      --string project_dir "$event_root/project" \
+      --string transcript_path "$event_managed_transcript"
+    # The watcher reads managed metadata from the explicit provider state
+    # roots, so a relocated provider root must be named like the runtime does.
+    DETACH_STATE_ROOT="$event_root/state" \
+    DETACH_CODEX_STATE_ROOT="$event_root/state/codex" \
+    DETACH_CLAUDE_STATE_ROOT="$event_root/state/claude" \
+    CODEX_HOME="$event_root/codex" \
+    CLAUDE_CONFIG_DIR="$event_root/claude" \
+      "$SCRIPT" watch --json >"$event_output" &
+    event_pid=$!
+    wait_for_file_text "$event_output" '"event":"ready"'
+    "$STATE_HELPER" events publish "$event_root/state"
+    wait_for_file_text "$event_output" '"event":"changed"'
+    touch "$event_root/codex/sessions/unmanaged.jsonl"
+    sleep 0.3
+    [ "$(grep -c '"event":"changed"' "$event_output")" -eq 1 ]
+    touch "$event_managed_transcript"
+    event_attempts=0
+    while [ "$event_attempts" -lt 80 ] && \
+          [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 3 ]; do
+      event_attempts=$((event_attempts + 1))
+      sleep 0.05
+    done
+    [ "$(grep -c '"event":"changed"' "$event_output")" -ge 3 ]
+
+    claude_event_session="detach-claude-event"
+    claude_event_transcript="$event_root/claude/projects/managed.jsonl"
+    mkdir -p \
+      "$event_root/state/claude/sessions/$claude_event_session" \
+      "$event_root/claude/projects"
+    touch "$claude_event_transcript"
+    "$STATE_HELPER" meta create \
+      "$event_root/state/claude/sessions/$claude_event_session/meta.json" \
+      --integer schema 1 \
+      --string session_name "$claude_event_session" \
+      --string project_dir "$event_root/project" \
+      --string transcript_path "$claude_event_transcript"
+    "$STATE_HELPER" events publish "$event_root/state"
+    event_attempts=0
+    while [ "$event_attempts" -lt 80 ] && \
+          [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 4 ]; do
+      event_attempts=$((event_attempts + 1))
+      sleep 0.05
+    done
+    sleep 0.1
+    touch "$claude_event_transcript"
+    event_attempts=0
+    while [ "$event_attempts" -lt 80 ] && \
+          [ "$(grep -c '"event":"changed"' "$event_output" 2>/dev/null || true)" -lt 6 ]; do
+      event_attempts=$((event_attempts + 1))
+      sleep 0.05
+    done
+    [ "$(grep -c '"event":"changed"' "$event_output")" -ge 6 ]
+  )
+
+  heartbeat_source="$(sed -n \
+    '/^runtime_heartbeat_locked() {/,/^runtime_heartbeat_once() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$heartbeat_source" | \
+    grep -F 'state_update_meta_for_run_without_event' >/dev/null
+  printf '%s\n' "$heartbeat_source" | \
+    grep -F 'runtime_writer_matches_live_worker' >/dev/null
+  printf '%s\n' "$heartbeat_source" | \
+    grep -F '@detach_heartbeat_epoch' >/dev/null
+  printf '%s\n' "$heartbeat_source" | \
+    grep -F 'power_refresh_session_status' >/dev/null
+  checkpoint_source="$(sed -n \
+    '/^checkpoint_once_locked() (/,/^runtime_readiness_is_committed() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$checkpoint_source" | \
+    grep -F '[ -n "$run_token" ] && [ -n "$worker_pid" ] || return 1' >/dev/null
+  printf '%s\n' "$checkpoint_source" | \
+    grep -F 'runtime_writer_matches_live_worker' >/dev/null
+  checkpoint_loop_source="$(sed -n \
+    '/^checkpoint_loop() {/,/^runtime_heartbeat_locked() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$checkpoint_loop_source" | \
+    grep -F '__discover_live_worker_locked' >/dev/null
+  recover_source="$(sed -n \
+    '/^recover_session() {/,/^main() {/p' "$ROOT/bin/detach-core")"
+  printf '%s\n' "$recover_source" | \
+    grep -F '__recover_session_prepare_locked' >/dev/null
+  state_mutation_source="$(sed -n \
+    '/^state_update_meta() {/,/^state_update_meta_without_event() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$state_mutation_source" | \
+    grep -F 'publish_session_event' >/dev/null
+  start_source="$(sed -n \
+    '/^start_tmux_session() {/,/^running_session_for_project() {/p' \
+    "$ROOT/bin/detach-core")"
+  if printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
+     grep -F 'publish_session_event' >/dev/null; then
+    printf 'start published lifecycle state before the worker existed\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$start_source" | sed -n '1,/respawn-pane -k/p' | \
+    grep -F 'install_session_event_hook' >/dev/null
+  worker_start_source="$(sed -n \
+    '/^worker_main() {/,/^  if \[ "$PROVIDER" = "claude" \]; then/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$worker_start_source" | \
+    grep -F 'state_update_meta_for_run_without_event' >/dev/null
+  printf '%s\n' "$worker_start_source" | \
+    grep -F 'publish_session_event' >/dev/null
+  # The pane-died hook string crosses tmux quoting and `sh -c`. Paths with
+  # spaces are common; characters either layer could reinterpret are refused.
+  hook_command="$(
+    DETACH_CORE_ENTRYPOINT=1 \
+    DETACH_PROVIDER=codex \
+    DETACH_STATE_BIN='/Volumes/User Data/libexec/detach-state' \
+    DETACH_STATE_ROOT='/Volumes/User Data/state' \
+      "$ROOT/bin/detach-core" __session_event_hook_command
+  )"
+  [ "$hook_command" = "run-shell -b \"'/Volumes/User Data/libexec/detach-state' events publish '/Volumes/User Data/state' >/dev/null 2>&1 || true\"" ]
+  if DETACH_CORE_ENTRYPOINT=1 \
+     DETACH_PROVIDER=codex \
+     DETACH_STATE_BIN='/tmp/$HOME/detach-state' \
+     DETACH_STATE_ROOT='/tmp/state' \
+       "$ROOT/bin/detach-core" __session_event_hook_command >/dev/null; then
+    printf 'hook command accepted an unsafe path\n' >&2
+    exit 1
+  fi
+  # The cleanup checkpoint must not wake the app while the provider is gone
+  # and the worker is still alive; the status write that follows publishes.
+  worker_cleanup_source="$(sed -n \
+    '/^  worker_cleanup() {/,/^  trap worker_cleanup EXIT/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$worker_cleanup_source" | \
+    grep -F 'DETACH_SUPPRESS_SESSION_EVENT=1' >/dev/null
+  printf '%s\n' "$worker_cleanup_source" | \
+    grep -F 'checkpoint_once "$session" "$run_token" "$$"' >/dev/null
+  finalizing_line="$(printf '%s\n' "$worker_cleanup_source" | \
+    grep -n -- '--string lifecycle_phase finalizing' | head -1 | cut -d: -f1)"
+  final_checkpoint_line="$(printf '%s\n' "$worker_cleanup_source" | \
+    grep -n 'checkpoint_once' | tail -1 | cut -d: -f1)"
+  terminal_line="$(printf '%s\n' "$worker_cleanup_source" | \
+    grep -n -- '--string lifecycle_phase terminal' | tail -1 | cut -d: -f1)"
+  [ -n "$finalizing_line" ] && [ -n "$final_checkpoint_line" ] && \
+    [ -n "$terminal_line" ]
+  [ "$finalizing_line" -lt "$final_checkpoint_line" ]
+  [ "$final_checkpoint_line" -lt "$terminal_line" ]
+  delete_source="$(sed -n \
+    '/^delete_locked() {/,/^restore_rollout_if_needed() {/p' \
+    "$ROOT/bin/detach-core")"
+  printf '%s\n' "$delete_source" | \
+    grep -F 'publish_session_event' >/dev/null
 
 if FAKE_POWER_STATE=unavailable run_codex --name power-preflight --detach -- \
   'must not start without power protection' >/dev/null 2>&1; then
@@ -629,7 +993,8 @@ bootstrap_codex_checkpoint() {
   export FAKE_CODEX_EXIT=0
   export FAKE_CODEX_FOREIGN_FIRST=0
   export FAKE_CODEX_INIT_DELAY=0.1
-  run_codex --name integration --detach -- 'recovery fixture'
+  run_codex --name integration --detach -- \
+    --model detach-recovery-model 'recovery fixture'
   wait_for_tmux_option "$SESSION" @detach_status running
   meta="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/meta.json"
   checkpoint="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/checkpoint"
@@ -642,7 +1007,11 @@ bootstrap_codex_checkpoint() {
     sleep 0.1
   done
   [ -s "$checkpoint/rollout.jsonl" ]
+  [ -s "$checkpoint/.detach-jsonl-validation.json" ]
   [ -s "$checkpoint/codex-state.sqlite" ]
+  ! find "$checkpoint" -maxdepth 1 \
+    \( -name 'codex-state.sqlite.tmp.*-shm' -o \
+       -name 'codex-state.sqlite.tmp.*-wal' \) -print -quit | grep -q .
   expected_id="$("$STATE_HELPER" meta get "$meta" codex_session_id)"
   [ -n "$expected_id" ]
   run_codex stop integration
@@ -659,15 +1028,83 @@ bootstrap_codex_checkpoint() {
 if codex_part_selected lifecycle; then
   marker="$TMP_ROOT/must-not-exist"
   literal_prompt="spaces ; \$(touch $marker) * \"quotes\""
-  export FAKE_CODEX_SLEEP=12
+  # Keep the provider alive across the real PTY and nested-client checks. A
+  # cold release gate can legitimately spend more than 12 seconds before the
+  # client-switch assertions, and those assertions require a live source pane.
+  export FAKE_CODEX_SLEEP=60
   integration_release="$TMP_ROOT/integration-provider-release"
   export FAKE_CODEX_RELEASE_FILE="$integration_release"
+
+  # Initial metadata is a private handoff document. It must not create a row
+  # before tmux and the worker have published one coherent runtime identity.
+  initializing_session=detach-codex-initializing-fixture
+  initializing_dir="$DETACH_CODEX_STATE_ROOT/sessions/$initializing_session"
+  mkdir -p "$initializing_dir"
+  "$STATE_HELPER" meta create "$initializing_dir/meta.json" \
+    --integer schema 1 \
+    --string session_name "$initializing_session" \
+    --string project_dir "$ROOT" \
+    --string status starting \
+    --string lifecycle_phase initializing \
+    --string run_token initializing-token \
+    --integer health_schema 1
+  ! run_codex list --json | grep -F "\"session_name\":\"$initializing_session\"" >/dev/null
+  rm -rf "$initializing_dir"
+
+  # Hold the power wrapper between the exact worker handshake and provider
+  # launch. The lifecycle hint observed in this phase must remain `starting`;
+  # it must never flash through Problems as a false missing-provider failure.
+  startup_session="$FAKE_POWER_DELAY_SESSION"
+  startup_meta="$DETACH_CODEX_STATE_ROOT/sessions/$startup_session/meta.json"
+  startup_output="$TMP_ROOT/startup-health-output"
+  rm -f "$FAKE_POWER_DELAY_RELEASE_FILE"
+  run_codex --name startup-health --detach -- 'startup health transition' \
+    >"$startup_output" 2>&1 &
+  startup_command_pid=$!
+  attempts=0
+  startup_worker_pid=""
+  while [ "$attempts" -lt 100 ]; do
+    if [ -f "$startup_meta" ]; then
+      startup_worker_pid="$(
+        "$STATE_HELPER" meta get "$startup_meta" worker_pid 2>/dev/null || true
+      )"
+    fi
+    case "$startup_worker_pid" in ''|*[!0-9]*) ;; *) break ;; esac
+    attempts=$((attempts + 1))
+    sleep 0.05
+  done
+  case "$startup_worker_pid" in
+    ''|*[!0-9]*) printf 'startup worker identity was not published\n' >&2; exit 1 ;;
+  esac
+  [ "$("$STATE_HELPER" meta get "$startup_meta" status)" = starting ]
+  [ "$("$STATE_HELPER" meta get "$startup_meta" lifecycle_phase)" = starting ]
+  wait_for_tmux_option "$startup_session" @detach_status starting
+  startup_health="$(
+    run_codex list --json | grep -F "\"session_name\":\"$startup_session\""
+  )"
+  [ "$(printf '%s' "$startup_health" | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)" = starting ]
+  [ "$(printf '%s' "$startup_health" | \
+    "$STATE_HELPER" meta get /dev/stdin health_reason)" = healthy ]
+  : >"$FAKE_POWER_DELAY_RELEASE_FILE"
+  wait "$startup_command_pid"
+  grep -F "Started $startup_session" "$startup_output" >/dev/null
+  startup_health="$(
+    run_codex list --json | grep -F "\"session_name\":\"$startup_session\""
+  )"
+  [ "$(printf '%s' "$startup_health" | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+  [ "$("$STATE_HELPER" meta get "$startup_meta" lifecycle_phase)" = running ]
+  run_codex stop startup-health >/dev/null
+  run_codex delete --force startup-health >/dev/null
+
   codex_scenario_event begin SC-SESSION-CREATE-CODEX
   codex_scenario_event begin SC-SESSION-PERSIST-CODEX
   codex_scenario_event begin SC-SESSION-RECOVER-CODEX
   codex_scenario_event begin SC-SESSION-STOP-CODEX
   codex_scenario_event begin SC-SESSION-DELETE-CODEX
-  LC_ALL=C run_codex --name integration --detach -- "$literal_prompt"
+  COLORTERM=ambient-is-not-a-capability \
+    LC_ALL=C run_codex --name integration --detach -- "$literal_prompt"
 
 wait_for_tmux_option "$SESSION" @detach_status running
 wait_for_tmux_option "$SESSION" set-titles on
@@ -675,6 +1112,8 @@ LC_ALL=C.UTF-8 wait_for_tmux_option \
   "$SESSION" set-titles-string "Detach · $PROJECT_LABEL"
 wait_for_tmux_option_text "$SESSION" status-left RUNNING
 tmux -L "$SOCKET" has-session -t "=$SESSION"
+wait_for_file_text "$FAKE_CODEX_COLORTERM_FILE" truecolor
+[ "$(<"$FAKE_CODEX_COLORTERM_FILE")" = truecolor ]
 "$DETACH" list | grep -F 'codex' | grep -F "$SESSION" >/dev/null
 codex_scenario_event pass SC-SESSION-CREATE-CODEX
 mkdir -p "$TMP_ROOT/unrelated-tmux-tmpdir"
@@ -683,6 +1122,31 @@ TMUX_TMPDIR="$TMP_ROOT/unrelated-tmux-tmpdir" \
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach)" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_provider)" = "codex" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
+meta="$DETACH_CODEX_STATE_ROOT/sessions/$SESSION/meta.json"
+# Stop must persist intent for the exact run before its first signal. Inject a
+# state write failure and prove the live pane and metadata remain unchanged.
+stop_state_wrapper="$TMP_ROOT/stop-state-wrapper"
+stop_state_failure="$TMP_ROOT/stop-state-failure"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'if [ -f "$DETACH_STOP_STATE_FAILURE" ] && [ "${1:-}" = meta ] && [ "${2:-}" = patch ]; then' \
+  '  case " $* " in *" stop_requested_at "*) exit 91 ;; esac' \
+  'fi' \
+  'exec "$DETACH_STOP_STATE_DELEGATE" "$@"' \
+  >"$stop_state_wrapper"
+chmod 0755 "$stop_state_wrapper"
+: >"$stop_state_failure"
+if DETACH_STATE_BIN="$stop_state_wrapper" \
+   DETACH_STOP_STATE_FAILURE="$stop_state_failure" \
+   DETACH_STOP_STATE_DELEGATE="$STATE_HELPER" \
+   run_codex stop integration >/dev/null 2>&1; then
+  printf 'Stop unexpectedly signaled a run without durable intent\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" has-session -t "=$SESSION"
+[ "$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_dead}')" = "0" ]
+[ -z "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
+rm "$stop_state_failure"
 # The creator CLI has already exited. The tmux server and worker must remain
 # alive without an attached client (the same lifecycle as closing Terminal or
 # Detach.app after starting a session).
@@ -709,7 +1173,7 @@ tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-right | \
 # the macOS clipboard through the Detach-owned server's copy-command.
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" mouse)" = "on" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_copy_type_through)" = "1" ]
-[ "$(tmux -L "$SOCKET" show-options -sqv copy-command)" = "/usr/bin/pbcopy" ]
+[ "$(tmux -L "$SOCKET" show-options -sqv copy-command)" = "LC_ALL=en_US.UTF-8 /usr/bin/pbcopy" ]
 tmux -L "$SOCKET" list-keys -T copy-mode | grep -F 'WheelUpPane' | \
   grep -F 'scroll-up' >/dev/null
 # Selections copy through the clipboard but keep the highlight and stay in
@@ -780,7 +1244,134 @@ tmux -L "$SOCKET" new-session -d -s "$shift_return_session" \
 # Re-run the server configuration through a real attach. Attaching without a
 # controlling terminal fails after tmux_configure_server has already run, so the
 # terminal-features must still appear exactly once.
+original_copy_keys="$(tmux -L "$SOCKET" list-keys -T detach-copy-mode-original)"
+tmux -L "$SOCKET" set-option -s @detach_copy_type_through_initialized 1
+tmux -L "$SOCKET" set-option -s copy-command /usr/bin/pbcopy
+tmux -L "$SOCKET" unbind-key -T copy-mode Any
+tmux -L "$SOCKET" unbind-key -T copy-mode-vi Any
 run_codex attach integration </dev/null >/dev/null 2>&1 || true
+[ "$(tmux -L "$SOCKET" show-options -sqv @detach_copy_type_through_initialized)" = 2 ]
+[ "$(tmux -L "$SOCKET" list-keys -T detach-copy-mode-original)" = "$original_copy_keys" ]
+python3 - "$TMUX_TEST_BIN" "$SOCKET_PATH" "$TMP_ROOT" <<'PY_TERMINAL_PASTE'
+#!/usr/bin/env python3
+"""Exercise managed tmux clipboard and paste through a real terminal client."""
+
+import os
+from pathlib import Path
+import pty
+import shlex
+import subprocess
+import sys
+import time
+
+
+def wait_for(predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("terminal clipboard condition did not become true")
+
+
+def main():
+    tmux, socket, directory = sys.argv[1:]
+    root = Path(directory)
+    utf8 = dict(os.environ, LC_ALL="en_US.UTF-8", TERM="xterm-256color")
+
+    def tm(*args):
+        return subprocess.check_output([tmux, "-S", socket, *args], env=utf8)
+
+    def read_clipboard():
+        return subprocess.check_output(
+            ["/usr/bin/pbpaste", "-pboard", "find"], env=utf8)
+
+    saved = read_clipboard()
+    sample = "Привет, мир! Ёж 🦔 第二行".encode()
+    copy_command = tm("show-options", "-sqv", "copy-command").decode().strip()
+    reader = root / "paste-reader.py"
+    reader.write_text(
+        "import os,sys,tty\n"
+        "tty.setraw(0)\n"
+        "output=open(sys.argv[1],'wb',buffering=0)\n"
+        "os.write(1, bytes.fromhex(sys.argv[2]))\n"
+        "while True: output.write(os.read(0,4096))\n")
+    try:
+        for key_mode in ["emacs", "vi"]:
+            for enabled in [False, True]:
+                name = f"detach-paste-{key_mode}-{int(enabled)}"
+                output = root / f"{name}.bytes"
+                child = None
+                master = None
+                try:
+                    banner = b"\x1b[?2004h" + sample + b"\r\n"
+                    tm("new-session", "-d", "-s", name, shlex.join([
+                        sys.executable, str(reader), str(output), banner.hex()]))
+                    tm("set-option", "-t", name, "mode-keys", key_mode)
+                    tm("set-option", "-t", name, "@detach_copy_type_through",
+                       str(int(enabled)))
+                    master, slave = pty.openpty()
+                    child = subprocess.Popen(
+                        [tmux, "-S", socket, "attach-session", "-t", name],
+                        stdin=slave, stdout=slave, stderr=slave,
+                        env=utf8, start_new_session=True)
+                    os.close(slave)
+                    wait_for(lambda: sample in tm("capture-pane", "-p", "-t", name))
+                    wait_for(lambda: name.encode() in tm(
+                        "list-clients", "-F", "#{client_session}"))
+                    tm("copy-mode", "-t", name)
+                    tm("send-keys", "-t", name, "-X", "cursor-up")
+                    tm("send-keys", "-t", name, "-X", "select-line")
+                    # Use the configured command under a C locale on the find
+                    # board, leaving the user's general clipboard untouched.
+                    tm("set-environment", "-t", name, "LC_ALL", "C")
+                    tm("send-keys", "-t", name, "-X", "copy-pipe-no-clear",
+                       copy_command + " -pboard find")
+                    wait_for(lambda: read_clipboard().rstrip(b"\n") == sample)
+                    assert tm("display-message", "-p", "-t", name,
+                              "#{pane_in_mode}").strip() == b"1"
+                    # Bound navigation must keep copy mode active.
+                    os.write(master, b"\x1b[A")
+                    time.sleep(0.05)
+                    assert tm("display-message", "-p", "-t", name,
+                              "#{pane_in_mode}").strip() == b"1"
+                    payload = read_clipboard().rstrip(b"\n") + b"\nsecond line"
+                    framed = b"\x1b[200~" + payload + b"\x1b[201~"
+                    os.write(master, framed)
+                    if enabled:
+                        wait_for(lambda: output.read_bytes() == framed)
+                        assert tm("display-message", "-p", "-t", name,
+                                  "#{pane_in_mode}").strip() == b"0"
+                        os.write(master, framed)
+                        wait_for(lambda: output.read_bytes() == framed * 2)
+                    else:
+                        time.sleep(0.15)
+                        assert output.read_bytes() == b""
+                        assert tm("display-message", "-p", "-t", name,
+                                  "#{pane_in_mode}").strip() == b"1"
+                except BaseException:
+                    print("terminal paste fixture:", name, file=sys.stderr)
+                    print("pane state:", tm("display-message", "-p", "-t", name,
+                          "#{pane_dead}|#{pane_dead_status}|#{pane_width}x#{pane_height}")
+                          .decode(errors="replace"), file=sys.stderr)
+                    print("pane output:", repr(tm("capture-pane", "-p", "-t", name)),
+                          file=sys.stderr)
+                    raise
+                finally:
+                    tm("kill-session", "-t", name)
+                    if child is not None:
+                        child.wait(timeout=3)
+                    if master is not None:
+                        os.close(master)
+    finally:
+        subprocess.run(["/usr/bin/pbcopy", "-pboard", "find"],
+                       input=saved, env=utf8, check=True)
+    print("UTF-8 clipboard and bracketed paste round trips passed")
+
+
+if __name__ == "__main__":
+    main()
+PY_TERMINAL_PASTE
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:extkeys')" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:hyperlinks')" = "1" ]
 grep -Fx -- 'run' "$FAKE_POWER_ARGS_FILE" >/dev/null
@@ -881,11 +1472,16 @@ tmux -L "$OUTER_SOCKET" send-keys -l -t "$outer_pane" -- \
 tmux -L "$OUTER_SOCKET" send-keys -t "$outer_pane" C-m
 attempts=0
 while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
-    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 50 ]; do
+    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 100 ]; do
   attempts=$((attempts + 1))
   sleep 0.1
 done
-tmux -L "$SOCKET" list-clients -F '#{client_session}' | grep -Fx "$SESSION" >/dev/null
+if ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
+    grep -Fx "$SESSION" >/dev/null; then
+  printf 'nested attach client did not appear within 10 seconds\n' >&2
+  tmux -L "$SOCKET" list-clients -F '#{client_pid} #{client_session}' >&2 || true
+  exit 1
+fi
 tmux -L "$OUTER_SOCKET" send-keys -t "$outer_pane" C-b d
 attempts=0
 while [ ! -f "$nested_returned" ] && [ "$attempts" -lt 50 ]; do
@@ -898,6 +1494,160 @@ done
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 tmux -L "$OUTER_SOCKET" has-session -t "=$outer_session"
 tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
+
+# SwiftTerm closes the in-app attach client with SIGTERM. Attach through the
+# public CLI on a real PTY, terminate that client, and prove the managed
+# session, worker, and provider survive. A second tmux server owns the test
+# PTY, so the client never borrows the release orchestrator's terminal.
+attach_client_returned="$TMP_ROOT/pty-attach-returned"
+attach_host_session=foreign-pty
+attach_host_pane="$(tmux -L "$OUTER_SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s "$attach_host_session" -x 120 -y 30)"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$attach_host_pane" -- \
+  "$DETACH codex attach --terminal-features sync integration; printf returned >'$attach_client_returned'"
+tmux -L "$OUTER_SOCKET" send-keys -t "$attach_host_pane" C-m
+attempts=0
+while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
+    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 100 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+if ! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
+    grep -Fx "$SESSION" >/dev/null; then
+  printf 'PTY attach client did not appear within 10 seconds\n' >&2
+  tmux -L "$SOCKET" list-clients -F '#{client_pid} #{client_session}' >&2 || true
+  exit 1
+fi
+attach_client_pid="$(tmux -L "$SOCKET" list-clients \
+  -F '#{client_pid} #{client_session}' | \
+  awk -v session="$SESSION" '$2 == session { print $1 }')"
+case "$attach_client_pid" in
+  ''|*[!0-9]*) printf 'attach client PID is missing\n' >&2; exit 1 ;;
+esac
+attach_client_name="$(tmux -L "$SOCKET" list-clients \
+  -F '#{client_pid}|#{client_name}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')"
+[ -n "$attach_client_name" ] || {
+  printf 'attach client name is missing\n' >&2
+  exit 1
+}
+attach_client_uid="$(tmux -L "$SOCKET" list-clients \
+  -F '#{client_pid}|#{client_uid}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')"
+[ "$attach_client_uid" = "$UID" ] || {
+  printf 'attach client UID is not the test user\n' >&2
+  exit 1
+}
+client_features="$(tmux -L "$SOCKET" list-clients \
+  -F '#{client_pid}|#{client_termfeatures}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')"
+case ",$client_features," in *,sync,*) ;; *)
+  printf 'in-app attach client did not advertise synchronized output: %s\n' \
+    "$client_features" >&2
+  exit 1
+  ;;
+esac
+
+# The app keeps this exact visible client and asks the public runtime to move
+# it between live managed sessions. PID and expected source bind the request;
+# a stale source or PID cannot affect another client.
+switch_target="detach-codex-client-switch-target"
+switch_target_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s "$switch_target" '/bin/sleep 30')"
+tmux -L "$SOCKET" set-option -q -t "=$switch_target:" @detach 1
+tmux -L "$SOCKET" set-option -q -t "=$switch_target:" @detach_provider codex
+tmux -L "$SOCKET" set-option -q -t "=$switch_target:" \
+  @detach_pane_id "$switch_target_pane"
+if "$DETACH" client switch --pid "$attach_client_pid" \
+    --from detach-codex-wrong-source --to "$switch_target" \
+    --provider codex >/dev/null 2>&1; then
+  printf 'client switch accepted a stale source session\n' >&2
+  exit 1
+fi
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
+client_switch_tmux="$TMP_ROOT/client-switch-tmux"
+client_switch_inspections="$TMP_ROOT/client-switch-inspections"
+client_switch_mutation="$TMP_ROOT/client-switch-mutation"
+# Keep retry control-flow deterministic. The wrapper records the proven
+# mutation without delaying the real PTY client; the following direct call
+# proves the separate tmux mutation contract.
+export DETACH_CLIENT_SWITCH_TMUX_HELPER="$TMUX_TEST_BIN"
+export DETACH_CLIENT_SWITCH_INSPECTIONS="$client_switch_inspections"
+export DETACH_CLIENT_SWITCH_MUTATION="$client_switch_mutation"
+export DETACH_CLIENT_SWITCH_PID="$attach_client_pid"
+export DETACH_CLIENT_SWITCH_NAME="$attach_client_name"
+export DETACH_CLIENT_SWITCH_SESSION="$SESSION"
+export DETACH_CLIENT_SWITCH_UID="$attach_client_uid"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'is_list=0' \
+  'is_switch=0' \
+  'for argument in "$@"; do' \
+  '  [ "$argument" != list-clients ] || is_list=1' \
+  '  [ "$argument" != switch-client ] || is_switch=1' \
+  'done' \
+  'if [ "$is_list" = 1 ]; then' \
+  '  completed=0' \
+  '  [ ! -f "$DETACH_CLIENT_SWITCH_INSPECTIONS" ] || completed="$(wc -l <"$DETACH_CLIENT_SWITCH_INSPECTIONS" | tr -d "[:space:]")"' \
+  '  printf '\''attempt\n'\'' >>"$DETACH_CLIENT_SWITCH_INSPECTIONS"' \
+  '  [ "$completed" -ge 2 ] || exit 1' \
+  '  [ "$completed" -ge 4 ] || exit 0' \
+  '  printf '\''%s|%s|%s|%s|END\n'\'' "$DETACH_CLIENT_SWITCH_PID" "$DETACH_CLIENT_SWITCH_NAME" "$DETACH_CLIENT_SWITCH_SESSION" "$DETACH_CLIENT_SWITCH_UID"' \
+  '  exit 0' \
+  'fi' \
+  'if [ "$is_switch" = 1 ]; then' \
+  '  printf '\''%s\n'\'' "$@" >"$DETACH_CLIENT_SWITCH_MUTATION"' \
+  '  exit 0' \
+  'fi' \
+  'exec "$DETACH_CLIENT_SWITCH_TMUX_HELPER" "$@"' \
+  >"$client_switch_tmux"
+chmod 0755 "$client_switch_tmux"
+LC_ALL=C DETACH_TMUX_BIN="$client_switch_tmux" \
+  "$DETACH" client switch --pid "$attach_client_pid" \
+  --from "$SESSION" --to "$switch_target" --provider codex
+[ "$(wc -l <"$client_switch_inspections" | tr -d '[:space:]')" = 5 ]
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
+grep -Fx -- 'switch-client' "$client_switch_mutation" >/dev/null
+grep -Fx -- '-c' "$client_switch_mutation" >/dev/null
+grep -Fx -- "$attach_client_name" "$client_switch_mutation" >/dev/null
+grep -Fx -- "=$switch_target" "$client_switch_mutation" >/dev/null
+LC_ALL=C "$DETACH" client switch --pid "$attach_client_pid" \
+  --from "$SESSION" --to "$switch_target" --provider codex
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$switch_target" ]
+LC_ALL=C "$DETACH" client switch --pid "$attach_client_pid" \
+  --from "$switch_target" --to "$SESSION" --provider codex
+[ "$(tmux -L "$SOCKET" list-clients -F '#{client_pid}|#{client_session}' | \
+  awk -F '|' -v pid="$attach_client_pid" '$1 == pid { print $2 }')" = "$SESSION" ]
+tmux -L "$SOCKET" kill-session -t "=$switch_target"
+kill -TERM "$attach_client_pid"
+attempts=0
+while tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
+    grep -Fx "$SESSION" >/dev/null && [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+! tmux -L "$SOCKET" list-clients -F '#{client_session}' 2>/dev/null | \
+  grep -Fx "$SESSION" >/dev/null
+attempts=0
+while [ ! -f "$attach_client_returned" ] && [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -f "$attach_client_returned" ]
+tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
+tmux -L "$SOCKET" has-session -t "=$SESSION"
+kill -0 "$first_worker_pid"
+kill -0 "$provider_pid"
+attach_closed_json="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$attach_closed_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+[ "$(printf '%s' "$attach_closed_json" | \
+  "$STATE_HELPER" meta get /dev/stdin worker_pid)" = "$first_worker_pid" ]
+[ "$(printf '%s' "$attach_closed_json" | \
+  "$STATE_HELPER" meta get /dev/stdin provider_pid)" = "$provider_pid" ]
 
 # Switching the public CLI while a worker is alive must not change that
 # worker's resolved core path. New invocations get the upgraded payload.
@@ -1008,9 +1758,115 @@ run_codex stop integration
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 [ "$("$STATE_HELPER" meta get "$meta" status)" = "stopped" ]
 [ -n "$("$STATE_HELPER" meta get "$meta" stopped_at)" ]
+# The immutable ANSI checkpoint keeps true-color provider styling after tmux
+# is gone, including when the app launched the original provider.
+run_codex logs --ansi integration | LC_ALL=C \
+  grep -F $'\033[38;2;12;34;56mtrue-color checkpoint probe' >/dev/null
+# Stop records its intent in typed state before it signals the runtime, and
+# the list carries it, so an `interrupted` window is never read as a crash.
+[ -n "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
+run_codex list --json | grep -F "\"session_name\":\"$SESSION\"" | \
+  grep -F '"stop_requested_at":"' >/dev/null
 grep -Fx "release --session $SESSION --run-token $stopped_run_token" \
   "$FAKE_POWER_RELEASES_FILE" >/dev/null
 codex_scenario_event pass SC-SESSION-STOP-CODEX
+
+# Ctrl+C that ends the provider must return the attached terminal to its
+# original shell. Keep the dead provider pane available for retained logs.
+interrupt_session=detach-codex-interrupt-terminal
+interrupt_project="$TMP_ROOT/interrupt-project"
+interrupt_returned="$TMP_ROOT/interrupt-terminal-returned"
+interrupt_usable="$TMP_ROOT/interrupt-terminal-usable"
+mkdir -p "$interrupt_project"
+(
+  cd "$interrupt_project"
+  FAKE_CODEX_RELEASE_FILE="$TMP_ROOT/interrupt-provider-release" \
+    FAKE_CODEX_FOREIGN_FIRST=0 FAKE_CODEX_INIT_DELAY=0 \
+    run_codex --name interrupt-terminal --detach >/dev/null
+)
+interrupt_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$interrupt_session:" @detach_pane_id)"
+interrupt_host="$(tmux -L "$OUTER_SOCKET" new-session -d -P \
+  -F '#{pane_id}' -s interrupt-host -x 120 -y 30)"
+printf -v interrupt_command \
+  'env -u TMUX -u TMUX_PANE %q codex attach interrupt-terminal; printf returned >%q' \
+  "$DETACH" "$interrupt_returned"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$interrupt_host" -- "$interrupt_command"
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_host" C-m
+attempts=0
+while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+    grep -Fx "$interrupt_session" >/dev/null && [ "$attempts" -lt 100 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx "$interrupt_session" >/dev/null
+# A user split can retain its own dead process. Its death must leave the
+# provider client attached, and an unrelated client must survive completion.
+interrupt_split="$(tmux -L "$SOCKET" split-window -d -P -F '#{pane_id}' \
+  -t "$interrupt_pane" /bin/sleep 60)"
+tmux -L "$SOCKET" set-option -p -t "$interrupt_split" remain-on-exit on
+tmux -L "$SOCKET" respawn-pane -k -t "$interrupt_split" /usr/bin/true
+attempts=0
+while [ "$(tmux -L "$SOCKET" display-message -p -t "$interrupt_split" '#{pane_dead}')" != 1 ] && \
+    [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ "$(tmux -L "$SOCKET" display-message -p -t "$interrupt_split" '#{pane_dead}')" = 1 ]
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx "$interrupt_session" >/dev/null
+[ ! -f "$interrupt_returned" ]
+tmux -L "$SOCKET" new-session -d -s completion-unrelated
+interrupt_other_host="$(tmux -L "$OUTER_SOCKET" split-window -d -P \
+  -F '#{pane_id}' -t "$interrupt_host")"
+printf -v interrupt_command \
+  'env -u TMUX -u TMUX_PANE %q -S %q attach-session -t "=completion-unrelated"' \
+  "$TMUX_TEST_BIN" "$SOCKET_PATH"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$interrupt_other_host" -- "$interrupt_command"
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_other_host" C-m
+attempts=0
+while ! tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+    grep -Fx completion-unrelated >/dev/null && [ "$attempts" -lt 100 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx completion-unrelated >/dev/null || {
+    printf 'unrelated terminal client did not attach\n' >&2
+    tmux -L "$OUTER_SOCKET" capture-pane -p -t "$interrupt_other_host" >&2
+    exit 1
+  }
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_host" C-c
+attempts=0
+while [ ! -f "$interrupt_returned" ] && [ "$attempts" -lt 160 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -f "$interrupt_returned" ] || {
+  printf 'Ctrl+C left the terminal attached after provider exit\n' >&2
+  exit 1
+}
+[ "$(tmux -L "$SOCKET" display-message -p -t "$interrupt_pane" '#{pane_dead}')" = 1 ]
+tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
+  grep -Fx completion-unrelated >/dev/null || {
+    printf 'provider completion disconnected an unrelated client\n' >&2
+    tmux -L "$SOCKET" list-clients -F '#{client_session}' >&2
+    exit 1
+  }
+run_codex logs interrupt-terminal | grep -F 'fake Codex started' >/dev/null
+printf -v interrupt_command 'printf usable >%q' "$interrupt_usable"
+tmux -L "$OUTER_SOCKET" send-keys -l -t "$interrupt_host" -- "$interrupt_command"
+tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_host" C-m
+attempts=0
+while [ ! -f "$interrupt_usable" ] && [ "$attempts" -lt 50 ]; do
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+[ -f "$interrupt_usable" ]
+run_codex delete --force interrupt-terminal >/dev/null
+tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
+tmux -L "$SOCKET" kill-session -t =completion-unrelated
 
 if [ "$CODEX_TEST_PART" = lifecycle ]; then
   run_codex delete --force integration
@@ -1023,8 +1879,28 @@ if codex_part_selected recovery; then
 if [ "$CODEX_TEST_PART" = recovery ]; then
   bootstrap_codex_checkpoint
 fi
+
+resume_rollout="$("$STATE_HELPER" meta get "$meta" transcript_path)"
+resume_checkpoint_copy="$TMP_ROOT/resume-checkpoint-rollout.jsonl"
+live_rollout_copy="$TMP_ROOT/resume-live-rollout.jsonl"
+cp -p "$checkpoint/rollout.jsonl" "$resume_checkpoint_copy"
+cp -p "$resume_rollout" "$live_rollout_copy"
+
+# Without a backup, Recover must validate the live rollout instead of treating
+# the missing checkpoint as proof that the provider data is usable.
+rm -f "$checkpoint/rollout.jsonl"
+printf '{damaged rollout\n' >"$resume_rollout"
+if run_codex recover --detach integration; then
+  printf 'Codex Recover accepted an invalid live rollout without a checkpoint\n' >&2
+  exit 1
+fi
+! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
+cp -p "$live_rollout_copy" "$resume_rollout"
+cp -p "$resume_checkpoint_copy" "$checkpoint/rollout.jsonl"
+
 "$STATE_HELPER" meta patch "$checkpoint/meta.json" --string status running
 rm -f "$meta"
+printf '{damaged rollout\n' >"$resume_rollout"
 
 export FAKE_CODEX_SLEEP=20
 export FAKE_CODEX_EXIT=0
@@ -1036,6 +1912,8 @@ fi
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
+# A new run under the same name starts without the previous Stop intent.
+[ -z "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 [ -n "$pane_id" ] || { printf 'recovered session is missing its pane ID\n' >&2; exit 1; }
 worker_pid="$(tmux -L "$SOCKET" display-message -p -t "$pane_id" '#{pane_pid}')"
@@ -1063,16 +1941,119 @@ fi
 
 # A fresh run with the same name must never inherit the previous run's UUID.
 [ -s "$checkpoint/rollout.jsonl" ]
-export FAKE_CODEX_INIT_DELAY=5
+previous_lifecycle_id="$("$STATE_HELPER" meta get "$meta" lifecycle_id)"
+[ -n "$previous_lifecycle_id" ]
+restart_session_dir="$(dirname "$meta")"
+  superseded_resume_args="$(saved_resume_args_path \
+    "$checkpoint/meta.json" "$restart_session_dir")"
+  legacy_resume_args="$restart_session_dir/resume-args.bin"
+  [ "$superseded_resume_args" != "$legacy_resume_args" ]
+  cp -p "$superseded_resume_args" "$legacy_resume_args"
+
+  # Fresh initialization must reject an unsafe saved-options entry before it
+  # clears the prior checkpoint generation.
+  unsafe_resume_args="$restart_session_dir/resume-args-unsafe.bin"
+  unsafe_resume_target="$TMP_ROOT/unsafe-resume-args-target"
+  unsafe_resume_checkpoint_guard="$TMP_ROOT/unsafe-resume-checkpoint-guard"
+  printf 'outside saved-options sentinel\n' >"$unsafe_resume_target"
+  cp -Rp "$checkpoint" "$unsafe_resume_checkpoint_guard"
+  ln -s "$unsafe_resume_target" "$unsafe_resume_args"
+  if run_codex __write_initial_meta \
+      "$SESSION" "$ROOT" integration 1 "$DETACH_CODEX_BIN" "" "" \
+      unsafe-resume-args-run 0 >/dev/null 2>&1; then
+    printf 'fresh metadata initialization accepted unsafe saved options\n' >&2
+    exit 1
+  fi
+  grep -Fx 'outside saved-options sentinel' "$unsafe_resume_target" >/dev/null
+  diff -qr "$unsafe_resume_checkpoint_guard" "$checkpoint" >/dev/null
+  rm -f "$unsafe_resume_args"
+
+  unsafe_checkpoint_log="$restart_session_dir/checkpoint.log"
+  saved_checkpoint_log="$TMP_ROOT/saved-checkpoint.log"
+  unsafe_log_target="$TMP_ROOT/unsafe-checkpoint-log-target"
+  mv "$unsafe_checkpoint_log" "$saved_checkpoint_log"
+  printf 'outside checkpoint-log sentinel\n' >"$unsafe_log_target"
+  ln -s "$unsafe_log_target" "$unsafe_checkpoint_log"
+  if run_codex __write_initial_meta \
+      "$SESSION" "$ROOT" integration 1 "$DETACH_CODEX_BIN" "" "" \
+      unsafe-checkpoint-log-run 0 >/dev/null 2>&1; then
+    printf 'fresh metadata initialization accepted an unsafe checkpoint log\n' >&2
+    exit 1
+  fi
+  grep -Fx 'outside checkpoint-log sentinel' "$unsafe_log_target" >/dev/null
+  diff -qr "$unsafe_resume_checkpoint_guard" "$checkpoint" >/dev/null
+  rm -f "$unsafe_checkpoint_log"
+  mv "$saved_checkpoint_log" "$unsafe_checkpoint_log"
+
+  unsafe_exit_status="$restart_session_dir/exit-status"
+  saved_exit_status="$TMP_ROOT/saved-exit-status"
+  unsafe_exit_target="$TMP_ROOT/unsafe-exit-status-target"
+  [ -f "$unsafe_exit_status" ] && [ ! -L "$unsafe_exit_status" ]
+  mv "$unsafe_exit_status" "$saved_exit_status"
+  printf 'outside exit-status sentinel\n' >"$unsafe_exit_target"
+  ln -s "$unsafe_exit_target" "$unsafe_exit_status"
+  if run_codex __write_initial_meta \
+      "$SESSION" "$ROOT" integration 1 "$DETACH_CODEX_BIN" "" "" \
+      unsafe-exit-status-run 0 >/dev/null 2>&1; then
+    printf 'fresh metadata initialization accepted an unsafe exit status\n' >&2
+    exit 1
+  fi
+  grep -Fx 'outside exit-status sentinel' "$unsafe_exit_target" >/dev/null
+  diff -qr "$unsafe_resume_checkpoint_guard" "$checkpoint" >/dev/null
+  rm -f "$unsafe_exit_status"
+  mv "$saved_exit_status" "$unsafe_exit_status"
+
+  saved_primary_meta="$TMP_ROOT/saved-primary-meta.json"
+  mv "$meta" "$saved_primary_meta"
+  mkdir "$meta"
+  printf 'primary metadata directory sentinel\n' >"$meta/sentinel"
+  if run_codex __write_initial_meta \
+      "$SESSION" "$ROOT" integration 1 "$DETACH_CODEX_BIN" "" "" \
+      unsafe-primary-meta-run 0 >/dev/null 2>&1; then
+    printf 'fresh initialization accepted a metadata directory\n' >&2
+    exit 1
+  fi
+  grep -Fx 'primary metadata directory sentinel' "$meta/sentinel" >/dev/null
+  diff -qr "$unsafe_resume_checkpoint_guard" "$checkpoint" >/dev/null
+  rm -rf "$meta"
+  mv "$saved_primary_meta" "$meta"
+
+  # Model a crash immediately after a fresh Start exchanged an intentional
+  # empty checkpoint generation. Its marker identifies the exact old sibling,
+  # so the next Start can finish cleanup without accepting a generic empty
+  # checkpoint as authoritative.
+  reset_crash_stage_name=.checkpoint-stage-reset-crash-fixture
+  reset_crash_stage="$restart_session_dir/$reset_crash_stage_name"
+  mkdir -m 0700 "$reset_crash_stage"
+  printf '%s\n' "$reset_crash_stage_name" \
+    >"$reset_crash_stage/.detach-checkpoint-reset"
+  "$STATE_HELPER" checkpoint exchange \
+    "$restart_session_dir" "$reset_crash_stage_name"
+  [ -f "$checkpoint/.detach-checkpoint-reset" ]
+  [ -f "$reset_crash_stage/meta.json" ]
+
+  export FAKE_CODEX_INIT_DELAY=5
 printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request", "never"]' >"$DETACH_CODEX_REQUIREMENTS_FILE"
 run_codex --name integration --detach -- 'start a new thread'
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" 'start a new thread'
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_cli_version)" = "$upgraded_version" ]
 [ "$(grep -Fxc -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ "$(grep -Fxc -- 'never' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
-[ ! -e "$checkpoint/rollout.jsonl" ]
-[ ! -e "$checkpoint/meta.json" ]
+  [ ! -e "$checkpoint/rollout.jsonl" ]
+  [ ! -e "$checkpoint/.detach-jsonl-validation.json" ]
+  [ ! -e "$checkpoint/meta.json" ]
+  [ ! -e "$checkpoint/.detach-checkpoint-reset" ]
+  [ ! -e "$reset_crash_stage" ] && [ ! -L "$reset_crash_stage" ]
 fresh_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
+fresh_resume_args="$(saved_resume_args_path "$meta" "$restart_session_dir")"
+[ "$fresh_resume_args" != "$superseded_resume_args" ]
+[ "$fresh_resume_args" != "$legacy_resume_args" ]
+[ ! -e "$superseded_resume_args" ]
+[ ! -e "$legacy_resume_args" ]
+fresh_lifecycle_id="$("$STATE_HELPER" meta get "$meta" lifecycle_id)"
+[ -n "$fresh_lifecycle_id" ]
+[ "$fresh_lifecycle_id" != "$previous_lifecycle_id" ]
+[ "$fresh_lifecycle_id" != "$fresh_run_token" ]
 if run_codex --name integration --detach -- 'must not replace a running task'; then
   printf 'new default start unexpectedly replaced a running task\n' >&2
   exit 1
@@ -1086,9 +2067,14 @@ fi
 fi
 
 if codex_part_selected resume; then
-if [ "$CODEX_TEST_PART" = resume ] || [ "$CODEX_TEST_PART" = resume-identity ]; then
+if [ "$CODEX_TEST_PART" = all ] || \
+   [ "$CODEX_TEST_PART" = resume ] || \
+   [ "$CODEX_TEST_PART" = resume-identity ]; then
   bootstrap_codex_checkpoint
 fi
+
+python3 "$ROOT/tests/runtime-state-consistency.py" \
+  "$SCRIPT" "$expected_id" "$SESSION" "$meta" "$STATE_HELPER" "$TMP_ROOT"
 
 # Explicit resume follows Codex semantics and accepts the exact thread UUID.
 export FAKE_CODEX_INIT_DELAY=0
@@ -1096,12 +2082,832 @@ export FAKE_CODEX_SLEEP=1
 expected_rollout="$("$STATE_HELPER" meta get "$meta" transcript_path)"
 [ -n "$expected_rollout" ]
 [ -f "$expected_rollout" ]
+
+# Resume can reuse a harness name for a different provider UUID. Until that
+# replacement passes both readiness proofs, the complete checkpoint for the
+# previous UUID and its saved options must remain the Recover target.
+failed_resume_id="22222222-3333-4444-8555-666666666666"
+failed_resume_rollout="$CODEX_HOME/sessions/2099/01/01/rollout-test-$failed_resume_id.jsonl"
+printf '%s\n' \
+  "{\"timestamp\":\"2099-01-01T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"$failed_resume_id\",\"cwd\":\"$ROOT\",\"originator\":\"codex_cli_rs\"}}" \
+  >"$failed_resume_rollout"
+failed_resume_rollout_sql="${failed_resume_rollout//\'/\'\'}"
+root_sql="${ROOT//\'/\'\'}"
+test_sqlite "$CODEX_HOME/state_5.sqlite" \
+  "INSERT OR REPLACE INTO threads
+     (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd)
+   VALUES
+     ('$failed_resume_id', '$failed_resume_rollout_sql', 1, 1, 'cli', 'user', '$root_sql');"
+codex_session_dir="$(dirname "$meta")"
+resume_checkpoint_copy="$TMP_ROOT/codex-resume-checkpoint"
+resume_args_file="$(saved_resume_args_path "$checkpoint/meta.json" "$codex_session_dir")"
+resume_args_copy="$TMP_ROOT/codex-resume-args.bin"
+cp -Rp "$checkpoint" "$resume_checkpoint_copy"
+cp -p "$resume_args_file" "$resume_args_copy"
+require_nul_file_arg "$resume_args_copy" --model
+require_nul_file_arg "$resume_args_copy" detach-recovery-model
+
+# Recovery identity binds both the UUID and its exact Codex rollout path. A
+# corrupt metadata document for A must not restore checkpoint A over B's valid
+# provider file, even though both paths are below the trusted Codex root.
+cross_thread_name=cross-thread-rollout
+cross_thread_session=detach-codex-cross-thread-rollout
+cross_thread_dir="$DETACH_CODEX_STATE_ROOT/sessions/$cross_thread_session"
+cross_thread_checkpoint_guard="$TMP_ROOT/cross-thread-checkpoint"
+cross_thread_rollout_guard="$TMP_ROOT/cross-thread-rollout.jsonl"
+cross_thread_output="$TMP_ROOT/cross-thread-recover.out"
+rm -rf "$cross_thread_dir"
+cp -Rp "$codex_session_dir" "$cross_thread_dir"
+"$STATE_HELPER" meta patch "$cross_thread_dir/meta.json" \
+  --string session_name "$cross_thread_session" \
+  --string display_name "$cross_thread_name" \
+  --string agent_session_id "$expected_id" \
+  --string codex_session_id "$expected_id" \
+  --string transcript_path "$failed_resume_rollout" \
+  --string rollout_path "$failed_resume_rollout"
+"$STATE_HELPER" meta patch "$cross_thread_dir/checkpoint/meta.json" \
+  --string session_name "$cross_thread_session" \
+  --string display_name "$cross_thread_name"
+cp -Rp "$cross_thread_dir/checkpoint" "$cross_thread_checkpoint_guard"
+cp -p "$failed_resume_rollout" "$cross_thread_rollout_guard"
+if run_codex recover --detach "$cross_thread_name" \
+     >"$cross_thread_output" 2>&1; then
+  printf 'Codex Recover overwrote another thread rollout\n' >&2
+  exit 1
+fi
+grep -F 'saved Codex recovery data is missing, unsafe, or invalid' \
+  "$cross_thread_output" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$cross_thread_session" 2>/dev/null
+cmp "$cross_thread_rollout_guard" "$failed_resume_rollout"
+diff -qr "$cross_thread_checkpoint_guard" \
+  "$cross_thread_dir/checkpoint" >/dev/null
+
+# If B is truncated too, the destination bytes no longer prove their owner.
+# With Codex's thread index unavailable, recovery must fail closed rather than
+# treating the damaged file as permission to overwrite it.
+cross_thread_db="$CODEX_HOME/state_5.sqlite"
+cross_thread_saved_db="$CODEX_HOME/state_5.sqlite.unavailable-cross-thread"
+cross_thread_damaged_guard="$TMP_ROOT/cross-thread-damaged.jsonl"
+[ -f "$cross_thread_db" ] && [ ! -L "$cross_thread_db" ]
+[ ! -e "$cross_thread_saved_db" ] && [ ! -L "$cross_thread_saved_db" ]
+printf '{damaged B without identity proof\n' >"$failed_resume_rollout"
+cp -p "$failed_resume_rollout" "$cross_thread_damaged_guard"
+mv "$cross_thread_db" "$cross_thread_saved_db"
+if run_codex recover --detach "$cross_thread_name" \
+     >"$cross_thread_output" 2>&1; then
+  mv "$cross_thread_saved_db" "$cross_thread_db"
+  cp -p "$cross_thread_rollout_guard" "$failed_resume_rollout"
+  printf 'Codex Recover accepted an unowned damaged rollout\n' >&2
+  exit 1
+fi
+mv "$cross_thread_saved_db" "$cross_thread_db"
+cmp "$cross_thread_damaged_guard" "$failed_resume_rollout"
+diff -qr "$cross_thread_checkpoint_guard" \
+  "$cross_thread_dir/checkpoint" >/dev/null
+cp -p "$cross_thread_rollout_guard" "$failed_resume_rollout"
+cross_thread_alias="$CODEX_HOME/sessions/cross-thread-alias"
+cross_thread_alias_rollout="$cross_thread_alias/$(basename "$failed_resume_rollout")"
+ln -s "$(dirname "$failed_resume_rollout")" "$cross_thread_alias"
+if run_codex __prepare_codex_resume_locked \
+     "$cross_thread_session" "$expected_id" "$cross_thread_alias_rollout" \
+     >/dev/null 2>&1; then
+  printf 'Codex Resume accepted an intermediate rollout symlink\n' >&2
+  exit 1
+fi
+cmp "$cross_thread_rollout_guard" "$failed_resume_rollout"
+rm -f "$cross_thread_alias"
+rm -rf "$cross_thread_dir"
+
+# Resume restores provider data only after it crosses the checkpoint lock.
+# While the lock is held, even a damaged live rollout must remain unchanged.
+# This orders Resume after an old writer that already passed its live-worker
+# guard and prevents the restored process from starting with an older payload.
+resume_barrier_name=resume-restore-barrier
+resume_barrier_session=detach-codex-resume-restore-barrier
+resume_barrier_dir="$DETACH_CODEX_STATE_ROOT/sessions/$resume_barrier_session"
+resume_barrier_lock="$DETACH_LOCKS_ROOT/checkpoint-$resume_barrier_session.lock"
+resume_barrier_ready="$TMP_ROOT/resume-barrier-ready"
+resume_barrier_release="$TMP_ROOT/resume-barrier-release"
+resume_barrier_queued="$TMP_ROOT/resume-barrier-queued"
+resume_barrier_lockf="$TMP_ROOT/resume-barrier-lockf"
+resume_barrier_output="$TMP_ROOT/resume-barrier.out"
+rm -rf "$resume_barrier_dir"
+cp -Rp "$codex_session_dir" "$resume_barrier_dir"
+"$STATE_HELPER" meta patch "$resume_barrier_dir/meta.json" \
+  --string session_name "$resume_barrier_session" \
+  --string display_name "$resume_barrier_name"
+"$STATE_HELPER" meta patch "$resume_barrier_dir/checkpoint/meta.json" \
+  --string session_name "$resume_barrier_session" \
+  --string display_name "$resume_barrier_name"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'set -eu' \
+  'if [ "${4:-}" = "$DETACH_TEST_LOCKF_PATH" ]; then' \
+  '  printf '\''queued\n'\'' >"$DETACH_TEST_LOCKF_QUEUED"' \
+  'fi' \
+  'exec /usr/bin/lockf "$@"' >"$resume_barrier_lockf"
+chmod 0755 "$resume_barrier_lockf"
+/usr/bin/lockf -k "$resume_barrier_lock" /bin/sh -c \
+  'printf '\''ready\n'\'' >"$1"; attempts=0; while [ ! -f "$2" ] && [ "$attempts" -lt 400 ]; do attempts=$((attempts + 1)); /bin/sleep 0.05; done; [ -f "$2" ]' \
+  sh "$resume_barrier_ready" "$resume_barrier_release" &
+resume_barrier_holder=$!
+wait_for_file_text "$resume_barrier_ready" ready
+printf '{damaged before Resume barrier\n' >"$expected_rollout"
+resume_barrier_damaged_copy="$TMP_ROOT/resume-barrier-damaged.jsonl"
+cp -p "$expected_rollout" "$resume_barrier_damaged_copy"
+DETACH_LOCKF_BIN="$resume_barrier_lockf" \
+DETACH_TEST_LOCKF_PATH="$resume_barrier_lock" \
+DETACH_TEST_LOCKF_QUEUED="$resume_barrier_queued" \
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex resume --name "$resume_barrier_name" --detach "$expected_id" \
+    >"$resume_barrier_output" 2>&1 &
+resume_barrier_pid=$!
+wait_for_file_text "$resume_barrier_queued" queued
+cmp "$resume_barrier_damaged_copy" "$expected_rollout"
+: >"$resume_barrier_release"
+wait "$resume_barrier_holder"
+if ! wait "$resume_barrier_pid"; then
+  sed -n '1,80p' "$resume_barrier_output" >&2
+  exit 1
+fi
+wait_for_tmux_option "$resume_barrier_session" @detach_status running
+"$STATE_HELPER" jsonl validate codex "$expected_rollout" "$expected_id"
+run_codex stop "$resume_barrier_name"
+run_codex delete --force "$resume_barrier_name"
+
+# Project occupancy is checked before Recover can restore shared provider
+# state. A live session under another name must keep both its process identity
+# and a deliberately damaged same-UUID rollout byte-for-byte unchanged.
+occupancy_target_name=recovery-project-target
+occupancy_target_session=detach-codex-recovery-project-target
+occupancy_target_dir="$DETACH_CODEX_STATE_ROOT/sessions/$occupancy_target_session"
+occupancy_live_name=recovery-project-occupant
+occupancy_live_session=detach-codex-recovery-project-occupant
+rm -rf "$occupancy_target_dir"
+cp -Rp "$codex_session_dir" "$occupancy_target_dir"
+"$STATE_HELPER" meta patch "$occupancy_target_dir/meta.json" \
+  --string session_name "$occupancy_target_session" \
+  --string display_name "$occupancy_target_name"
+"$STATE_HELPER" meta patch "$occupancy_target_dir/checkpoint/meta.json" \
+  --string session_name "$occupancy_target_session" \
+  --string display_name "$occupancy_target_name"
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$occupancy_live_name" --detach -- \
+    'project recovery lock coverage'
+wait_for_tmux_option "$occupancy_live_session" @detach_status running
+occupancy_live_token="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$occupancy_live_session:" @detach_run_token)"
+occupancy_live_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$occupancy_live_session:" @detach_pane_id)"
+occupancy_live_pid="$(tmux -L "$SOCKET" display-message -p \
+  -t "$occupancy_live_pane" '#{pane_pid}')"
+printf '{occupied project rollout sentinel\n' >"$expected_rollout"
+occupancy_rollout_copy="$TMP_ROOT/occupied-project-rollout.jsonl"
+cp -p "$expected_rollout" "$occupancy_rollout_copy"
+if run_codex recover --detach "$occupancy_target_name" \
+     >"$TMP_ROOT/occupied-project-recover.out" 2>&1; then
+  printf 'Recover mutated provider state while the project was occupied\n' >&2
+  exit 1
+fi
+grep -F 'project already has a running detached session' \
+  "$TMP_ROOT/occupied-project-recover.out" >/dev/null
+cmp "$occupancy_rollout_copy" "$expected_rollout"
+[ "$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$occupancy_live_session:" @detach_run_token)" = "$occupancy_live_token" ]
+[ "$(tmux -L "$SOCKET" display-message -p \
+  -t "$occupancy_live_pane" '#{pane_pid}')" = "$occupancy_live_pid" ]
+kill -0 "$occupancy_live_pid"
+run_codex stop "$occupancy_live_name"
+run_codex delete --force "$occupancy_live_name"
+cp -p "$occupancy_target_dir/checkpoint/rollout.jsonl" "$expected_rollout"
+run_codex delete --force "$occupancy_target_name"
+
+# A present checkpoint path is untrusted even when its symlink target contains
+# valid JSONL. Resume must reject it before start and must not read it as a
+# matching provider checkpoint.
+resume_symlink_target="$TMP_ROOT/resume-symlink-target.jsonl"
+resume_symlink_target_copy="$TMP_ROOT/resume-symlink-target-copy.jsonl"
+resume_symlink_meta_copy="$TMP_ROOT/resume-symlink-meta.json"
+resume_symlink_output="$TMP_ROOT/resume-symlink.out"
+cp -p "$failed_resume_rollout" "$resume_symlink_target"
+cp -p "$resume_symlink_target" "$resume_symlink_target_copy"
+cp -p "$meta" "$resume_symlink_meta_copy"
+rm -f "$checkpoint/rollout.jsonl"
+ln -s "$resume_symlink_target" "$checkpoint/rollout.jsonl"
+if run_codex resume --name integration --detach "$failed_resume_id" \
+     >"$resume_symlink_output" 2>&1; then
+  run_codex stop integration >/dev/null 2>&1 || true
+  printf 'Codex Resume accepted a symlinked rollout checkpoint\n' >&2
+  exit 1
+fi
+grep -F 'could not restore the matching rollout checkpoint' \
+  "$resume_symlink_output" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
+cmp "$resume_symlink_meta_copy" "$meta"
+[ -L "$checkpoint/rollout.jsonl" ]
+[ "$(readlink "$checkpoint/rollout.jsonl")" = "$resume_symlink_target" ]
+cmp "$resume_symlink_target_copy" "$resume_symlink_target"
+rm -f "$checkpoint/rollout.jsonl"
+cp -p "$resume_checkpoint_copy/rollout.jsonl" "$checkpoint/rollout.jsonl"
+
+# A checkpoint directory symlink must fail before metadata cloning or payload
+# cleanup can touch its target.
+checkpoint_link_name=checkpoint-directory-symlink
+checkpoint_link_session=detach-codex-checkpoint-directory-symlink
+checkpoint_link_dir="$DETACH_CODEX_STATE_ROOT/sessions/$checkpoint_link_session"
+checkpoint_link_target="$TMP_ROOT/checkpoint-directory-symlink-target"
+checkpoint_link_guard="$TMP_ROOT/checkpoint-directory-symlink-guard"
+mkdir -m 0700 "$checkpoint_link_dir" "$checkpoint_link_target"
+cp -p "$meta" "$checkpoint_link_dir/meta.json"
+"$STATE_HELPER" meta patch "$checkpoint_link_dir/meta.json" \
+  --string session_name "$checkpoint_link_session" \
+  --string display_name "$checkpoint_link_name"
+printf 'external checkpoint sentinel\n' >"$checkpoint_link_target/sentinel"
+cp -Rp "$checkpoint_link_target" "$checkpoint_link_guard"
+ln -s "$checkpoint_link_target" "$checkpoint_link_dir/checkpoint"
+if run_codex __write_initial_meta \
+    "$checkpoint_link_session" "$ROOT" "$checkpoint_link_name" 1 \
+    "$DETACH_CODEX_BIN" "$expected_id" "$expected_rollout" \
+    checkpoint-link-run 1 >/dev/null 2>&1; then
+  printf 'metadata initialization accepted a symlinked checkpoint directory\n' >&2
+  exit 1
+fi
+[ -L "$checkpoint_link_dir/checkpoint" ]
+diff -qr "$checkpoint_link_guard" "$checkpoint_link_target" >/dev/null
+rm -f "$checkpoint_link_dir/checkpoint"
+rm -rf "$checkpoint_link_dir"
+
+failed_resume_output="$TMP_ROOT/failed-codex-resume.out"
+stale_starting_meta="$TMP_ROOT/codex-stale-starting-meta.json"
+rm -f \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+: >"$FAKE_POWER_FAIL_ARM_FILE"
+export FAKE_POWER_FAIL_AFTER_READY=1
+run_codex resume --name integration --detach "$failed_resume_id" \
+  >"$failed_resume_output" 2>&1 &
+failed_resume_pid=$!
+if ! wait_for_file_text "$FAKE_POWER_FAIL_ENTERED_FILE" entered; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  sed -n '1,80p' "$failed_resume_output" >&2
+  exit 1
+fi
+if ! cp -p "$meta" "$stale_starting_meta"; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  printf 'Codex could not preserve replacement B starting metadata\n' >&2
+  exit 1
+fi
+# The checkpoint interval is one second in this test. Hold the failed power
+# wrapper beyond that boundary to prove the checkpoint loop remains gated.
+sleep 2
+if run_codex __checkpoint_once "$SESSION" >/dev/null 2>&1; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  printf 'tokenless checkpoint bypassed replacement readiness\n' >&2
+  exit 1
+fi
+if ! diff -qr "$resume_checkpoint_copy" "$checkpoint" >/dev/null || \
+   ! cmp -s "$resume_args_copy" "$resume_args_file"; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  printf 'Codex Resume changed recovery data before readiness\n' >&2
+  exit 1
+fi
+held_resume_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$SESSION\"" || true)"
+if [ "$(printf '%s' "$held_resume_json" | \
+     "$STATE_HELPER" meta get /dev/stdin agent_session_id 2>/dev/null || true)" != \
+     "$failed_resume_id" ] || \
+   [ "$(printf '%s' "$held_resume_json" | \
+     "$STATE_HELPER" meta get /dev/stdin effective_status 2>/dev/null || true)" != \
+     starting ] || \
+   ! printf '%s' "$held_resume_json" | \
+     grep -F '"health_actions":["attach"]' >/dev/null; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_resume_pid" || true
+  printf 'Codex list exposed recovery while replacement B was still starting: %s\n' \
+    "$held_resume_json" >&2
+  exit 1
+fi
+: >"$FAKE_POWER_FAIL_RELEASE_FILE"
+if wait "$failed_resume_pid"; then
+  printf 'Codex Resume passed a failed power handshake\n' >&2
+  exit 1
+fi
+rm -f \
+  "$FAKE_POWER_FAIL_ARM_FILE" \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+unset FAKE_POWER_FAIL_AFTER_READY
+! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
+if ! diff -qr "$resume_checkpoint_copy" "$checkpoint" >/dev/null || \
+   ! cmp -s "$resume_args_copy" "$resume_args_file"; then
+  printf 'Codex Resume changed recovery data during failed cleanup\n' >&2
+  exit 1
+fi
+[ -z "$("$STATE_HELPER" meta get "$meta" runtime_ready_at 2>/dev/null || true)" ]
+[ -n "$("$STATE_HELPER" meta get "$meta" \
+  runtime_shutdown_observed_at 2>/dev/null || true)" ]
+[ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$failed_resume_id" ]
+failed_resume_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$failed_resume_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$failed_resume_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$expected_id" ]
+[ "$(printf '%s' "$failed_resume_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = recoverable_checkpoint ]
+printf '%s' "$failed_resume_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+
+# Legacy metadata can omit both Codex identity keys. Recover must infer the
+# UUID from its validated checkpoint, bind a complete staged generation, and
+# retain that repaired generation if the replacement fails before readiness.
+legacy_id_name=legacy-null-id
+legacy_id_session=detach-codex-legacy-null-id
+legacy_id_dir="$DETACH_CODEX_STATE_ROOT/sessions/$legacy_id_session"
+legacy_id_checkpoint="$legacy_id_dir/checkpoint"
+rm -rf "$legacy_id_dir"
+cp -Rp "$codex_session_dir" "$legacy_id_dir"
+rm -f "$legacy_id_dir/meta.json"
+"$STATE_HELPER" meta patch "$legacy_id_checkpoint/meta.json" \
+  --string session_name "$legacy_id_session" \
+  --string display_name "$legacy_id_name" \
+  --null agent_session_id \
+  --null codex_session_id
+rm -f \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+: >"$FAKE_POWER_FAIL_ARM_FILE"
+export FAKE_CODEX_SLEEP=20
+run_codex recover --detach "$legacy_id_name" \
+  >"$TMP_ROOT/failed-legacy-id-recover.out" 2>&1 &
+failed_legacy_id_recover_pid=$!
+if ! wait_for_file_text "$FAKE_POWER_FAIL_ENTERED_FILE" entered; then
+  : >"$FAKE_POWER_FAIL_RELEASE_FILE"
+  wait "$failed_legacy_id_recover_pid" || true
+  exit 1
+fi
+[ "$("$STATE_HELPER" meta get \
+  "$legacy_id_checkpoint/meta.json" codex_session_id)" = "$expected_id" ]
+: >"$FAKE_POWER_FAIL_RELEASE_FILE"
+if wait "$failed_legacy_id_recover_pid"; then
+  printf 'legacy-ID replacement passed a failed power handshake\n' >&2
+  exit 1
+fi
+rm -f \
+  "$FAKE_POWER_FAIL_ARM_FILE" \
+  "$FAKE_POWER_FAIL_ENTERED_FILE" \
+  "$FAKE_POWER_FAIL_RELEASE_FILE"
+! tmux -L "$SOCKET" has-session -t "=$legacy_id_session" 2>/dev/null
+[ "$("$STATE_HELPER" meta get \
+  "$legacy_id_checkpoint/meta.json" codex_session_id)" = "$expected_id" ]
+run_codex recover --detach "$legacy_id_name"
+wait_for_tmux_option "$legacy_id_session" @detach_status running
+require_file_line "$FAKE_CODEX_ARGS_FILE" resume
+require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
+run_codex stop "$legacy_id_name"
+run_codex delete --force "$legacy_id_name"
+
+# A Codex checkpoint metadata generation remains recoverable when its backup
+# rollout is absent but the selected live rollout is valid. List and Recover
+# must use the same eligibility rule, so exercise both on an isolated copy.
+missing_backup_name=valid-live-no-backup
+missing_backup_session=detach-codex-valid-live-no-backup
+missing_backup_dir="$DETACH_CODEX_STATE_ROOT/sessions/$missing_backup_session"
+rm -rf "$missing_backup_dir"
+cp -Rp "$codex_session_dir" "$missing_backup_dir"
+"$STATE_HELPER" meta patch "$missing_backup_dir/meta.json" \
+  --string session_name "$missing_backup_session" \
+  --string display_name "$missing_backup_name"
+"$STATE_HELPER" meta patch "$missing_backup_dir/checkpoint/meta.json" \
+  --string session_name "$missing_backup_session" \
+  --string display_name "$missing_backup_name"
+# An interrupted publication can retain an older complete generation. Recover
+# must preserve it until the valid live source has rebuilt canonical recovery.
+missing_backup_retained="$missing_backup_dir/.checkpoint-stage-retained-recovery"
+cp -Rp "$missing_backup_dir/checkpoint" "$missing_backup_retained"
+rm -f "$missing_backup_dir/checkpoint/rollout.jsonl"
+missing_backup_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$missing_backup_session\"")"
+[ "$(printf '%s' "$missing_backup_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$missing_backup_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$expected_id" ]
+printf '%s' "$missing_backup_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+# Reject unsafe retained paths without touching the saved generation.
+missing_backup_unsafe="$missing_backup_dir/.checkpoint-stage-unsafe"
+missing_backup_retained_copy="$TMP_ROOT/retained-recovery-copy"
+cp -Rp "$missing_backup_retained" "$missing_backup_retained_copy"
+ln -s "$missing_backup_retained_copy" "$missing_backup_unsafe"
+if run_codex recover --detach "$missing_backup_name" \
+    >"$TMP_ROOT/unsafe-retained-recover.out" 2>&1; then
+  printf 'Recover accepted a symlinked retained checkpoint stage\n' >&2
+  exit 1
+fi
+[ -L "$missing_backup_unsafe" ]
+diff -qr "$missing_backup_retained_copy" "$missing_backup_retained" >/dev/null
+[ ! -e "$missing_backup_dir/checkpoint/rollout.jsonl" ]
+rm "$missing_backup_unsafe"
+# Force publication to fail after the live source was staged. Old retained
+# data must survive, and the next ordinary Recover must still succeed.
+missing_backup_state_wrapper="$TMP_ROOT/retained-recovery-state"
+missing_backup_exchange_attempt="$TMP_ROOT/retained-recovery-exchange-attempt"
+{
+  printf '#!/bin/bash\n'
+  printf 'if [ "$1:$2" = checkpoint:exchange ] && [ "$3" = %q ]; then\n' "$missing_backup_dir"
+  printf '  : >%q\n  exit 1\nfi\n' "$missing_backup_exchange_attempt"
+  printf 'exec %q "$@"\n' "$STATE_HELPER"
+} >"$missing_backup_state_wrapper"
+chmod 0700 "$missing_backup_state_wrapper"
+if DETACH_STATE_BIN="$missing_backup_state_wrapper" \
+    run_codex recover --detach "$missing_backup_name" \
+    >"$TMP_ROOT/retained-publication-failure.out" 2>&1; then
+  printf 'Recover accepted a failed checkpoint publication\n' >&2
+  exit 1
+fi
+[ -f "$missing_backup_exchange_attempt" ]
+diff -qr "$missing_backup_retained_copy" "$missing_backup_retained" >/dev/null
+[ ! -e "$missing_backup_dir/checkpoint/rollout.jsonl" ]
+export FAKE_CODEX_SLEEP=20
+run_codex recover --detach "$missing_backup_name"
+wait_for_tmux_option "$missing_backup_session" @detach_status running
+[ ! -e "$missing_backup_retained" ]
+"$STATE_HELPER" jsonl validate codex \
+  "$missing_backup_dir/checkpoint/rollout.jsonl" "$expected_id"
+require_file_line "$FAKE_CODEX_ARGS_FILE" resume
+require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
+require_file_line "$FAKE_CODEX_ARGS_FILE" detach-recovery-model
+run_codex stop "$missing_backup_name"
+run_codex delete --force "$missing_backup_name"
+
+# An explicit saved-options selector is part of recovery eligibility. Recover
+# must reject a missing file before it restores provider data from checkpoint.
+missing_args_copy="$TMP_ROOT/codex-missing-resume-args.bin"
+missing_args_meta_copy="$TMP_ROOT/codex-missing-resume-args-meta.json"
+mv "$resume_args_file" "$missing_args_copy"
+cp -p "$meta" "$missing_args_meta_copy"
+printf '{damaged rollout\n' >"$expected_rollout"
+missing_args_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$missing_args_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+printf '%s' "$missing_args_json" | grep -F '"health_actions":["delete"]' >/dev/null
+if run_codex recover --detach integration >/dev/null 2>&1; then
+  printf 'Codex Recover accepted a missing saved-options file\n' >&2
+  exit 1
+fi
+grep -Fx '{damaged rollout' "$expected_rollout" >/dev/null
+cmp -s "$missing_args_meta_copy" "$meta"
+mv "$missing_args_copy" "$resume_args_file"
+
+valid_args_copy="$TMP_ROOT/codex-valid-resume-args.bin"
+cp -p "$resume_args_file" "$valid_args_copy"
+printf 'torn-option' >>"$resume_args_file"
+torn_args_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$torn_args_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
+printf '%s' "$torn_args_json" | grep -F '"health_actions":["delete"]' >/dev/null
+if run_codex recover --detach integration >/dev/null 2>&1; then
+  printf 'Codex Recover accepted a torn saved-options file\n' >&2
+  exit 1
+fi
+grep -Fx '{damaged rollout' "$expected_rollout" >/dev/null
+cmp -s "$missing_args_meta_copy" "$meta"
+mv "$valid_args_copy" "$resume_args_file"
+
+printf '{damaged rollout\n' >"$expected_rollout"
+export FAKE_CODEX_SLEEP=20
+export FAKE_CODEX_EXIT=0
+run_codex recover --detach integration
+wait_for_tmux_option "$SESSION" @detach_status running
+require_file_line "$FAKE_CODEX_ARGS_FILE" resume
+require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
+require_file_line "$FAKE_CODEX_ARGS_FILE" detach-recovery-model
+"$STATE_HELPER" jsonl validate codex "$expected_rollout" "$expected_id"
+run_codex stop integration
+
+# A ready marker without a provider PID is the durable launch gap: the child
+# may exist, but its exact identity was never published. Even after the exact
+# worker is dead, List and Recover must keep all actions closed.
+"$STATE_HELPER" meta patch "$stale_starting_meta" \
+  --integer worker_pid 2147483647 \
+  --null provider_pid \
+  --null runtime_shutdown_observed_at
+cp -p "$stale_starting_meta" "$meta"
+launch_gap_token="$("$STATE_HELPER" meta get "$meta" run_token)"
+launch_gap_ready="$codex_session_dir/power-ready-$launch_gap_token"
+launch_gap_checkpoint_copy="$TMP_ROOT/codex-launch-gap-checkpoint"
+cp -Rp "$checkpoint" "$launch_gap_checkpoint_copy"
+: >"$launch_gap_ready"
+launch_gap_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$launch_gap_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = hung ]
+[ "$(printf '%s' "$launch_gap_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = runtime_quiescence_unproven ]
+printf '%s' "$launch_gap_json" | grep -F '"health_actions":[]' >/dev/null
+if run_codex recover --detach integration >/dev/null 2>&1; then
+  printf 'Codex Recover accepted a launch gap without provider identity\n' >&2
+  exit 1
+fi
+[ -f "$launch_gap_ready" ]
+diff -qr "$launch_gap_checkpoint_copy" "$checkpoint" >/dev/null
+rm -f "$launch_gap_ready"
+
+# `initializing` with no PID artifacts is not proof that launch was never
+# attempted. respawn-pane can create the worker before it publishes identity,
+# so this incomplete primary remains actionless without a shutdown marker.
+rm -f "$meta"
+"$STATE_HELPER" meta create "$meta" \
+  --integer schema 1 \
+  --string session_name "$SESSION" \
+  --string project_dir "$ROOT" \
+  --string status starting \
+  --string lifecycle_phase initializing \
+  --string run_token "$launch_gap_token" \
+  --string provider codex \
+  --integer health_schema 1 \
+  --bool preserve_recovery_until_ready true \
+  --null runtime_ready_at \
+  --null worker_pid \
+  --null provider_pid \
+  --null runtime_shutdown_observed_at
+prelaunch_unknown_meta_copy="$TMP_ROOT/codex-prelaunch-unknown-meta.json"
+cp -p "$meta" "$prelaunch_unknown_meta_copy"
+prelaunch_unknown_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$prelaunch_unknown_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = hung ]
+[ "$(printf '%s' "$prelaunch_unknown_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = runtime_quiescence_unproven ]
+printf '%s' "$prelaunch_unknown_json" | grep -F '"health_actions":[]' >/dev/null
+if run_codex recover --detach integration >/dev/null 2>&1; then
+  printf 'Codex Recover inferred shutdown from missing launch artifacts\n' >&2
+  exit 1
+fi
+if run_codex delete --force integration >/dev/null 2>&1; then
+  printf 'Codex Delete inferred shutdown from missing launch artifacts\n' >&2
+  exit 1
+fi
+[ -z "$("$STATE_HELPER" meta get "$meta" \
+  runtime_shutdown_observed_at 2>/dev/null || true)" ]
+cmp -s "$prelaunch_unknown_meta_copy" "$meta"
+diff -qr "$launch_gap_checkpoint_copy" "$checkpoint" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
+! "$DETACH" reconcile --dry-run --json | grep -F "$SESSION" >/dev/null
+
+# Model an abrupt loss after B published its starting metadata and exact
+# process identities, but before readiness. Fixed impossible PIDs make the
+# dead-process proof deterministic. Recover must still select checkpoint A.
+"$STATE_HELPER" meta patch "$stale_starting_meta" \
+  --integer provider_pid 2147483646 \
+  --null runtime_shutdown_observed_at
+cp -p "$stale_starting_meta" "$meta"
+stale_starting_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$SESSION\"")"
+[ "$(printf '%s' "$stale_starting_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$stale_starting_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$expected_id" ]
+printf '%s' "$stale_starting_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+printf '{damaged rollout\n' >"$expected_rollout"
+run_codex recover --detach integration
+wait_for_tmux_option "$SESSION" @detach_status running
+require_file_line "$FAKE_CODEX_ARGS_FILE" resume
+require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
+require_file_line "$FAKE_CODEX_ARGS_FILE" detach-recovery-model
+"$STATE_HELPER" jsonl validate codex "$expected_rollout" "$expected_id"
+run_codex stop integration
+
+# Model a ready run after /clear rebound it from thread A to B, but before the
+# next checkpoint. Primary and checkpoint share one run identity and legacy
+# options, while their provider IDs and rollout paths differ. Recover must
+# validate live B and replace the stale A binding before it starts C.
+ready_name=ready-before-first-checkpoint
+ready_session=detach-codex-ready-before-first-checkpoint
+ready_dir="$DETACH_CODEX_STATE_ROOT/sessions/$ready_session"
+ready_meta="$ready_dir/meta.json"
+ready_checkpoint="$ready_dir/checkpoint"
+rm -rf "$ready_dir"
+cp -Rp "$codex_session_dir" "$ready_dir"
+"$STATE_HELPER" meta patch "$ready_checkpoint/meta.json" \
+  --string session_name "$ready_session" \
+  --string display_name "$ready_name" \
+  --null resume_args_file
+ready_shared_run_token="$("$STATE_HELPER" meta get \
+  "$ready_checkpoint/meta.json" run_token)"
+ready_shared_lifecycle_id="$("$STATE_HELPER" meta get \
+  "$ready_checkpoint/meta.json" lifecycle_id)"
+cp -p "$stale_starting_meta" "$ready_meta"
+"$STATE_HELPER" meta patch "$ready_meta" \
+  --string session_name "$ready_session" \
+  --string display_name "$ready_name" \
+  --string run_token "$ready_shared_run_token" \
+  --string lifecycle_id "$ready_shared_lifecycle_id" \
+  --string status running \
+  --string lifecycle_phase running \
+  --string runtime_ready_at 2099-01-01T00:00:00Z \
+  --null last_checkpoint_at \
+  --null last_checkpoint_epoch \
+  --null resume_args_file \
+  --integer worker_pid 2147483647 \
+  --integer provider_pid 2147483646 \
+  --null runtime_shutdown_observed_at
+printf '%s\0%s\0' --model detach-ready-model >"$ready_dir/resume-args.bin"
+[ "$("$STATE_HELPER" meta get "$ready_meta" codex_session_id)" = "$failed_resume_id" ]
+[ "$("$STATE_HELPER" meta get "$ready_checkpoint/meta.json" codex_session_id)" = \
+  "$expected_id" ]
+[ -n "$("$STATE_HELPER" meta get "$ready_meta" runtime_ready_at)" ]
+[ -z "$("$STATE_HELPER" meta get "$ready_meta" last_checkpoint_at 2>/dev/null || true)" ]
+ready_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$ready_session\"")"
+[ "$(printf '%s' "$ready_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$ready_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$failed_resume_id" ]
+printf '%s' "$ready_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+
+# Recovery handoff fields are typed authority. A present primary with even a
+# scalar type mismatch must not fall back to checkpoint A in List or authorize
+# Recover/Delete. Build corruption without detach-state because the helper
+# itself rejects these invalid writes.
+ready_typed_meta_copy="$TMP_ROOT/ready-typed-meta.json"
+ready_typed_checkpoint_copy="$TMP_ROOT/ready-typed-checkpoint"
+ready_typed_tmp="$ready_meta.typed.tmp"
+cp -p "$ready_meta" "$ready_typed_meta_copy"
+cp -Rp "$ready_checkpoint" "$ready_typed_checkpoint_copy"
+for ready_typed_case in preserve ready shutdown; do
+  case "$ready_typed_case" in
+    preserve)
+      sed 's/"preserve_recovery_until_ready":true/"preserve_recovery_until_ready":"false"/' \
+        "$ready_typed_meta_copy" >"$ready_typed_tmp"
+      grep -F '"preserve_recovery_until_ready":"false"' \
+        "$ready_typed_tmp" >/dev/null
+      ;;
+    ready)
+      sed 's/"runtime_ready_at":"2099-01-01T00:00:00Z"/"runtime_ready_at":false/' \
+        "$ready_typed_meta_copy" >"$ready_typed_tmp"
+      grep -F '"runtime_ready_at":false' "$ready_typed_tmp" >/dev/null
+      ;;
+    shutdown)
+      sed 's/"runtime_shutdown_observed_at":null/"runtime_shutdown_observed_at":0/' \
+        "$ready_typed_meta_copy" >"$ready_typed_tmp"
+      grep -F '"runtime_shutdown_observed_at":0' "$ready_typed_tmp" >/dev/null
+      ;;
+  esac
+  mv -f "$ready_typed_tmp" "$ready_meta"
+  ready_typed_json="$(run_codex list --json | \
+    grep -F "\"session_name\":\"$ready_session\"")"
+  [ "$(printf '%s' "$ready_typed_json" | \
+    "$STATE_HELPER" meta get /dev/stdin effective_status)" = corrupt ]
+  printf '%s' "$ready_typed_json" | grep -F '"health_actions":[]' >/dev/null
+  if run_codex recover --detach "$ready_name" >/dev/null 2>&1; then
+    printf 'Codex Recover accepted mistyped %s metadata\n' \
+      "$ready_typed_case" >&2
+    exit 1
+  fi
+  if run_codex delete --force "$ready_name" >/dev/null 2>&1; then
+    printf 'Codex Delete accepted mistyped %s metadata\n' \
+      "$ready_typed_case" >&2
+    exit 1
+  fi
+  diff -qr "$ready_typed_checkpoint_copy" "$ready_checkpoint" >/dev/null
+  cp -p "$ready_typed_meta_copy" "$ready_meta"
+done
+
+# Resume must validate B's explicit saved-options binding before it can clone
+# B over the still-recoverable checkpoint A. A missing run-bound file fails
+# unchanged even when the legacy options file is present and valid.
+ready_missing_args_name="resume-args-$ready_shared_run_token.bin"
+rm -f "$ready_dir/$ready_missing_args_name"
+"$STATE_HELPER" meta patch "$ready_meta" \
+  --string resume_args_file "$ready_missing_args_name"
+ready_missing_meta_copy="$TMP_ROOT/ready-missing-options-meta.json"
+ready_missing_checkpoint_copy="$TMP_ROOT/ready-missing-options-checkpoint"
+ready_missing_legacy_args_copy="$TMP_ROOT/ready-missing-options-legacy.bin"
+cp -p "$ready_meta" "$ready_missing_meta_copy"
+cp -Rp "$ready_checkpoint" "$ready_missing_checkpoint_copy"
+cp -p "$ready_dir/resume-args.bin" "$ready_missing_legacy_args_copy"
+ready_missing_output="$TMP_ROOT/ready-missing-options-resume.out"
+if run_codex resume --name "$ready_name" --detach "$failed_resume_id" \
+     >"$ready_missing_output" 2>&1; then
+  printf 'Codex Resume accepted a missing selected options file\n' >&2
+  exit 1
+fi
+! grep -F 'Started ' "$ready_missing_output" >/dev/null
+grep -F 'could not initialize session metadata' "$ready_missing_output" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$ready_session" 2>/dev/null
+cmp "$ready_missing_meta_copy" "$ready_meta"
+diff -qr "$ready_missing_checkpoint_copy" "$ready_checkpoint" >/dev/null
+cmp "$ready_missing_legacy_args_copy" "$ready_dir/resume-args.bin"
+"$STATE_HELPER" meta patch "$ready_meta" --null resume_args_file
+
+# A selected Codex generation without its own rollout checkpoint is valid only
+# while its safe live rollout is valid. A damaged B rollout must not replace A
+# metadata, even when A remains recoverable from its own live rollout.
+ready_payload_checkpoint_copy="$TMP_ROOT/ready-payload-checkpoint"
+ready_payload_expected_checkpoint="$TMP_ROOT/ready-payload-expected-checkpoint"
+ready_payload_meta_copy="$TMP_ROOT/ready-payload-meta.json"
+ready_payload_live_copy="$TMP_ROOT/ready-payload-live.jsonl"
+cp -p "$ready_checkpoint/rollout.jsonl" "$ready_payload_checkpoint_copy"
+rm -f "$ready_checkpoint/rollout.jsonl"
+cp -Rp "$ready_checkpoint" "$ready_payload_expected_checkpoint"
+cp -p "$ready_meta" "$ready_payload_meta_copy"
+cp -p "$failed_resume_rollout" "$ready_payload_live_copy"
+printf '{damaged selected rollout\n' >"$failed_resume_rollout"
+ready_payload_output="$TMP_ROOT/ready-payload-resume.out"
+if run_codex resume --name "$ready_name" --detach "$expected_id" \
+     >"$ready_payload_output" 2>&1; then
+  printf 'Codex Resume accepted a damaged selected live rollout\n' >&2
+  exit 1
+fi
+! grep -F 'Started ' "$ready_payload_output" >/dev/null
+grep -F 'could not initialize session metadata' "$ready_payload_output" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$ready_session" 2>/dev/null
+cmp "$ready_payload_meta_copy" "$ready_meta"
+diff -qr "$ready_payload_expected_checkpoint" "$ready_checkpoint" >/dev/null
+cp -p "$ready_payload_checkpoint_copy" "$ready_checkpoint/rollout.jsonl"
+cp -p "$ready_payload_live_copy" "$failed_resume_rollout"
+
+# Recovering ready B starts replacement C. Force a deterministic failure in
+# snapshot_known_threads before respawn-pane is invoked. The starter can prove
+# locally that no C runtime existed, and the usable but stale A checkpoint
+# must first be replaced by the selected B generation and B's saved options.
+prelaunch_fail_sqlite="$TMP_ROOT/prelaunch-fail-sqlite"
+real_sqlite="$(command -v sqlite3)"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'case "$*" in *"SELECT id FROM threads"*"ORDER BY id"*) exit 91 ;; esac' \
+  "exec \"$real_sqlite\" \"\$@\"" \
+  >"$prelaunch_fail_sqlite"
+chmod 0755 "$prelaunch_fail_sqlite"
+prelaunch_failure_output="$TMP_ROOT/prelaunch-recovery-failure.out"
+if DETACH_SQLITE_BIN="$prelaunch_fail_sqlite" \
+   run_codex recover --detach "$ready_name" \
+     >"$prelaunch_failure_output" 2>&1; then
+  printf 'Codex Recover passed a pre-worker snapshot failure\n' >&2
+  exit 1
+fi
+! grep -F 'Started ' "$prelaunch_failure_output" >/dev/null
+grep -F 'could not snapshot existing Codex sessions' \
+  "$prelaunch_failure_output" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$ready_session" 2>/dev/null
+[ -n "$("$STATE_HELPER" meta get "$ready_meta" \
+  runtime_shutdown_observed_at 2>/dev/null || true)" ]
+[ "$("$STATE_HELPER" meta get "$ready_checkpoint/meta.json" \
+  codex_session_id)" = "$failed_resume_id" ]
+"$STATE_HELPER" jsonl validate codex \
+  "$ready_checkpoint/rollout.jsonl" "$failed_resume_id"
+ready_preserved_args="$(saved_resume_args_path \
+  "$ready_checkpoint/meta.json" "$ready_dir")"
+require_nul_file_arg "$ready_preserved_args" detach-ready-model
+ready_after_prelaunch_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$ready_session\"")"
+[ "$(printf '%s' "$ready_after_prelaunch_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+[ "$(printf '%s' "$ready_after_prelaunch_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$failed_resume_id" ]
+printf '%s' "$ready_after_prelaunch_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+
+# Replacement C may have changed B's live rollout before it failed. Recover
+# must use the newly materialized immutable B payload, not stale checkpoint A
+# or the damaged live provider file.
+printf '{damaged live B after failed C\n' >"$failed_resume_rollout"
+run_codex recover --detach "$ready_name"
+wait_for_tmux_option "$ready_session" @detach_status running
+require_file_line "$FAKE_CODEX_ARGS_FILE" resume
+require_file_line "$FAKE_CODEX_ARGS_FILE" "$failed_resume_id"
+require_file_line "$FAKE_CODEX_ARGS_FILE" detach-ready-model
+"$STATE_HELPER" jsonl validate codex "$failed_resume_rollout" "$failed_resume_id"
+run_codex stop "$ready_name"
+run_codex delete --force "$ready_name"
+
+uppercase_codex="$TMP_ROOT/fake-codex-uppercase-resume"
+uppercase_release="$TMP_ROOT/fake-codex-uppercase-resume-release"
+write_releasable_fake_codex "$uppercase_codex" "$uppercase_release"
 cp -p "$expected_rollout" "$checkpoint/rollout.jsonl"
 printf '{damaged rollout\n' >"$expected_rollout"
 uppercase_id="$(printf '%s' "$expected_id" | tr '[:lower:]' '[:upper:]')"
 other_cwd="$TMP_ROOT/other-cwd"
 mkdir -p "$other_cwd"
-(cd "$other_cwd" && "$DETACH" resume --name integration --detach "$uppercase_id")
+# Capture the event token before resume. On a fast host, the worker can record
+# `completed`, exit, and run the pane-died hook before the status poll below
+# returns. A baseline taken after that poll would wait for a nonexistent extra
+# event.
+status_hint="$(cat "$DETACH_STATE_ROOT/session-change")"
+(cd "$other_cwd" && DETACH_CODEX_BIN="$uppercase_codex" \
+  "$DETACH" --terminal-size 137x47 resume --name integration --detach "$uppercase_id")
+[ "$(awk '{print $1, $2}' "$FAKE_CODEX_ARGS_FILE.terminal-size")" = '47 137' ]
+[ -z "$(cat "$FAKE_CODEX_ARGS_FILE.initial-size-hint")" ]
+: >"$uppercase_release"
 wait_for_tmux_option "$SESSION" @detach_status completed
 grep -Fx 'resume' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
@@ -1109,6 +2915,13 @@ grep -Fx "$expected_id" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 completed_run_token="$("$STATE_HELPER" meta get "$meta" run_token)"
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
 wait_for_pane_dead "$pane_id"
+hint_attempts=0
+while [ "$hint_attempts" -lt 100 ] && \
+      [ "$(cat "$DETACH_STATE_ROOT/session-change")" = "$status_hint" ]; do
+  hint_attempts=$((hint_attempts + 1))
+  sleep 0.05
+done
+[ "$(cat "$DETACH_STATE_ROOT/session-change")" != "$status_hint" ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_status)" = "completed" ]
 completed_style="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style)"
 [ "$completed_style" != "$failed_style" ]
@@ -1143,6 +2956,7 @@ json_line="$(run_codex list --json | grep -F "\"session_name\":\"$SESSION\"")"
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = "running" ]
 [ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin project_dir)" ]
 [ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin created_at)" ]
+[ -n "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin lifecycle_id)" ]
 [ -z "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin exit_status)" ]
 [[ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin session_color)" =~ ^#[[:xdigit:]]{6}$ ]]
 [ "$(printf '%s' "$json_line" | "$STATE_HELPER" meta get /dev/stdin power_protection_state)" = "protected" ]
@@ -1350,7 +3164,57 @@ printf '%s' "$json_line" | grep -F '"session_color":null' >/dev/null
 fi
 
 if codex_part_selected delete; then
-run_codex --name integration --detach -- 'delete refusal coverage'
+# Stop serializes its stop-edge pane capture with an in-flight atomic
+# checkpoint publication. Output produced after the staged capture must remain
+# in canonical checkpoint logs after both operations finish.
+stop_edge_name=checkpoint-stop-edge
+stop_edge_session=detach-codex-checkpoint-stop-edge
+stop_edge_ready="$TMP_ROOT/checkpoint-stop-edge-ready"
+stop_edge_release="$TMP_ROOT/checkpoint-stop-edge-release"
+stop_edge_lock_queued="$TMP_ROOT/checkpoint-stop-edge-lock-queued"
+stop_edge_lockf="$TMP_ROOT/checkpoint-stop-edge-lockf"
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$stop_edge_name" --detach -- 'checkpoint Stop edge coverage'
+wait_for_tmux_option "$stop_edge_session" @detach_status running
+stop_edge_meta="$DETACH_CODEX_STATE_ROOT/sessions/$stop_edge_session/meta.json"
+stop_edge_run_token="$("$STATE_HELPER" meta get "$stop_edge_meta" run_token)"
+stop_edge_worker_pid="$("$STATE_HELPER" meta get "$stop_edge_meta" worker_pid)"
+stop_edge_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$stop_edge_session:" @detach_pane_id)"
+DETACH_TEST_CHECKPOINT_PREEXCHANGE_READY="$stop_edge_ready" \
+DETACH_TEST_CHECKPOINT_PREEXCHANGE_RELEASE="$stop_edge_release" \
+  "$SCRIPT" codex __checkpoint_once \
+    "$stop_edge_session" "$stop_edge_run_token" "$stop_edge_worker_pid" \
+    >/dev/null 2>&1 &
+stop_edge_writer=$!
+wait_for_file_text "$stop_edge_ready" ready
+tmux -L "$SOCKET" send-keys -l -t "$stop_edge_pane" \
+  'stop-edge-pane-marker'
+wait_for_pane_text "$SOCKET" "$stop_edge_pane" 'stop-edge-pane-marker'
+printf '%s\n' \
+  '#!/bin/bash' \
+  'set -eu' \
+  'if [ "${4:-}" = "$DETACH_TEST_LOCKF_PATH" ]; then' \
+  '  printf '\''queued\n'\'' >"$DETACH_TEST_LOCKF_QUEUED"' \
+  'fi' \
+  'exec /usr/bin/lockf "$@"' >"$stop_edge_lockf"
+chmod 0755 "$stop_edge_lockf"
+DETACH_LOCKF_BIN="$stop_edge_lockf" \
+DETACH_TEST_LOCKF_PATH="$DETACH_LOCKS_ROOT/checkpoint-$stop_edge_session.lock" \
+DETACH_TEST_LOCKF_QUEUED="$stop_edge_lock_queued" \
+  run_codex stop "$stop_edge_name" >/dev/null 2>&1 &
+stop_edge_stop=$!
+wait_for_file_text "$stop_edge_lock_queued" queued
+: >"$stop_edge_release"
+wait "$stop_edge_writer"
+wait "$stop_edge_stop"
+grep -F 'stop-edge-pane-marker' \
+  "$DETACH_CODEX_STATE_ROOT/sessions/$stop_edge_session/checkpoint/pane.txt" \
+  >/dev/null
+run_codex delete --force "$stop_edge_name"
+
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name integration --detach -- 'delete refusal coverage'
 wait_for_tmux_option "$SESSION" @detach_status running
 live_storage_plan="$("$DETACH" storage cleanup --dry-run --json)"
 ! printf '%s' "$live_storage_plan" | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
@@ -1398,6 +3262,207 @@ wait "$checkpoint_holder"
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 ! run_codex list --json | grep -F "\"session_name\":\"$SESSION\"" >/dev/null
 codex_scenario_event pass SC-SESSION-DELETE-CODEX
+
+# A managed tmux session whose state directory was removed by hand is a
+# tmux-only remnant. Delete must still remove the remnant instead of dying
+# on the missing directory.
+remnant_name=delete-remnant
+remnant_session=detach-codex-delete-remnant
+remnant_codex="$TMP_ROOT/fake-codex-delete-remnant"
+remnant_release="$TMP_ROOT/fake-codex-delete-remnant-release"
+write_releasable_fake_codex "$remnant_codex" "$remnant_release"
+DETACH_CODEX_BIN="$remnant_codex" \
+  run_codex --name "$remnant_name" --detach -- 'tmux-only remnant delete coverage'
+: >"$remnant_release"
+remnant_pane="$(tmux -L "$SOCKET" show-options -qv -t "=$remnant_session:" @detach_pane_id)"
+wait_for_pane_dead "$remnant_pane"
+tmux -L "$SOCKET" has-session -t "=$remnant_session"
+rm -rf "$DETACH_CODEX_STATE_ROOT/sessions/$remnant_session"
+run_codex delete --force "$remnant_name"
+! tmux -L "$SOCKET" has-session -t "=$remnant_session" 2>/dev/null
+
+# A delete that cannot remove every byte must fail loudly instead of
+# printing a misleading success over leftover state.
+stubborn_name=delete-stubborn
+stubborn_session=detach-codex-delete-stubborn
+stubborn_codex="$TMP_ROOT/fake-codex-delete-stubborn"
+stubborn_release="$TMP_ROOT/fake-codex-delete-stubborn-release"
+write_releasable_fake_codex "$stubborn_codex" "$stubborn_release"
+DETACH_CODEX_BIN="$stubborn_codex" \
+  run_codex --name "$stubborn_name" --detach -- 'partial delete failure coverage'
+: >"$stubborn_release"
+stubborn_pane="$(tmux -L "$SOCKET" show-options -qv -t "=$stubborn_session:" @detach_pane_id)"
+wait_for_pane_dead "$stubborn_pane"
+stubborn_dir="$DETACH_CODEX_STATE_ROOT/sessions/$stubborn_session"
+mkdir -p "$stubborn_dir/nested"
+printf 'undeletable\n' >"$stubborn_dir/nested/keep"
+chmod 0555 "$stubborn_dir/nested"
+if run_codex delete --force "$stubborn_name" >"$TMP_ROOT/delete-stubborn.out" 2>&1; then
+  printf 'delete unexpectedly succeeded over an undeletable nested file\n' >&2
+  exit 1
+fi
+grep -F 'could not completely remove session state' "$TMP_ROOT/delete-stubborn.out" >/dev/null
+! grep -F "Deleted $stubborn_session" "$TMP_ROOT/delete-stubborn.out" >/dev/null
+grep -Fx 'undeletable' "$stubborn_dir/nested/keep" >/dev/null
+chmod 0755 "$stubborn_dir/nested"
+rm -rf "$stubborn_dir"
+! tmux -L "$SOCKET" has-session -t "=$stubborn_session" 2>/dev/null
+
+# Stop resolves the pane process group through /bin/ps. A failing ps first
+# on PATH must not replace it: a single-pid fallback TERM would leave the
+# HUP-ignoring provider running after kill-session and fail the stop, while
+# the revalidated group TERM still stops the whole managed group cleanly.
+stop_signal_source="$(sed -n '/^stop_session() {/,/^delete_session() {/p' \
+  "$ROOT/bin/detach-core")"
+[ "$(printf '%s\n' "$stop_signal_source" | \
+  grep -c 'signal_managed_pane_group .* TERM')" = 1 ]
+[ "$(printf '%s\n' "$stop_signal_source" | \
+  grep -c 'signal_managed_pane_group .* KILL')" = 1 ]
+! printf '%s\n' "$stop_signal_source" | \
+  grep -E 'kill[[:space:]]+-(TERM|KILL)' >/dev/null
+shadow_name=delete-stop-shadow-ps
+shadow_session=detach-codex-delete-stop-shadow-ps
+shadow_bin="$TMP_ROOT/shadow-bin"
+mkdir -p "$shadow_bin"
+printf '%s\n' '#!/bin/bash' 'exit 1' >"$shadow_bin/ps"
+chmod 0755 "$shadow_bin/ps"
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$shadow_name" --detach -- 'stop PATH ps coverage'
+wait_for_tmux_option "$shadow_session" @detach_status running
+PATH="$shadow_bin:$PATH" run_codex stop "$shadow_name"
+! tmux -L "$SOCKET" has-session -t "=$shadow_session" 2>/dev/null
+[ "$("$STATE_HELPER" meta get \
+  "$DETACH_CODEX_STATE_ROOT/sessions/$shadow_session/meta.json" status)" = stopped ]
+run_codex delete --force "$shadow_name"
+
+# A legacy worker or a faulty final checkpoint can remain alive after its
+# recorded provider has exited. Stop must keep actions closed until that exact
+# worker is gone, but it must not spend the full live-provider grace on cleanup.
+slow_cleanup_name=stop-slow-final-checkpoint
+slow_cleanup_session=detach-codex-stop-slow-final-checkpoint
+slow_cleanup_marker="$TMP_ROOT/slow-final-checkpoint"
+slow_cleanup_started="$TMP_ROOT/slow-final-checkpoint-started"
+slow_cleanup_sqlite="$TMP_ROOT/slow-final-checkpoint-sqlite"
+sqlite_delegate="$(command -v sqlite3)"
+printf '%s\n' \
+  '#!/bin/bash' \
+  "if [ -f '$slow_cleanup_marker' ] && [ \"\${DETACH_SUPPRESS_SESSION_EVENT:-0}\" = 1 ]; then" \
+  "  : >'$slow_cleanup_started'" \
+  "  trap '' HUP INT TERM" \
+  '  sleep 30' \
+  'fi' \
+  "exec '$sqlite_delegate' \"\$@\"" \
+  >"$slow_cleanup_sqlite"
+chmod 0755 "$slow_cleanup_sqlite"
+DETACH_SQLITE_BIN="$slow_cleanup_sqlite" \
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$slow_cleanup_name" --detach -- \
+    'bounded Stop finalization coverage'
+wait_for_tmux_option "$slow_cleanup_session" @detach_status running
+slow_cleanup_meta="$DETACH_CODEX_STATE_ROOT/sessions/$slow_cleanup_session/meta.json"
+slow_cleanup_checkpoint="$(dirname "$slow_cleanup_meta")/checkpoint"
+# Only Stop can recreate these snapshots: the final worker checkpoint blocks
+# in SQLite before it reaches pane capture.
+rm -f "$slow_cleanup_checkpoint/pane.txt" "$slow_cleanup_checkpoint/pane-ansi.txt"
+: >"$slow_cleanup_marker"
+slow_cleanup_start_seconds=$SECONDS
+run_codex stop "$slow_cleanup_name"
+slow_cleanup_elapsed=$((SECONDS - slow_cleanup_start_seconds))
+[ -f "$slow_cleanup_started" ]
+if [ "$slow_cleanup_elapsed" -ge 7 ]; then
+  printf 'Stop spent %s seconds waiting after provider exit\n' \
+    "$slow_cleanup_elapsed" >&2
+  exit 1
+fi
+slow_cleanup_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$slow_cleanup_session\"")"
+[ "$(printf '%s' "$slow_cleanup_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
+printf '%s' "$slow_cleanup_json" | \
+  grep -F '"health_actions":["resume","delete"]' >/dev/null
+[ "$("$STATE_HELPER" meta get "$slow_cleanup_meta" status)" = stopped ]
+[ -s "$slow_cleanup_checkpoint/pane.txt" ]
+run_codex logs --ansi "$slow_cleanup_name" | LC_ALL=C \
+  grep -F $'\033[38;2;12;34;56mtrue-color checkpoint probe' >/dev/null
+run_codex delete --force "$slow_cleanup_name"
+
+# Freeze the worker after Start, then request Stop. The process-group TERM
+# removes the provider while the stopped worker cannot publish final metadata.
+# This holds the exact UI-visible transition long enough to assert that the
+# formal stopping phase reports the requested outcome without authorizing an
+# early action.
+stop_transition_name=stop-transition
+stop_transition_session=detach-codex-stop-transition
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$stop_transition_name" --detach -- 'Stop transition health coverage'
+wait_for_tmux_option "$stop_transition_session" @detach_status running
+stop_transition_meta="$DETACH_CODEX_STATE_ROOT/sessions/$stop_transition_session/meta.json"
+stop_transition_worker="$("$STATE_HELPER" meta get "$stop_transition_meta" worker_pid)"
+kill -STOP "$stop_transition_worker"
+run_codex stop "$stop_transition_name" >"$TMP_ROOT/stop-transition.out" 2>&1 &
+stop_transition_pid=$!
+stop_transition_json=""
+attempts=0
+while [ "$attempts" -lt 80 ]; do
+  candidate_json="$(run_codex list --json | \
+    grep -F "\"session_name\":\"$stop_transition_session\"")"
+  candidate_reason="$(printf '%s' "$candidate_json" | \
+    "$STATE_HELPER" meta get /dev/stdin health_reason)"
+  case "$candidate_reason" in
+    finished|provider_process_lost)
+      stop_transition_json="$candidate_json"
+      break
+      ;;
+  esac
+  attempts=$((attempts + 1))
+  sleep 0.1
+done
+kill -CONT "$stop_transition_worker" 2>/dev/null || true
+wait "$stop_transition_pid"
+[ -n "$stop_transition_json" ]
+[ "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
+[ "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
+[ "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin cleanup_eligible)" = false ]
+[ -n "$(printf '%s' "$stop_transition_json" | \
+  "$STATE_HELPER" meta get /dev/stdin stop_requested_at)" ]
+printf '%s' "$stop_transition_json" | grep -F '"health_actions":[]' >/dev/null
+[ "$("$STATE_HELPER" meta get "$stop_transition_meta" status)" = stopped ]
+[ "$("$STATE_HELPER" meta get "$stop_transition_meta" lifecycle_phase)" = terminal ]
+run_codex delete --force "$stop_transition_name"
+
+# A start holds the install lock through its readiness wait (up to 35
+# seconds). Scale lockf deadlines by 10 for this check so the regression stays
+# discriminating without adding 35 seconds to every Codex test run.
+install_lock_ready="$TMP_ROOT/install-lock-ready"
+scaled_install_lockf="$TMP_ROOT/scaled-install-lockf"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'set -eu' \
+  '[ "$1" = -k ] && [ "$2" = -t ]' \
+  'timeout=$((($3 + 9) / 10))' \
+  'shift 3' \
+  'exec /usr/bin/lockf -k -t "$timeout" "$@"' >"$scaled_install_lockf"
+chmod 0755 "$scaled_install_lockf"
+/usr/bin/lockf -k "$TEST_INSTALL_STATE_ROOT/install.lock" /bin/sh -c \
+  'touch "$1"; sleep 3.5' sh "$install_lock_ready" &
+install_holder=$!
+attempts=0
+while [ ! -f "$install_lock_ready" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 40 ] || {
+    printf 'install lock holder did not start\n' >&2
+    exit 1
+  }
+  sleep 0.05
+done
+DETACH_LOCKF_BIN="$scaled_install_lockf" "$SCRIPT" config tmux-mouse off
+wait "$install_holder"
+[ "$("$SCRIPT" config tmux-mouse)" = "off" ]
+"$SCRIPT" config tmux-mouse on
+[ "$("$SCRIPT" config tmux-mouse)" = "on" ]
 fi
 
 # Killing the worker can leave its provider alive in a retained pane. Detach
@@ -1411,20 +3476,238 @@ DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
   run_codex --name "$worker_crash_name" --detach -- 'worker crash health coverage'
 worker_crash_meta="$DETACH_CODEX_STATE_ROOT/sessions/$worker_crash_session/meta.json"
 worker_crash_checkpoint="$DETACH_CODEX_STATE_ROOT/sessions/$worker_crash_session/checkpoint/rollout.jsonl"
+worker_crash_checkpoint_meta="$(dirname "$worker_crash_checkpoint")/meta.json"
 attempts=0
 while { [ ! -s "$worker_crash_checkpoint" ] || \
+        ! "$STATE_HELPER" meta usable \
+          "$worker_crash_checkpoint_meta" "$worker_crash_session" \
+          >/dev/null 2>&1 || \
         [ -z "$("$STATE_HELPER" meta get "$worker_crash_meta" agent_session_id 2>/dev/null || true)" ]; } && \
       [ "$attempts" -lt 80 ]; do
   attempts=$((attempts + 1))
   sleep 0.1
 done
 [ -s "$worker_crash_checkpoint" ]
+[ -s "$worker_crash_checkpoint_meta" ]
+[ -s "$(dirname "$worker_crash_checkpoint")/.detach-jsonl-validation.json" ]
 worker_crash_pane="$(tmux -L "$SOCKET" show-options -qv \
   -t "=$worker_crash_session:" @detach_pane_id)"
 worker_crash_pid="$("$STATE_HELPER" meta get "$worker_crash_meta" worker_pid)"
 worker_crash_provider_pid="$("$STATE_HELPER" meta get "$worker_crash_meta" provider_pid)"
 worker_crash_pgid="$(wait_for_process_group_id "$worker_crash_pid")"
+worker_crash_run_token="$("$STATE_HELPER" meta get "$worker_crash_meta" run_token)"
+
+# A checkpoint generation includes the exact run-bound saved options. If that
+# file becomes torn after staging, prepublish validation must retain canonical
+# checkpoint A byte-for-byte.
+worker_crash_args_ready="$TMP_ROOT/worker-crash-args-ready"
+worker_crash_args_release="$TMP_ROOT/worker-crash-args-release"
+worker_crash_args_guard="$TMP_ROOT/worker-crash-args-checkpoint"
+worker_crash_args_copy="$TMP_ROOT/worker-crash-resume-args.bin"
+DETACH_TEST_CHECKPOINT_PREPUBLISH_READY="$worker_crash_args_ready" \
+DETACH_TEST_CHECKPOINT_PREPUBLISH_RELEASE="$worker_crash_args_release" \
+  "$SCRIPT" codex __checkpoint_once \
+    "$worker_crash_session" "$worker_crash_run_token" "$worker_crash_pid" \
+    >/dev/null 2>&1 &
+worker_crash_args_writer=$!
+wait_for_file_text "$worker_crash_args_ready" ready
+cp -Rp "$(dirname "$worker_crash_checkpoint")" "$worker_crash_args_guard"
+worker_crash_resume_args="$(saved_resume_args_path \
+  "$worker_crash_meta" "$(dirname "$worker_crash_meta")")"
+cp -p "$worker_crash_resume_args" "$worker_crash_args_copy"
+printf 'torn-options' >>"$worker_crash_resume_args"
+: >"$worker_crash_args_release"
+if wait "$worker_crash_args_writer"; then
+  printf 'checkpoint published with torn run-bound saved options\n' >&2
+  exit 1
+fi
+diff -qr "$worker_crash_args_guard" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+mv -f "$worker_crash_args_copy" "$worker_crash_resume_args"
+
+# A signal after atomic exchange but before the publish sync must retain both
+# names. The old canonical generation now lives at the stage path, so an EXIT
+# cleanup that was armed for pre-exchange failures would destroy recovery A.
+worker_crash_signal_ready="$TMP_ROOT/worker-crash-signal-ready"
+worker_crash_signal_release="$TMP_ROOT/worker-crash-signal-release"
+worker_crash_signal_preexchange_ready="$TMP_ROOT/worker-crash-signal-preexchange-ready"
+worker_crash_signal_preexchange_release="$TMP_ROOT/worker-crash-signal-preexchange-release"
+worker_crash_signal_pid_file="$TMP_ROOT/worker-crash-signal-pid"
+worker_crash_signal_guard="$TMP_ROOT/worker-crash-signal-checkpoint"
+DETACH_CODEX_SYNC=1 \
+DETACH_TEST_CHECKPOINT_PREEXCHANGE_READY="$worker_crash_signal_preexchange_ready" \
+DETACH_TEST_CHECKPOINT_PREEXCHANGE_RELEASE="$worker_crash_signal_preexchange_release" \
+DETACH_TEST_CHECKPOINT_POSTEXCHANGE_READY="$worker_crash_signal_ready" \
+DETACH_TEST_CHECKPOINT_POSTEXCHANGE_RELEASE="$worker_crash_signal_release" \
+DETACH_TEST_CHECKPOINT_BARRIER_PID_FILE="$worker_crash_signal_pid_file" \
+  "$SCRIPT" codex __checkpoint_once \
+    "$worker_crash_session" "$worker_crash_run_token" "$worker_crash_pid" \
+    >/dev/null 2>&1 &
+worker_crash_signal_writer=$!
+wait_for_file_text "$worker_crash_signal_preexchange_ready" ready
+cp -Rp "$(dirname "$worker_crash_checkpoint")" "$worker_crash_signal_guard"
+rm -f "$worker_crash_signal_pid_file"
+: >"$worker_crash_signal_preexchange_release"
+wait_for_file_text "$worker_crash_signal_ready" ready
+IFS= read -r worker_crash_signal_pid <"$worker_crash_signal_pid_file"
+case "$worker_crash_signal_pid" in
+  ''|*[!0-9]*) printf 'post-exchange writer PID is invalid\n' >&2; exit 1 ;;
+esac
+worker_crash_signal_stage="$(find "$(dirname "$worker_crash_meta")" \
+  -mindepth 1 -maxdepth 1 -type d -name '.checkpoint-stage-*' -print -quit)"
+[ -n "$worker_crash_signal_stage" ]
+diff -qr "$worker_crash_signal_guard" "$worker_crash_signal_stage" >/dev/null
+kill -TERM "$worker_crash_signal_pid"
+if wait "$worker_crash_signal_writer"; then
+  printf 'post-exchange checkpoint writer survived TERM\n' >&2
+  exit 1
+fi
+[ -d "$worker_crash_signal_stage" ] && [ ! -L "$worker_crash_signal_stage" ]
+diff -qr "$worker_crash_signal_guard" "$worker_crash_signal_stage" >/dev/null
+worker_crash_signal_id="$(
+  "$STATE_HELPER" meta get "$worker_crash_checkpoint_meta" codex_session_id
+)"
+"$STATE_HELPER" jsonl validate codex \
+  "$worker_crash_checkpoint" "$worker_crash_signal_id"
+DETACH_CODEX_SYNC=1 "$SCRIPT" codex __checkpoint_once \
+  "$worker_crash_session" "$worker_crash_run_token" "$worker_crash_pid"
+[ -z "$(find "$(dirname "$worker_crash_meta")" -mindepth 1 -maxdepth 1 \
+  -type d -name '.checkpoint-stage-*' -print -quit)" ]
+
+# A failed durability sync after the directory exchange must roll publication
+# back to checkpoint A. If the rollback sync also fails, both directory
+# entries must remain so a crash cannot discard the only durable generation.
+worker_crash_sync_ready="$TMP_ROOT/worker-crash-sync-ready"
+worker_crash_sync_release="$TMP_ROOT/worker-crash-sync-release"
+worker_crash_sync_preexchange_ready="$TMP_ROOT/worker-crash-sync-preexchange-ready"
+worker_crash_sync_preexchange_release="$TMP_ROOT/worker-crash-sync-preexchange-release"
+worker_crash_sync_guard="$TMP_ROOT/worker-crash-sync-checkpoint"
+DETACH_CODEX_SYNC=1 \
+DETACH_TEST_CHECKPOINT_SYNC_FAIL=1 \
+DETACH_TEST_CHECKPOINT_ROLLBACK_SYNC_FAIL=1 \
+DETACH_TEST_CHECKPOINT_PREEXCHANGE_READY="$worker_crash_sync_preexchange_ready" \
+DETACH_TEST_CHECKPOINT_PREEXCHANGE_RELEASE="$worker_crash_sync_preexchange_release" \
+DETACH_TEST_CHECKPOINT_ROLLBACK_READY="$worker_crash_sync_ready" \
+DETACH_TEST_CHECKPOINT_ROLLBACK_RELEASE="$worker_crash_sync_release" \
+  "$SCRIPT" codex __checkpoint_once \
+    "$worker_crash_session" "$worker_crash_run_token" "$worker_crash_pid" \
+    >/dev/null 2>&1 &
+worker_crash_sync_writer=$!
+wait_for_file_text "$worker_crash_sync_preexchange_ready" ready
+cp -Rp "$(dirname "$worker_crash_checkpoint")" "$worker_crash_sync_guard"
+: >"$worker_crash_sync_preexchange_release"
+wait_for_file_text "$worker_crash_sync_ready" ready
+diff -qr "$worker_crash_sync_guard" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+worker_crash_sync_stage="$(find "$(dirname "$worker_crash_meta")" \
+  -mindepth 1 -maxdepth 1 -type d -name '.checkpoint-stage-*' -print -quit)"
+[ -n "$worker_crash_sync_stage" ]
+: >"$worker_crash_sync_release"
+if wait "$worker_crash_sync_writer"; then
+  printf 'checkpoint unexpectedly succeeded after its durability sync failed\n' >&2
+  exit 1
+fi
+diff -qr "$worker_crash_sync_guard" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+[ -d "$worker_crash_sync_stage" ] && [ ! -L "$worker_crash_sync_stage" ]
+/bin/sync
+rm -rf -- "$worker_crash_sync_stage"
+
+# Build a complete replacement checkpoint while holding the checkpoint lock,
+# but pause before its atomic publish. Checkpoint A must remain byte-identical
+# throughout staging, and neither that stale writer nor a queued Recover may
+# change it after the exact worker dies.
+worker_crash_lock="$DETACH_LOCKS_ROOT/checkpoint-$worker_crash_session.lock"
+worker_crash_checkpoint_ready="$TMP_ROOT/worker-crash-checkpoint-ready"
+worker_crash_checkpoint_release="$TMP_ROOT/worker-crash-checkpoint-release"
+worker_crash_queued_lockf="$TMP_ROOT/worker-crash-queued-lockf"
+worker_crash_recover_queued="$TMP_ROOT/worker-crash-recover-queued"
+worker_crash_guard_meta="$TMP_ROOT/worker-crash-guard-meta.json"
+worker_crash_guard_checkpoint="$TMP_ROOT/worker-crash-guard-checkpoint"
+worker_crash_session_dir="$(dirname "$worker_crash_meta")"
+worker_crash_abandoned_stage="$worker_crash_session_dir/.checkpoint-stage-abandoned-crash"
+worker_crash_live_db="$CODEX_HOME/state_5.sqlite"
+worker_crash_saved_db="$CODEX_HOME/state_5.sqlite.unavailable-for-checkpoint-test"
+[ -s "$(dirname "$worker_crash_checkpoint")/codex-state.sqlite" ]
+[ -f "$worker_crash_live_db" ] && [ ! -L "$worker_crash_live_db" ]
+[ ! -e "$worker_crash_saved_db" ] && [ ! -L "$worker_crash_saved_db" ]
+printf '%s\n' \
+  '#!/bin/bash' \
+  'set -eu' \
+  'if [ "${4:-}" = "${DETACH_TEST_LOCKF_PATH:-}" ]; then' \
+  '  printf '\''queued\n'\'' >"$DETACH_TEST_LOCKF_QUEUED"' \
+  'fi' \
+  'exec /usr/bin/lockf "$@"' >"$worker_crash_queued_lockf"
+chmod 0755 "$worker_crash_queued_lockf"
+DETACH_TEST_CHECKPOINT_PREPUBLISH_READY="$worker_crash_checkpoint_ready" \
+DETACH_TEST_CHECKPOINT_PREPUBLISH_RELEASE="$worker_crash_checkpoint_release" \
+DETACH_TEST_ABANDONED_STAGE="$worker_crash_abandoned_stage" \
+DETACH_TEST_CANONICAL_CHECKPOINT="$(dirname "$worker_crash_checkpoint")" \
+DETACH_TEST_GUARD_CHECKPOINT="$worker_crash_guard_checkpoint" \
+DETACH_TEST_LIVE_DB="$worker_crash_live_db" \
+DETACH_TEST_SAVED_DB="$worker_crash_saved_db" \
+DETACH_TEST_SCRIPT="$SCRIPT" \
+DETACH_TEST_SESSION="$worker_crash_session" \
+DETACH_TEST_RUN_TOKEN="$worker_crash_run_token" \
+DETACH_TEST_WORKER_PID="$worker_crash_pid" \
+  /usr/bin/lockf -k "$worker_crash_lock" /bin/sh -c \
+    'mkdir -m 0700 "$DETACH_TEST_ABANDONED_STAGE"
+     printf "abandoned\n" >"$DETACH_TEST_ABANDONED_STAGE/sentinel"
+     cp -Rp "$DETACH_TEST_CANONICAL_CHECKPOINT" "$DETACH_TEST_GUARD_CHECKPOINT"
+     mv "$DETACH_TEST_LIVE_DB" "$DETACH_TEST_SAVED_DB"
+     exec "$DETACH_TEST_SCRIPT" codex __checkpoint_once_locked \
+       "$DETACH_TEST_SESSION" "$DETACH_TEST_RUN_TOKEN" "$DETACH_TEST_WORKER_PID"' \
+    >/dev/null 2>&1 &
+worker_crash_checkpoint_writer=$!
+wait_for_file_text "$worker_crash_checkpoint_ready" ready
+[ ! -e "$worker_crash_abandoned_stage" ] && \
+  [ ! -L "$worker_crash_abandoned_stage" ]
+worker_crash_active_stage="$(find "$worker_crash_session_dir" \
+  -mindepth 1 -maxdepth 1 -type d -name '.checkpoint-stage-*' -print -quit)"
+[ -n "$worker_crash_active_stage" ]
+[ "$(find "$worker_crash_session_dir" -mindepth 1 -maxdepth 1 \
+  -type d -name '.checkpoint-stage-*' -print | wc -l | tr -d '[:space:]')" = 1 ]
+[ "$(test_sqlite "$worker_crash_guard_checkpoint/codex-state.sqlite" \
+  'PRAGMA quick_check;')" = ok ]
+cmp -s "$worker_crash_guard_checkpoint/codex-state.sqlite" \
+  "$worker_crash_active_stage/codex-state.sqlite"
+[ ! -e "$worker_crash_live_db" ] && [ -f "$worker_crash_saved_db" ]
+diff -qr "$worker_crash_guard_checkpoint" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+mv "$worker_crash_saved_db" "$worker_crash_live_db"
+[ -f "$worker_crash_live_db" ] && [ ! -L "$worker_crash_live_db" ]
+cp -p "$worker_crash_meta" "$worker_crash_guard_meta"
 kill -KILL "$worker_crash_pid"
+wait_for_pane_dead "$worker_crash_pane"
+diff -qr "$worker_crash_guard_checkpoint" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+DETACH_LOCKF_BIN="$worker_crash_queued_lockf" \
+DETACH_TEST_LOCKF_PATH="$worker_crash_lock" \
+DETACH_TEST_LOCKF_QUEUED="$worker_crash_recover_queued" \
+  "$SCRIPT" codex recover --detach "$worker_crash_name" \
+    >"$TMP_ROOT/worker-crash-locked-recover.out" 2>&1 &
+worker_crash_locked_recover=$!
+wait_for_file_text "$worker_crash_recover_queued" queued
+: >"$worker_crash_checkpoint_release"
+if wait "$worker_crash_checkpoint_writer"; then
+  printf 'staged checkpoint published after its exact worker died\n' >&2
+  exit 1
+fi
+if wait "$worker_crash_locked_recover"; then
+  printf 'serialized Recover started over a surviving provider\n' >&2
+  exit 1
+fi
+if "$SCRIPT" codex __checkpoint_once \
+    "$worker_crash_session" "$worker_crash_run_token" >/dev/null 2>&1; then
+  printf 'run-token checkpoint bypassed exact worker liveness\n' >&2
+  exit 1
+fi
+cmp -s "$worker_crash_guard_meta" "$worker_crash_meta"
+diff -qr "$worker_crash_guard_checkpoint" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+[ -z "$(find "$(dirname "$worker_crash_meta")" -maxdepth 1 \
+  -name '.checkpoint-stage-*' -print -quit)" ]
+tmux -L "$SOCKET" has-session -t "=$worker_crash_session"
 attempts=0
 while [ "$(tmux -L "$SOCKET" display-message -p -t "$worker_crash_pane" '#{pane_dead}')" != "1" ] && \
       [ "$attempts" -lt 80 ]; do
@@ -1433,6 +3716,57 @@ while [ "$(tmux -L "$SOCKET" display-message -p -t "$worker_crash_pane" '#{pane_
 done
 [ "$(tmux -L "$SOCKET" display-message -p -t "$worker_crash_pane" '#{pane_dead}')" = "1" ]
 kill -0 "$worker_crash_provider_pid"
+
+# A heartbeat that has passed its initial exact-worker guard must repeat that
+# proof before its first metadata or tmux write. Pause at that boundary in a
+# separate live session, kill the worker, and compare both state surfaces.
+heartbeat_crash_name=health-heartbeat-worker-crash
+heartbeat_crash_session=detach-codex-health-heartbeat-worker-crash
+DETACH_CODEX_BIN="$FAKE_CODEX_LONG_BIN" \
+  run_codex --name "$heartbeat_crash_name" --detach -- \
+    'heartbeat postguard crash coverage'
+wait_for_tmux_option "$heartbeat_crash_session" @detach_status running
+heartbeat_crash_meta="$DETACH_CODEX_STATE_ROOT/sessions/$heartbeat_crash_session/meta.json"
+heartbeat_crash_pane="$(tmux -L "$SOCKET" show-options -qv \
+  -t "=$heartbeat_crash_session:" @detach_pane_id)"
+heartbeat_crash_pid="$("$STATE_HELPER" meta get "$heartbeat_crash_meta" worker_pid)"
+heartbeat_crash_run_token="$("$STATE_HELPER" meta get \
+  "$heartbeat_crash_meta" run_token)"
+heartbeat_crash_pgid="$(wait_for_process_group_id "$heartbeat_crash_pid")"
+heartbeat_crash_provider_file="$TMP_ROOT/heartbeat-crash-provider-pid"
+heartbeat_crash_ready="$TMP_ROOT/heartbeat-crash-ready"
+heartbeat_crash_release="$TMP_ROOT/heartbeat-crash-release"
+heartbeat_crash_guard_meta="$TMP_ROOT/heartbeat-crash-guard-meta.json"
+heartbeat_crash_guard_tmux="$TMP_ROOT/heartbeat-crash-guard-tmux.txt"
+heartbeat_crash_after_tmux="$TMP_ROOT/heartbeat-crash-after-tmux.txt"
+printf '2147483646\n' >"$heartbeat_crash_provider_file"
+DETACH_TEST_HEARTBEAT_POSTGUARD_READY="$heartbeat_crash_ready" \
+DETACH_TEST_HEARTBEAT_POSTGUARD_RELEASE="$heartbeat_crash_release" \
+  "$SCRIPT" codex __runtime_heartbeat_once \
+    "$heartbeat_crash_session" "$heartbeat_crash_run_token" \
+    "$heartbeat_crash_pid" "$heartbeat_crash_provider_file" 30 \
+    >/dev/null 2>&1 &
+heartbeat_crash_writer=$!
+wait_for_file_text "$heartbeat_crash_ready" ready
+cp -p "$heartbeat_crash_meta" "$heartbeat_crash_guard_meta"
+tmux -L "$SOCKET" show-options -t "=$heartbeat_crash_session:" \
+  >"$heartbeat_crash_guard_tmux"
+kill -KILL "$heartbeat_crash_pid"
+wait_for_pane_dead "$heartbeat_crash_pane"
+: >"$heartbeat_crash_release"
+if wait "$heartbeat_crash_writer"; then
+  printf 'postguard heartbeat published after its exact worker died\n' >&2
+  exit 1
+fi
+cmp -s "$heartbeat_crash_guard_meta" "$heartbeat_crash_meta"
+tmux -L "$SOCKET" show-options -t "=$heartbeat_crash_session:" \
+  >"$heartbeat_crash_after_tmux"
+cmp -s "$heartbeat_crash_guard_tmux" "$heartbeat_crash_after_tmux"
+kill -KILL -- "-$heartbeat_crash_pgid"
+wait_for_process_group_exit "$heartbeat_crash_pgid"
+tmux -L "$SOCKET" kill-session -t "=$heartbeat_crash_session"
+rm -rf "$DETACH_CODEX_STATE_ROOT/sessions/$heartbeat_crash_session"
+
 worker_crash_json="$(run_codex list --json | \
   grep -F "\"session_name\":\"$worker_crash_session\"")"
 [ "$(printf '%s' "$worker_crash_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = hung ]
@@ -1448,6 +3782,9 @@ if run_codex recover --detach "$worker_crash_name" >/dev/null 2>&1; then
   printf 'recover unexpectedly started over a surviving provider\n' >&2
   exit 1
 fi
+tmux -L "$SOCKET" has-session -t "=$worker_crash_session"
+[ "$(tmux -L "$SOCKET" display-message -p \
+  -t "$worker_crash_pane" '#{pane_dead}')" = "1" ]
 if run_codex delete --force "$worker_crash_name" >/dev/null 2>&1; then
   printf 'delete unexpectedly removed state for a surviving provider\n' >&2
   exit 1
@@ -1463,6 +3800,78 @@ kill -0 "$worker_crash_provider_pid"
 
 kill -KILL -- "-$worker_crash_pgid"
 wait_for_process_group_exit "$worker_crash_pgid"
+
+# A retained dead tmux run is not mutable unless its token still matches the
+# operational primary metadata. Recovery and deletion must leave both the
+# pane and saved state unchanged on a mismatch.
+worker_crash_id="$("$STATE_HELPER" meta get "$worker_crash_meta" codex_session_id)"
+worker_crash_meta_copy="$TMP_ROOT/worker-crash-meta.json"
+worker_crash_checkpoint_copy="$TMP_ROOT/worker-crash-checkpoint"
+cp -p "$worker_crash_meta" "$worker_crash_meta_copy"
+cp -Rp "$(dirname "$worker_crash_checkpoint")" "$worker_crash_checkpoint_copy"
+
+# Batched List may fall back to checkpoint metadata for presentation, but that
+# recovery generation is not operational authority for a retained dead pane.
+# Without primary metadata, neither health nor a command may infer ownership
+# merely because the pane token happens to match checkpoint A.
+worker_crash_missing_primary="$TMP_ROOT/worker-crash-missing-primary.json"
+mv "$worker_crash_meta" "$worker_crash_missing_primary"
+worker_crash_fallback_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$worker_crash_session\"")"
+[ "$(printf '%s' "$worker_crash_fallback_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = corrupt ]
+[ "$(printf '%s' "$worker_crash_fallback_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = run_token_missing ]
+[ "$(printf '%s' "$worker_crash_fallback_json" | \
+  "$STATE_HELPER" meta get /dev/stdin reconcile_action)" = none ]
+printf '%s' "$worker_crash_fallback_json" | grep -F '"health_actions":[]' >/dev/null
+if run_codex recover --detach "$worker_crash_name" >/dev/null 2>&1; then
+  printf 'recover used fallback checkpoint metadata to remove retained tmux\n' >&2
+  exit 1
+fi
+if run_codex delete --force "$worker_crash_name" >/dev/null 2>&1; then
+  printf 'delete used fallback checkpoint metadata to remove retained tmux\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" has-session -t "=$worker_crash_session"
+diff -qr "$worker_crash_checkpoint_copy" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+mv "$worker_crash_missing_primary" "$worker_crash_meta"
+
+tmux -L "$SOCKET" set-option -q -t "=$worker_crash_session:" \
+  @detach_run_token stale-retained-token
+worker_crash_mismatch_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$worker_crash_session\"")"
+[ "$(printf '%s' "$worker_crash_mismatch_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = corrupt ]
+[ "$(printf '%s' "$worker_crash_mismatch_json" | \
+  "$STATE_HELPER" meta get /dev/stdin health_reason)" = run_token_mismatch ]
+printf '%s' "$worker_crash_mismatch_json" | grep -F '"health_actions":[]' >/dev/null
+if run_codex recover --detach "$worker_crash_name" >/dev/null 2>&1; then
+  printf 'recover removed a retained tmux run with a mismatched token\n' >&2
+  exit 1
+fi
+if run_codex delete --force "$worker_crash_name" >/dev/null 2>&1; then
+  printf 'delete removed a retained tmux run with a mismatched token\n' >&2
+  exit 1
+fi
+if run_codex --name "$worker_crash_name" --detach -- \
+    'must not replace mismatched retained tmux' >/dev/null 2>&1; then
+  printf 'start replaced a retained tmux run with a mismatched token\n' >&2
+  exit 1
+fi
+if run_codex resume --name "$worker_crash_name" --detach \
+    "$worker_crash_id" >/dev/null 2>&1; then
+  printf 'resume replaced a retained tmux run with a mismatched token\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" has-session -t "=$worker_crash_session"
+cmp -s "$worker_crash_meta_copy" "$worker_crash_meta"
+diff -qr "$worker_crash_checkpoint_copy" \
+  "$(dirname "$worker_crash_checkpoint")" >/dev/null
+tmux -L "$SOCKET" set-option -q -t "=$worker_crash_session:" \
+  @detach_run_token "$worker_crash_run_token"
+
 attempts=0
 worker_crash_status=""
 while [ "$attempts" -lt 80 ]; do
@@ -1612,6 +4021,56 @@ fi
 # full preservation below in its integration; keep the Codex lane's mirror
 # bounded to exact monotonic slot selection.
 if codex_part_selected history; then
+# Codex writes the model near the start of a turn. A long turn can move that
+# record outside the bounded summary tail. The provider database can supply
+# the model only for the exact managed UUID and rollout path.
+model_home="$TMP_ROOT/model-home's"
+model_state="$TMP_ROOT/model-display-state"
+model_session=detach-codex-model-display
+model_id=11111111-2222-4333-8444-555555555555
+model_transcript="$model_home/sessions/rollout-model.jsonl"
+model_database="$model_home/state_5.sqlite"
+mkdir -p "$model_home/sessions" "$model_state/sessions/$model_session"
+printf '%s\n' \
+  "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$model_id\"}}" \
+  '{"type":"turn_context","payload":{"model":"gpt-transcript-old"}}' \
+  >"$model_transcript"
+printf '{"payload":{"padding":"' >>"$model_transcript"
+dd if=/dev/zero bs=1024 count=300 2>/dev/null | tr '\000' x >>"$model_transcript"
+printf '"}}\n' >>"$model_transcript"
+"$STATE_HELPER" meta create "$model_state/sessions/$model_session/meta.json" \
+  --integer schema 1 --string session_name "$model_session" \
+  --string project_dir "$ROOT" --string status stopped \
+  --string agent_session_id "$model_id" --string transcript_path "$model_transcript"
+model_transcript_sql="$(printf '%s' "$model_transcript" | sed "s/'/''/g")"
+test_sqlite "$model_database" \
+  "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, model TEXT);
+   INSERT INTO threads VALUES ('$model_id', '$model_transcript_sql', 'gpt-database');"
+require_list_model() {
+  local expected="$1" result
+  result="$(CODEX_HOME="$model_home" DETACH_CODEX_STATE_ROOT="$model_state" \
+    run_codex list --json)"
+  printf '%s' "$result" | grep -F "\"model\":$expected" >/dev/null || {
+    printf 'Codex list did not report model %s\n' "$expected" >&2
+    return 1
+  }
+}
+require_list_model '"gpt-database"'
+test_sqlite "$model_database" "UPDATE threads SET model = 'gpt-database-updated';"
+require_list_model '"gpt-database-updated"'
+test_sqlite "$model_database" "UPDATE threads SET rollout_path = '/different/rollout.jsonl';"
+require_list_model null
+test_sqlite "$model_database" \
+  "UPDATE threads SET rollout_path = '$model_transcript_sql', id = 'different-thread';"
+require_list_model null
+test_sqlite "$model_database" "UPDATE threads SET id = '$model_id', model = NULL;"
+require_list_model null
+test_sqlite "$model_database" "ALTER TABLE threads RENAME COLUMN model TO legacy_model;"
+require_list_model null
+printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-tail-fallback"}}' \
+  >>"$model_transcript"
+require_list_model '"gpt-tail-fallback"'
+
 default_slug="$(basename "$ROOT" | LC_ALL=C tr -cs 'A-Za-z0-9_-' '-' | \
   sed 's/^-*//; s/-*$//')"
 [ -n "$default_slug" ] || default_slug=project
@@ -1628,14 +4087,20 @@ rmdir "$DETACH_CODEX_STATE_ROOT/sessions/$default_session-r000000000001"
 rmdir "$DETACH_CODEX_STATE_ROOT/sessions/$default_session"
 
 # Listing saved histories must remain below the app's five-second deadline as
-# state grows. Count helper launches as a deterministic guard against restoring
-# the former per-field subprocess fan-out, and retain a real wall-clock ceiling
-# on the reference test machine.
+# state grows. The second read uses cached summaries for one 300 KiB transcript
+# per row. Count helper launches as a deterministic guard against restoring the
+# former per-field subprocess fan-out, and retain a wall-clock ceiling.
 list_scale_root="$TMP_ROOT/list-scale-state"
 list_scale_output="$TMP_ROOT/list-scale.jsonl"
 list_scale_invocations="$TMP_ROOT/list-scale-invocations.txt"
 list_scale_wrapper="$TMP_ROOT/list-scale-detach-state"
+list_scale_tmux_invocations="$TMP_ROOT/list-scale-tmux-invocations.txt"
+list_scale_tmux_wrapper="$TMP_ROOT/list-scale-tmux"
+list_scale_transcript="$TMP_ROOT/list-scale-transcript.jsonl"
+list_scale_live_sessions=()
 mkdir -p "$list_scale_root/sessions"
+dd if=/dev/zero of="$list_scale_transcript" bs=1024 count=300 >/dev/null 2>&1
+printf '\n%s\n' '{"payload":{"model":"gpt-scale"}}' >>"$list_scale_transcript"
 list_scale_index=1
 while [ "$list_scale_index" -le 25 ]; do
   list_scale_session="detach-codex-list-scale-$list_scale_index"
@@ -1645,7 +4110,14 @@ while [ "$list_scale_index" -le 25 ]; do
     --integer schema 1 \
     --string session_name "$list_scale_session" \
     --string project_dir "$ROOT" \
-    --string status stopped
+    --string status stopped \
+    --string transcript_path "$list_scale_transcript"
+  if [ "$list_scale_index" -le 3 ]; then
+    tmux -L "$SOCKET" new-session -d -s "$list_scale_session" /bin/sleep 30
+    tmux -L "$SOCKET" set-option -q -t "=$list_scale_session:" @detach 1
+    tmux -L "$SOCKET" set-option -q -t "=$list_scale_session:" @detach_provider codex
+    list_scale_live_sessions+=( "$list_scale_session" )
+  fi
   list_scale_index=$((list_scale_index + 1))
 done
 printf '%s\n' \
@@ -1653,25 +4125,64 @@ printf '%s\n' \
   'printf x\\n >>"$DETACH_LIST_SCALE_INVOCATIONS"' \
   'exec "$DETACH_LIST_SCALE_STATE_HELPER" "$@"' >"$list_scale_wrapper"
 chmod 0755 "$list_scale_wrapper"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'printf x\\n >>"$DETACH_LIST_SCALE_TMUX_INVOCATIONS"' \
+  'exec "$DETACH_LIST_SCALE_TMUX_HELPER" "$@"' >"$list_scale_tmux_wrapper"
+chmod 0755 "$list_scale_tmux_wrapper"
 SECONDS=0
 DETACH_CODEX_STATE_ROOT="$list_scale_root" \
 DETACH_STATE_BIN="$list_scale_wrapper" \
 DETACH_LIST_SCALE_STATE_HELPER="$STATE_HELPER" \
 DETACH_LIST_SCALE_INVOCATIONS="$list_scale_invocations" \
 DETACH_POWER_BIN=/usr/bin/false \
-DETACH_TMUX_BIN=/usr/bin/false \
-DETACH_TMUX_SOCKET_PATH="$TMUX_SOCKET_ROOT/list-scale.sock" \
+DETACH_TMUX_BIN="$list_scale_tmux_wrapper" \
+DETACH_LIST_SCALE_TMUX_HELPER="$TMUX_TEST_BIN" \
+DETACH_LIST_SCALE_TMUX_INVOCATIONS="$list_scale_tmux_invocations" \
+DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
   "$SCRIPT" codex list --json >"$list_scale_output"
 list_scale_elapsed="$SECONDS"
 [ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
-[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 5 ] || {
+[ "$(grep -Fc '"model":"gpt-scale"' "$list_scale_output")" = 25 ]
+[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 7 ] || {
   printf 'list restored per-field state helper fan-out\n' >&2
   exit 1
 }
-[ "$list_scale_elapsed" -lt 5 ] || {
-  printf '25-session list exceeded the app deadline: %ss\n' "$list_scale_elapsed" >&2
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 2 ] || {
+  printf 'list did not validate its batched tmux snapshot\n' >&2
   exit 1
 }
+[ "$(find "$list_scale_root/sessions" -name .transcript-summary-cache.json -type f | \
+  wc -l | tr -d '[:space:]')" = 25 ]
+[ "$list_scale_elapsed" -lt 5 ] || {
+  printf 'cold 25-session list exceeded the app deadline: %ss\n' "$list_scale_elapsed" >&2
+  exit 1
+}
+: >"$list_scale_invocations"
+: >"$list_scale_tmux_invocations"
+SECONDS=0
+DETACH_CODEX_STATE_ROOT="$list_scale_root" \
+DETACH_STATE_BIN="$list_scale_wrapper" \
+DETACH_LIST_SCALE_STATE_HELPER="$STATE_HELPER" \
+DETACH_LIST_SCALE_INVOCATIONS="$list_scale_invocations" \
+DETACH_POWER_BIN=/usr/bin/false \
+DETACH_TMUX_BIN="$list_scale_tmux_wrapper" \
+DETACH_LIST_SCALE_TMUX_HELPER="$TMUX_TEST_BIN" \
+DETACH_LIST_SCALE_TMUX_INVOCATIONS="$list_scale_tmux_invocations" \
+DETACH_TMUX_SOCKET_PATH="$SOCKET_PATH" \
+  "$SCRIPT" codex list --json >"$list_scale_output"
+list_scale_hot_elapsed="$SECONDS"
+[ "$(wc -l <"$list_scale_output" | tr -d '[:space:]')" = 25 ]
+[ "$(wc -l <"$list_scale_invocations" | tr -d '[:space:]')" -le 7 ]
+[ "$(wc -l <"$list_scale_tmux_invocations" | tr -d '[:space:]')" = 2 ]
+[ "$list_scale_hot_elapsed" -lt 5 ] || {
+  printf 'cached 25-session list exceeded the app deadline: %ss\n' \
+    "$list_scale_hot_elapsed" >&2
+  exit 1
+}
+for list_scale_session in "${list_scale_live_sessions[@]}"; do
+  tmux -L "$SOCKET" kill-session -t "=$list_scale_session"
+done
 
 # Public read paths must reject state-root redirection before creating or
 # traversing sessions in an unrelated directory.

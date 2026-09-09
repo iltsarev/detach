@@ -9,18 +9,63 @@ enum FinishedDeletionPresentation {
     }
 }
 
+struct SidebarFailurePresentation: Equatable, Identifiable {
+    enum Kind: Hashable {
+        case finishedDeletion
+        case quickChat
+    }
+
+    let kind: Kind
+    let message: String
+
+    var id: Kind { kind }
+
+    var title: String {
+        switch kind {
+        case .finishedDeletion:
+            L10n.string("Could not delete some sessions")
+        case .quickChat:
+            L10n.string("Could not start quick chat")
+        }
+    }
+}
+
+struct FinishedSelectionReconciliation: Equatable {
+    let selectedIDs: Set<String>
+    let isSelecting: Bool
+
+    static func resolve(
+        selectedIDs: Set<String>,
+        currentIDs: [String],
+        isSelecting: Bool,
+        isDeleting: Bool
+    ) -> Self {
+        Self(
+            selectedIDs: selectedIDs.intersection(currentIDs),
+            isSelecting: currentIDs.isEmpty && !isDeleting ? false : isSelecting)
+    }
+}
+
 struct SidebarView: View {
     @Environment(\.appFontPointSize) private var fontPointSize
     let store: SessionStore
-    let detachPath: String
     @Binding var selectedID: String?
     @ObservedObject var navigation: MainNavigation
+    let shortcutAssignments: [SessionShortcutAssignment]
+    @AppStorage(AppSettings.defaultProjectsDirectoryKey, store: AppSettings.defaults)
+    private var defaultProjectsDirectoryPath =
+        AppSettings.defaultProjectsDirectoryPath
+    @AppStorage(AppSettings.quickChatDirectoryKey, store: AppSettings.defaults)
+    private var quickChatDirectoryPath = AppSettings.defaultQuickChatDirectoryPath
+    @AppStorage(AppSettings.quickChatProviderKey, store: AppSettings.defaults)
+    private var quickChatProvider = AppSettings.defaultQuickChatProvider
     @State private var showNewSession = false
+    @State private var isStartingQuickChat = false
+    @State private var failurePresentation: SidebarFailurePresentation?
     @State private var isSelectingFinished = false
     @State private var selectedFinishedIDs: Set<String> = []
     @State private var confirmFinishedDelete = false
     @State private var isDeletingFinished = false
-    @State private var finishedDeleteError: String?
 
     private func sessions(in section: SessionSection) -> [Session] {
         store.sessions.filter { $0.section == section }
@@ -33,6 +78,22 @@ struct SidebarView: View {
     private var selectedFinishedSessions: [Session] {
         deletableFinishedSessions.filter { selectedFinishedIDs.contains($0.id) }
     }
+
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+    private var uiE2EInitialProjectDirectory: URL? {
+        guard let configuration = AppSettings.uiE2E,
+              FileManager.default.fileExists(atPath: configuration.root
+                .appendingPathComponent(
+                    "fake/enable-new-session-project").path)
+        else { return nil }
+        return configuration.root.appendingPathComponent(
+            "project", isDirectory: true)
+    }
+#else
+    private var uiE2EInitialProjectDirectory: URL? { nil }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,9 +121,13 @@ struct SidebarView: View {
                                 .foregroundStyle(Brand.gradient)
                         }
                     } description: {
-                        Text(L10n.string("Launch Codex or Claude in Terminal"))
+                        Text(L10n.string("Start Codex or Claude in Detach"))
                     }
                 }
+            }
+            if store.state != .cliMissing {
+                Divider()
+                shortcutGuide
             }
             if isSelectingFinished {
                 finishedSelectionBar
@@ -91,7 +156,14 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showNewSession) {
-            NewSessionSheet(detachPath: detachPath)
+            NewSessionSheet(
+                store: store,
+                selectedID: $selectedID,
+                initialProjectDir: uiE2EInitialProjectDirectory,
+                projectPickerRoot: DirectoryPreference.configuredOrFallback(
+                    path: defaultProjectsDirectoryPath,
+                    fallback: FileManager.default.homeDirectoryForCurrentUser)
+            )
         }
         .confirmationDialog(
             L10n.format(
@@ -107,15 +179,11 @@ struct SidebarView: View {
             Text(L10n.string(
                 "The selected Detach state directories and checkpoints will be permanently deleted. Provider transcripts in ~/.claude and ~/.codex will not be affected."))
         }
-        .alert(
-            L10n.string("Could not delete some sessions"),
-            isPresented: .init(
-                get: { finishedDeleteError != nil },
-                set: { if !$0 { finishedDeleteError = nil } })
-        ) {
-            Button(L10n.string("OK"), role: .cancel) {}
-        } message: {
-            Text(finishedDeleteError ?? "")
+        .alert(item: $failurePresentation) { failure in
+            Alert(
+                title: Text(failure.title),
+                message: Text(failure.message),
+                dismissButton: .cancel(Text(L10n.string("OK"))))
         }
         // The menu can request a sheet before reopening the main window, so
         // consume an already-pending request on the sidebar's first render.
@@ -124,15 +192,62 @@ struct SidebarView: View {
             showNewSession = true
             navigation.requestsNewSession = false
         }
+        .onChange(of: navigation.quickChatRequestID, initial: true) { _, requestID in
+            guard requestID != nil else { return }
+            navigation.quickChatRequestID = nil
+            startQuickChat()
+        }
         .onChange(of: deletableFinishedSessions.map(\.id)) { _, currentIDs in
-            selectedFinishedIDs.formIntersection(currentIDs)
-            if currentIDs.isEmpty && !isDeletingFinished {
-                isSelectingFinished = false
-            }
+            let state = FinishedSelectionReconciliation.resolve(
+                selectedIDs: selectedFinishedIDs,
+                currentIDs: currentIDs,
+                isSelecting: isSelectingFinished,
+                isDeleting: isDeletingFinished)
+            selectedFinishedIDs = state.selectedIDs
+            isSelectingFinished = state.isSelecting
         }
         .navigationSplitViewColumnWidth(
             min: max(230, fontPointSize * 18),
             ideal: max(260, fontPointSize * 20))
+    }
+
+    private var shortcutGuide: some View {
+        LazyVGrid(
+            columns: [GridItem(.flexible()), GridItem(.flexible())],
+            alignment: .leading,
+            spacing: 6
+        ) {
+            ForEach(SidebarShortcutPresentation.hints) { hint in
+                HStack(spacing: 6) {
+                    Text(hint.shortcut)
+                        .appFont(.caption, weight: .semibold, design: .monospaced)
+                        .foregroundStyle(Brand.indigo)
+                    Text(isStartingQuickChat && hint.shortcut == "⌘T"
+                         ? L10n.string("Starting…") : hint.title)
+                        .appFont(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n.string("Keyboard shortcuts"))
+        .accessibilityIdentifier("sidebar-shortcut-guide")
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+        .background {
+            if AppSettings.uiE2E != nil {
+                UIE2EGeometryProbe(
+                    identifier: "sidebar-shortcut-guide",
+                    semanticLabel: L10n.string("Keyboard shortcuts"),
+                    semanticRole: .group)
+            }
+        }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
     }
 
     @ViewBuilder
@@ -182,6 +297,9 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func sessionRow(_ session: Session) -> some View {
+        let shortcutSlot = shortcutAssignments.first {
+            $0.sessionID == session.id
+        }?.slot
         if isSelectingFinished && session.canDeleteFromFinishedList {
             HStack(spacing: 8) {
                 Button {
@@ -219,7 +337,7 @@ struct SidebarView: View {
                 }
 #endif
 // quality-coverage:end ui-e2e-instrumentation
-                SessionRow(session: session)
+                SessionRow(session: session, shortcutSlot: shortcutSlot)
             }
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
@@ -228,7 +346,9 @@ struct SidebarView: View {
 // quality-coverage:end ui-e2e-instrumentation
             .tag(session.id)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(session.displayTitle)
+            .accessibilityLabel(SessionShortcutPresentation.accessibilityLabel(
+                title: session.displayTitle,
+                slot: shortcutSlot))
             .accessibilityIdentifier("session-row-\(session.id)")
             .listRowBackground(
                 session.isWaitingForUser ? Color.orange.opacity(0.10) : nil)
@@ -236,7 +356,7 @@ struct SidebarView: View {
             Button {
                 selectedID = session.id
             } label: {
-                SessionRow(session: session)
+                SessionRow(session: session, shortcutSlot: shortcutSlot)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
@@ -248,7 +368,9 @@ struct SidebarView: View {
 // quality-coverage:end ui-e2e-instrumentation
             .tag(session.id)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(session.displayTitle)
+            .accessibilityLabel(SessionShortcutPresentation.accessibilityLabel(
+                title: session.displayTitle,
+                slot: shortcutSlot))
             .accessibilityIdentifier("session-row-\(session.id)")
             .listRowBackground(
                 session.isWaitingForUser ? Color.orange.opacity(0.10) : nil)
@@ -332,8 +454,33 @@ struct SidebarView: View {
             if failures.isEmpty {
                 isSelectingFinished = false
             } else {
-                finishedDeleteError = FinishedDeletionPresentation.errorMessage(
-                    for: failures)
+                failurePresentation = SidebarFailurePresentation(
+                    kind: .finishedDeletion,
+                    message: FinishedDeletionPresentation.errorMessage(
+                        for: failures))
+            }
+        }
+    }
+
+    private func startQuickChat() {
+        guard !isStartingQuickChat else { return }
+        isStartingQuickChat = true
+        failurePresentation = nil
+        Task { @MainActor in
+            let result = await QuickChatLaunch.start(
+                store: store,
+                providerRawValue: quickChatProvider,
+                directoryPath: quickChatDirectoryPath,
+                onSessionAvailable: { sessionID in
+                    selectedID = sessionID
+                })
+            isStartingQuickChat = false
+            if let message = result.message {
+                failurePresentation = SidebarFailurePresentation(
+                    kind: .quickChat,
+                    message: message)
+            } else if let sessionID = result.sessionID {
+                selectedID = sessionID
             }
         }
     }
@@ -352,6 +499,7 @@ struct SidebarView: View {
 
 struct SessionRow: View {
     let session: Session
+    let shortcutSlot: Int?
 
     private var dotColor: Color {
         SessionIdentity.statusColor(for: session)
@@ -396,6 +544,34 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(session.displayTitle).appFont(.body, weight: .semibold).lineLimit(1)
+                    if let shortcutSlot {
+                        Text(SessionShortcutPresentation.badge(slot: shortcutSlot))
+                            .appFont(.caption2, weight: .semibold, design: .monospaced)
+                            .foregroundStyle(Brand.indigo)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(
+                                Brand.indigo.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                            .help(L10n.format(
+                                "Switch to %@ with Command-%d",
+                                session.displayTitle,
+                                shortcutSlot))
+                            .accessibilityHidden(true)
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                            .background {
+                                if AppSettings.uiE2E != nil {
+                                    UIE2EGeometryProbe(
+                                        identifier: "session-shortcut-\(session.id)",
+                                        semanticLabel: "Command-\(shortcutSlot)",
+                                        semanticRole: .staticText)
+                                }
+                            }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
+                    }
                     Text(session.provider.rawValue)
                         .appFont(.caption2)
                         .foregroundStyle(Brand.tint(for: session.provider))

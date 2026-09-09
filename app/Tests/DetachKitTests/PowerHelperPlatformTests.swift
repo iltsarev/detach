@@ -13,9 +13,24 @@ final class PowerHelperPlatformTests: XCTestCase {
         }
     }
 
+    func testBootSessionReaderCanBeConstructed() {
+        _ = SysctlBootSessionReader()
+    }
+
+    func testBootSessionReaderReturnsStableCanonicalIdentifier() throws {
+        let first = try SysctlBootSessionReader().currentBootSessionIdentifier()
+        let repeated = try SysctlBootSessionReader().currentBootSessionIdentifier()
+
+        let identifier = try XCTUnwrap(UUID(uuidString: first))
+        XCTAssertEqual(first, identifier.uuidString.lowercased())
+        XCTAssertEqual(repeated, first)
+    }
+
     func testRootCommandRunnerTerminatesHungProcess() {
         let runner = RootProcessCommandRunner(
-            timeout: 0.05, terminationGrace: 0.05)
+            // Give the child time to install its ignored-TERM handler before
+            // the runner starts the TERM-to-KILL escalation.
+            timeout: 0.5, terminationGrace: 0.05)
 
         XCTAssertThrowsError(try runner.run(RootCommand(
             executable: "/bin/sh",
@@ -24,6 +39,35 @@ final class PowerHelperPlatformTests: XCTestCase {
                 error as? PowerHelperPlatformError,
                 .commandTimedOut(executable: "/bin/sh"))
         }
+    }
+
+    func testRootCommandRunnerBoundsInheritedPipesAfterLeaderExit() throws {
+        let started = Date()
+        let result = try RootProcessCommandRunner(
+            timeout: 0.2, terminationGrace: 0.05
+        ).run(RootCommand(
+            executable: "/bin/sh",
+            arguments: ["-c", "(/bin/sleep 3; printf late) & printf ready"]))
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.standardOutput, "ready")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
+    }
+
+    func testRootCommandRunnerTimeoutIncludesPipeDescendants() {
+        let started = Date()
+        let runner = RootProcessCommandRunner(
+            timeout: 0.2, terminationGrace: 0.05)
+
+        XCTAssertThrowsError(try runner.run(RootCommand(
+            executable: "/bin/sh",
+            arguments: ["-c", "trap '' TERM; /bin/sleep 3 & wait"]))) { error in
+            XCTAssertEqual(error as? PowerHelperPlatformError,
+                           .commandTimedOut(executable: "/bin/sh"))
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
     }
 
     func testRootCommandRunnerDrainsButBoundsCapturedOutput() throws {
@@ -36,6 +80,8 @@ final class PowerHelperPlatformTests: XCTestCase {
 
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertLessThanOrEqual(result.standardOutput.utf8.count, 1_024)
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertFalse(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerBoundsBothStreamsAndUsesFixedEnvironment() throws {
@@ -49,6 +95,8 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.standardOutput, "/usr/")
         XCTAssertEqual(result.standardError, "12345")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerCanDiscardAllOutput() throws {
@@ -61,6 +109,8 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.standardOutput, "")
         XCTAssertEqual(result.standardError, "")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerReturnsNonzeroProcessStatus() throws {
@@ -128,6 +178,26 @@ final class PowerHelperPlatformTests: XCTestCase {
                     error as? PowerHelperPlatformError,
                     .unrecognizedPMSetOutput)
             }
+    }
+
+    func testPowerReadersRejectTruncatedSystemOutput() {
+        let runner = FakeCommandRunner()
+        runner.results = [
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "SleepDisabled 1\n",
+                standardOutputTruncated: true),
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "Now drawing from 'AC Power'\n",
+                standardOutputTruncated: true),
+        ]
+
+        XCTAssertThrowsError(
+            try PMSetClosedLidProtectionController(runner: runner)
+                .protectionIsEnabled())
+        XCTAssertThrowsError(
+            try PMSetBatterySafetyReader(runner: runner).isLowBattery())
     }
 
     func testPMSetBackendRejectsAmbiguousAndExtraFieldStatus() {
@@ -298,6 +368,26 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertEqual(directoryMode.intValue & 0o777, 0o700)
     }
 
+    func testSecureFileStoreAtomicallyReplacesExistingState() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SecureFilePowerHelperStateStore(
+            fileURL: root.appendingPathComponent("state.json"))
+        let initial = PowerHelperPersistentState()
+        let replacement = PowerHelperPersistentState(
+            ownsClosedLidProtection: true,
+            leases: [PowerLease(
+                id: "replacement", sessionName: "session", runToken: "run",
+                renewedAt: Date(timeIntervalSince1970: 456),
+                assertionActive: true)])
+
+        try store.save(initial)
+        try store.save(replacement)
+
+        XCTAssertEqual(try store.load(), replacement)
+    }
+
     func testSecureFileStoreRejectsSymlinkStatePath() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
@@ -415,6 +505,179 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertThrowsError(
             try SecureFilePowerHelperStateStore(fileURL: stateURL).load()
         ) { XCTAssertTrue($0 is DecodingError) }
+    }
+
+    func testSecureFileStoreQuarantineMovesUnreadableFileAside() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let stateURL = root.appendingPathComponent("state.json")
+        let corrupt = Data("not-json".utf8)
+        try corrupt.write(to: stateURL)
+        let store = SecureFilePowerHelperStateStore(fileURL: stateURL)
+
+        try store.quarantineUnreadableState()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
+        let quarantined = try XCTUnwrap(
+            try FileManager.default.contentsOfDirectory(atPath: root.path)
+                .first { $0.hasPrefix("state.json.corrupt-") })
+        XCTAssertEqual(
+            try Data(contentsOf: root.appendingPathComponent(quarantined)),
+            corrupt)
+        // The state path is free for a clean save after quarantine.
+        try store.save(PowerHelperPersistentState())
+        XCTAssertEqual(try store.load(), PowerHelperPersistentState())
+    }
+
+    func testSecureFileStoreQuarantineMovesSymlinkAsideWithoutFollowing() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let target = root.appendingPathComponent("target")
+        let link = root.appendingPathComponent("state.json")
+        try Data("{}".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path, withDestinationPath: target.path)
+
+        try SecureFilePowerHelperStateStore(fileURL: link)
+            .quarantineUnreadableState()
+
+        XCTAssertEqual(try Data(contentsOf: target), Data("{}".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: link.path))
+        let quarantined = try XCTUnwrap(
+            try FileManager.default.contentsOfDirectory(atPath: root.path)
+                .first { $0.hasPrefix("state.json.corrupt-") })
+        let values = try root.appendingPathComponent(quarantined)
+            .resourceValues(forKeys: [.isSymbolicLinkKey])
+        XCTAssertTrue(values.isSymbolicLink == true)
+    }
+
+    func testSecureFileStoreQuarantineIgnoresMissingState() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let store = SecureFilePowerHelperStateStore(
+            fileURL: root.appendingPathComponent("state.json"))
+
+        try store.quarantineUnreadableState()
+
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+
+    func testSecureFileStoreQuarantineSurfacesUnsearchableStateDirectory() throws {
+        try XCTSkipIf(
+            geteuid() == 0, "permission checks do not constrain the root user")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let stateURL = root.appendingPathComponent("state.json")
+        try Data("not-json".utf8).write(to: stateURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000], ofItemAtPath: root.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: root.path)
+        }
+
+        XCTAssertThrowsError(
+            try SecureFilePowerHelperStateStore(fileURL: stateURL)
+                .quarantineUnreadableState()
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError,
+                .fileSystem(operation: "lstat", code: EACCES))
+        }
+    }
+
+    func testSecureFileStoreQuarantineSurfacesRenameFailure() throws {
+        try XCTSkipIf(
+            geteuid() == 0, "permission checks do not constrain the root user")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let stateURL = root.appendingPathComponent("state.json")
+        try Data("not-json".utf8).write(to: stateURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555], ofItemAtPath: root.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: root.path)
+        }
+
+        XCTAssertThrowsError(
+            try SecureFilePowerHelperStateStore(fileURL: stateURL)
+                .quarantineUnreadableState()
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError,
+                .fileSystem(operation: "rename", code: EACCES))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stateURL.path))
+    }
+
+    func testSecureFileStoreQuarantineSurfacesDirectoryOpenFailure() throws {
+        try XCTSkipIf(
+            geteuid() == 0, "permission checks do not constrain the root user")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let stateURL = root.appendingPathComponent("state.json")
+        try Data("not-json".utf8).write(to: stateURL)
+        // A write+execute directory permits the rename but not the read open.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o333], ofItemAtPath: root.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: root.path)
+        }
+
+        XCTAssertThrowsError(
+            try SecureFilePowerHelperStateStore(fileURL: stateURL)
+                .quarantineUnreadableState()
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError,
+                .fileSystem(operation: "open directory", code: EACCES))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
+    }
+
+    func testSecureFileStoreQuarantineSurfacesDirectorySyncFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let stateURL = root.appendingPathComponent("state.json")
+        try Data("not-json".utf8).write(to: stateURL)
+        let store = SecureFilePowerHelperStateStore(
+            fileURL: stateURL,
+            fileManager: .default,
+            directorySyncer: { _ in
+                errno = EIO
+                return -1
+            })
+
+        XCTAssertThrowsError(try store.quarantineUnreadableState()) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError,
+                .fileSystem(operation: "fsync directory", code: EIO))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateURL.path))
     }
 
     func testSecureFileStoreRejectsInsecureDirectoryShapesOnSave() throws {

@@ -191,6 +191,12 @@ do {
     let interruptSource = DispatchSource.makeSignalSource(
         signal: SIGINT, queue: .main)
     let terminate: @Sendable () -> Void = {
+        // Stop scheduling new reconciliations before the final restore. The
+        // lease service additionally refuses any reconciliation that was
+        // already queued, so a retained live lease cannot re-enable the
+        // machine setting between the restore and exit.
+        reconciliationTimer.cancel()
+        NotificationCenter.default.removeObserver(thermalObserver)
         var restored = false
         for attempt in 1...3 {
             do {

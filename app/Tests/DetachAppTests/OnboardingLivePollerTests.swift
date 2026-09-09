@@ -5,13 +5,20 @@ import XCTest
 
 @MainActor
 final class OnboardingLivePollerTests: XCTestCase {
-    func testProductionWiringConstructsAnIdlePoller() {
-        let store = InstallationStore(detachPath: "/tmp/detach-test")
+    func testProductionWiringConstructsAnIdlePoller() async throws {
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            watchdog: PollerWatchdogStub(),
+            powerHelper: PollerPowerHelperStub())
         let poller = OnboardingLivePoller(store: store)
 
         XCTAssertEqual(poller.providerAvailability, ProviderAvailability())
         XCTAssertFalse(poller.heartbeatHealthy)
         XCTAssertFalse(poller.installedCopyPresent)
+
+        await poller.tick(.permissions)
+        await poller.tick(.moveToApplications)
+        try await OnboardingLivePoller.defaultSleep(nanoseconds: 0)
     }
 
     func testEnableTransitionTriggersExactlyOneReconcile() async {
@@ -107,6 +114,22 @@ final class OnboardingLivePollerTests: XCTestCase {
         XCTAssertEqual(reconciles, 2)
     }
 
+    func testDoneTickUsesTheDefaultRefreshWhenNoneIsProvided() async {
+        let poller = OnboardingLivePoller(
+            refreshStatuses: {},
+            servicesEnabled: { false },
+            readinessConfirmed: { false },
+            providerCheckPassed: { false },
+            reconcile: { true },
+            locate: { ProviderAvailability() },
+            heartbeatIsHealthy: { true },
+            installedCopyExists: { false })
+
+        await poller.tick(.done)
+        XCTAssertTrue(poller.heartbeatHealthy)
+        XCTAssertFalse(poller.heartbeatWaitIsLong)
+    }
+
     func testHeartbeatGatePublishesHealth() async {
         var healthy = false
         let poller = makePoller(heartbeatIsHealthy: { healthy })
@@ -116,6 +139,39 @@ final class OnboardingLivePollerTests: XCTestCase {
 
         healthy = true
         await poller.tick(.done)
+        XCTAssertTrue(poller.heartbeatHealthy)
+        XCTAssertFalse(poller.heartbeatWaitIsLong)
+    }
+
+    func testDoneTickRereadsHeartbeatFileWithoutMenuBarTimer() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "detach-onboarding-heartbeat-\(UUID().uuidString)",
+                isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+        let poller = OnboardingLivePoller(store: store)
+
+        await poller.tick(.done)
+        XCTAssertFalse(poller.heartbeatHealthy)
+        XCTAssertFalse(store.watchdogHeartbeat.healthy)
+
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        try Data(
+            #"{"state":"ok","power_state":"protected","checked_at":"\#(stamp)"}"#
+                .utf8
+        ).write(
+            to: root.appendingPathComponent("watchdog-status.json"),
+            options: .atomic)
+        XCTAssertFalse(store.watchdogHeartbeat.healthy)
+
+        await poller.tick(.done)
+        XCTAssertTrue(store.watchdogHeartbeat.healthy)
         XCTAssertTrue(poller.heartbeatHealthy)
         XCTAssertFalse(poller.heartbeatWaitIsLong)
     }
@@ -165,6 +221,27 @@ final class OnboardingLivePollerTests: XCTestCase {
             [3_000_000_000, 3_000_000_000, 5_000_000_000, 2_000_000_000])
     }
 
+    func testRunLoopRepeatsAndExitsAfterTaskCancellation() async {
+        var intervals: [UInt64] = []
+        var detections = 0
+        let poller = makePoller(
+            installedCopyExists: {
+                detections += 1
+                return true
+            },
+            sleep: { interval in
+                intervals.append(interval)
+                if intervals.count == 2 {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            })
+
+        await poller.run(.moveToApplications, interval: 3_000_000_000)
+
+        XCTAssertEqual(detections, 2)
+        XCTAssertEqual(intervals, [3_000_000_000, 3_000_000_000])
+    }
+
     func testUpdateIsIdempotentAndStopRearmsTheSameStep() async {
         let sleeps = PollSleepRecorder()
         let poller = makePoller(
@@ -199,6 +276,7 @@ final class OnboardingLivePollerTests: XCTestCase {
         locate: @escaping () async -> ProviderAvailability = {
             ProviderAvailability()
         },
+        refreshHeartbeat: @escaping @MainActor () -> Void = {},
         heartbeatIsHealthy: @escaping @MainActor () -> Bool = { false },
         installedCopyExists: @escaping () -> Bool = { false },
         sleep: @escaping (UInt64) async throws -> Void = {
@@ -212,6 +290,7 @@ final class OnboardingLivePollerTests: XCTestCase {
             providerCheckPassed: providerCheckPassed,
             reconcile: reconcile,
             locate: locate,
+            refreshHeartbeat: refreshHeartbeat,
             heartbeatIsHealthy: heartbeatIsHealthy,
             installedCopyExists: installedCopyExists,
             sleep: sleep)
@@ -236,6 +315,28 @@ private actor PollSleepRecorder {
         intervals.append(interval)
         throw CancellationError()
     }
+}
+
+@MainActor
+private final class PollerWatchdogStub: InstallationWatchdogServicing {
+    var status: WatchdogStatus = .notRegistered
+
+    func reconcileAfterAppUpdate(forceReplacement: Bool) async throws {}
+    func enable() async throws {}
+    func disable() async throws {}
+    func openLoginItemsSettings() {}
+}
+
+@MainActor
+private final class PollerPowerHelperStub: InstallationPowerHelperServicing {
+    var status: PowerHelperRegistrationStatus = .notRegistered
+
+    func reconcileAfterAppUpdate() async throws -> PowerHelperReconciliationOutcome {
+        .complete
+    }
+    func enable() async throws {}
+    func disable() async throws {}
+    func openApprovalSettings() {}
 }
 
 final class OnboardingProviderLocatorTests: XCTestCase {
