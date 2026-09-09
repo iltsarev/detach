@@ -27,6 +27,7 @@ protocol InstallationPowerHelperServicing: AnyObject {
     func enable() async throws
     func disable() async throws
     func openApprovalSettings()
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws
 }
 
 extension PowerHelperService: InstallationPowerHelperServicing {}
@@ -74,6 +75,7 @@ final class InstallationStore {
     private(set) var lastInstallMessage: String?
     private(set) var distributionMatchesBundle = false
     private(set) var powerProtectionState: PowerProtectionState = .unknown
+    private(set) var lowBatteryThreshold: PowerLowBatteryThreshold = .default
     /// True only after a coordinated reconciliation finished with the helper
     /// reported `.enabled` and no error — the readiness barrier. A bare
     /// `SMAppService.status` read is never sufficient: after approval the
@@ -113,6 +115,10 @@ final class InstallationStore {
         OSAllocatedUnfairLock<UInt64>(initialState: 0)
     @ObservationIgnored var onPowerSnapshot:
         (@MainActor (PowerHeartbeatSnapshot) async -> Void)?
+    /// The floor the helper just accepted. A stale heartbeat must not put the
+    /// Settings copy back to the previous value.
+    @ObservationIgnored private var pendingLowBatteryThreshold:
+        PowerLowBatteryThreshold?
 
     init(
         detachPath: String,
@@ -170,6 +176,7 @@ final class InstallationStore {
             bundledMetadata = nil
         }
         powerProtectionState = watchdogHeartbeat.effectivePowerState
+        lowBatteryThreshold = watchdogHeartbeat.effectiveLowBatteryThreshold
     }
 
     static func makeDistributionClient(
@@ -203,6 +210,20 @@ final class InstallationStore {
         // higher number is never the older document.
         let sequence = nextPowerSnapshotSequence()
         publishPowerSnapshot(heartbeatReader.read(), sequence: sequence)
+    }
+
+    func setLowBatteryThreshold(
+        _ threshold: PowerLowBatteryThreshold
+    ) async {
+        do {
+            try await powerHelper.setLowBatteryThreshold(threshold)
+            powerHelperError = nil
+            pendingLowBatteryThreshold = threshold
+            lowBatteryThreshold = threshold
+            refreshPowerProtectionState()
+        } catch {
+            powerHelperError = error.localizedDescription
+        }
     }
 
     private func nextPowerSnapshotSequence() -> UInt64 {
@@ -262,10 +283,27 @@ final class InstallationStore {
         if snapshot.effectivePowerState != powerProtectionState {
             powerProtectionState = snapshot.effectivePowerState
         }
+        applyLowBatteryThreshold(from: snapshot)
         guard presentedStateChanged || isInitialObservation,
               let onPowerSnapshot else { return }
         Task { @MainActor in
             await onPowerSnapshot(snapshot)
+        }
+    }
+
+    private func applyLowBatteryThreshold(from snapshot: PowerHeartbeatSnapshot) {
+        if let pending = pendingLowBatteryThreshold {
+            if snapshot.healthy, snapshot.lowBatteryThreshold == pending {
+                pendingLowBatteryThreshold = nil
+            }
+            if lowBatteryThreshold != pending {
+                lowBatteryThreshold = pending
+            }
+            return
+        }
+        let next = snapshot.effectiveLowBatteryThreshold
+        if lowBatteryThreshold != next {
+            lowBatteryThreshold = next
         }
     }
 
