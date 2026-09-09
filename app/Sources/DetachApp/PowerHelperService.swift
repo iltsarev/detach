@@ -143,6 +143,7 @@ private final class SystemPowerHelperRegistrationBackend:
 
 enum PowerHelperServiceError: LocalizedError {
     case bundledDefinitionMissing
+    case releaseSignatureRequired
     case registrationDidNotComplete
     case unregistrationBarrierDidNotComplete
     case activeLeasesPreventUnregistration
@@ -153,6 +154,9 @@ enum PowerHelperServiceError: LocalizedError {
         switch self {
         case .bundledDefinitionMissing:
             L10n.string("The bundled power helper definition is missing or incomplete.")
+        case .releaseSignatureRequired:
+            L10n.string(
+                "Only a signed Detach release can update the power helper.")
         case .registrationDidNotComplete:
             L10n.string("macOS did not finish registering the power helper.")
         case .unregistrationBarrierDidNotComplete:
@@ -207,6 +211,7 @@ final class PowerHelperService {
     private let systemHandoffLockProvider: () throws
         -> (any PowerHelperHandoffLocking)?
     private let currentProcessIsActiveConsoleUser: () -> Bool
+    private let serviceMutationAllowed: () -> Bool
     private let sleep: (UInt64) async throws -> Void
 
     private let digestKey = "powerHelperDefinitionDigest"
@@ -244,6 +249,9 @@ final class PowerHelperService {
             PowerHelperConsoleUserAdmission()
                 .currentProcessIsActiveConsoleUser()
         }
+        serviceMutationAllowed = {
+            ServiceManagementMutationAdmission.currentBundleIsReleaseSigned
+        }
         sleep = { try await Task.sleep(nanoseconds: $0) }
     }
 
@@ -263,6 +271,7 @@ final class PowerHelperService {
                 UncontendedPowerHelperSystemHandoffLock()
             },
         currentProcessIsActiveConsoleUser: @escaping () -> Bool = { true },
+        serviceMutationAllowed: @escaping () -> Bool = { true },
         sleep: @escaping (UInt64) async throws -> Void = {
             try await Task.sleep(nanoseconds: $0)
         }
@@ -277,6 +286,7 @@ final class PowerHelperService {
         self.systemHandoffLockProvider = systemHandoffLockProvider
         self.currentProcessIsActiveConsoleUser =
             currentProcessIsActiveConsoleUser
+        self.serviceMutationAllowed = serviceMutationAllowed
         self.sleep = sleep
     }
 
@@ -286,6 +296,7 @@ final class PowerHelperService {
     func reconcileAfterAppUpdate() async throws
         -> PowerHelperReconciliationOutcome
     {
+        try requireReleaseSignature()
         guard let digest = digestProvider() else {
             throw PowerHelperServiceError.bundledDefinitionMissing
         }
@@ -301,6 +312,7 @@ final class PowerHelperService {
     }
 
     func disable() async throws {
+        try requireReleaseSignature()
         try await performExclusiveOperation {
             _ = try await drive(to: .remove)
         }
@@ -352,7 +364,7 @@ final class PowerHelperService {
     {
         var transaction = try loadOrMigrateTransaction(desired: desired)
         if transaction == nil {
-            transaction = try bootstrapTransaction(for: desired)
+            transaction = try await bootstrapTransaction(for: desired)
             if transaction == nil { return .complete }
         }
 
@@ -366,9 +378,13 @@ final class PowerHelperService {
             case .preparing:
                 switch status {
                 case .enabled:
-                    if try lifetimeBarrierStatus() == .missing {
-                        // launchd/BTM can keep an enabled job that never
-                        // spawned. There is no live helper to prepare.
+                    let lifetimeStatus = try lifetimeBarrierStatus()
+                    if lifetimeStatus == .missing
+                        || lifetimeStatus == .released {
+                        // launchd/BTM can keep an enabled job after its helper
+                        // failed to spawn or exited. A missing or unlocked
+                        // lifetime barrier proves there is no live helper to
+                        // prepare over XPC, so replay unregister directly.
                         transaction.phase = .unregisterSubmitted
                         transaction.bootSessionIdentifier =
                             try currentBootSession()
@@ -520,9 +536,14 @@ final class PowerHelperService {
         throw PowerHelperServiceError.registrationDidNotComplete
     }
 
+    /// An enabled helper record without a lifetime holder can be a helper
+    /// that launchd has not finished spawning at login. Re-read once after
+    /// this grace before treating a matching definition as a stale job.
+    static let staleRegistrationGraceNanoseconds: UInt64 = 3_000_000_000
+
     private func bootstrapTransaction(
         for desired: DesiredGoal
-    ) throws -> PowerHelperHandoffTransaction? {
+    ) async throws -> PowerHelperHandoffTransaction? {
         let bootSession = try currentBootSession()
         switch desired {
         case let .install(digest):
@@ -530,9 +551,21 @@ final class PowerHelperService {
                 defaults.string(forKey: digestKey) != digest
                 || defaults.bool(forKey: pendingDigestKey)
             switch status {
-            case .enabled where !definitionNeedsReconcile:
-                return nil
             case .enabled:
+                var lifetimeStatus = try lifetimeBarrierStatus()
+                if !definitionNeedsReconcile, lifetimeStatus != .busy {
+                    try await sleep(Self.staleRegistrationGraceNanoseconds)
+                    lifetimeStatus = try lifetimeBarrierStatus()
+                }
+                if !definitionNeedsReconcile, lifetimeStatus == .busy {
+                    return nil
+                }
+                // SMAppService can retain an enabled BTM record whose parent
+                // bundle UUID no longer resolves after an in-place app
+                // replacement. A matching definition digest does not prove
+                // that launchd can spawn it. The helper takes this lock before
+                // exposing XPC, so an absent holder is direct stale-job
+                // evidence and must force the normal durable handoff.
                 defaults.set(true, forKey: pendingDigestKey)
                 let transaction = makeTransaction(
                     phase: .preparing, desired: desired,
@@ -762,6 +795,12 @@ final class PowerHelperService {
     private func requireActiveConsoleUser() throws {
         guard currentProcessIsActiveConsoleUser() else {
             throw PowerHelperServiceError.notActiveConsoleUser
+        }
+    }
+
+    private func requireReleaseSignature() throws {
+        guard serviceMutationAllowed() else {
+            throw PowerHelperServiceError.releaseSignatureRequired
         }
     }
 

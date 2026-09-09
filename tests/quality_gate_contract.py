@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -35,10 +38,33 @@ from quality_gate import (  # noqa: E402
     split_swift_build_jobs,
     ui_coverage_binary,
 )
+from quality_gate import provider_runtime_payload  # noqa: E402
 from quality_policy import POLICY_FILE, Policy  # noqa: E402
 
 
 class QualityGateContract(unittest.TestCase):
+    def test_provider_payload_follows_exact_product_binding(self) -> None:
+        root = Path("/repo")
+        with patch.dict("os.environ", {}, clear=False):
+            for name in (
+                "DETACH_QUALITY_EXACT_PRODUCTS",
+                "GITHUB_ACTIONS",
+                "DETACH_QUALITY_GATE_AUTHORITY",
+            ):
+                os.environ.pop(name, None)
+            self.assertEqual(
+                provider_runtime_payload(root),
+                root / "app/build/Detach.app/Contents/Resources/DetachCLI",
+            )
+            os.environ["DETACH_QUALITY_EXACT_PRODUCTS"] = "1"
+            with self.assertRaisesRegex(GateError, "hosted CI authority"):
+                provider_runtime_payload(root)
+            os.environ["GITHUB_ACTIONS"] = "true"
+            os.environ["DETACH_QUALITY_GATE_AUTHORITY"] = "ci-shard"
+            self.assertEqual(
+                provider_runtime_payload(root), root / "app/.build/quality-runtime"
+            )
+
     def test_relative_result_root_becomes_absolute_evidence(self) -> None:
         relative = Path("app/build/relative-quality-evidence")
         with patch.dict(
@@ -225,6 +251,25 @@ class QualityGateContract(unittest.TestCase):
             with self.assertRaisesRegex(GateError, "hosted CI authority"):
                 exact_products_enabled()
 
+    def test_provider_stages_receive_the_exact_product_binding(self) -> None:
+        environment = {
+            "DETACH_QUALITY_GATE_TEST_MODE": "1",
+            "DETACH_QUALITY_EXACT_PRODUCTS": "1",
+            "DETACH_QUALITY_EXACT_APP": "1",
+        }
+        with patch.dict("os.environ", environment, clear=False):
+            gate = QualityGate(parse_options([]))
+            for stage in ("codex", "claude", "swift", "ui-e2e"):
+                self.assertEqual(
+                    gate.stage_environment(stage).get("DETACH_QUALITY_EXACT_PRODUCTS"), "1",
+                    stage,
+                )
+            for stage in ("static", "distribution", "tmux-runtime"):
+                self.assertNotIn(
+                    "DETACH_QUALITY_EXACT_PRODUCTS", gate.stage_environment(stage), stage
+                )
+            self.assertNotIn("DETACH_QUALITY_EXACT_APP", gate.stage_environment("codex"))
+
     def test_codex_parts_get_private_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -258,9 +303,11 @@ class QualityGateContract(unittest.TestCase):
                     0,
                 )
             for part in (
+                "resume",
+                "delete",
                 "guardrails",
                 "lifecycle-recovery",
-                "resume-identity",
+                "identity",
             ):
                 log = (run_dir / f"codex-parts/{part}.log").read_text(
                     encoding="utf-8"
@@ -293,6 +340,33 @@ class QualityGateContract(unittest.TestCase):
                     ),
                 )
 
+    def test_codex_layouts_select_every_suite_section_once(self) -> None:
+        # Execute the real shell selector without starting the integration suite.
+        # Scheduling must not lose sections or repeat stateful scenarios.
+        source = (ROOT / "tests/run.sh").read_text(encoding="utf-8")
+        selector = source.split("codex_part_selected() {", 1)[1].split(
+            "codex_scenario_event()", 1
+        )[0]
+        sections = re.findall(r"^if codex_part_selected ([a-z-]+); then$", source, re.MULTILINE)
+        self.assertTrue(sections)
+        self.assertEqual(len(sections), len(set(sections)))
+        command = "codex_part_selected() {" + selector + "\n" + (
+            'CODEX_TEST_PART="$1"; shift\n'
+            'for section in "$@"; do\n'
+            '  if codex_part_selected "$section"; then printf "%s\\n" "$section"; fi\n'
+            'done\n'
+        )
+        for cpus in (3, 10):
+            with self.subTest(cpus=cpus), patch("quality_gate.os.cpu_count", return_value=cpus):
+                selected = []
+                for part in provider_test_parts("codex"):
+                    result = subprocess.run(
+                        ["/bin/bash", "-c", command, "selector", part, *sections],
+                        text=True, capture_output=True, check=True,
+                    )
+                    selected.extend(result.stdout.splitlines())
+                self.assertCountEqual(selected, sections)
+
     def test_static_contracts_keep_separate_deterministic_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -300,7 +374,6 @@ class QualityGateContract(unittest.TestCase):
             tests.mkdir()
             names = (
                 "docs-contract.sh",
-                "release-budget-ratchet.sh",
                 "shell-safety.sh",
                 "test-suite-contract.sh",
             )

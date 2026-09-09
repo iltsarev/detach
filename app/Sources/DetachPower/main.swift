@@ -4,7 +4,9 @@ import Foundation
 
 _ = umask(0o077)
 
-let helperClient = PowerHelperXPCClient()
+let arguments = Array(CommandLine.arguments.dropFirst())
+let helperTransport: any PowerHelperXPCTransport = NSXPCPowerHelperTransport()
+let helperClient = PowerHelperXPCClient(transport: helperTransport)
 let command = DetachPowerCommand(
     helperClient: helperClient,
     assertionController: PowerAssertionController(),
@@ -12,4 +14,4 @@ let command = DetachPowerCommand(
     heartbeatRunner: DispatchPowerHeartbeatRunner(),
     clamshellLockRunner: ClamshellLockRunner())
 let executable = DetachPowerExecutable(command: command)
-exit(executable.run(arguments: Array(CommandLine.arguments.dropFirst())))
+exit(executable.run(arguments: arguments))

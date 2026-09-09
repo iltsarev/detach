@@ -6,6 +6,7 @@ ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/app/build/Detach.app"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-ui-e2e-contract.XXXXXX")"
 FAKE_ROOT=""
+FAKE_QUICK_ROOT=""
 
 cleanup() {
   case "$TMP_ROOT" in
@@ -13,6 +14,9 @@ cleanup() {
   esac
   case "$FAKE_ROOT" in
     /private/tmp/detach-ui-e2e.contract.*) rm -rf "$FAKE_ROOT" ;;
+  esac
+  case "$FAKE_QUICK_ROOT" in
+    /private/tmp/detach-chat-contract.*) rm -rf "$FAKE_QUICK_ROOT" ;;
   esac
 }
 trap cleanup EXIT
@@ -22,6 +26,14 @@ run_validation() {
 }
 
 run_validation "$APP"
+
+if DETACH_TEST_APP="$APP" DETACH_UI_E2E_GUI_PROBE_RESULT=no-session \
+    "$ROOT/tests/ui-e2e.sh" >"$TMP_ROOT/no-gui-session.log" 2>&1; then
+  printf 'UI e2e ran without an interactive GUI session\n' >&2
+  exit 1
+fi
+grep -F 'UI e2e: environment denied: no interactive GUI session (no-session)' \
+  "$TMP_ROOT/no-gui-session.log" >/dev/null
 
 if DETACH_TEST_APP="$APP" DETACH_UI_E2E_VALIDATE_ONLY=1 \
     DETACH_UI_E2E_COVERAGE_BINARY="$TMP_ROOT/missing-coverage-binary" \
@@ -44,15 +56,17 @@ grep -F 'coverage executable has no coverage map' \
 for invocation in \
   'list --json' \
   'codex logs --ansi detach-codex-ui-running' \
-  'codex attach detach-codex-ui-running' \
+  'codex attach --terminal-features sync detach-codex-ui-running' \
   'codex logs --ansi detach-codex-ui-recoverable' \
   'codex recover --detach detach-codex-ui-recoverable' \
-  'codex attach detach-codex-ui-recoverable' \
+  '--terminal-size 137x47 codex recover --detach detach-codex-ui-recoverable' \
+  'codex attach --terminal-features sync detach-codex-ui-recoverable' \
   'claude logs --ansi detach-claude-ui-completed' \
-  'resume --detach a9f58f1d-1234-5678-9abc-def012342ed9' \
-  'claude attach detach-claude-ui-completed' \
+  'claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9' \
+  '--terminal-size 137x47 claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9' \
+  'claude attach --terminal-features sync detach-claude-ui-completed' \
   'claude --detach' \
-  'claude attach detach-claude-ui-new' \
+  'claude attach --terminal-features sync detach-claude-ui-new' \
   'codex stop detach-codex-ui-running' \
   'storage --json' \
   'config tmux-style' \
@@ -61,6 +75,9 @@ for invocation in \
 done
 
 for invocation in \
+  '--terminal-size 0x47 codex recover --detach detach-codex-ui-recoverable' \
+  '--terminal-size 1000x47 codex recover --detach detach-codex-ui-recoverable' \
+  '--terminal-size 137x47 codex stop detach-codex-ui-running' \
   'config tmux-style detach' \
   'config tmux-extended-keys on' \
   'storage cleanup --dry-run --json' \
@@ -95,6 +112,19 @@ if run_fake config tmux-style detach >/dev/null 2>&1; then
   printf 'Fake UI CLI accepted a Settings mutation\n' >&2
   exit 1
 fi
+
+FAKE_QUICK_ROOT="$(mktemp -d /private/tmp/detach-chat-contract.XXXXXX)"
+chmod 0700 "$FAKE_QUICK_ROOT"
+(
+  cd "$FAKE_QUICK_ROOT"
+  run_fake codex --detach
+)
+printf 'sessions\n' >"$FAKE_STATE"
+quick_json="$(run_fake list --json | tail -n 1)"
+[ "$(printf '%s\n' "$quick_json" \
+  | plutil -extract session_name raw -o - -)" = detach-codex-ui-quick ]
+[ "$(printf '%s\n' "$quick_json" \
+  | plutil -extract project_dir raw -o - -)" = "$FAKE_QUICK_ROOT" ]
 
 mkdir -p "$TMP_ROOT/mismatch.app/Contents/MacOS" \
   "$TMP_ROOT/mismatch.app/Contents/Resources"

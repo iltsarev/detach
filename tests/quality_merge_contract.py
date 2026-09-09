@@ -135,8 +135,10 @@ def invoke(
     mode: str = "success",
     repair: int = 0,
     policy: Path | None = None,
+    test_mode: bool = True,
+    output: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    output = root / f"{mode}-{repair}.json"
+    output = output or root / f"{mode}-{repair}.json"
     environment = os.environ.copy()
     environment.update(
         {
@@ -147,6 +149,9 @@ def invoke(
             "MERGE_STATE": str(root / f"state-{mode}-{repair}"),
         }
     )
+    if not test_mode:
+        environment.pop("DETACH_QUALITY_MERGE_TEST_MODE", None)
+        environment["PATH"] = str(fake.parent) + os.pathsep + environment.get("PATH", "")
     if policy is not None:
         environment["DETACH_QUALITY_POLICY"] = str(policy)
     return subprocess.run(
@@ -178,6 +183,29 @@ def main() -> None:
         root = Path(directory)
         fake = root / "gh"
         fake_gh(fake)
+
+        forbidden = invoke(root, fake, "forbidden-output", test_mode=False)
+        require_failure(forbidden, "merge evidence must use app/build/quality-merge.json")
+        assert not (root / "state-forbidden-output-0/calls.log").exists(), (
+            "invalid output reached GitHub before validation")
+
+        for mode in ["directory-output", "symlink-output", "dangling-output"]:
+            output = root / f"{mode}-0.json"
+            if mode == "directory-output":
+                output.mkdir()
+            else:
+                target = root / f"{mode}-target"
+                if mode == "symlink-output":
+                    target.write_text("preserve", encoding="utf-8")
+                output.symlink_to(target)
+            require_failure(invoke(root, fake, mode), "merge evidence output is unsafe")
+            assert not (root / f"state-{mode}-0/calls.log").exists()
+
+        parent_file = root / "parent-file"
+        parent_file.write_text("preserve", encoding="utf-8")
+        parent_result = invoke(root, fake, "parent-file", output=parent_file / "summary.json")
+        assert parent_result.returncode == 2, parent_result.stdout
+        assert not (root / "state-parent-file-0/calls.log").exists()
 
         result = invoke(root, fake)
         assert result.returncode == 0, result.stdout

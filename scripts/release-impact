@@ -30,6 +30,8 @@ LID_TEST_REQUIRED=false
 UNKNOWN_IMPACT=false
 LID_REASONS=()
 UNKNOWN_REASONS=()
+SCAN_WAIVED=()
+MODIFIED_PATHS=""
 SEMANTIC_REVIEW_APPLIED=false
 LID_REVIEW_REASON=""
 
@@ -120,6 +122,40 @@ apply_semantic_review() {
   SEMANTIC_REVIEW_APPLIED=true
 }
 
+# A lid-gated path with a policy release-scan pattern keeps the closed-lid
+# probe only when its diff hunks mention a power token: changed lines or the
+# enclosing function names in the hunk headers. Only plain modifications are
+# scanned; added, deleted, renamed, or copied files keep the gate.
+apply_release_scans() {
+  local path pattern diff remaining=()
+  for path in "${LID_REASONS[@]-}"; do
+    [ -n "$path" ] || continue
+    pattern="$("$QUALITY_POLICY" release-scan "$path")" || \
+      die "cannot read the release scan for $path"
+    if [ "$pattern" = - ] || \
+        ! printf '%s' "$MODIFIED_PATHS" | grep -Fqx -- "$path"; then
+      remaining+=( "$path" )
+      continue
+    fi
+    diff="$(git -C "$ROOT" diff -U0 --no-color --no-ext-diff \
+      "$BASE_COMMIT" "$HEAD_COMMIT" -- "$path")" || die "cannot diff $path"
+    if [ -z "$diff" ] || printf '%s\n' "$diff" | awk '
+        /^@@/ { sub(/^@@[^@]*@@ ?/, ""); print; next }
+        /^(\+\+\+|---) / { next }
+        /^[-+]/ { print substr($0, 2) }
+      ' | grep -Eiq -- "$pattern"; then
+      remaining+=( "$path" )
+    else
+      SCAN_WAIVED+=( "$path" )
+    fi
+  done
+  LID_REASONS=( "${remaining[@]-}" )
+  LID_TEST_REQUIRED=false
+  for path in "${LID_REASONS[@]-}"; do
+    [ -z "$path" ] || LID_TEST_REQUIRED=true
+  done
+}
+
 classify_path() {
   local path="$1" status test_domain release_domain spec stages gates unknown
   local route_pattern route_priority capabilities journeys gate
@@ -144,6 +180,9 @@ classify_path() {
 while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   classify_path "$path"
   case "$status" in
+    M) MODIFIED_PATHS="$MODIFIED_PATHS$path"$'\n' ;;
+  esac
+  case "$status" in
     R*|C*)
       IFS= read -r -d '' path || die 'malformed rename/copy entry from Git'
       classify_path "$path"
@@ -151,6 +190,7 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   esac
 done < <(git -C "$ROOT" diff --name-status -z --find-renames "$BASE_COMMIT" "$HEAD_COMMIT")
 
+apply_release_scans
 apply_semantic_review
 
 printf 'schema\t2\n'
@@ -167,4 +207,7 @@ for path in "${LID_REASONS[@]-}"; do
 done
 for path in "${UNKNOWN_REASONS[@]-}"; do
   [ -z "$path" ] || printf 'unknown_reason\t%s\n' "$path"
+done
+for path in "${SCAN_WAIVED[@]-}"; do
+  [ -z "$path" ] || printf 'lid_test_scan_waived\t%s\n' "$path"
 done

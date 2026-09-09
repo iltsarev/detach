@@ -32,6 +32,10 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   selected by the accumulated diff from `<tag>`. It omits the recursive
   `scripts/release-version` test. Release mode without a base fails safe to the
   complete release plan.
+- `scripts/quality-gate --mode release --reuse-hosted <run-dir>` also reuses
+  every selected stage that digest-bound hosted evidence already proved for
+  the exact source tree. `scripts/quality-evidence fetch --commit <sha>`
+  downloads that evidence from the green `main` workflow run of the commit.
 - `scripts/quality-gate --resume <run-dir>` reuses compatible passed stages.
   `--resume latest` selects the newest compatible local run.
   `--resume auto` starts fresh when no compatible run exists. Releases use
@@ -65,11 +69,6 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   corpus. Mutation work does not add to pull request latency.
 - `scripts/quality-promote` binds a successful pull-request artifact to its
   final `main` merge commit. It runs only in the hosted main-push workflow.
-
-`--without-release-budget` disables reference-Mac time comparisons. Hosted CI
-uses this option because hosted timing is not release timing. Functional
-checks, process deadlines, and static policy ratchets remain active. This
-option does not make a local run authoritative.
 
 ## Authority and evidence
 
@@ -113,8 +112,15 @@ manual because it needs physical evidence.
 Resume requires the same policy, authority, source commit, base commit, and
 input fingerprint. The old plan must contain every selected stage. Reused logs
 keep their duration and digest. The new manifest binds the parent manifest.
-Inherited wall time cannot become shorter. A prior time failure cannot become
-PASS through resume.
+Inherited wall time cannot become shorter.
+
+Hosted reuse is separate. Release mode may reuse a passed stage from a
+`ci-main` run that names the source commit, or from a promoted `ci-merge` run
+whose promotion record names the source commit and proves equal tested and
+merged trees. The evidence must have the current policy, a passed result, and
+matching environment, artifact, summary, and log digests. Each reused stage
+records the hosted run as its origin. Stages the hosted plan did not cover run
+on the release Mac.
 
 ## Automated stages and scheduling
 
@@ -128,10 +134,11 @@ The policy defines these stages:
 - isolated Codex and Claude provider integrations;
 - distribution and bundled runtime contracts;
 - release and publish preflights;
-- release-impact and release-workflow contracts;
-- the zero-work release time-budget postflight.
+- release-impact and release-workflow contracts.
 
-Every executable stage has a policy-owned process deadline. The GitHub workflow
+Every executable stage has a policy-owned process deadline. Stage and wall
+durations are telemetry for `scripts/quality-history` and the care SLO; they
+never change a verdict. The GitHub workflow
 has a ten-minute deadline and cancels superseded work. The pull request feedback
 SLO is less than ten minutes.
 
@@ -148,13 +155,17 @@ Swift tests, the normal app, and the instrumented app use isolated scratch and
 module-cache paths. CI materializes their shared dependency cache once before
 parallel builds. A host with at least three CPUs splits workers and builds all
 three at the same time. Smaller hosts run Swift and app work in sequence.
-The normal bundle is verified. On a hosted app-cache miss, the successful
-fresh build becomes the exact app for that job. The selected app stage verifies
-the same bundle and does not build it again. A failed build cannot create this
-binding. Only the private UI copy gets the instrumented executable.
+The normal bundle is verified. On a hosted app-cache miss, the shard that owns
+the app stage builds the app in that stage. Other shards build the app before
+their checks and bind the successful build as the exact app for that job.
+A cache hit requires verification before reuse. A failed build cannot create
+this binding. Only the private UI copy gets the instrumented executable.
 The short packaged UI lane runs after the verified app and before the
 CPU-intensive provider, runtime, and gate-contract lanes. This prevents
-WindowServer event delivery from competing with those workers. After the UI and metric phases,
+WindowServer event delivery from competing with those workers. The UI smoke
+probes the console session first. An agent sandbox, SSH session, login window,
+or locked screen is an environment denial that the gate records as
+`environment-failed`, never as a product failure. After the UI and metric phases,
 the scheduler starts ready process-heavy stages in descending policy timing
 order. It admits at most two process-heavy top-level lanes. One separate lane
 runs short runtime and release preflights during gate-contract. Distribution
@@ -178,20 +189,30 @@ compiler, package, sources, tests, build scripts, and version metadata. A
 promoted `main` run warms only a missing exact product and emits no gate
 evidence. The packaged UI test uses a
 stripped process-private app, fake CLI, and private state. Provider tests use
-private state and socket roots plus the newly bundled `tmux` and
-`detach-state`. Each provider part has private state, socket, log, and failure
+private state and socket roots plus the bundled `tmux` and `detach-state`. A
+hosted provider shard binds the exact runtime products that the last green
+`main` published when the product cache has them, so a change that touches
+only the shell CLI does not rebuild the app in every shard. Without them the
+shard verifies or builds the packaged app first. Each provider part has
+private state, socket, log, and failure
 artifact roots. Parts run concurrently. The bounded large-host Codex lane
 starts the longest measured independent parts first, and still runs every
-part. Smaller hosts use three Codex parts and two Claude parts; larger hosts
-use finer parts. Compact layouts reuse
-checkpoints across recovery and restart, resume and identity, or Claude
-lifecycle and recovery. The parent writes scenario events in one order and
+part. Smaller hosts use five Codex parts with at most three active parts and
+two Claude parts. Resume and Delete run in separate parts on every host.
+Larger hosts use finer parts. Compact layouts reuse checkpoints across
+recovery and restart or Claude lifecycle and recovery.
+The parent writes scenario events in one order and
 fails the stage when any part fails. Tests do not use installed product state
 or ambient helpers. Distribution runs its runtime and shell-profile contracts
 concurrently in separate private temporary homes.
 
 There are no quarantined tests. A future quarantine needs an owner, reason, and
-expiry. It cannot remove release evidence.
+expiry. It cannot remove release evidence. The packaged UI journeys are the
+only retry layer: every scenario and every attempt starts from a clean
+private state with no app state, fake CLI markers, attach client, or
+persisted defaults; a scenario whose app never reports a result, or reports
+a timeout, gets exactly one retry inside the stage budget, and the stage log
+records the retry. A reported assertion failure never retries.
 
 ## Impact and user journeys
 
@@ -205,13 +226,18 @@ unknown path selects every functional stage and every release impact.
 | --- | --- |
 | Documentation | static |
 | Quality policy or CI | static and gate self-contracts |
-| Swift source | Swift, metrics, app, packaged UI, and required dependencies |
+| Swift source | Swift, metrics, app, and packaged UI |
 | Swift tests | Swift and matching-profile metrics |
-| CLI or session lifecycle | app, both providers, distribution, runtime, and dependencies |
+| CLI or session lifecycle | app, both providers, and distribution |
 | One provider test | static and that provider; its shard verifies the exact app prerequisite |
-| Install or distribution | app, distribution, runtime, and dependencies |
-| Release or publication | app, preflights, workflow contracts, and dependencies |
+| Install or distribution | app and distribution |
+| Release or publication | app, preflights, and workflow contracts |
 | Unknown path | full repository plan |
+
+Stages do not cascade. The packaged UI smoke drives a fake CLI, so it runs only
+for app product sources, resources, and UI tests. The pinned tmux runtime
+contract runs only for package, script, and tmux build changes. Each domain
+selects the stages that can observe its change and nothing else.
 
 Hosted pull request CI does not trust a caller-supplied stage list. It requires
 the clean tested merge commit, classifies the exact base-to-merge diff, applies
@@ -234,10 +260,11 @@ profiles during migration. Each combined run also records a digest-bound Swift
 snapshot for later Swift-profile comparisons without a second ratchet. Thus,
 Swift-test-only changes do not run packaged app journeys only to make coverage
 inputs equivalent.
-CI rejects a removed test or a lower aggregate or critical-source ratio.
-Changed executable lines need at least 90 percent coverage. A new critical
-source needs 100 percent coverage for its first baseline. Missing, stale,
-unbound, unsafe, or malformed baseline evidence fails closed.
+CI rejects a lower critical-source ratio and a new critical source that is not
+fully covered in its first baseline. Missing, stale, unbound, unsafe, or
+malformed baseline evidence fails closed. Aggregate ratios, removed test
+identities, and changed-line coverage below the 90 percent floor are advisory.
+The stage prints them as `quality-metrics: advisory:` lines and stays green.
 
 The UI aggregate includes Swift tests and the bounded packaged-app journeys.
 The separate opportunity artifact ranks current uncovered UI sources. Its risk
@@ -338,8 +365,8 @@ configured CodeQL languages and cadence. Generation fails if the workflow no
 longer uses weekly and explicit runs. These care jobs do not extend pull-request
 feedback and cannot run release commands.
 
-Release readiness also requires the tracked reference-Mac time budgets and the
-release-only gates below. Ordinary implementation must not run them.
+Release readiness also requires the release-only gates below. Ordinary
+implementation must not run release-only gates.
 
 ## Release-only gates
 

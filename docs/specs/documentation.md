@@ -13,8 +13,9 @@ Hosted CI is the merge-readiness authority.
   instructions or additional imports.
 - Root instructions stay below 200 lines and 8 KiB. Detailed architecture does
   not return to the automatic startup context.
-- No individual spec exceeds 12 KiB. Read more than one only when a change
-  crosses real subsystem boundaries.
+- No individual spec exceeds 16 KiB. The static check and dashboard warn above
+  12 KiB so a split is planned first. Read a second spec only for a real
+  cross-subsystem change.
 - `AGENTS.md` contains one small human-readable context map. There is no second
   routing DSL or tool for an agent to learn.
 - New or changed English text in `README.md` and `docs/` uses
@@ -42,8 +43,9 @@ Hosted CI is the merge-readiness authority.
   repository diagnostic respectively. Each supports `--plan`. No command in
   this group is merge-readiness evidence.
 - Resume evidence retains stage timing and digest-bound logs, binds its parent,
-  requires the same authority, and cannot turn a prior time-budget regression
-  into authoritative evidence.
+  and requires the same authority. Timing is telemetry, never a verdict.
+  Hosted reuse in release mode is separate: a passed `ci-main` or promoted
+  `ci-merge` stage counts only for the exact source tree it proved.
 - Quality policy files contain current version and state; Git is history.
   Runtime tools do not decode old policy schemas. A last-green metrics artifact
   can use an earlier policy number only with the current evidence schema,
@@ -63,18 +65,21 @@ Hosted CI is the merge-readiness authority.
 - Instrumented scenarios emit begin and pass events. Evidence records their
   requirement and journey links, duration, result, and bounded rerun. A missing
   event fails a passed stage.
-- A local timing-budget failure creates performance work. Warm-cache and
-  variance reruns cannot prove readiness. Repeat an unchanged run only for a
-  recorded unrelated external transient.
+- Stage and wall durations are telemetry, never a verdict. A slow stage is
+  performance work. Warm-cache and variance reruns cannot prove readiness.
+  Repeat an unchanged run only for a recorded unrelated external transient.
 - CI binds checks to the tested merge and first parent. Linux runs level 0
   planning and static work. Level 1 covers units and contracts. Level 2 covers
   packaged and runtime work on macOS. Every selected level is required.
 - Shards revalidate merge identity but have no merge authority. The final Linux
   job recomputes the plan and accepts only exact digest-bound shard evidence.
   Evidence roots are absolute. Ambiguity fails closed. A failed shard cancels peers.
-- CI keeps a ten-minute timing ratchet with no reference-Mac limit.
+- CI keeps a ten-minute workflow deadline and the care p95 SLO as its only
+  latency watch.
 - Gate contracts admit four heavy shards on eight CPUs and two on smaller
   hosts; light contracts stay concurrent and budgets expose overload.
+- Codex uses at most three active test parts. Resume and Delete use separate
+  parts on every host. Each suite section runs once in either layout.
 - Swift and release builds use separate caches and split at three CPUs;
   smaller hosts run in order. UI waits for app; metrics require both.
   Gate-contract excludes heavy peers and gates distribution. Release-workflow
@@ -82,7 +87,8 @@ Hosted CI is the merge-readiness authority.
   heavy and one integration lane.
 - Exact keys bind inputs and toolchain. `main` warms missing products. CI
   verifies hits and misses, then reuses a fresh app. Warming emits no
-  evidence.
+  evidence. On a miss, a shard with the app stage builds inside that stage.
+  Other shards prepare the app before their checks.
 - CI uses the newest green `main` artifact with metrics; a later run without
   them does not replace it. Test identities and aggregate or critical-source
   coverage cannot decrease. Changed Swift lines need 90 percent coverage; a
@@ -117,10 +123,11 @@ Hosted CI is the merge-readiness authority.
   `main` run with direct or promoted evidence, or a green scheduled mutation
   run. Bounded quality care can also deploy its validated result before it
   marks an attention run as failed. Care evidence binds the source commit and
-  SHA-256 digests of its eval and history inputs. The dashboard shows measured
-  coverage, ranked UI coverage opportunities, mutation score, workflow evals,
-  feedback p95 and SLO, and security state when they exist. The security state
-  comes from a typed current-policy
+  SHA-256 digests of its eval and history inputs. A digest-bound gate artifact
+  supplies routed-spec sizes. The dashboard also shows measured coverage,
+  ranked UI coverage opportunities, mutation score, workflow evals, feedback
+  p95 and SLO, and security state when they exist. The security state comes
+  from a typed current-policy
   artifact. It includes both CodeQL job results, the analyzed commit, an
   identity fingerprint, and the exact workflow link. A later main, care, or
   mutation deploy restores the newest valid current-policy security and care
@@ -131,6 +138,8 @@ Hosted CI is the merge-readiness authority.
   attention issue.
 - `main` promotes a successful pull-request artifact only when its stages equal
   a fresh impact plan and both merges have the same tree and ordered parents.
+  Spec, capability, and journey identities must match without duplicates;
+  their record order can differ. Promotion does not rewrite the manifest.
   Promotion keeps identities and digests. Ambiguity runs a full `ci-main` gate.
 - The active GitHub ruleset for `main` has no bypass actors. It requires a pull
   request, a current strict GitHub Actions `quality-gates` job, merge commits,
@@ -141,7 +150,9 @@ Hosted CI is the merge-readiness authority.
   exact head check. It then enables native auto-merge for that head and waits
   at most the merge deadline. It disables auto-merge on timeout. The command
   rejects a changed head, an invalid ruleset, and a repair attempt above the
-  policy maximum. It writes current-policy evidence under `app/build/`.
+  policy maximum. It validates the evidence path and creates its parent
+  before it calls GitHub. Invalid paths cannot trigger a merge. It writes
+  current-policy evidence under `app/build/`.
 - Weekly Dependabot checks pinned Actions and Swift packages. It groups each
   ecosystem into at most one pull request to protect the feedback queue. The
   bounded weekly/manual CodeQL workflow scans Actions on Linux and arm64 Swift

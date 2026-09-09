@@ -46,8 +46,19 @@ public struct PowerHelperPersistentState: Codable, Equatable, Sendable {
         thermalSafety = try container.decodeIfPresent(
             PowerThermalSafetyLatch.self, forKey: .thermalSafety)
             ?? PowerThermalSafetyLatch()
-        lowBatteryThreshold = PowerLowBatteryThreshold.parse(
-            try container.decodeIfPresent(Int.self, forKey: .lowBatteryThreshold))
+        lowBatteryThreshold = Self.decodeLowBatteryThreshold(from: container)
+    }
+
+    /// A missing, unsupported, or wrong-type floor becomes 10%. Other valid
+    /// fields must still load so a damaged threshold cannot drop leases.
+    private static func decodeLowBatteryThreshold(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) -> PowerLowBatteryThreshold {
+        guard container.contains(.lowBatteryThreshold) else { return .default }
+        if let value = try? container.decode(Int.self, forKey: .lowBatteryThreshold) {
+            return PowerLowBatteryThreshold.parse(value)
+        }
+        return .default
     }
 
     private enum CodingKeys: String, CodingKey {

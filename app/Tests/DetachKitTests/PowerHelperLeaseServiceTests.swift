@@ -716,6 +716,37 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertEqual(state.lowBatteryThreshold, .percent10)
     }
 
+    func testWrongTypeStoredLowBatteryThresholdKeepsValidOwnership() throws {
+        let original = PowerHelperPersistentState(
+            ownsClosedLidProtection: true,
+            leases: [
+                PowerLease(
+                    id: "lease-1",
+                    sessionName: "codex-job",
+                    runToken: "tok-1",
+                    renewedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                    assertionActive: true)
+            ],
+            bootSessionIdentifier: "boot-1",
+            lowBatteryThreshold: .percent20)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: try encoder.encode(original)) as? [String: Any])
+        object["low_battery_threshold"] = "15"
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let state = try decoder.decode(
+            PowerHelperPersistentState.self,
+            from: try JSONSerialization.data(withJSONObject: object))
+
+        XCTAssertEqual(state.lowBatteryThreshold, .percent10)
+        XCTAssertEqual(state.leases, original.leases)
+        XCTAssertTrue(state.ownsClosedLidProtection)
+        XCTAssertEqual(state.bootSessionIdentifier, "boot-1")
+    }
+
     func testLowBatteryThresholdPersistsAcrossReloadAndDrivesReconcile() throws {
         let store = FakeStore()
         let backend = FakeBackend(enabled: false)

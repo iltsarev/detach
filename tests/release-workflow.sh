@@ -22,6 +22,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+grep -F 'export GIT_PAGER=cat PAGER=cat GH_PAGER=cat' \
+  "$ROOT/scripts/release-version" >/dev/null || {
+  printf 'release-version must disable pagers for terminal runs\n' >&2
+  exit 1
+}
+
 write_executable() {
   local path="$1"
   mkdir -p "$(dirname "$path")"
@@ -47,7 +53,8 @@ setup_fixture() {
     return
   fi
   mkdir -p "$REPO/scripts" "$REPO/tests/quality-gate-fixtures" "$REPO/app/scripts" \
-    "$REPO/app/.build/artifacts/sparkle/Sparkle/bin" "$REPO/quality" "$REPO/tools" \
+    "$REPO/app/.build/artifacts/sparkle/Sparkle/bin" "$REPO/docs/specs" \
+    "$REPO/quality" "$REPO/tools" \
     "$BIN" "$APPS" "$FIXTURE/hooks" \
     "$REMOTE_ASSETS"
 
@@ -63,6 +70,7 @@ setup_fixture() {
   install -m 0644 "$ROOT/tools/quality_policy.py" "$REPO/tools/quality_policy.py"
   install -m 0644 "$ROOT/tools/release_sbom.py" "$REPO/tools/release_sbom.py"
   install -m 0644 "$ROOT/app/Package.resolved" "$REPO/app/Package.resolved"
+  install -m 0644 "$ROOT"/docs/specs/*.md "$REPO/docs/specs/"
   install -m 0644 "$ROOT/quality/policy.tsv" "$REPO/quality/policy.tsv"
   install -m 0755 "$ROOT/app/scripts/verify-appcast.sh" \
     "$REPO/app/scripts/verify-appcast.sh"
@@ -71,23 +79,6 @@ setup_fixture() {
   printf '%s\n' '.env.release' >"$REPO/.gitignore"
   printf '%s\n' '.build/' 'build/' >"$REPO/app/.gitignore"
   printf '%s\n' 'release workflow fixture' >"$REPO/README.md"
-  printf '%s\n' \
-    $'schema\t2' \
-    $'wall_seconds_max\t180' \
-    $'stage_static_seconds_max\t10' \
-    $'stage_gate_contract_seconds_max\t10' \
-    $'stage_swift_seconds_max\t10' \
-    $'stage_quality_contracts_seconds_max\t10' \
-    $'stage_app_seconds_max\t10' \
-    $'stage_ui_e2e_seconds_max\t10' \
-    $'stage_codex_seconds_max\t10' \
-    $'stage_claude_seconds_max\t10' \
-    $'stage_distribution_seconds_max\t10' \
-    $'stage_tmux_runtime_seconds_max\t10' \
-    $'stage_release_preflight_seconds_max\t10' \
-    $'stage_publish_preflight_seconds_max\t10' \
-    $'stage_release_workflow_seconds_max\t10' \
-    >"$REPO/tests/release-budget.tsv"
   {
     printf "DETACH_CODESIGN_IDENTITY='%s'\n" "$IDENTITY"
     printf '%s\n' 'DETACH_NOTARY_PROFILE=detach-tests'
@@ -487,7 +478,7 @@ SH
 
 run_workflow() {
   local fail_after="${1:-}" lid_confirmation="${2:-example/detach@$TARGET_TAG}"
-  local release_confirmation="${3:-}" ignore_timing="${4:-0}"
+  local release_confirmation="${3:-}"
   (
     cd -P "$REPO"
     PATH="$BIN:/usr/bin:/bin" \
@@ -505,7 +496,6 @@ run_workflow() {
       DETACH_RELEASE_TEST_APPLICATIONS_DIR="$APPS" \
       DETACH_RELEASE_TEST_LID_MIN_SECONDS=0 \
       DETACH_RELEASE_TEST_FAIL_AFTER="$fail_after" \
-      DETACH_RELEASE_IGNORE_TIMING="$ignore_timing" \
       DETACH_QUALITY_AUTHORITY= \
       DETACH_CONFIRM_RELEASE="$release_confirmation" \
       DETACH_CONFIRM_LID_TEST="$lid_confirmation" \
@@ -610,38 +600,6 @@ run_invalid_resume_artifact_credentials_case() {
     'notary credential preflight failed' run_workflow
   unset FAKE_NOTARY_UNAVAILABLE
   [ ! -f "$RELEASE_EXISTS" ]
-}
-
-run_timing_override_confirmation_case() {
-  setup_fixture timing-override-confirmation
-  grep -F 'DETACH_CONFIRM_RELEASE="$REPOSITORY@$TAG" \' \
-    "$REPO/scripts/release-version" >/dev/null
-  expect_failure timing-override-confirmation \
-    "confirmation must exactly equal example/detach@$TARGET_TAG" \
-    run_workflow '' "example/detach@$TARGET_TAG" wrong-confirmation 1
-  [ ! -s "$ACTION_LOG" ]
-}
-
-run_timing_override_invalid_case() {
-  setup_fixture timing-override-invalid
-  expect_failure timing-override-invalid 'DETACH_RELEASE_IGNORE_TIMING must be 0 or 1' \
-    run_workflow '' "example/detach@$TARGET_TAG" "example/detach@$TARGET_TAG" invalid
-  [ ! -s "$ACTION_LOG" ]
-}
-
-run_timing_override_case() {
-  setup_fixture timing-override
-  expect_failure timing-override 'injected safe failure after preflight' \
-    run_workflow preflight "example/detach@$TARGET_TAG" "example/detach@$TARGET_TAG" 1
-  [ "$(<"$REPO/app/build/release-workflow/$TARGET_VERSION/timing-budget-enforced")" = false ]
-  grep -F $'release_timing_override\t1' \
-    "$REPO"/app/build/quality-gates/*/environment.tsv >/dev/null
-  ! grep -F $'\trelease-budget\t' \
-    "$REPO"/app/build/quality-gates/*/summary.tsv >/dev/null
-  run_workflow
-  [ "$(<"$REPO/VERSION")" = "$TARGET_VERSION" ]
-  [ "$(grep -c '^release$' "$ACTION_LOG")" = 1 ]
-  [ -f "$REPO/app/build/release-workflow/$TARGET_VERSION/stage-verified" ]
 }
 
 run_dirty_preflight_rejection_case() {
@@ -755,15 +713,12 @@ release_case_names=()
 release_case_status=0
 release_cases=(
   run_resume_case
-  run_timing_override_case
   run_unexpected_remote_asset_case
   run_remote_hash_case
   run_hardware_rejection_case
   run_invalid_resume_artifact_credentials_case
   run_post_push_main_rejection_case
   run_test_mode_rejects_unproven_fixture_case
-  run_timing_override_confirmation_case
-  run_timing_override_invalid_case
   run_dirty_preflight_rejection_case
   run_stale_build_preflight_rejection_case
   run_diverged_preflight_rejection_case

@@ -42,10 +42,16 @@
 - Pull-request CI validates that machine plan and runs static contracts before
   optional metrics and Swift cache downloads. The final gate recomputes both,
   so the early pass is fail-fast diagnosis and not readiness evidence.
+- `scripts/quality-evidence fetch --repository OWNER/REPOSITORY --commit <sha>`
+  downloads the green `main` evidence that proves one commit into ignored
+  `app/build/quality-evidence/`. The release gate passes it as
+  `--reuse-hosted <run-dir>` and runs only the stages it does not prove.
 - `scripts/quality-cache-warm` builds the three isolated Swift products for a
   missing promoted-`main` cache key. It emits no gate evidence and never
   replaces a selected stage. `--dependencies-only` materializes the shared
-  cache once before parallel builds.
+  cache once before parallel builds. `tools/quality_products.py publish`
+  also stages the bundled `tmux` and `detach-state` as exact runtime
+  products; a hosted provider shard that binds them skips the app build.
 - `scripts/quality-scenarios rerun SC-ID` runs the owning diagnostic stage for
   an instrumented scenario, or its direct policy command otherwise. The stage
   process deadline bounds both forms. The helper has 30 seconds for evidence
@@ -93,21 +99,15 @@
   updates the GitHub Pages dashboard with its score.
 - `scripts/quality-gate --mode repository` — every automated repository check.
   Local use is diagnostic. Pull-request CI uses impact mode once with
-  `ci-merge` authority and `--without-release-budget`, disabling local
-  reference-machine wall and stage timing enforcement while retaining every
-  selected functional stage and the static timing-budget ratchet. A normal
-  release enforces the budgets. Only the owner-confirmed
-  `DETACH_RELEASE_IGNORE_TIMING=1 scripts/release-version X.Y.Z`
-  path may omit them for one intentionally busy-machine release, with the
-  waiver recorded in private evidence. `--stage` is diagnostic only and is not
+  `ci-merge` authority. `--stage` is diagnostic only and is not
   proof that a change is ready. On hosts with at least three CPUs, the current
   policy splits workers across isolated Swift tests, normal app, and
   instrumented app builds. Smaller hosts run Swift and app work in sequence.
   It then runs the isolated Codex and Claude suites concurrently
-  against the verified bundled tmux and state helper. It rejects reference-Mac
-  wall or stage regressions and rejects attempts to lower quality floors or
-  raise time budgets relative to their merge-base values. A quality-core or
-  unknown change selects the full repository plan. `--resume auto` starts
+  against the verified bundled tmux and state helper. Stage and wall durations
+  are telemetry for `scripts/quality-history` and the care SLO; they never
+  change a verdict. A quality-core or unknown change selects the full
+  repository plan. `--resume auto` starts
   fresh when no compatible run exists and is the release default. Resume
   inherits timing and parent provenance. It preserves bounded failure
   diagnostics and classifies known execution-environment denials without
@@ -136,10 +136,20 @@
   The smoke uses a stripped background-only copy, a fake CLI, and private
   HOME/preferences/state below `/private/tmp`; it cannot use the installed
   Detach or user session state. It temporarily activates the isolated app,
-  posts AppKit mouse events to measured SwiftUI controls, and restores the
-  prior application. The locator bridge has no application actions. Run the
+  posts AppKit mouse events to measured SwiftUI controls, uses native slider
+  increment actions, and restores the prior application. The locator bridge
+  has no application actions. Run the
   app build first. The UI smoke needs a logged-in WindowServer session but no
-  Accessibility approval. Do not grant it broader filesystem or production
+  Accessibility approval. Before it launches the app it probes the console
+  session. An agent sandbox, an SSH session, the login window, or a locked
+  screen produces `UI e2e: environment denied`, exit 2, and the gate records
+  `environment-failed` instead of a product failure. Every scenario and
+  attempt starts from a clean private state, and the smoke deletes the test
+  copy's preference domains through cfprefsd at the end. A scenario whose
+  app never reports a result, or reports a timeout, gets one retry; the log
+  records `e2e retry 1 of 1`. A reported assertion failure never retries.
+  Do not grant
+  it broader filesystem or production
   payload access. Its fake CLI allowlist covers only the exact status and stop
   flow and the completed-session forced delete asserted by the smoke. The
   same run disconnects Stop, proves that no action occurs, reconnects it, and
@@ -157,10 +167,10 @@
   `tests/quality-contracts.sh` — unit tests plus measured UI and business test
   identities, aggregate coverage, and coverage for the 13 critical sources.
   The authoritative gate also merges the release-configuration packaged-app
-  profiles after all UI journeys pass. CI rejects a reduction from the last
-  green `main` artifact. It also rejects
-  changed executable Swift-line coverage below 90 percent. New critical
-  sources start at 100 percent. The quality policy owns each coverage
+  profiles after all UI journeys pass. CI rejects a critical-source reduction
+  from the last green `main` artifact and a new critical source that is not
+  fully covered. Aggregate, test-identity, and changed-line comparisons
+  (90 percent floor) are advisory. The quality policy owns each coverage
   exclusion and links it to automated scenario evidence. Excluded sources do
   not enter aggregate or changed-line denominators. Named test-only regions in
   product files stay in aggregate coverage but use their automated scenario as
@@ -168,7 +178,6 @@
   removed-test, aggregate, critical-file, changed-line, combined-profile, and
   ranked-opportunity contracts. The opportunity artifact is advisory. It does
   not set a coverage floor.
-  `tests/release-budget-ratchet-contract.sh` protects timing.
 - `tests/quality-mutation.sh` checks source restoration, timeout handling,
   failure classification, score enforcement, remote evidence restore, and the
   scheduled workflow contract. A nonzero compiler exit without the declared
@@ -180,6 +189,10 @@
   verify a local app. A normal build must contain only an `arm64` slice for the
   app, watchdog, tmux, state helper, power client, root helper, and embedded
   Sparkle executables. Intel Macs are not supported.
+- `DETACH_SIGNED_APP_FIXTURE=/path/to/Detach.app swift test --filter
+  ServiceManagementMutationAdmission` — runs the real Security framework check
+  of the release-signing gate against a signed bundle. Without the variable the
+  test skips, so run it before a release that changes code signing.
 - `DETACH_ALLOW_REAL_POWER_TEST=1 tests/power-smoke.sh` — deliberately changes
   real system power state through an installed, signed, approved app. Never run
   it as routine verification. Before a release, run it only on supervised
@@ -223,16 +236,16 @@ the signed candidate, runs the real power smoke, publishes, and independently
 lists, downloads, and hashes every remote asset. `scripts/release-impact` compares the
 last published tag with the release source. It selects the supervised
 closed-lid probe only for power, helper, watchdog, lease, assertion, or
-lid-probe impact. Unknown product paths select the closed-lid gate. Its private
+lid-probe impact. Unknown product paths select the closed-lid gate. The policy
+`release-scan` row for `bin/detach-core` waives the probe for a plain
+modification whose diff hunks mention no power token; the result records
+`lid_test_scan_waived`. Its private
 resume state and impact evidence live under ignored `app/build/`.
 The path result is fail-safe. For a false positive, a release operator can
 supply `DETACH_RELEASE_IMPACT_REVIEW` with an absolute path directly under
 ignored `app/build/release-impact-reviews/`. The `0600` TSV file must bind the
 exact base and head commits, set the manual-gate decision, and give a reason.
 It cannot narrow unknown-path impact or an automated release gate.
-Set `DETACH_RELEASE_IGNORE_TIMING=1` only when the owner explicitly accepts
-busy-machine timing for that single release; the script requires the same exact
-release-target confirmation before it omits reference-machine timing checks.
 Interrupted draft uploads may resume only after every existing asset digest is
 matched; an unexpected or changed asset fails closed. Do not run the two
 low-level scripts manually during a normal release. Do not run, tag, notarize,

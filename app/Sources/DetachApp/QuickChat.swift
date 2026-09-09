@@ -27,10 +27,39 @@ enum DirectoryPreference {
     }
 }
 
+enum QuickChatProjectDirectory {
+    static func create(
+        inside parent: URL,
+        fileManager: FileManager = .default,
+        id: UUID = UUID()
+    ) throws -> URL {
+        let name = "detach-chat-\(id.uuidString.lowercased())"
+        let directory = parent.appendingPathComponent(name, isDirectory: true)
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        return directory.resolvingSymlinksInPath().standardizedFileURL
+    }
+}
+
 @MainActor
 enum QuickChatLaunch {
+    private enum Outcome: Sendable {
+        case session(String?)
+        case launch(SessionStartResult)
+    }
+
     static func provider(rawValue: String) -> Provider {
         Provider(rawValue: rawValue) ?? .claude
+    }
+
+    static func existingSessionIDs(in sessions: [Session]) -> Set<String> {
+        var ids: Set<String> = []
+        for session in sessions {
+            ids.insert(session.id)
+        }
+        return ids
     }
 
     static func start(
@@ -39,8 +68,16 @@ enum QuickChatLaunch {
         directoryPath: String,
         fileManager: FileManager = .default,
         onSessionAvailable: (@MainActor (String) -> Void)? = nil,
-        discoverySleep: @escaping @Sendable (UInt64) async throws -> Void = {
-            try await Task.sleep(nanoseconds: $0)
+        createProjectDirectory: (URL, FileManager) throws -> URL = {
+            try QuickChatProjectDirectory.create(inside: $0, fileManager: $1)
+        },
+        waitForSession: @escaping @MainActor @Sendable (
+            SessionStore, Provider, URL, Set<String>
+        ) async -> String? = { store, provider, directory, existingIDs in
+            await store.waitForSession(
+                provider: provider,
+                projectDirectory: directory,
+                excluding: existingIDs)
         }
     ) async -> SessionStartResult {
         guard let directory = DirectoryPreference.existingDirectoryURL(
@@ -50,75 +87,58 @@ enum QuickChatLaunch {
                 "Quick chat folder is unavailable: %@",
                 directoryPath))
         }
+        let projectDirectory: URL
+        do {
+            projectDirectory = try createProjectDirectory(directory, fileManager)
+        } catch {
+            return SessionStartResult(message: L10n.format(
+                "Quick chat folder is unavailable: %@",
+                directoryPath))
+        }
         let provider = provider(rawValue: providerRawValue)
         guard let onSessionAvailable else {
             return await store.startDetached(
                 provider: provider,
-                projectDirectory: directory,
+                projectDirectory: projectDirectory,
                 name: nil,
                 prompt: nil)
         }
 
-        let existingIDs = Set(store.sessions.map(\.id))
-        var launchFinished = false
-        let launchTask = Task { @MainActor in
-            defer { launchFinished = true }
-            return await store.startDetached(
-                provider: provider,
-                projectDirectory: directory,
-                name: nil,
-                prompt: nil)
-        }
-        defer { launchTask.cancel() }
-
-        // The typed `starting` row exists before the CLI finishes its runtime
-        // readiness checks. Select it as soon as it is unambiguous.
-        var selectedEarly = false
-        for delay in [75_000_000, 175_000_000] where !launchFinished {
-            do {
-                try await discoverySleep(UInt64(delay))
-            } catch {
-                break
+        let existingIDs = existingSessionIDs(in: store.sessions)
+        return await withTaskGroup(of: Outcome.self) { group in
+            group.addTask {
+                .launch(await store.startDetached(
+                    provider: provider,
+                    projectDirectory: projectDirectory,
+                    name: nil,
+                    prompt: nil))
             }
-            guard !launchFinished else { break }
-            await store.refresh()
-            if let sessionID = newSessionID(
-                in: store.sessions,
-                excluding: existingIDs,
-                provider: provider,
-                projectDirectory: directory) {
-                selectedEarly = true
-                onSessionAvailable(sessionID)
-                break
+            group.addTask {
+                .session(await waitForSession(
+                    store, provider, projectDirectory, existingIDs))
             }
-        }
 
-        let result = await launchTask.value
-        if selectedEarly && result.message != nil {
-            await store.refresh()
+            var selectedEarly = false
+            while let outcome = await group.next() {
+                switch outcome {
+                case .session(let sessionID):
+                    guard let sessionID else { continue }
+                    selectedEarly = true
+                    onSessionAvailable(sessionID)
+                case .launch(let result):
+                    if !selectedEarly, let sessionID = result.sessionID {
+                        onSessionAvailable(sessionID)
+                    }
+                    if selectedEarly, result.message != nil {
+                        await store.refresh()
+                    }
+                    group.cancelAll()
+                    return result
+                }
+            }
+            return SessionStartResult(message: L10n.string(
+                "Could not start quick chat"))
         }
-        return result
-    }
-
-    private static func newSessionID(
-        in sessions: [Session],
-        excluding existingIDs: Set<String>,
-        provider: Provider,
-        projectDirectory: URL
-    ) -> String? {
-        let projectPath = canonicalProjectPath(projectDirectory.path)
-        let candidates = sessions.filter {
-            !existingIDs.contains($0.id)
-                && $0.provider == provider
-                && $0.projectDir.map(canonicalProjectPath) == projectPath
-        }
-        return candidates.count == 1 ? candidates[0].id : nil
-    }
-
-    private static func canonicalProjectPath(_ path: String) -> String {
-        URL(fileURLWithPath: path, isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL.path
     }
 }
 

@@ -21,7 +21,7 @@ struct MacPowerSettingsPresentation: Equatable {
         case noActiveSessions
         case waitingSessions(Int)
         case sessionsNotHolding(Int)
-        case lowBattery
+        case lowBattery(PowerLowBatteryThreshold)
         case temperature
         case confirming
         case helperUnreachable
@@ -38,7 +38,8 @@ struct MacPowerSettingsPresentation: Equatable {
         watchdogStatus: WatchdogStatus,
         distributionMatchesBundle: Bool,
         activeSessionCount: Int? = nil,
-        workingSessionCount: Int? = nil
+        workingSessionCount: Int? = nil,
+        lowBatteryThreshold: PowerLowBatteryThreshold = .default
     ) {
         self.state = state
         if helperStatus == .requiresApproval {
@@ -64,7 +65,7 @@ struct MacPowerSettingsPresentation: Equatable {
             }
         case .allowed:
             // The heartbeat wins, but never claim "no sessions" while the
-            // session poller can see live ones.
+            // session snapshot can see live ones.
             if let activeSessionCount, activeSessionCount > 0 {
                 if workingSessionCount == 0 {
                     reason = .waitingSessions(activeSessionCount)
@@ -75,7 +76,7 @@ struct MacPowerSettingsPresentation: Equatable {
                 reason = .noActiveSessions
             }
         case .lowBattery:
-            reason = .lowBattery
+            reason = .lowBattery(lowBatteryThreshold)
         case .temperature:
             reason = .temperature
         case .transitioning:
@@ -100,6 +101,29 @@ struct MacPowerSettingsPresentation: Equatable {
     }
 }
 
+extension PowerLowBatteryThreshold {
+    var pickerTitle: String {
+        switch self {
+        case .percent10: L10n.string("10% (default)")
+        case .percent15, .percent20: "\(rawValue)%"
+        }
+    }
+
+    var settingsExplanation: String {
+        switch self {
+        case .percent10:
+            L10n.string(
+                "This is the default floor. At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.")
+        case .percent15:
+            L10n.string(
+                "Detach releases sleep protection earlier. At 15% battery or below, or during serious thermal pressure, the Mac can sleep so overnight work does not drain a small reserve.")
+        case .percent20:
+            L10n.string(
+                "Detach keeps more reserve. At 20% battery or below, or during serious thermal pressure, the Mac can sleep instead of running until the battery is empty.")
+        }
+    }
+}
+
 /// Sessions that Settings and the menu bar count as active work.
 enum MacPowerActiveSessions {
     static func active(in sessions: [Session]) -> [Session] {
@@ -118,25 +142,15 @@ enum MacPowerActiveSessions {
     }
 }
 
-/// Heartbeat refresh for Settings → System. The SwiftUI `.task` wrapper
-/// only calls this; XCTest cannot map that modifier.
+/// One initial Settings → System refresh. Later heartbeat changes arrive from
+/// the app-level event monitor; storage remains an explicit pane load.
 enum SystemTabHeartbeatRefresh {
     static func run(
         refreshPower: () -> Void,
-        refreshStorage: () async -> Void,
-        sleepNanoseconds: UInt64 = 10_000_000_000
+        refreshStorage: () async -> Void
     ) async {
         refreshPower()
-        async let storageRefresh: Void = refreshStorage()
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: sleepNanoseconds)
-            } catch {
-                break
-            }
-            refreshPower()
-        }
-        await storageRefresh
+        await refreshStorage()
     }
 }
 
@@ -195,8 +209,8 @@ private extension SettingsDestination {
 struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     let installation: InstallationStore
-    /// The app-level shared session poller. Settings can be the only open
-    /// scene, so CLI path and cadence changes are applied here as well.
+    /// The app-level shared session source. Settings can be the only open
+    /// scene, so CLI path changes are applied here as well.
     let sessionStore: SessionStore
     let storageStore: StorageStore
     @ObservedObject var updater: UpdaterService
@@ -205,7 +219,6 @@ struct SettingsView: View {
 
     @AppStorage("detachPath", store: AppSettings.defaults)
     private var detachPath = AppSettings.initialDetachPath
-    @AppStorage("pollInterval", store: AppSettings.defaults) private var pollInterval = 2.0
     @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
     private var fontPointSize = AppFontSize.defaultValue
     @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
@@ -366,9 +379,6 @@ struct SettingsView: View {
             draft.synchronizeAppliedValue(clamped)
             fontSizeDraft = draft
         }
-        .onChange(of: pollInterval) { _, value in
-            sessionStore.startPolling(interval: value)
-        }
         .onChange(of: detachPath) { _, _ in
             Task {
                 await sessionStore.configure(cli: ProcessDetachCLI(
@@ -486,6 +496,15 @@ struct SettingsView: View {
                     .frame(width: 150)
                     .accessibilityLabel(L10n.string("Text size"))
                     .accessibilityValue(L10n.format("%d pt", Int(previewFontPointSize)))
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                    .background {
+                        if AppSettings.uiE2E != nil {
+                            UIE2EGeometryProbe(identifier: "settings-text-size")
+                        }
+                    }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
                     Text(verbatim: "A")
                         .font(.system(size: 16))
                         .foregroundStyle(.secondary)
@@ -502,20 +521,19 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.indigo)
                     .disabled(fontSizeDraft?.hasChanges != true)
-                }
-                HStack(spacing: 8) {
-                    Text(L10n.string("Refresh interval"))
-                    Spacer(minLength: 12)
-                    Slider(value: $pollInterval, in: 1...10, step: 1) {
-                        Text(L10n.string("Refresh interval"))
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                    .background {
+                        if AppSettings.uiE2E != nil {
+                            UIE2EGeometryProbe(
+                                identifier: "settings-apply-text-size",
+                                semanticLabel: L10n.string("Apply"),
+                                semanticRole: .button,
+                                semanticEnabled: fontSizeDraft?.hasChanges == true)
+                        }
                     }
-                    .labelsHidden()
-                    .frame(width: 150)
-                    Text(L10n.format("%d sec", Int(pollInterval)))
-                        .appFont(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 44, alignment: .trailing)
+#endif
+// quality-coverage:end ui-e2e-instrumentation
                 }
                 Toggle(L10n.string("Show tips"), isOn: $tipsEnabled)
 // quality-coverage:begin ui-e2e-instrumentation
@@ -921,16 +939,14 @@ struct SettingsView: View {
                     selection: lowBatteryThresholdBinding
                 ) {
                     ForEach(PowerLowBatteryThreshold.allCases, id: \.self) { value in
-                        Text("\(value.rawValue)%").tag(value)
+                        Text(value.pickerTitle).tag(value)
                     }
                 }
                 .disabled(
                     !installation.powerHelperReadinessConfirmed
                         || installation.isBusy)
                 .accessibilityIdentifier("settings-low-battery-threshold")
-                Text(L10n.format(
-                    "At %d%% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.",
-                    installation.lowBatteryThreshold.rawValue))
+                Text(installation.lowBatteryThreshold.settingsExplanation)
                     .settingsMessage()
             }
             Section(L10n.string("Bundled Runtime")) {
@@ -1146,14 +1162,17 @@ struct SettingsView: View {
     }
 
     var macPowerPresentation: MacPowerSettingsPresentation {
-        let counts = MacPowerActiveSessions.counts(in: sessionStore.sessions)
+        // A cached cold-start row is presentation only and carries no power claim.
+        let counts = MacPowerActiveSessions.counts(
+            in: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [])
         return MacPowerSettingsPresentation(
             state: installation.powerProtectionState,
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
             activeSessionCount: counts.active,
-            workingSessionCount: counts.working)
+            workingSessionCount: counts.working,
+            lowBatteryThreshold: installation.lowBatteryThreshold)
     }
 
     private var macPowerHeroRow: some View {
@@ -1171,10 +1190,15 @@ struct SettingsView: View {
                 Text(L10n.string(macPowerPresentation.stateLocalizationKey))
                     .appFont(.headline, weight: .semibold)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(macPowerDetailLine)
-                    .appFont(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // The heartbeat age is a clock reading. Redraw it each second
+                // while this pane is visible instead of waking the app-level
+                // monitor for it.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(macPowerDetailLine(now: context.date))
+                        .appFont(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -1194,9 +1218,9 @@ struct SettingsView: View {
         }
     }
 
-    private var macPowerDetailLine: String {
+    private func macPowerDetailLine(now: Date) -> String {
         var parts = [macPowerReasonText]
-        if let age = macPowerHeartbeatAgeText { parts.append(age) }
+        if let age = macPowerHeartbeatAgeText(now: now) { parts.append(age) }
         return parts.joined(separator: " · ")
     }
 
@@ -1204,10 +1228,10 @@ struct SettingsView: View {
         macPowerPresentation.reason.localizedText
     }
 
-    private var macPowerHeartbeatAgeText: String? {
+    private func macPowerHeartbeatAgeText(now: Date) -> String? {
         let snapshot = installation.watchdogHeartbeat
         guard snapshot.healthy,
-              let age = snapshot.age(relativeTo: Date()), age >= 0 else {
+              let age = snapshot.age(relativeTo: now), age >= 0 else {
             return nil
         }
         return powerCheckedAgeText(seconds: Int(age))
@@ -1550,19 +1574,28 @@ final class SettingsWindowFrameView: NSView {
 
     private func pinToHostingScreen() {
         guard let window, width > 0 else { return }
-        let visibleHeight = window.screen?.visibleFrame.height ?? 720
+        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
         let size = CGSize(
             width: width,
             height: SettingsWindowLayout.contentHeight(
                 base: baseHeight,
                 fontPointSize: fontPointSize,
-                visibleScreenHeight: visibleHeight))
+                visibleScreenHeight: visibleFrame?.height ?? 720))
         window.contentMinSize = size
         window.contentMaxSize = size
         let current = window.contentView?.bounds.size ?? .zero
         if abs(current.width - size.width) > 0.5
             || abs(current.height - size.height) > 0.5 {
             window.setContentSize(size)
+        }
+        if let visibleFrame {
+            let frame = window.frame
+            let origin = CGPoint(
+                x: max(visibleFrame.minX, min(frame.minX, visibleFrame.maxX - frame.width)),
+                y: max(visibleFrame.minY, min(frame.minY, visibleFrame.maxY - frame.height)))
+            if origin != frame.origin {
+                window.setFrameOrigin(origin)
+            }
         }
     }
 }

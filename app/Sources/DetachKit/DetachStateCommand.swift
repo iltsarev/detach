@@ -1,5 +1,10 @@
+import CryptoKit
 import Darwin
 import Foundation
+
+// Swift imports Darwin's `struct flock` under the same name as flock(2).
+@_silgen_name("flock")
+private func metadataFileLock(_ descriptor: Int32, _ operation: Int32) -> Int32
 
 public enum DetachStateCommandError: Error, Equatable, Sendable {
     case invalidArguments
@@ -16,6 +21,12 @@ public enum DetachStateCommandError: Error, Equatable, Sendable {
     case invalidStorageInventory
     case invalidStorageReport
     case unsafeStorageSelection(String)
+    case unsafeEventSignal
+}
+
+struct ManagedTranscriptRegistry: Equatable, Sendable {
+    let all: Set<String>
+    let live: Set<String>
 }
 
 /// The command contract shared by the `detach-state` executable and unit
@@ -53,10 +64,16 @@ public enum DetachStateCommand {
             return try metaSnapshot(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("meta", "recovery-binding"):
+            return try metaRecoveryBinding(
+                Array(arguments.dropFirst(2)),
+                standardInput: injectedStandardInput)
         case ("meta", "snapshots"):
             return try metaSnapshots(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("meta", "health-revision"):
+            return try metadataHealthRevision(Array(arguments.dropFirst(2)))
         case ("meta", "usable"):
             return try metaUsable(
                 Array(arguments.dropFirst(2)),
@@ -77,6 +94,8 @@ public enum DetachStateCommand {
             return try jsonlValidate(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("jsonl", "validate-cached"):
+            return try jsonlValidateCached(Array(arguments.dropFirst(2)))
         case ("jsonl", "summary"):
             return try jsonlSummary(
                 Array(arguments.dropFirst(2)),
@@ -97,13 +116,106 @@ public enum DetachStateCommand {
             return try healthSessions(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("process", "state"):
+            return try processState(Array(arguments.dropFirst(2)))
+        case ("checkpoint", "exchange"):
+            return try checkpointExchange(Array(arguments.dropFirst(2)))
         case ("maintenance", "reconcile"):
             return try maintenanceReconcile(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("events", "publish"):
+            return try eventPublish(Array(arguments.dropFirst(2)))
         default:
             throw DetachStateCommandError.invalidArguments
         }
+    }
+
+    private static func processState(_ arguments: [String]) throws -> Data {
+        guard arguments.count == 1,
+              let rawPID = Int64(arguments[0]),
+              rawPID > 1,
+              rawPID <= Int64(Int32.max) else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let state = ExactProcessStateProbe.state(pid: pid_t(rawPID))
+        return Data((state.rawValue + "\n").utf8)
+    }
+
+    private static func checkpointExchange(_ arguments: [String]) throws -> Data {
+        guard arguments.count == 2 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let sessionPath = arguments[0]
+        let stageName = arguments[1]
+        let pathComponents = sessionPath.split(
+            separator: "/", omittingEmptySubsequences: false)
+        guard sessionPath.hasPrefix("/"),
+              sessionPath != "/",
+              !sessionPath.hasSuffix("/"),
+              !sessionPath.contains("\n"),
+              !sessionPath.contains("\r"),
+              !pathComponents.contains("."),
+              !pathComponents.contains(".."),
+              validSessionIdentifier(fileURL(sessionPath).lastPathComponent),
+              validCheckpointStageName(stageName) else {
+            throw DetachStateCommandError.invalidArguments
+        }
+
+        let session = open(
+            sessionPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard session >= 0 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        defer { close(session) }
+        var sessionMetadata = stat()
+        guard fstat(session, &sessionMetadata) == 0,
+              isDirectory(sessionMetadata),
+              sessionMetadata.st_uid == geteuid() else {
+            throw DetachStateCommandError.invalidArguments
+        }
+
+        let stage = try openOwnedDirectory(
+            in: session, name: stageName)
+        defer { close(stage.descriptor) }
+
+        var checkpointMetadata = stat()
+        let checkpointStatus = fstatat(
+            session, "checkpoint", &checkpointMetadata, AT_SYMLINK_NOFOLLOW)
+        if checkpointStatus == 0 {
+            let checkpoint = try openOwnedDirectory(
+                in: session, name: "checkpoint")
+            defer { close(checkpoint.descriptor) }
+            guard namedDirectoryMatches(
+                    stage.metadata, in: session, name: stageName),
+                  namedDirectoryMatches(
+                    checkpoint.metadata, in: session, name: "checkpoint"),
+                  renameatx_np(
+                    session, stageName, session, "checkpoint", UInt32(RENAME_SWAP)) == 0 else {
+                throw DetachStateCommandError.invalidArguments
+            }
+        } else {
+            guard errno == ENOENT,
+                  namedDirectoryMatches(
+                    stage.metadata, in: session, name: stageName),
+                  renameatx_np(
+                    session, stageName, session, "checkpoint", UInt32(RENAME_EXCL)) == 0 else {
+                throw DetachStateCommandError.invalidArguments
+            }
+        }
+        return Data()
+    }
+
+    private static func eventPublish(_ arguments: [String]) throws -> Data {
+        guard arguments.count == 1 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        do {
+            try SessionEventSignal.publish(inStateRoot: arguments[0])
+        } catch {
+            throw DetachStateCommandError.unsafeEventSignal
+        }
+        return Data()
     }
 
     private static func storageReport(
@@ -303,11 +415,19 @@ public enum DetachStateCommand {
     private static func healthAssessment(
         _ arguments: [String]
     ) throws -> SessionHealthAssessment {
-        let allowed = Set([
+        let required = Set([
             "--metadata-valid", "--runtime-identity-expected", "--meta-status",
             "--tmux", "--run-token",
             "--worker", "--provider-process", "--heartbeat", "--checkpoint",
             "--checkpoint-recoverable", "--agent-session-known",
+        ])
+        let processInspection = Set([
+            "--inspect-processes", "--worker-pid", "--provider-pid", "--pane-pid",
+        ])
+        let allowed = required.union(processInspection).union([
+            "--stop-requested", "--lifecycle-phase", "--uncommitted-replacement",
+            "--runtime-quiescent",
+            "--runtime-ready-at", "--operation-lock",
         ])
         var values: [String: String] = [:]
         var index = 0
@@ -320,7 +440,7 @@ public enum DetachStateCommand {
             values[arguments[index]] = arguments[index + 1]
             index += 2
         }
-        guard values.count == allowed.count,
+        guard required.allSatisfy({ values[$0] != nil }),
               let metadataRaw = values["--metadata-valid"],
               let identityExpectedRaw = values["--runtime-identity-expected"],
               let statusRaw = values["--meta-status"],
@@ -330,9 +450,9 @@ public enum DetachStateCommand {
               let tokenRaw = values["--run-token"],
               let token = RunTokenHealthState(rawValue: tokenRaw),
               let workerRaw = values["--worker"],
-              let worker = ProcessHealthState(rawValue: workerRaw),
+              var worker = ProcessHealthState(rawValue: workerRaw),
               let providerRaw = values["--provider-process"],
-              let providerProcess = ProcessHealthState(rawValue: providerRaw),
+              var providerProcess = ProcessHealthState(rawValue: providerRaw),
               let heartbeatRaw = values["--heartbeat"],
               let heartbeat = FreshnessState(rawValue: heartbeatRaw),
               let checkpointRaw = values["--checkpoint"],
@@ -341,7 +461,43 @@ public enum DetachStateCommand {
               let knownRaw = values["--agent-session-known"] else {
             throw DetachStateCommandError.invalidArguments
         }
-        return SessionHealthEvaluator.evaluate(SessionHealthEvidence(
+        let stopRequested = try values["--stop-requested"].map(boolean) ?? false
+        let uncommittedReplacement = try values["--uncommitted-replacement"]
+            .map(boolean) ?? false
+        let runtimeQuiescent = try values["--runtime-quiescent"]
+            .map(boolean) ?? false
+        let lifecyclePhase: RuntimeLifecyclePhase?
+        if let rawPhase = values["--lifecycle-phase"] {
+            guard let parsed = RuntimeLifecyclePhase(rawValue: rawPhase) else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            lifecyclePhase = parsed
+        } else {
+            lifecyclePhase = nil
+        }
+        if let inspectRaw = values["--inspect-processes"] {
+            guard try boolean(inspectRaw),
+                  processInspection.allSatisfy({ values[$0] != nil }),
+                  let workerPID = values["--worker-pid"],
+                  let providerPID = values["--provider-pid"],
+                  let panePID = values["--pane-pid"] else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            let processHealth = SessionProcessHealthInspector.inspect(
+                tmuxState: tmux,
+                workerPID: workerPID,
+                providerPID: providerPID,
+                panePID: panePID,
+                runtimeReadyAt: values["--runtime-ready-at"].flatMap {
+                    ISO8601DateFormatter().date(from: $0)
+                })
+            worker = processHealth.worker
+            providerProcess = processHealth.provider
+        } else if !processInspection.isDisjoint(with: values.keys) {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let operationBusy = try values["--operation-lock"].map(operationLockIsHeld) ?? false
+        var assessment = SessionHealthEvaluator.evaluate(SessionHealthEvidence(
             metadataValid: try boolean(metadataRaw),
             runtimeIdentityExpected: try boolean(identityExpectedRaw),
             metaStatus: status,
@@ -352,7 +508,53 @@ public enum DetachStateCommand {
             heartbeatFreshness: heartbeat,
             checkpointFreshness: checkpoint,
             checkpointRecoverable: try boolean(recoverableRaw),
-            agentSessionKnown: try boolean(knownRaw)))
+            agentSessionKnown: try boolean(knownRaw),
+            uncommittedReplacement: uncommittedReplacement,
+            runtimeQuiescent: runtimeQuiescent,
+            stopRequested: stopRequested,
+            lifecyclePhase: lifecyclePhase))
+        if operationBusy {
+            // A session operation can expose its placeholder pane before its
+            // metadata and tmux identity are committed. It grants no mutation
+            // authority while that transaction still owns the kernel lock.
+            switch assessment.effectiveStatus {
+            case .hung, .corrupt, .collision, .recoverable, .orphaned, .unknown:
+                assessment.effectiveStatus = .starting
+                assessment.reason = .operationInProgress
+                assessment.ownershipProven = false
+                assessment.reconcileAction = .none
+                assessment.actions = []
+            default:
+                assessment.actions = assessment.actions.filter { $0 == .attach }
+                assessment.reconcileAction = .none
+            }
+            assessment.cleanupEligible = false
+        }
+        return assessment
+    }
+
+    private static func operationLockIsHeld(_ path: String) throws -> Bool {
+        guard path.hasPrefix("/") else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return false }
+            throw DetachStateCommandError.invalidArguments
+        }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              isRegularFile(metadata), metadata.st_uid == geteuid() else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        if metadataFileLock(descriptor, LOCK_SH | LOCK_NB) == 0 {
+            return false // close releases the nonblocking shared probe.
+        }
+        guard errno == EWOULDBLOCK else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        return true
     }
 
     private static func maintenanceReconcile(
@@ -407,6 +609,8 @@ public enum DetachStateCommand {
             "last_checkpoint_at": NSNull(),
             "exit_status": NSNull(),
             "finished_at": NSNull(),
+            "stop_requested_at": NSNull(),
+            "lifecycle_id": NSNull(),
             "model": NSNull(),
             "context_used_tokens": NSNull(),
             "context_window": NSNull(),
@@ -512,6 +716,10 @@ public enum DetachStateCommand {
                     ? NSNull() : try integer(value)
             case "--worker-heartbeat-at":
                 object["worker_heartbeat_at"] = optionalString(value)
+            case "--stop-requested-at":
+                object["stop_requested_at"] = optionalString(value)
+            case "--lifecycle-id":
+                object["lifecycle_id"] = optionalString(value)
             default:
                 throw DetachStateCommandError.invalidArguments
             }
@@ -554,10 +762,71 @@ public enum DetachStateCommand {
         ("session_color", ["session_color"]),
         ("transcript_path", ["transcript_path", "rollout_path"]),
         ("run_token", ["run_token"]),
+        ("lifecycle_id", ["lifecycle_id"]),
         ("worker_heartbeat_epoch", ["worker_heartbeat_epoch"]),
         ("last_checkpoint_epoch", ["last_checkpoint_epoch"]),
         ("health_schema", ["health_schema"]),
+        ("stop_requested_at", ["stop_requested_at"]),
+        ("lifecycle_phase", ["lifecycle_phase"]),
+        ("preserve_recovery_until_ready", ["preserve_recovery_until_ready"]),
+        ("runtime_ready_at", ["runtime_ready_at"]),
     ]
+
+    private static let recoveryBindingFields: [(String, [String])] = [
+        ("provider", ["provider"]),
+        ("project_dir", ["project_dir"]),
+        ("display_name", ["display_name"]),
+        ("run_token", ["run_token"]),
+        ("lifecycle_id", ["lifecycle_id"]),
+        ("resume_args_file", ["resume_args_file"]),
+        ("agent_session_id", ["agent_session_id", "codex_session_id"]),
+        ("transcript_path", ["transcript_path", "rollout_path"]),
+    ]
+
+    private enum MetadataSnapshotSource: String {
+        case primary
+        case checkpoint
+    }
+
+    private struct MetadataSnapshot {
+        let values: [DetachStateScalar?]
+        let source: MetadataSnapshotSource
+    }
+
+    private static func validatedMetadataSnapshotValues(
+        in data: Data,
+        expectedSessionName: String
+    ) throws -> [DetachStateScalar?]? {
+        guard let values = try SessionMetadataDocument.usableScalars(
+            in: data,
+            expectedSessionName: expectedSessionName,
+            pathGroups: metadataSnapshotFields.map(\.1)) else {
+            return nil
+        }
+        for ((name, _), value) in zip(metadataSnapshotFields, values) {
+            guard metadataSnapshotValueIsTyped(value, for: name) else {
+                throw DetachStateCommandError.unusableMetadata
+            }
+        }
+        return values
+    }
+
+    private static func metadataSnapshotValueIsTyped(
+        _ value: DetachStateScalar?,
+        for name: String
+    ) -> Bool {
+        guard let value else { return true }
+        switch name {
+        case "exit_status", "worker_pid", "provider_pid",
+             "worker_heartbeat_epoch", "last_checkpoint_epoch", "health_schema":
+            if case .integer = value { return true }
+        case "preserve_recovery_until_ready":
+            if case .bool = value { return true }
+        default:
+            if case .string = value { return true }
+        }
+        return false
+    }
 
     /// Emits fixed key/value pairs separated by NUL bytes. The final complete
     /// marker lets a Bash process-substitution consumer detect helper failure
@@ -572,10 +841,8 @@ public enum DetachStateCommand {
         let data = try inputData(
             atPath: arguments[0],
             standardInput: standardInput)
-        guard let values = try SessionMetadataDocument.usableScalars(
-            in: data,
-            expectedSessionName: arguments[1],
-            pathGroups: metadataSnapshotFields.map(\.1)) else {
+        guard let values = try validatedMetadataSnapshotValues(
+            in: data, expectedSessionName: arguments[1]) else {
             throw DetachStateCommandError.unusableMetadata
         }
         var output = Data()
@@ -588,22 +855,67 @@ public enum DetachStateCommand {
         return output
     }
 
+    /// Emits one canonical, typed recovery binding from one metadata read.
+    /// Volatile lifecycle and heartbeat fields are deliberately excluded so
+    /// callers can compare identity while the same run advances normally.
+    private static func metaRecoveryBinding(
+        _ arguments: [String],
+        standardInput: Data?
+    ) throws -> Data {
+        guard arguments.count == 2 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let data = try inputData(
+            atPath: arguments[0],
+            standardInput: standardInput)
+        guard let values = try SessionMetadataDocument.usableScalars(
+            in: data,
+            expectedSessionName: arguments[1],
+            pathGroups: recoveryBindingFields.map(\.1)) else {
+            throw DetachStateCommandError.unusableMetadata
+        }
+        var object: [String: Any] = [:]
+        for ((name, _), value) in zip(recoveryBindingFields, values) {
+            guard let value else {
+                object[name] = NSNull()
+                continue
+            }
+            guard case .string(let string) = value else {
+                throw DetachStateCommandError.unusableMetadata
+            }
+            object[name] = string
+        }
+        return try encodeJSONObject(object)
+    }
+
     /// Enumerates one validated sessions root in one process. Output uses NUL
     /// delimiters so metadata values can contain tabs and newlines.
     private static func metaSnapshots(
         _ arguments: [String],
         standardInput _: Data?
     ) throws -> Data {
-        guard arguments.count == 1 else {
+        guard arguments.count == 1
+                || (arguments.count == 2
+                    && arguments[1] == "--with-transcript-summary") else {
             throw DetachStateCommandError.invalidArguments
         }
-        let sessions = try metadataSnapshots(at: arguments[0])
+        let includesTranscriptSummary = arguments.count == 2
         var output = Data()
-        for (session, values) in sessions {
+        try forEachMetadataSnapshot(at: arguments[0]) {
+            session, values, source, directory in
             appendNULTerminated(session, to: &output)
             appendNULTerminated(values == nil ? "false" : "true", to: &output)
             for value in values ?? Array(repeating: nil, count: metadataSnapshotFields.count) {
                 appendNULTerminated(value.map(render) ?? "", to: &output)
+            }
+            appendNULTerminated(source?.rawValue ?? "", to: &output)
+            if includesTranscriptSummary {
+                for value in transcriptSummarySnapshotValues(
+                    session: session,
+                    metadataValues: values,
+                    sessionDirectory: directory) {
+                    appendNULTerminated(value, to: &output)
+                }
             }
         }
         appendNULTerminated("", to: &output)
@@ -611,16 +923,277 @@ public enum DetachStateCommand {
         return output
     }
 
+    /// Health observations must not combine different lifecycle generations.
+    /// Routine heartbeat and checkpoint freshness updates do not change this
+    /// revision. No transcript reads or per-session helper processes are used.
+    private static func metadataHealthRevision(_ arguments: [String]) throws -> Data {
+        guard arguments.count == 2 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let volatile = Set([
+            "worker_heartbeat_at", "worker_heartbeat_epoch",
+            "last_checkpoint_at", "last_checkpoint_epoch",
+        ])
+        var digest = SHA256()
+        try forEachMetadataSnapshot(at: arguments[0]) { session, values, source, directory in
+            var record = Data()
+            appendNULTerminated(session, to: &record)
+            appendNULTerminated(source?.rawValue ?? "invalid", to: &record)
+            for (field, value) in zip(metadataSnapshotFields, values ?? [])
+                where !volatile.contains(field.0) {
+                appendNULTerminated(value.map(render) ?? "", to: &record)
+            }
+            // Checkpoints are published by directory exchange. A newly
+            // published recovery generation can change Recover eligibility
+            // without changing the primary runtime generation or phase.
+            var checkpoint = stat()
+            if fstatat(directory, "checkpoint", &checkpoint, AT_SYMLINK_NOFOLLOW) == 0 {
+                appendNULTerminated(
+                    "\(checkpoint.st_dev):\(checkpoint.st_ino):\(checkpoint.st_mode):\(checkpoint.st_uid)",
+                    to: &record)
+            } else {
+                guard errno == ENOENT else { throw DetachStateCommandError.invalidArguments }
+                appendNULTerminated("no-checkpoint", to: &record)
+            }
+            // Shutdown evidence is also read by replacement quiescence checks.
+            if let data = readOwnedMetadataFile(in: directory, name: "meta.json"),
+               let values = try? SessionMetadataDocument.usableScalars(
+                in: data, expectedSessionName: session,
+                pathGroups: [["runtime_shutdown_observed_at"]]) {
+                for value in values {
+                    appendNULTerminated(value.map(render) ?? "", to: &record)
+                }
+            }
+            let busy = try operationLockIsHeld(
+                arguments[1] + "/operation-" + session + ".lock")
+            appendNULTerminated(busy ? "busy" : "idle", to: &record)
+            digest.update(data: record)
+        }
+        return Data((digest.finalize().map { String(format: "%02x", $0) }.joined() + "\n").utf8)
+    }
+
+    /// Batches the bounded transcript tail parse into the metadata helper.
+    /// The shell list path used to launch one helper process per session for
+    /// these five values. A failed or absent transcript stays an empty summary
+    /// and never invalidates the independently validated metadata record.
+    private static func transcriptSummarySnapshotValues(
+        session: String,
+        metadataValues: [DetachStateScalar?]?,
+        sessionDirectory: Int32
+    ) -> [String] {
+        let empty = Array(repeating: "", count: 5)
+        guard let metadataValues,
+              let transcriptIndex = metadataSnapshotFields.firstIndex(where: {
+                  $0.0 == "transcript_path"
+              }),
+              metadataValues.indices.contains(transcriptIndex),
+              case .string(let transcriptPath)? = metadataValues[transcriptIndex]
+        else { return empty }
+
+        let provider: Provider
+        if session.hasPrefix("detach-codex-") {
+            provider = .codex
+        } else if session.hasPrefix("detach-claude-") {
+            provider = .claude
+        } else {
+            return empty
+        }
+        // Open without blocking and validate the descriptor. A FIFO, device, or
+        // final-component symlink must not stall or redirect the complete list.
+        guard transcriptPath.hasPrefix("/") else { return empty }
+        let descriptor = open(
+            transcriptPath, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return empty }
+        defer { close(descriptor) }
+        var beforeMetadata = stat()
+        guard fstat(descriptor, &beforeMetadata) == 0,
+              let before = TranscriptValidationIdentity(beforeMetadata) else {
+            return empty
+        }
+
+        let receiptName = ".transcript-summary-cache.json"
+        let cachedReceipt = readOwnedMetadataFile(
+            in: sessionDirectory, name: receiptName).flatMap {
+                try? JSONDecoder().decode(
+                    TranscriptSummaryReceipt.self, from: $0)
+            }
+        if let values = cachedReceipt?.snapshotValues(
+                provider: provider,
+                transcriptPath: transcriptPath,
+                identity: before) {
+            return values
+        }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        let size = UInt64(beforeMetadata.st_size)
+        let maximumByteCount: UInt64 = 262_144
+        let continuation = cachedReceipt?.continuation(
+            provider: provider,
+            transcriptPath: transcriptPath,
+            identity: before,
+            maximumByteCount: maximumByteCount)
+        let startOffset = continuation?.offset
+            ?? (size > maximumByteCount ? size - maximumByteCount : 0)
+        guard (try? handle.seek(toOffset: startOffset)) != nil
+        else { return empty }
+        var tail = Data()
+        while tail.count < Int(maximumByteCount) {
+            let remaining = Int(maximumByteCount) - tail.count
+            let chunk: Data
+            do {
+                chunk = try handle.read(
+                    upToCount: min(64 * 1_024, remaining)) ?? Data()
+            } catch {
+                return empty
+            }
+            guard !chunk.isEmpty else { break }
+            tail.append(chunk)
+        }
+        var afterMetadata = stat()
+        guard fstat(descriptor, &afterMetadata) == 0,
+              let after = TranscriptValidationIdentity(afterMetadata),
+              before == after else { return empty }
+        let summary = TranscriptDocument.summary(
+            ofTail: tail,
+            provider: provider,
+            startingFrom: continuation?.summary ?? TranscriptSummary())
+        let values = [
+            summary.model ?? "",
+            summary.contextUsed.map(String.init) ?? "",
+            summary.contextWindow.map(String.init) ?? "",
+            summary.agentTurnState?.rawValue ?? "",
+            summary.agentTurnID ?? "",
+        ]
+        let receipt = TranscriptSummaryReceipt(
+            schema: TranscriptSummaryReceipt.currentSchema,
+            provider: provider.rawValue,
+            transcriptPath: transcriptPath,
+            identity: after,
+            model: summary.model,
+            contextUsed: summary.contextUsed,
+            contextWindow: summary.contextWindow,
+            agentTurnState: summary.agentTurnState?.rawValue,
+            agentTurnID: summary.agentTurnID,
+            pendingToolUseID: summary.pendingToolUseID)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if var receiptData = try? encoder.encode(receipt) {
+            receiptData.append(0x0A)
+            try? replaceOwnedFileAtomically(
+                receiptData, in: sessionDirectory, name: receiptName)
+        }
+        return values
+    }
+
+    private struct TranscriptSummaryReceipt: Codable {
+        static let currentSchema = 4
+        private static let overlapByteCount: UInt64 = 64 * 1_024
+
+        var schema: Int
+        var provider: String
+        var transcriptPath: String
+        var identity: TranscriptValidationIdentity
+        var model: String?
+        var contextUsed: Int?
+        var contextWindow: Int?
+        var agentTurnState: String?
+        var agentTurnID: String?
+        var pendingToolUseID: String?
+
+        func snapshotValues(
+            provider expectedProvider: Provider,
+            transcriptPath expectedPath: String,
+            identity expectedIdentity: TranscriptValidationIdentity
+        ) -> [String]? {
+            guard schema == Self.currentSchema,
+                  provider == expectedProvider.rawValue,
+                  transcriptPath == expectedPath,
+                  identity == expectedIdentity,
+                  contextUsed.map({ $0 >= 0 }) ?? true,
+                  contextWindow.map({ $0 >= 0 }) ?? true,
+                  agentTurnState.map({ AgentTurnState(rawValue: $0) != nil }) ?? true,
+                  hasValidPendingToolUse
+            else { return nil }
+            return [
+                model ?? "",
+                contextUsed.map(String.init) ?? "",
+                contextWindow.map(String.init) ?? "",
+                agentTurnState ?? "",
+                agentTurnID ?? "",
+            ]
+        }
+
+        /// Continues a cached reduction only across a bounded append to the
+        /// same file. The overlap completes a record that may have been
+        /// partial at the previous identity. A larger unobserved gap falls
+        /// back to a cold tail so stale answer-ready state cannot survive an
+        /// unseen turn transition.
+        func continuation(
+            provider expectedProvider: Provider,
+            transcriptPath expectedPath: String,
+            identity expectedIdentity: TranscriptValidationIdentity,
+            maximumByteCount: UInt64
+        ) -> (offset: UInt64, summary: TranscriptSummary)? {
+            guard schema == Self.currentSchema,
+                  provider == expectedProvider.rawValue,
+                  transcriptPath == expectedPath,
+                  identity.device == expectedIdentity.device,
+                  identity.inode == expectedIdentity.inode,
+                  identity.size >= 0,
+                  expectedIdentity.size > identity.size,
+                  contextUsed.map({ $0 >= 0 }) ?? true,
+                  contextWindow.map({ $0 >= 0 }) ?? true,
+                  agentTurnState.map({ AgentTurnState(rawValue: $0) != nil }) ?? true,
+                  hasValidPendingToolUse
+            else { return nil }
+
+            let previousSize = UInt64(identity.size)
+            let currentSize = UInt64(expectedIdentity.size)
+            let overlap = min(previousSize, Self.overlapByteCount)
+            let offset = previousSize - overlap
+            guard currentSize - offset <= maximumByteCount else { return nil }
+            var summary = TranscriptSummary(
+                model: model,
+                contextUsed: contextUsed,
+                contextWindow: contextWindow,
+                agentTurnState: agentTurnState.flatMap(AgentTurnState.init(rawValue:)),
+                agentTurnID: agentTurnID)
+            summary.pendingToolUseID = pendingToolUseID
+            return (offset, summary)
+        }
+
+        private var hasValidPendingToolUse: Bool {
+            guard let pendingToolUseID else { return true }
+            return provider == Provider.claude.rawValue
+                && !pendingToolUseID.isEmpty
+                && agentTurnState == AgentTurnState.waiting.rawValue
+                && agentTurnID == pendingToolUseID
+        }
+    }
+
     private static func metadataSnapshotValues(
         in directory: Int32,
         session: String
-    ) throws -> [DetachStateScalar?]? {
-        if let data = readOwnedMetadataFile(in: directory, name: "meta.json"),
-           let values = try? SessionMetadataDocument.usableScalars(
-            in: data,
-            expectedSessionName: session,
-            pathGroups: metadataSnapshotFields.map(\.1)) {
-            return values
+    ) throws -> MetadataSnapshot? {
+        var primaryMetadata = stat()
+        let primaryStatus = fstatat(
+            directory, "meta.json", &primaryMetadata, AT_SYMLINK_NOFOLLOW)
+        if primaryStatus == 0 {
+            guard isRegularFile(primaryMetadata),
+                  !isSymbolicLink(primaryMetadata),
+                  primaryMetadata.st_uid == geteuid(),
+                  let data = readOwnedMetadataFile(
+                    in: directory, name: "meta.json"),
+                  let values = try? validatedMetadataSnapshotValues(
+                    in: data, expectedSessionName: session) else {
+                // Any present but unusable primary may describe a newer live
+                // generation. Do not conceal it with checkpoint metadata.
+                return nil
+            }
+            return MetadataSnapshot(values: values, source: .primary)
+        }
+        guard errno == ENOENT else {
+            throw DetachStateCommandError.invalidArguments
         }
         var checkpointMetadata = stat()
         let checkpointStatus = fstatat(
@@ -650,19 +1223,30 @@ public enum DetachStateCommand {
             && openedCheckpoint.st_ino == checkpointMetadata.st_ino
         guard checkpointMatches else { throw DetachStateCommandError.invalidArguments }
         if let data = readOwnedMetadataFile(in: checkpoint, name: "meta.json") {
-            if let values = try? SessionMetadataDocument.usableScalars(
-                in: data,
-                expectedSessionName: session,
-                pathGroups: metadataSnapshotFields.map(\.1)) {
-                return values
+            if let values = try? validatedMetadataSnapshotValues(
+                in: data, expectedSessionName: session) {
+                return MetadataSnapshot(values: values, source: .checkpoint)
             }
         }
         return nil
     }
 
-    private static func metadataSnapshots(
+    static func metadataSnapshots(
         at root: String
     ) throws -> [(String, [DetachStateScalar?]?)] {
+        var snapshots: [(String, [DetachStateScalar?]?)] = []
+        try forEachMetadataSnapshot(at: root) { name, values, _, _ in
+            snapshots.append((name, values))
+        }
+        return snapshots
+    }
+
+    private static func forEachMetadataSnapshot(
+        at root: String,
+        visit: (
+            String, [DetachStateScalar?]?, MetadataSnapshotSource?, Int32
+        ) throws -> Void
+    ) throws {
         let components = root.split(separator: "/", omittingEmptySubsequences: false)
         guard root.hasPrefix("/"),
               root != "/",
@@ -699,7 +1283,6 @@ public enum DetachStateCommand {
             }
             if name != "." && name != ".." { names.append(name) }
         }
-        var sessions: [(String, [DetachStateScalar?]?)] = []
         for name in names.sorted() {
             var item = stat()
             if fstatat(rootDescriptor, name, &item, AT_SYMLINK_NOFOLLOW) != 0 {
@@ -728,17 +1311,82 @@ public enum DetachStateCommand {
             guard sessionMatches else {
                 close(session); throw DetachStateCommandError.invalidArguments
             }
-            let values: [DetachStateScalar?]?
+            let snapshot: MetadataSnapshot?
             do {
-                values = try metadataSnapshotValues(in: session, session: name)
+                snapshot = try metadataSnapshotValues(in: session, session: name)
+                try visit(name, snapshot?.values, snapshot?.source, session)
             } catch {
                 close(session)
                 throw error
             }
             close(session)
-            sessions.append((name, values))
         }
-        return sessions
+    }
+
+    /// Returns only transcript files recorded by usable Detach metadata.
+    /// The event watcher still observes the provider roots so it can follow
+    /// files that appear after startup, but this allowlist prevents unrelated
+    /// Codex or Claude sessions from waking the app.
+    static func managedTranscriptPaths(
+        atStateRoot stateRoot: String,
+        allowedRoots: [String]
+    ) -> Set<String> {
+        managedTranscriptPaths(
+            sessionsRoots: SessionEventWatchConfiguration
+                .defaultSessionsRoots(stateRoot: stateRoot),
+            allowedRoots: allowedRoots)
+    }
+
+    static func managedTranscriptPaths(
+        sessionsRoots: [String],
+        allowedRoots: [String]
+    ) -> Set<String> {
+        managedTranscriptRegistry(
+            sessionsRoots: sessionsRoots,
+            allowedRoots: allowedRoots).all
+    }
+
+    /// Live transcripts also receive an exact vnode source. This closes the
+    /// compatibility gap for an older runtime that cannot publish the newer
+    /// lifecycle hint itself.
+    static func managedTranscriptRegistry(
+        sessionsRoots: [String],
+        allowedRoots: [String]
+    ) -> ManagedTranscriptRegistry {
+        guard let transcriptIndex = metadataSnapshotFields.firstIndex(where: {
+            $0.0 == "transcript_path"
+        }), let statusIndex = metadataSnapshotFields.firstIndex(where: {
+            $0.0 == "status"
+        }) else { return ManagedTranscriptRegistry(all: [], live: []) }
+
+        var all: Set<String> = []
+        var live: Set<String> = []
+        for sessionsRoot in sessionsRoots {
+            guard let snapshots = try? metadataSnapshots(at: sessionsRoot) else {
+                continue
+            }
+            for (_, values) in snapshots {
+                guard let values,
+                      values.indices.contains(transcriptIndex),
+                      case .string(let rawPath)? = values[transcriptIndex] else {
+                    continue
+                }
+                let standardized = URL(fileURLWithPath: rawPath)
+                    .standardizedFileURL.path
+                guard standardized == rawPath else { continue }
+                let path = SessionEventWatchConfiguration.canonicalPath(rawPath)
+                guard allowedRoots.contains(where: {
+                    path == $0 || path.hasPrefix($0 + "/")
+                }) else { continue }
+                all.insert(path)
+                if values.indices.contains(statusIndex),
+                   case .string(let status)? = values[statusIndex],
+                   ["starting", "running", "recovering"].contains(status) {
+                    live.insert(path)
+                }
+            }
+        }
+        return ManagedTranscriptRegistry(all: all, live: live)
     }
 
     private static func readOwnedMetadataFile(
@@ -746,7 +1394,7 @@ public enum DetachStateCommand {
         name: String
     ) -> Data? {
         let descriptor = openat(
-            directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            directory, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
         defer { close(descriptor) }
         var item = stat()
@@ -782,6 +1430,58 @@ public enum DetachStateCommand {
 
     private static func isSymbolicLink(_ item: stat) -> Bool {
         item.st_mode & S_IFMT == S_IFLNK
+    }
+
+    private static func validCheckpointStageName(_ value: String) -> Bool {
+        let prefix = ".checkpoint-stage-"
+        guard value.hasPrefix(prefix),
+              value.utf8.count > prefix.utf8.count,
+              value.utf8.count <= Int(NAME_MAX) else { return false }
+        return value.utf8.allSatisfy {
+            asciiAlphanumeric($0) || $0 == 0x2E || $0 == 0x5F || $0 == 0x2D
+        }
+    }
+
+    private static func openOwnedDirectory(
+        in parent: Int32,
+        name: String
+    ) throws -> (descriptor: Int32, metadata: stat) {
+        var namedMetadata = stat()
+        guard fstatat(parent, name, &namedMetadata, AT_SYMLINK_NOFOLLOW) == 0,
+              isDirectory(namedMetadata),
+              !isSymbolicLink(namedMetadata),
+              namedMetadata.st_uid == geteuid() else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let descriptor = openat(
+            parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        var openedMetadata = stat()
+        guard fstat(descriptor, &openedMetadata) == 0,
+              isDirectory(openedMetadata),
+              openedMetadata.st_uid == geteuid(),
+              openedMetadata.st_dev == namedMetadata.st_dev,
+              openedMetadata.st_ino == namedMetadata.st_ino else {
+            close(descriptor)
+            throw DetachStateCommandError.invalidArguments
+        }
+        return (descriptor, openedMetadata)
+    }
+
+    private static func namedDirectoryMatches(
+        _ expected: stat,
+        in parent: Int32,
+        name: String
+    ) -> Bool {
+        var current = stat()
+        return fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) == 0
+            && isDirectory(current)
+            && !isSymbolicLink(current)
+            && current.st_uid == geteuid()
+            && current.st_dev == expected.st_dev
+            && current.st_ino == expected.st_ino
     }
 
     private static func validSessionIdentifier(_ value: String) -> Bool {
@@ -842,13 +1542,48 @@ public enum DetachStateCommand {
             Array(arguments.dropFirst()),
             allowRunToken: true)
         let url = fileURL(path)
-        let original = try Data(contentsOf: url)
-        let updated = try SessionMetadataDocument.patch(
-            original,
-            expectedRunToken: mutation.expectedRunToken,
-            changes: mutation.changes)
-        try updated.write(to: url, options: .atomic)
+        try withMetadataPatchLock(for: url) {
+            let original = try Data(contentsOf: url)
+            let updated = try SessionMetadataDocument.patch(
+                original,
+                expectedRunToken: mutation.expectedRunToken,
+                changes: mutation.changes)
+            try updated.write(to: url, options: .atomic)
+        }
         return Data()
+    }
+
+    /// Serializes the complete read-modify-replace transaction across helper
+    /// processes. Atomic rename prevents torn JSON but does not prevent two
+    /// readers from replacing each other's disjoint changes.
+    private static func withMetadataPatchLock<T>(
+        for metadataURL: URL,
+        operation: () throws -> T
+    ) throws -> T {
+        let lockURL = metadataURL.deletingLastPathComponent()
+            .appendingPathComponent(".meta-patch.lock")
+        let descriptor = open(
+            lockURL.path,
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        defer { close(descriptor) }
+
+        var information = stat()
+        guard fstat(descriptor, &information) == 0,
+              information.st_mode & S_IFMT == S_IFREG,
+              information.st_uid == geteuid() else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        while metadataFileLock(descriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+        defer { _ = metadataFileLock(descriptor, LOCK_UN) }
+        return try operation()
     }
 
     private struct MetaMutationArguments {
@@ -1041,6 +1776,178 @@ public enum DetachStateCommand {
         var output = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         output.append(0x0A)
         return output
+    }
+
+    private struct TranscriptValidationIdentity: Codable, Equatable {
+        var device: UInt64
+        var inode: UInt64
+        var size: Int64
+        var modificationSeconds: Int64
+        var modificationNanoseconds: Int64
+
+        init?(_ item: stat) {
+            guard isRegularFile(item),
+                  item.st_uid == geteuid(),
+                  item.st_size > 0 else { return nil }
+            device = UInt64(item.st_dev)
+            inode = UInt64(item.st_ino)
+            size = Int64(item.st_size)
+            modificationSeconds = Int64(item.st_mtimespec.tv_sec)
+            modificationNanoseconds = Int64(item.st_mtimespec.tv_nsec)
+        }
+    }
+
+    private struct TranscriptValidationReceipt: Codable, Equatable {
+        var schema: Int
+        var provider: String
+        var expectedSessionID: String
+        var valid: Bool
+        var identity: TranscriptValidationIdentity
+    }
+
+    /// Caches only a health assessment for one immutable checkpoint file.
+    /// Restore paths continue to use `jsonl validate` and parse every record.
+    /// The receipt is ignored as soon as any opened-file identity field changes.
+    private static func jsonlValidateCached(_ arguments: [String]) throws -> Data {
+        guard arguments.count == 3 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let selectedProvider = try provider(arguments[0])
+        let path = arguments[1]
+        let expectedSessionID = arguments[2]
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard path.hasPrefix("/"),
+              path != "/",
+              !path.hasSuffix("/"),
+              !path.contains("\n"),
+              !path.contains("\r"),
+              !components.contains("."),
+              !components.contains(".."),
+              !expectedSessionID.isEmpty else {
+            throw DetachStateCommandError.invalidArguments
+        }
+
+        let url = fileURL(path)
+        let parentPath = url.deletingLastPathComponent().path
+        let fileName = url.lastPathComponent
+        guard !fileName.isEmpty,
+              fileName.utf8.count <= Int(NAME_MAX) else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let directory = open(
+            parentPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else {
+            throw DetachStateCommandError.invalidTranscript
+        }
+        defer { close(directory) }
+        var directoryMetadata = stat()
+        guard fstat(directory, &directoryMetadata) == 0,
+              isDirectory(directoryMetadata),
+              directoryMetadata.st_uid == geteuid() else {
+            throw DetachStateCommandError.invalidTranscript
+        }
+
+        let descriptor = openat(
+            directory, fileName, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw DetachStateCommandError.invalidTranscript
+        }
+        defer { close(descriptor) }
+        var beforeMetadata = stat()
+        guard fstat(descriptor, &beforeMetadata) == 0,
+              let before = TranscriptValidationIdentity(beforeMetadata) else {
+            throw DetachStateCommandError.invalidTranscript
+        }
+
+        let receiptName = ".detach-jsonl-validation.json"
+        if let receiptData = readOwnedMetadataFile(
+                in: directory, name: receiptName),
+           let receipt = try? JSONDecoder().decode(
+                TranscriptValidationReceipt.self, from: receiptData),
+           receipt.schema == 1,
+           receipt.provider == selectedProvider.rawValue,
+           receipt.expectedSessionID == expectedSessionID,
+           receipt.identity == before {
+            guard receipt.valid else {
+                throw DetachStateCommandError.invalidTranscript
+            }
+            return Data()
+        }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        let valid = try TranscriptDocument.isValid(
+            reading: handle,
+            provider: selectedProvider,
+            expectedSessionID: expectedSessionID)
+        var afterMetadata = stat()
+        guard fstat(descriptor, &afterMetadata) == 0,
+              let after = TranscriptValidationIdentity(afterMetadata),
+              before == after else {
+            throw DetachStateCommandError.invalidTranscript
+        }
+
+        let receipt = TranscriptValidationReceipt(
+            schema: 1,
+            provider: selectedProvider.rawValue,
+            expectedSessionID: expectedSessionID,
+            valid: valid,
+            identity: after)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if var receiptData = try? encoder.encode(receipt) {
+            receiptData.append(0x0A)
+            try? replaceOwnedFileAtomically(
+                receiptData, in: directory, name: receiptName)
+        }
+        guard valid else {
+            throw DetachStateCommandError.invalidTranscript
+        }
+        return Data()
+    }
+
+    private static func replaceOwnedFileAtomically(
+        _ data: Data,
+        in directory: Int32,
+        name: String
+    ) throws {
+        guard !name.isEmpty,
+              name != ".",
+              name != "..",
+              !name.contains("/") else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let temporaryName = ".\(name).\(UUID().uuidString).tmp"
+        let descriptor = openat(
+            directory,
+            temporaryName,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        defer {
+            close(descriptor)
+            unlinkat(directory, temporaryName, 0)
+        }
+        let wroteAll = data.withUnsafeBytes { bytes -> Bool in
+            guard let base = bytes.baseAddress else { return data.isEmpty }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(
+                    descriptor, base.advanced(by: offset), bytes.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return true
+        }
+        guard wroteAll,
+              renameat(directory, temporaryName, directory, name) == 0 else {
+            throw DetachStateCommandError.invalidArguments
+        }
     }
 
     private static func pair(

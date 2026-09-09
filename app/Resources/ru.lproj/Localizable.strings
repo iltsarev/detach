@@ -22,6 +22,7 @@
 
 /* DetachKit errors */
 "detach list timed out" = "Истекло время ожидания detach list";
+"detach returned incomplete output" = "detach вернул неполный вывод";
 "Internal error: %@ must run in Terminal" = "Внутренняя ошибка: команда %@ должна выполняться в Terminal";
 "Internal error: %@ is not an in-app start action" = "Внутренняя ошибка: %@ не запускается внутри приложения";
 "The session has no provider UUID to resume." = "У сессии нет UUID провайдера для продолжения.";
@@ -149,11 +150,10 @@
 "Provider" = "Провайдер";
 "Provider CLI" = "CLI провайдера";
 "Ready — we'll notify you about ready responses, completed sessions, or session problems." = "Готово — сообщим о готовом ответе, завершении или проблеме сессии.";
-"Recovery from the latest checkpoint is available" = "Доступно восстановление из последнего чекпойнта";
+"Validated recovery data is available" = "Доступны проверенные данные для восстановления";
 "Recover" = "Восстановить";
 "Reconnect" = "Переподключиться";
 "Recover in %@" = "Восстановить в %@";
-"Refresh interval" = "Интервал обновления";
 "Refresh terminal list" = "Обновить список терминалов";
 "Reinstall command-line tools" = "Переустановить командные инструменты";
 "Remove everything, including checkpoints…" = "Удалить всё, включая чекпойнты…";
@@ -251,7 +251,10 @@
 "Sleep Protection Helper" = "Системный помощник защиты от сна";
 "Stop active Detach sessions before removing the power helper." = "Остановите активные сессии Detach перед удалением системного помощника.";
 "Switch to this macOS user before updating the power helper." = "Переключитесь на этого пользователя macOS перед обновлением системного помощника.";
-"At %d%% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "При заряде %d%% или ниже либо при серьёзной тепловой нагрузке Detach снимает защиту от сна, чтобы Mac мог уснуть.";
+"10% (default)" = "10% (по умолчанию)";
+"This is the default floor. At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "Это порог по умолчанию. При заряде 10% или ниже либо при серьёзной тепловой нагрузке Detach снимает защиту от сна, чтобы Mac мог уснуть.";
+"Detach releases sleep protection earlier. At 15% battery or below, or during serious thermal pressure, the Mac can sleep so overnight work does not drain a small reserve." = "Detach снимает защиту от сна раньше. При заряде 15% или ниже либо при серьёзной тепловой нагрузке Mac может уснуть, чтобы ночная работа не израсходовала малый запас.";
+"Detach keeps more reserve. At 20% battery or below, or during serious thermal pressure, the Mac can sleep instead of running until the battery is empty." = "Detach оставляет больший запас. При заряде 20% или ниже либо при серьёзной тепловой нагрузке Mac может уснуть, а не работать до полной разрядки.";
 "Release sleep protection at" = "Снимать защиту от сна при";
 "The background monitor reported power state: %@" = "Фоновый монитор сообщил состояние энергозащиты: %@";
 "The background power monitor has not started yet" = "Фоновый монитор энергозащиты ещё не запускался";
@@ -279,7 +282,6 @@
 "Text size preview" = "Предпросмотр размера текста";
 "Apply" = "Применить";
 "%d pt" = "%d пт";
-"%d sec" = "%d с";
 "Command line" = "Командная строка";
 "Answer ready · 2 min ago" = "Ответ готов · 2 мин назад";
 "tmux status line" = "Строка статуса tmux";
@@ -334,7 +336,7 @@
 "No active agent sessions" = "Нет активных сессий агентов";
 "Sessions waiting for replies: %d" = "Сессии ждут ответа: %d";
 "Active sessions without sleep protection: %d" = "Активные сессии без защиты от сна: %d";
-"Protection released until power is connected" = "Защита снята до подключения питания";
+"Protection released at %d%% until power is connected" = "Защита снята при %d%% до подключения питания";
 "Confirming sleep protection…" = "Подтверждаем защиту от сна…";
 "The native power helper is unreachable" = "Нативный помощник питания недоступен";
 "No fresh report from the background monitor" = "Нет свежего отчёта фонового монитора";
@@ -353,7 +355,7 @@
 "Sleep protection — Detach Power Helper" = "Защита от сна — Detach Power Helper";
 "Background power monitor — Detach" = "Фоновый монитор питания — Detach";
 "Confirming protection readiness…" = "Подтверждаем готовность защиты…";
-"A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery or serious thermal pressure, protection is released so the Mac can sleep. No Apple Events or third-party tools are used." = "Узкий системный помощник не даёт Mac уснуть с закрытой крышкой, пока работает агент. При 10% заряда или серьёзной тепловой нагрузке защита снимается, чтобы Mac мог уснуть. Apple Events и сторонние инструменты не используются.";
+"A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. Low battery or serious thermal pressure releases protection so the Mac can sleep. No Apple Events or third-party tools are used." = "Узкий системный помощник не даёт Mac уснуть с закрытой крышкой, пока работает агент. Низкий заряд или серьёзная тепловая нагрузка снимает защиту, чтобы Mac мог уснуть. Apple Events и сторонние инструменты не используются.";
 "Detach manages Codex CLI and Claude Code sessions. Install at least one — it stays yours; Detach never bundles or replaces it." = "Detach управляет сессиями Codex CLI и Claude Code. Установите хотя бы один клиент — он остаётся вашим; Detach его не подменяет и не распространяет.";
 "Detected — verifying…" = "Обнаружен — проверяем…";
 "Not detected yet. Check the Terminal output — network, npm permissions — then try again." = "Клиент ещё не обнаружен. Проверьте вывод в Terminal — сеть, права npm — и попробуйте ещё раз.";
@@ -416,11 +418,16 @@
 "The provider process exited while its worker remained alive." = "Процесс провайдера завершился, но его worker остался запущен.";
 "The recorded provider PID is not owned by this worker." = "Сохранённый PID провайдера не принадлежит этому worker-процессу.";
 "A recorded runtime process is still alive without its managed tmux session; Detach will not signal it." = "Сохранённый runtime-процесс ещё работает без управляемой tmux-сессии; Detach не будет посылать ему сигналы.";
-"The live runtime disappeared, but a valid checkpoint can be recovered." = "Живой runtime исчез, но доступна корректная контрольная точка для восстановления.";
-"The live runtime disappeared without a valid recovery checkpoint." = "Живой runtime исчез без корректной контрольной точки для восстановления.";
+"Detach could not confirm that the replacement runtime stopped." = "Detach не удалось подтвердить остановку нового runtime-процесса.";
+"The live runtime disappeared, but validated recovery data is available." = "Живой runtime исчез, но доступны проверенные данные для восстановления.";
+"The live runtime disappeared without validated recovery data." = "Живой runtime исчез без проверенных данных для восстановления.";
 
 /* Session shortcuts and defaults */
 "Quick chat" = "Быстрый чат";
+"Sessions" = "Сессии";
+"Session %d" = "Сессия %d";
+"%@, Command-%d" = "%@, Command-%d";
+"Switch to %@ with Command-%d" = "Переключиться на «%@»: Command-%d";
 "Settings" = "Настройки";
 "Find output" = "Поиск в выводе";
 "Keyboard shortcuts" = "Сочетания клавиш";
@@ -431,6 +438,8 @@
 "⌘N opens New session. ⌘T starts Quick chat immediately." = "⌘N открывает новую сессию. ⌘T сразу запускает быстрый чат.";
 "Could not start quick chat" = "Не удалось запустить быстрый чат";
 "Quick chat folder is unavailable: %@" = "Папка быстрого чата недоступна: %@";
+"Could not identify the active terminal client" = "Не удалось определить активный клиент терминала";
+"Could not switch the terminal session" = "Не удалось переключить сессию терминала";
 
 /* Menu bar item */
 "Open Detach" = "Открыть Detach";
@@ -445,3 +454,7 @@
 "Show Detach in the menu bar" = "Показывать Detach в строке меню";
 "Show active session count next to the icon" = "Число активных сессий рядом со значком";
 "You can close the window — the icon keeps showing sleep state. ⌘Q quits Detach; sessions and sleep protection continue on their own." = "Окно можно закрывать — значок продолжит показывать состояние сна. ⌘Q завершает Detach; сессии и защита от сна продолжаются сами.";
+"Only a signed Detach release can update the background monitor." = "Только подписанный релиз Detach может обновить фоновый монитор.";
+"Only a signed Detach release can update the power helper." = "Только подписанный релиз Detach может обновить помощник питания.";
+
+"A session operation is in progress." = "Выполняется операция с сессией.";

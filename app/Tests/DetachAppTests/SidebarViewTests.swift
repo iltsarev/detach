@@ -18,7 +18,8 @@ final class SidebarViewTests: XCTestCase {
         let view = SidebarView(
             store: SessionStore(cli: SidebarNoopCLI()),
             selectedID: .constant(nil),
-            navigation: MainNavigation())
+            navigation: MainNavigation(),
+            shortcutAssignments: [])
 
         _ = view.body
     }
@@ -57,5 +58,41 @@ final class SidebarViewTests: XCTestCase {
         XCTAssertNotEqual(deletion.id, quickChat.id)
         XCTAssertEqual(deletion.message, "delete failed")
         XCTAssertEqual(quickChat.message, "start failed")
+    }
+
+    func testFinishedSelectionReconciliationRemovesStaleIDs() {
+        XCTAssertEqual(
+            FinishedSelectionReconciliation.resolve(
+                selectedIDs: ["kept", "removed"],
+                currentIDs: ["kept", "new"],
+                isSelecting: true,
+                isDeleting: false),
+            FinishedSelectionReconciliation(
+                selectedIDs: ["kept"],
+                isSelecting: true))
+    }
+
+    func testFinishedSelectionReconciliationClosesEmptyIdleSelection() {
+        XCTAssertEqual(
+            FinishedSelectionReconciliation.resolve(
+                selectedIDs: ["removed"],
+                currentIDs: [],
+                isSelecting: true,
+                isDeleting: false),
+            FinishedSelectionReconciliation(
+                selectedIDs: [],
+                isSelecting: false))
+    }
+
+    func testFinishedSelectionReconciliationPreservesInFlightDeletion() {
+        XCTAssertEqual(
+            FinishedSelectionReconciliation.resolve(
+                selectedIDs: ["removed"],
+                currentIDs: [],
+                isSelecting: true,
+                isDeleting: true),
+            FinishedSelectionReconciliation(
+                selectedIDs: [],
+                isSelecting: true))
     }
 }

@@ -17,6 +17,15 @@ final class PowerHelperPlatformTests: XCTestCase {
         _ = SysctlBootSessionReader()
     }
 
+    func testBootSessionReaderReturnsStableCanonicalIdentifier() throws {
+        let first = try SysctlBootSessionReader().currentBootSessionIdentifier()
+        let repeated = try SysctlBootSessionReader().currentBootSessionIdentifier()
+
+        let identifier = try XCTUnwrap(UUID(uuidString: first))
+        XCTAssertEqual(first, identifier.uuidString.lowercased())
+        XCTAssertEqual(repeated, first)
+    }
+
     func testRootCommandRunnerTerminatesHungProcess() {
         let runner = RootProcessCommandRunner(
             // Give the child time to install its ignored-TERM handler before
@@ -32,6 +41,35 @@ final class PowerHelperPlatformTests: XCTestCase {
         }
     }
 
+    func testRootCommandRunnerBoundsInheritedPipesAfterLeaderExit() throws {
+        let started = Date()
+        let result = try RootProcessCommandRunner(
+            timeout: 0.2, terminationGrace: 0.05
+        ).run(RootCommand(
+            executable: "/bin/sh",
+            arguments: ["-c", "(/bin/sleep 3; printf late) & printf ready"]))
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.standardOutput, "ready")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
+    }
+
+    func testRootCommandRunnerTimeoutIncludesPipeDescendants() {
+        let started = Date()
+        let runner = RootProcessCommandRunner(
+            timeout: 0.2, terminationGrace: 0.05)
+
+        XCTAssertThrowsError(try runner.run(RootCommand(
+            executable: "/bin/sh",
+            arguments: ["-c", "trap '' TERM; /bin/sleep 3 & wait"]))) { error in
+            XCTAssertEqual(error as? PowerHelperPlatformError,
+                           .commandTimedOut(executable: "/bin/sh"))
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+    }
+
     func testRootCommandRunnerDrainsButBoundsCapturedOutput() throws {
         let runner = RootProcessCommandRunner(
             timeout: 2, maximumOutputBytes: 1_024)
@@ -42,6 +80,8 @@ final class PowerHelperPlatformTests: XCTestCase {
 
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertLessThanOrEqual(result.standardOutput.utf8.count, 1_024)
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertFalse(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerBoundsBothStreamsAndUsesFixedEnvironment() throws {
@@ -55,6 +95,8 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.standardOutput, "/usr/")
         XCTAssertEqual(result.standardError, "12345")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerCanDiscardAllOutput() throws {
@@ -67,6 +109,8 @@ final class PowerHelperPlatformTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.standardOutput, "")
         XCTAssertEqual(result.standardError, "")
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
     }
 
     func testRootCommandRunnerReturnsNonzeroProcessStatus() throws {
@@ -134,6 +178,26 @@ final class PowerHelperPlatformTests: XCTestCase {
                     error as? PowerHelperPlatformError,
                     .unrecognizedPMSetOutput)
             }
+    }
+
+    func testPowerReadersRejectTruncatedSystemOutput() {
+        let runner = FakeCommandRunner()
+        runner.results = [
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "SleepDisabled 1\n",
+                standardOutputTruncated: true),
+            RootCommandResult(
+                exitCode: 0,
+                standardOutput: "Now drawing from 'AC Power'\n",
+                standardOutputTruncated: true),
+        ]
+
+        XCTAssertThrowsError(
+            try PMSetClosedLidProtectionController(runner: runner)
+                .protectionIsEnabled())
+        XCTAssertThrowsError(
+            try PMSetBatterySafetyReader(runner: runner).isLowBattery())
     }
 
     func testPMSetBackendRejectsAmbiguousAndExtraFieldStatus() {

@@ -37,6 +37,8 @@ public enum DetachStateError: Error, Equatable, Sendable {
     case invalidJSON
     case invalidMetadata
     case staleRunToken
+    case invalidLifecyclePhase
+    case invalidLifecycleTransition
     case unsupportedScalar
 }
 
@@ -91,11 +93,16 @@ public enum SessionMetadataDocument {
             throw DetachStateError.staleRunToken
         }
 
+        let original = object
+
         for change in changes {
             object[change.key] = foundationValue(change.value)
         }
 
-        guard JSONSerialization.isValidJSONObject(object) else {
+        try validateLifecycleMutation(from: original, to: object, changes: changes)
+
+        guard operationalFieldsAreTyped(object),
+              JSONSerialization.isValidJSONObject(object) else {
             throw DetachStateError.invalidMetadata
         }
         do {
@@ -114,7 +121,16 @@ public enum SessionMetadataDocument {
             object[change.key] = foundationValue(change.value)
         }
 
-        guard JSONSerialization.isValidJSONObject(object) else {
+        if let rawPhase = object["lifecycle_phase"] {
+            guard rawPhase is NSNull
+                    || (rawPhase as? String).flatMap(RuntimeLifecyclePhase.init(rawValue:)) != nil
+            else {
+                throw DetachStateError.invalidLifecyclePhase
+            }
+        }
+
+        guard operationalFieldsAreTyped(object),
+              JSONSerialization.isValidJSONObject(object) else {
             throw DetachStateError.invalidMetadata
         }
         do {
@@ -245,6 +261,73 @@ public enum SessionMetadataDocument {
         integer(from: object["schema"]) == 1
             && object["session_name"] as? String == expectedSessionName
             && object["project_dir"] is String
+            && operationalFieldsAreTyped(object)
+    }
+
+    private static func operationalFieldsAreTyped(
+        _ object: [String: Any]
+    ) -> Bool {
+        if let value = object["preserve_recovery_until_ready"],
+           !(value is NSNull) {
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                return false
+            }
+        }
+        for key in ["runtime_ready_at", "runtime_shutdown_observed_at"] {
+            if let value = object[key],
+               !(value is NSNull),
+               !(value is String) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Validates only runtime-owned phase changes. Ordinary scalar patches do
+    /// not need to know the lifecycle graph and remain forward-compatible.
+    private static func validateLifecycleMutation(
+        from original: [String: Any],
+        to updated: [String: Any],
+        changes: [Change]
+    ) throws {
+        guard let change = changes.last(where: { $0.key == "lifecycle_phase" }) else {
+            return
+        }
+        guard case .string(let rawTarget) = change.value,
+              let target = RuntimeLifecyclePhase(rawValue: rawTarget) else {
+            throw DetachStateError.invalidLifecyclePhase
+        }
+
+        let current: RuntimeLifecyclePhase
+        if let rawCurrent = original["lifecycle_phase"] as? String {
+            guard let parsed = RuntimeLifecyclePhase(rawValue: rawCurrent) else {
+                throw DetachStateError.invalidLifecyclePhase
+            }
+            current = parsed
+        } else {
+            current = RuntimeLifecyclePhase.inferred(
+                fromMetadataStatus: original["status"] as? String)
+        }
+        guard current.allows(target) else {
+            throw DetachStateError.invalidLifecycleTransition
+        }
+
+        let stopRequested = (updated["stop_requested_at"] as? String)
+            .map { !$0.isEmpty } ?? false
+        let status = updated["status"] as? String
+        if target == .stopping,
+           !stopRequested || status != "stopped" {
+            throw DetachStateError.invalidLifecycleTransition
+        }
+        if target == .finalizing, stopRequested {
+            throw DetachStateError.invalidLifecycleTransition
+        }
+        if target == .terminal, stopRequested, status != "stopped" {
+            // Stop intent wins a same-run race with worker finalization. This
+            // check runs under the metadata transaction lock.
+            throw DetachStateError.invalidLifecycleTransition
+        }
     }
 
     private static func foundationValue(_ scalar: DetachStateScalar) -> Any {
@@ -283,6 +366,7 @@ public struct TranscriptSummary: Equatable, Sendable {
     public var contextWindow: Int?
     public var agentTurnState: AgentTurnState?
     public var agentTurnID: String?
+    var pendingToolUseID: String?
 
     public init(
         model: String? = nil,
@@ -296,6 +380,15 @@ public struct TranscriptSummary: Equatable, Sendable {
         self.contextWindow = contextWindow
         self.agentTurnState = agentTurnState
         self.agentTurnID = agentTurnID
+        self.pendingToolUseID = nil
+    }
+
+    public static func == (lhs: TranscriptSummary, rhs: TranscriptSummary) -> Bool {
+        lhs.model == rhs.model
+            && lhs.contextUsed == rhs.contextUsed
+            && lhs.contextWindow == rhs.contextWindow
+            && lhs.agentTurnState == rhs.agentTurnState
+            && lhs.agentTurnID == rhs.agentTurnID
     }
 }
 
@@ -445,9 +538,10 @@ public enum TranscriptDocument {
     /// ignored because a byte tail commonly begins in the middle of a record.
     public static func summary(
         ofTail data: Data,
-        provider: Provider
+        provider: Provider,
+        startingFrom initial: TranscriptSummary = TranscriptSummary()
     ) -> TranscriptSummary {
-        var result = TranscriptSummary()
+        var result = initial
         var emitted = false
         _ = try? scanRecords(
             tolerateInvalid: true,
@@ -632,27 +726,112 @@ public enum TranscriptDocument {
             return
         }
 
-        if type == "system", record["subtype"] as? String == "turn_duration" {
+        if type == "assistant",
+           message?["role"] as? String == "assistant",
+           message?["stop_reason"] as? String == "tool_use",
+           let toolUseID = toolUseID(
+            message?["content"], named: "AskUserQuestion") {
             result.agentTurnState = .waiting
-            result.agentTurnID = turnID
+            result.agentTurnID = toolUseID
+            result.pendingToolUseID = toolUseID
+            return
+        }
+
+        if type == "system", record["subtype"] as? String == "turn_duration" {
+            if result.pendingToolUseID == nil, result.agentTurnState != .waiting {
+                result.agentTurnState = .waiting
+                result.agentTurnID = turnID
+            }
+            return
+        }
+
+        if type == "assistant",
+           !isJSONTrue(record["isMeta"]),
+           message?["role"] as? String == "assistant",
+           result.pendingToolUseID == nil {
+            if message?["stop_reason"] as? String == "end_turn",
+               hasFinalText(message?["content"]) {
+                // Claude can omit turn_duration. Keep one notification identity
+                // across final text fragments and a later duration record.
+                if result.agentTurnState != .waiting {
+                    result.agentTurnState = .waiting
+                    result.agentTurnID = turnID
+                }
+            } else if message?["stop_reason"] as? String == "tool_use" {
+                // A tool continuation can follow a completed answer without a
+                // new plain user record (for example, after a Stop hook).
+                result.agentTurnState = .working
+                result.agentTurnID = turnID
+            }
             return
         }
 
         guard type == "user",
               !isJSONTrue(record["isMeta"]),
-              message?["role"] as? String == "user",
-              !containsToolResult(message?["content"]) else {
+              message?["role"] as? String == "user" else {
+            return
+        }
+        let toolResult = toolResultStatus(
+            message?["content"], matching: result.pendingToolUseID)
+        if let pendingToolUseID = result.pendingToolUseID {
+            guard result.agentTurnState == .waiting,
+                  toolResult.present,
+                  toolResult.matches,
+                  pendingToolUseID == result.agentTurnID else {
+                return
+            }
+        } else if toolResult.present {
             return
         }
         result.agentTurnState = .working
         result.agentTurnID = turnID
+        result.pendingToolUseID = nil
     }
 
-    private static func containsToolResult(_ value: Any?) -> Bool {
-        guard let content = value as? [Any] else { return false }
-        return content.contains { item in
-            (item as? [String: Any])?["type"] as? String == "tool_result"
+    private static func toolUseID(_ value: Any?, named name: String) -> String? {
+        guard let content = value as? [Any] else { return nil }
+        return content.compactMap { item -> String? in
+            guard let block = item as? [String: Any],
+                  block["type"] as? String == "tool_use",
+                  block["name"] as? String == name,
+                  let identifier = block["id"] as? String,
+                  !identifier.isEmpty else {
+                return nil
+            }
+            return identifier
+        }.first
+    }
+
+    private static func hasFinalText(_ value: Any?) -> Bool {
+        guard let content = value as? [[String: Any]],
+              !content.contains(where: { $0["type"] as? String == "tool_use" })
+        else { return false }
+        return content.contains {
+            $0["type"] as? String == "text"
+                && ($0["text"] as? String)?.isEmpty == false
         }
+    }
+
+    private static func toolResultStatus(
+        _ value: Any?,
+        matching identifier: String?
+    ) -> (present: Bool, matches: Bool) {
+        guard let content = value as? [Any] else {
+            return (false, false)
+        }
+        var present = false
+        for item in content {
+            guard let block = item as? [String: Any],
+                  block["type"] as? String == "tool_result" else {
+                continue
+            }
+            present = true
+            if let identifier,
+               block["tool_use_id"] as? String == identifier {
+                return (true, true)
+            }
+        }
+        return (present, false)
     }
 
     private static func isJSONTrue(_ value: Any?) -> Bool {

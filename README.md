@@ -26,30 +26,42 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/detach-app.png" width="920" alt="Detach showing Codex and Claude Code sessions with a live interactive terminal">
+  <img src="docs/assets/detach-app.png" width="920" alt="Detach dashboard with an Answer ready session, working Codex and Claude sessions, finished history, and a live terminal">
+  <br>
+  <sub>Answer-ready work comes first. Switch live sessions without restarting the agent.</sub>
 </p>
 
-Detach gives long-running coding agents a durable place to work. Start a run,
-use the built-in terminal, close the app, and return when the agent needs you.
-Detach keeps the process, health state, checkpoints, logs, and Mac power policy
-together.
+Detach is a native control center for agent work that must outlive a terminal
+window. Start a run, use the built-in terminal, close the app, and return when
+the agent needs you. The live process, typed lifecycle state, recovery data,
+and Mac power policy stay together.
 
 ## Why Detach
 
 Codex and Claude Code can work for minutes or hours. A terminal window should
 not be the weak link.
 
-- **Leave without ending the run.** Close Terminal, close the Detach window, or
-  detach from tmux. The managed agent continues in the background.
-- **Run everything in one native app.** Start Codex or Claude Code, type in the
-  interactive terminal, paste text or images, search output, and reconnect a
-  terminal client without restarting the agent.
+- **Leave without ending the run.** Close Terminal, close the Detach window,
+  or detach from tmux. The managed agent continues in the background.
+- **Start in the app.** Use New session for a project run or Quick chat for a
+  private temporary workspace. Both Codex and Claude Code use the same managed
+  lifecycle.
+- **Work in one native terminal.** Type, paste text or images, find output, and
+  switch between live sessions with `Cmd-1` through `Cmd-9`. Detach keeps the
+  same PTY and does not restart the agent during a switch.
 - **See what needs you now.** Sessions that wait for a reply move into
   **Answer ready**. Notifications and the menu bar show when a turn finishes,
   fails, or becomes recoverable.
-- **Return the correct way.** Attach to a live process, Resume a provider
-  conversation, or Recover an interrupted Detach run from a validated local
-  checkpoint.
+- **Use actions that match proven state.** Stop is for a live owned process.
+  Resume continues a provider conversation. Recover restarts an interrupted
+  managed run from a validated recovery source. Delete stays blocked until
+  state is safe to remove.
+- **Get updates when state changes.** Native filesystem events trigger a
+  dashboard refresh for lifecycle and provider turn changes. There is no
+  repeating session-list timer while nothing changes.
+- **Recover conversation state, not source files.** Validated local
+  checkpoints can restore an interrupted agent conversation. Detach never
+  rolls repository files back.
 - **Let the Mac keep working safely.** Two-layer sleep protection can keep an
   active run working with the lid closed. It releases protection while all
   agents wait, and it fails safe for low battery or high temperature.
@@ -119,29 +131,84 @@ The embedded terminal keeps the shortcuts that matter:
 |---|---|
 | Open the standard New session sheet | `Cmd-N` |
 | Start a Quick chat immediately | `Cmd-T` |
+| Switch to a numbered Working or Answer ready session | `Cmd-1` … `Cmd-9` |
+| Copy selected text | `Cmd-C` |
+| Open a link | Click the link |
 | Paste text | `Cmd-V` |
 | Give Codex or Claude Code an image from the clipboard | `Ctrl-V` |
+| Interrupt a command or close a provider overlay | `Ctrl-C` |
 | Find terminal output | `Cmd-F` |
 | Replace an exited terminal client without restarting the agent | **Reconnect** |
 
-Settings → General selects the provider and working folder for Quick chat. The
-default folder is `/tmp`. The same settings page selects the default folder
-where the standard project chooser opens. Quick chat uses the normal managed
-session lifecycle; it does not automatically delete project files, Detach
-state, or provider transcripts.
+With managed mouse input, tmux copies the selection when you release the
+mouse button. `Cmd-C` keeps that copy when there is no native selection.
+Links show an underline on hover. Click an underlined link to open it.
+Copies preserve Unicode text. `Cmd-V` leaves managed copy mode and inserts
+the text at the live prompt, including line breaks.
+
+Settings → General selects the provider and parent folder for Quick chat. The
+default is `/tmp`. Each `Cmd-T` creates a private
+`detach-chat-<uuid>` project inside that folder, so another Quick chat can
+start while earlier chats are still running. The same settings page selects
+the default folder for the standard project chooser. Quick chat uses the
+normal managed session lifecycle. Detach does not automatically delete its
+project files, state, or provider transcripts.
+
+Detach shows each assigned session shortcut beside its name. The number stays
+with the session while it is in Working or Answer ready. Detach reuses the
+number after the session leaves both sections. If more than nine sessions are
+eligible, each extra session waits for the first free number.
 
 Start, Resume, and Recover run inside Detach and do not require an outer
 terminal. The selected external terminal remains available as a fallback for
 Attach, Resume, and Recover.
 
+Resume and Recover show the new terminal as soon as the session can accept an
+attachment. Startup checks continue, and Detach reports any startup error.
+With the current CLI, the provider receives the visible terminal size before
+its first output.
+
+The live terminal processes PTY input and output as events. Its stable
+CoreGraphics renderer repaints only when content changes. A steady cursor
+avoids an idle redraw timer. Switching between live sessions keeps the same
+terminal and PTY. The first attach waits for the visible terminal size. A
+selection change during attachment waits for the tmux client to become ready.
+tmux synchronized output replaces the complete frame at once.
+
+Detach preloads the last text screen for up to nine live sessions in a small
+bounded burst. A cold attachment can show that text for up to one second. It
+does not keep hidden PTYs alive or use raster snapshots during live switching.
+
+Detach preloads recent non-live session logs in a bounded startup burst. This
+includes finished and recoverable sessions. Switching to a cached result shows
+its content immediately. Reopening unchanged content starts no new process.
+
+The dashboard also keeps a small private copy of the last valid session list.
+It can paint that list on the first app frame while Detach reads current state.
+Cached rows cannot Stop, Resume, Recover, or Delete a session. Those controls
+return only after the current typed state proves that they are safe.
+
+The dashboard also updates from events. Detach coalesces a provider transcript
+burst into one update at the start and one after output becomes quiet. Each
+event reads a complete typed session list. A dropped event or app activation
+causes a full resync. There is no Refresh interval setting and no periodic
+session-list process while state is idle. Unchanged transcript summaries use a
+private file-identity cache, so consecutive event refreshes do not reread every
+retained transcript tail.
+
+Power status is event-driven too. An atomic watchdog report wakes the app when
+it changes. One deadline marks a silent report stale. The menu bar, Settings,
+and notifications do not poll the same file on repeating timers.
+
 <details>
 <summary><strong>How a new in-app session starts</strong></summary>
 
-Detach runs the CLI with `--detach` in the selected project and refreshes the
-session list. When it finds one new matching session, it selects the session
-and opens the embedded terminal. A start error stays in the sheet so that you
-can correct it. Terminal, iTerm2, Warp, or another configured shell runner
-remains available from the named fallback button.
+Detach runs the CLI with `--detach` in the selected project. It waits for the
+event-driven typed session source. When one new matching `starting` session
+appears, Detach selects it and opens the embedded terminal before the full
+readiness check ends. A start error stays in the sheet so that you can correct
+it. Terminal, iTerm2, Warp, or another configured shell runner remains
+available from the named fallback button.
 
 </details>
 
@@ -168,8 +235,9 @@ A compact guide below the session list keeps `Cmd-N`, `Cmd-T`, `Cmd-,`, and
 
 Sessions that wait for your reply move into **Answer ready**, before agents
 that are still working. Detach reads structured provider lifecycle records for
-this signal. It does not guess from terminal text. Mid-turn permission prompts
-are not currently part of the signal.
+this signal. A completed Claude text answer enters **Answer ready** even when
+Claude omits its turn-duration record. Detach does not guess from terminal
+text. Mid-turn permission prompts are not currently part of the signal.
 
 The optional menu bar companion shows:
 
@@ -190,7 +258,7 @@ These actions solve different problems:
 |---|---|---|
 | The managed worker is still alive | **Attach** | Open a client for the existing tmux session. Do not start another agent. |
 | The provider conversation exists | **Resume** | Continue the conversation by UUID in its saved project. |
-| A Detach-managed run was interrupted | **Recover** | Validate saved context and a checkpoint, then restart the exact conversation under Detach. |
+| A Detach-managed run was interrupted | **Recover** | Validate saved context and its recovery source, then restart the exact conversation under Detach. |
 
 **Attach = live process. Resume = provider conversation. Recover = interrupted
 managed run.**
@@ -233,14 +301,14 @@ Detach evaluates health from independent facts:
 - the exact worker PID and provider PID, user ownership, and process relation;
 - valid metadata and provider conversation identity;
 - worker heartbeat and checkpoint freshness;
-- a checkpoint that is valid enough for conservative recovery.
+- a provider source that is valid enough for conservative recovery.
 
 | State | Meaning | Safe actions |
 |---|---|---|
 | **Running** | The pane, worker, provider, and run token agree. | Attach, Stop |
 | **Hung** | A required runtime identity is missing or inconsistent, or a recorded process survived tmux. | Attach or Stop only when tmux ownership is proven. Otherwise, no mutation. |
-| **Recoverable** | The live runtime is gone and a matching validated checkpoint exists. | Recover, Delete |
-| **Orphaned** | The live runtime is gone and no safe recovery checkpoint exists. | Delete |
+| **Recoverable** | The live runtime is gone and a matching validated recovery source exists. | Recover, Delete |
+| **Orphaned** | The live runtime is gone and no safe recovery source exists. | Delete |
 | **Finished / stopped** | The worker reached a terminal state. | Resume or Delete, according to provider identity. |
 | **Collision / corrupt** | tmux ownership or metadata cannot be trusted. | Conservative, state-specific actions only. |
 
@@ -248,11 +316,20 @@ A stale heartbeat or old checkpoint is diagnostic information. It does not
 prove that an agent is hung. If the owned worker and provider are alive, Detach
 keeps the session running through a long provider turn.
 
+Start, Resume, and Recover can show **Starting** while the runtime identity is
+being configured. This transition does not mean the session has a problem.
+Mutation actions stay unavailable until the operation ends. Detach discards
+list results that combine different runtime generations. A reused PID does
+not block Resume when process creation time proves that the old runtime ended.
+
 If tmux disappears while a recorded process is still alive, Detach blocks
 Stop, Recover, Delete, and bulk cleanup until that exact runtime is gone. It
 never signals or removes foreign processes and unmanaged tmux sessions.
 Concurrent Stop, Recover, and Delete requests are serialized per session and
 recheck ownership immediately before mutation.
+Stop gives a live provider its full termination grace. After that provider
+exits, Detach gives its worker a short final-checkpoint grace, then ends the
+exact run. Resume and Delete stay unavailable until the worker is gone.
 
 <details>
 <summary><strong>Checkpoint and recovery rules</strong></summary>
@@ -270,6 +347,8 @@ then refer to the conversation that is in use.
 - **Codex:** Detach saves the session UUID and rollout JSONL. It keeps a valid
   live rollout when that file is at least as large as the checkpoint. It
   restores only when the matching live rollout is missing, invalid, or smaller.
+  If the backup is absent or belongs to an older generation, List and Recover
+  require the selected live rollout to be valid and match the session UUID.
   A separately validated SQLite backup is an emergency artifact. Detach never
   restores it over the shared Codex database automatically.
 - **Claude Code:** Detach saves the preassigned session UUID, transcript,
@@ -278,6 +357,12 @@ then refer to the conversation that is in use.
   matching checkpoint and its companion artifacts before resume.
 - **Both:** Detach rejects unsafe paths, ambiguous or mismatched UUIDs,
   malformed JSONL, and invalid checkpoint contents.
+
+Resume and Recover keep the last valid checkpoint and saved provider options
+until the replacement run is ready. If the readiness check fails, that recovery
+data stays available. A fresh Start with the same session name clears the prior
+checkpoint. Recover stays unavailable until Detach confirms that the failed
+replacement runtime stopped.
 
 Checkpoint state lives here:
 
@@ -300,6 +385,12 @@ when you open it again.
 </details>
 
 ## Closed-lid work with fail-safe limits
+
+<p align="center">
+  <img src="docs/assets/detach-system.png" width="560" alt="Detach System settings showing Mac stays awake with the sleep-protection helper and background power monitor ready">
+  <br>
+  <sub>Settings → System shows the effective Mac power state and both required protection components.</sub>
+</p>
 
 Keep-awake protection starts automatically with a managed session. An
 unprivileged wrapper holds the normal IOKit idle-sleep assertion. A narrowly
@@ -411,6 +502,7 @@ detach claude --name "Rev (ai)" -- "review the repository"
 # Monitor and return.
 detach list
 detach list --json
+detach watch --json
 detach claude attach review
 detach resume SESSION_UUID
 
@@ -425,6 +517,8 @@ detach reconcile --dry-run --json
 | `detach <provider> [start]` | Start a fresh conversation for the current project. |
 | `detach <provider> attach [name]` | Attach to a live managed session. |
 | `detach list [--json]` | List Codex and Claude sessions together. JSON mode emits JSONL. |
+| `detach watch --json` | Stream typed `ready`, `changed`, and `resync` hints for session consumers. Read `list --json` after each hint. |
+| `detach client switch --pid PID --from SESSION --to SESSION --provider PROVIDER` | Retarget one attached tmux client that you own to another live managed session. The app uses it for in-place switching. |
 | `detach resume <uuid>` | Detect the provider and project, then continue the conversation. An owned Claude session without a transcript restarts with the same UUID. |
 | `detach <provider> status [name]` | Show runtime, checkpoint, and power state. |
 | `detach <provider> logs [--ansi] [name]` | Read retained output without attaching. |
@@ -447,6 +541,7 @@ For automation and diagnosis:
 
 ```bash
 detach list --json
+detach watch --json
 detach reconcile --dry-run --json
 detach cleanup --dry-run --json
 ```
@@ -494,12 +589,17 @@ palette slot. Detach never edits the global tmux configuration.
 Shells in user-created split panes close normally on `Ctrl-D` or exit. Only the
 managed Codex or Claude pane is retained after completion so that Detach can
 preserve output and exit status.
+When the provider exits, including after `Ctrl-C`, the external terminal returns
+to its original shell. A `Ctrl-C` that only interrupts work keeps the connection
+while the provider remains running. Logs and checkpoints stay available.
 
 Inside managed tmux, the mouse wheel scrolls one line at a time. Mouse selection
 copies to the macOS clipboard and keeps the highlight and scroll position. When
 managed mouse input is on, an ASCII or Cyrillic printable key, Space, Enter, or
 Backspace leaves copy mode and sends that key to the live prompt. Arrows, page
-navigation, Escape, and control chords keep their copy-mode behavior. Use
+navigation, Escape, and bound control chords keep their copy-mode behavior.
+Other unbound input, including bracketed paste, returns to the live prompt.
+Use
 `detach config tmux-mouse off` to restore the original copy-mode key tables and
 return mouse handling to the terminal emulator. In Terminal.app, Option-drag
 also bypasses tmux selection.

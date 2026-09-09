@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,9 +44,6 @@ VALID_RESULTS = {
     "blocked",
 }
 FAILURE_RESULTS = {"failed", "environment-failed", "timeout", "interrupted"}
-RELEASE_TARGET = re.compile(
-    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@v[0-9A-Za-z._+-]+$"
-)
 SAFE_RUN_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
@@ -56,6 +54,19 @@ EXECUTION_PREREQUISITES = {
     "codex": ("app",),
     "claude": ("app",),
     "tmux-runtime": ("app",),
+}
+# Typical measured stage seconds on the reference Mac. The scheduler starts
+# the longest ready post-UI stage first. These are scheduling hints only; no
+# verdict compares a measured duration with them.
+POST_UI_STAGE_WEIGHTS = {
+    "gate-contract": 120,
+    "codex": 110,
+    "release-workflow": 110,
+    "distribution": 80,
+    "claude": 60,
+    "publish-preflight": 30,
+    "release-preflight": 15,
+    "tmux-runtime": 8,
 }
 POST_UI_STAGES = (
     "gate-contract",
@@ -116,9 +127,13 @@ DISTRIBUTION_SCENARIOS = (
     "SC-INSTALL-UNINSTALL",
 )
 COMPACT_CODEX_TEST_PARTS = (
+    # Resume and Delete have long independent waits. Keep their fixtures in
+    # separate lanes even on small hosts; the scheduler still admits only three.
+    "resume",
+    "delete",
     "guardrails",
     "lifecycle-recovery",
-    "resume-identity",
+    "identity",
 )
 COMPACT_CLAUDE_TEST_PARTS = (
     "session",
@@ -192,7 +207,7 @@ class Options:
     explain: bool
     resume: str
     keep_going: bool
-    without_release_budget: bool
+    reuse_hosted: str
     list_stages: bool
     stage: str
     shard: str
@@ -342,7 +357,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--explain", action="store_true")
     result.add_argument("--resume", default="")
     result.add_argument("--keep-going", action="store_true")
-    result.add_argument("--without-release-budget", action="store_true")
+    result.add_argument("--reuse-hosted", default="")
     result.add_argument("--list-stages", action="store_true")
     result.add_argument("--stage", default="")
     result.add_argument("--shard", default="")
@@ -359,7 +374,7 @@ def parse_options(arguments: list[str]) -> Options:
         explain=values.explain,
         resume=values.resume,
         keep_going=values.keep_going,
-        without_release_budget=values.without_release_budget,
+        reuse_hosted=values.reuse_hosted,
         list_stages=values.list_stages,
         stage=values.stage,
         shard=values.shard,
@@ -377,8 +392,6 @@ class QualityGate:
         self.test_mode = environment_flag("DETACH_QUALITY_GATE_TEST_MODE")
         self.test_real_static = environment_flag("DETACH_QUALITY_GATE_TEST_REAL_STATIC")
         self.test_direct = environment_flag("DETACH_QUALITY_GATE_TEST_DIRECT")
-        self.release_timing_override = os.environ.get("DETACH_RELEASE_TIMING_OVERRIDE", "")
-        self.release_timing_override_active = False
         self.authority = ""
         self.resolved_base = ""
         self.source_commit = git_text(["rev-parse", "--verify", "HEAD"])
@@ -405,10 +418,8 @@ class QualityGate:
         self.markdown = self.run_dir / "summary.md"
         self.environment = self.run_dir / "environment.tsv"
         self.artifacts = self.run_dir / "artifacts.tsv"
-        self.release_budget = ROOT / "tests/release-budget.tsv"
         self.started_epoch = int(time.time())
         self.started_at = utc_now()
-        self.effective_timing_wall = 0
         self.results: dict[str, StageResult] = {}
         self.active: dict[str, ActiveStage] = {}
         self.reported: set[str] = set()
@@ -416,6 +427,8 @@ class QualityGate:
         self.failure_count = 0
         self.prior_manifest: dict[str, str | None] = {}
         self.prior_results: dict[str, StageResult] = {}
+        self.hosted_dir: Path | None = None
+        self.hosted_results: dict[str, StageResult] = {}
         self.scenario_records: list[dict[str, object]] = []
 
     def validate_options(self) -> None:
@@ -461,43 +474,11 @@ class QualityGate:
         else:
             raise GateError(f"invalid quality authority: {self.authority}")
 
-        if self.release_timing_override:
-            if not RELEASE_TARGET.fullmatch(self.release_timing_override):
-                raise GateError(
-                    "DETACH_RELEASE_TIMING_OVERRIDE must be an exact owner/repository@tag"
-                )
-            if os.environ.get("DETACH_CONFIRM_RELEASE") != self.release_timing_override:
-                raise GateError(
-                    "release timing override requires matching exact release confirmation"
-                )
-            if self.options.mode not in ("release", "repository") or not (
-                self.options.without_release_budget
-            ):
-                raise GateError(
-                    "release timing override requires repository or release mode with "
-                    "--without-release-budget"
-                )
-            self.release_timing_override_active = True
-        if (
-            self.options.without_release_budget
-            and os.environ.get("GITHUB_ACTIONS") != "true"
-            and not self.test_mode
-            and not self.release_timing_override_active
-        ):
-            raise GateError("--without-release-budget is restricted to GitHub Actions")
-
-        if not self.test_mode:
-            clock_names = [
-                "DETACH_QUALITY_GATE_TEST_WALL_SECONDS",
-                "DETACH_QUALITY_GATE_TEST_CODEX_SECONDS",
-            ]
-            clock_names.extend(
-                "DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_"
-                + stage.upper().replace("-", "_")
-                for stage in self.all_stages
-            )
-            if any(os.environ.get(name, "") for name in clock_names):
-                raise GateError("quality-gate clock overrides are test-only")
+        if self.options.reuse_hosted:
+            if self.options.mode != "release":
+                raise GateError("--reuse-hosted requires release mode")
+            if self.options.stage or self.options.shard:
+                raise GateError("--reuse-hosted cannot be combined with --stage or --shard")
         if self.options.output_format not in ("text", "json"):
             raise GateError(f"invalid format: {self.options.output_format}")
         if self.options.stage and (
@@ -660,10 +641,7 @@ class QualityGate:
                         changed = True
         if self.options.mode == "release":
             self.selected = [stage for stage in self.selected if stage in self.release_stages]
-            self.add_stage("release-budget", "mandatory release timing postflight")
         self.selected = [stage for stage in self.all_stages if stage in self.selected]
-        if self.options.without_release_budget:
-            self.selected = [stage for stage in self.selected if stage != "release-budget"]
         if self.options.shard:
             requested = self.options.shard.split(",")
             if (
@@ -752,6 +730,7 @@ class QualityGate:
         write_private(self.summary, RESULT_HEADER)
         write_private(self.environment, self.environment_document())
         write_private(self.artifacts, "schema\t1\n")
+        self.write_specification_sizes()
         (self.run_dir / "scenario-events").mkdir(mode=0o700)
         (self.run_dir / "stage-scenarios").mkdir(mode=0o700)
         self.write_static_files()
@@ -791,9 +770,6 @@ class QualityGate:
         lines = ["schema\t1"]
         lines.extend(f"{key}\t{value}" for key, value in values.items())
         lines.append(
-            f"release_timing_override\t{int(self.release_timing_override_active)}"
-        )
-        lines.append(
             f"managed_sandbox_declared\t{str(bool(os.environ.get('CODEX_SANDBOX'))).lower()}"
         )
         return "\n".join(lines) + "\n"
@@ -815,12 +791,93 @@ class QualityGate:
         raw = b"".join(os.fsencode(path) + b"\0" for path in self.static_paths())
         write_private_bytes(self.run_dir / "static-files.z", raw)
 
+    def write_specification_sizes(self) -> None:
+        warning = self.policy.limits["routed_spec_warning_bytes"]
+        limit = self.policy.limits["routed_spec_limit_bytes"]
+        specification_root = ROOT / "docs/specs"
+        try:
+            root_mode = specification_root.lstat().st_mode
+        except OSError as error:
+            raise GateError(
+                f"routed specification root is missing or unsafe: {error}"
+            ) from error
+        if not stat.S_ISDIR(root_mode):
+            raise GateError("routed specification root is missing or unsafe")
+        resolved_root = specification_root.resolve()
+        if resolved_root != ROOT / "docs/specs":
+            raise GateError("routed specification root is missing or unsafe")
+        records: list[dict[str, object]] = []
+        for identifier, (raw_path, _) in self.policy.specs.items():
+            relative = Path(raw_path)
+            path = ROOT / relative
+            try:
+                if (
+                    relative.is_absolute()
+                    or relative.parts != ("docs", "specs", f"{identifier}.md")
+                    or path.parent.resolve() != resolved_root
+                ):
+                    raise GateError(
+                        f"routed specification path is unsafe: {raw_path}"
+                    )
+                try:
+                    file_status = path.lstat()
+                except FileNotFoundError as error:
+                    raise GateError(
+                        f"routed specification is missing or unsafe: {raw_path}"
+                    ) from error
+                if not stat.S_ISREG(file_status.st_mode):
+                    raise GateError(
+                        f"routed specification is missing or unsafe: {raw_path}"
+                    )
+                size = file_status.st_size
+            except OSError as error:
+                raise GateError(
+                    f"cannot measure routed specification {identifier}: {error}"
+                ) from error
+            status = (
+                "over-limit" if size > limit
+                else "warning" if size > warning
+                else "healthy"
+            )
+            records.append(
+                {
+                    "bytes": size,
+                    "headroom_bytes": max(0, limit - size),
+                    "id": identifier,
+                    "path": raw_path,
+                    "status": status,
+                }
+            )
+        statuses = {record["status"] for record in records}
+        overall = (
+            "over-limit" if "over-limit" in statuses
+            else "warning" if "warning" in statuses
+            else "healthy"
+        )
+        document = {
+            "input_fingerprint": self.input_fingerprint,
+            "limit_bytes": limit,
+            "policy": self.policy_version,
+            "schema": 1,
+            "source_commit": self.source_commit,
+            "specifications": records,
+            "status": overall,
+            "warning_bytes": warning,
+        }
+        write_private(
+            self.run_dir / "spec-sizes.json",
+            json.dumps(
+                document, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ) + "\n",
+        )
+
     def artifact_inventory(self) -> None:
         files: list[Path] = []
         for name in (
             "quality-metrics.json",
             "quality-metrics-swift.json",
             "coverage-opportunities.json",
+            "spec-sizes.json",
             "shards.tsv",
         ):
             evidence = self.run_dir / name
@@ -885,10 +942,7 @@ class QualityGate:
             measured = int(time.time()) - self.started_epoch
             duration = str(measured)
             summary_digest = sha256_file(self.summary)
-            effective = self.effective_timing_wall or measured
-            if effective <= 0:
-                effective = measured
-            timing_wall = str(effective)
+            timing_wall = str(max(measured, self.inherited_timing_wall()))
         resumed_from_run = ""
         resumed_from_digest = ""
         if self.resume_dir is not None:
@@ -1054,42 +1108,7 @@ class QualityGate:
             raise GateError("resume environment digest does not match its manifest")
         if sha256_file(resume / "artifacts.tsv") != values.get("artifacts_sha256"):
             raise GateError("resume artifact inventory digest does not match its manifest")
-        artifact_lines = (resume / "artifacts.tsv").read_text(encoding="utf-8").splitlines()
-        if not artifact_lines or artifact_lines[0] != "schema\t1":
-            raise GateError("resume artifact inventory schema is invalid")
-        for line in artifact_lines[1:]:
-            fields = line.split("\t")
-            if len(fields) != 3 or fields[0] != "file":
-                raise GateError("resume artifact inventory contains an unknown record")
-            _, relative, expected_digest = fields
-            if (
-                relative.startswith("/")
-                or relative.startswith("../")
-                or "/../" in relative
-                or "\n" in relative
-                or "\t" in relative
-            ):
-                raise GateError("resume artifact inventory path is unsafe")
-            if not (
-                relative == "quality-metrics.json"
-                or relative == "quality-metrics-swift.json"
-                or relative == "coverage-opportunities.json"
-                or relative == "scenarios.jsonl"
-                or relative == "scenarios.junit.xml"
-                or relative == "repair-bundle.json"
-                or relative.startswith("stage-scenarios/")
-                or relative.startswith("ui-e2e-artifacts/")
-                or relative.startswith("codex-artifacts/")
-                or relative.startswith("claude-artifacts/")
-            ):
-                raise GateError("resume artifact inventory path is unapproved")
-            if not DIGEST.fullmatch(expected_digest):
-                raise GateError("resume artifact inventory digest is invalid")
-            artifact = resume / relative
-            if not artifact.is_file() or artifact.is_symlink():
-                raise GateError("resume diagnostic artifact is missing or unsafe")
-            if sha256_file(artifact) != expected_digest:
-                raise GateError("resume diagnostic artifact digest does not match")
+        self.validate_artifact_inventory(resume, "resume")
         timing_wall = values.get("timing_wall_seconds")
         if timing_wall is None or not NONNEGATIVE_INTEGER.fullmatch(timing_wall):
             raise GateError("resume evidence timing wall duration is invalid")
@@ -1155,6 +1174,134 @@ class QualityGate:
             resume / "summary.tsv", prior_stages, prior_mode
         )
 
+    def validate_artifact_inventory(self, root: Path, label: str) -> None:
+        artifact_lines = (root / "artifacts.tsv").read_text(encoding="utf-8").splitlines()
+        if not artifact_lines or artifact_lines[0] != "schema\t1":
+            raise GateError(f"{label} artifact inventory schema is invalid")
+        for line in artifact_lines[1:]:
+            fields = line.split("\t")
+            if len(fields) != 3 or fields[0] != "file":
+                raise GateError(f"{label} artifact inventory contains an unknown record")
+            _, relative, expected_digest = fields
+            if (
+                relative.startswith("/")
+                or relative.startswith("../")
+                or "/../" in relative
+                or "\n" in relative
+                or "\t" in relative
+            ):
+                raise GateError(f"{label} artifact inventory path is unsafe")
+            if not (
+                relative == "quality-metrics.json"
+                or relative == "quality-metrics-swift.json"
+                or relative == "coverage-opportunities.json"
+                or relative == "spec-sizes.json"
+                or relative == "shards.tsv"
+                or relative == "scenarios.jsonl"
+                or relative == "scenarios.junit.xml"
+                or relative == "repair-bundle.json"
+                or relative.startswith("stage-scenarios/")
+                or relative.startswith("ui-e2e-artifacts/")
+                or relative.startswith("codex-artifacts/")
+                or relative.startswith("claude-artifacts/")
+            ):
+                raise GateError(f"{label} artifact inventory path is unapproved")
+            if not DIGEST.fullmatch(expected_digest):
+                raise GateError(f"{label} artifact inventory digest is invalid")
+            artifact = root / relative
+            if not artifact.is_file() or artifact.is_symlink():
+                raise GateError(f"{label} diagnostic artifact is missing or unsafe")
+            if sha256_file(artifact) != expected_digest:
+                raise GateError(f"{label} diagnostic artifact digest does not match")
+
+    def validate_hosted_reuse(self) -> None:
+        """Bind hosted ci-main evidence to the exact source commit before reuse.
+
+        Release mode may reuse a stage that hosted CI already proved for the
+        same tree. The evidence must be digest-bound, must have passed, and
+        must name this commit directly (ci-main) or through a promotion
+        record whose tested and merged trees are equal.
+        """
+        if not self.options.reuse_hosted:
+            return
+        hosted = Path(self.options.reuse_hosted).absolute()
+        if not hosted.is_dir() or hosted.is_symlink():
+            raise GateError("hosted evidence path must be a non-symlink run directory")
+        for name in ("manifest.tsv", "summary.tsv", "environment.tsv", "artifacts.tsv"):
+            path = hosted / name
+            if not path.is_file() or path.is_symlink():
+                raise GateError(f"hosted evidence {name} is missing or unsafe")
+        values = self.manifest_values(hosted / "manifest.tsv")
+        if values.get("schema") != "4":
+            raise GateError("hosted evidence schema is unsupported")
+        if values.get("policy") != str(self.policy_version):
+            raise GateError("hosted evidence uses another policy version")
+        if values.get("result") != "passed":
+            raise GateError("hosted evidence did not pass")
+        if values.get("mode") not in ("impact", "repository"):
+            raise GateError("hosted evidence mode is not a hosted plan")
+        authority = values.get("authority")
+        if authority not in ("ci-merge", "ci-main"):
+            raise GateError("hosted evidence authority is not hosted")
+        for name, key in (
+            ("environment.tsv", "environment_sha256"),
+            ("artifacts.tsv", "artifacts_sha256"),
+            ("summary.tsv", "summary_sha256"),
+        ):
+            if sha256_file(hosted / name) != values.get(key):
+                raise GateError(f"hosted evidence {name} digest does not match its manifest")
+        self.validate_artifact_inventory(hosted, "hosted evidence")
+        tested_commit = values.get("source_commit") or ""
+        if not (authority == "ci-main" and tested_commit == self.source_commit):
+            self.validate_hosted_promotion(hosted, values)
+        results = self.parse_summary(
+            hosted / "summary.tsv", values.get("stages") or "", values.get("mode") or ""
+        )
+        self.hosted_results = {
+            stage: result for stage, result in results.items() if result.status == "passed"
+        }
+        self.hosted_dir = hosted
+        proven = [
+            stage
+            for stage in self.selected
+            if stage in self.hosted_results and stage not in self.prior_results
+        ]
+        print(
+            f"quality-gate: hosted evidence {hosted.name} proves "
+            f"{','.join(proven) if proven else 'no selected stage'} for {self.source_commit}"
+        )
+
+    def validate_hosted_promotion(self, hosted: Path, values: dict[str, str | None]) -> None:
+        promotion = hosted / "promotion.tsv"
+        if not promotion.is_file() or promotion.is_symlink():
+            raise GateError("hosted evidence is not bound to the source commit")
+        record = self.manifest_values(promotion)
+        tree = git_text(["rev-parse", f"{self.source_commit}^{{tree}}"])
+        checks = (
+            ("schema", "1", "hosted promotion schema is unsupported"),
+            ("authority", "ci-main", "hosted promotion authority is not ci-main"),
+            ("result", "passed", "hosted promotion did not pass"),
+            ("main_commit", self.source_commit, "hosted promotion names another main commit"),
+            (
+                "tested_commit",
+                values.get("source_commit") or "",
+                "hosted promotion names another tested commit",
+            ),
+            (
+                "source_manifest_sha256",
+                sha256_file(hosted / "manifest.tsv"),
+                "hosted promotion does not bind this manifest",
+            ),
+            ("main_tree", tree, "hosted promotion tree does not match the source tree"),
+            ("tested_tree", tree, "hosted promotion tested tree does not match the source tree"),
+        )
+        for key, expected, message in checks:
+            if not expected or record.get(key) != expected:
+                raise GateError(message)
+        repository = os.environ.get("DETACH_QUALITY_REPOSITORY", "")
+        if repository and record.get("repository") != repository:
+            raise GateError("hosted promotion names another repository")
+
     def stage_result_path(self, stage: str) -> Path:
         return self.run_dir / f".stage-{stage}.result"
 
@@ -1199,13 +1346,30 @@ class QualityGate:
             ),
         )
 
+    def reuse_source(self, stage: str) -> tuple[Path, StageResult] | None:
+        prior = self.prior_results.get(stage)
+        if (
+            prior is not None
+            and prior.status in ("passed", "reused")
+            and self.resume_dir is not None
+        ):
+            return self.resume_dir, prior
+        hosted = self.hosted_results.get(stage)
+        if hosted is not None and self.hosted_dir is not None:
+            return self.hosted_dir, hosted
+        return None
+
     def reusable(self, stage: str) -> bool:
-        result = self.prior_results.get(stage)
+        source = self.reuse_source(stage)
+        if source is None:
+            return False
         if stage == "ui-e2e" and "quality-contracts" in self.selected:
-            metrics = self.prior_results.get("quality-contracts")
-            if metrics is None or metrics.status not in ("passed", "reused"):
+            # The UI profile only counts with the metrics that merged it, so
+            # both must come from the same evidence.
+            metrics = self.reuse_source("quality-contracts")
+            if metrics is None or metrics[0] != source[0]:
                 return False
-        return result is not None and result.status in ("passed", "reused")
+        return True
 
     def prerequisite_failed(self, stage: str) -> bool:
         prerequisites = EXECUTION_PREREQUISITES.get(stage)
@@ -1241,9 +1405,7 @@ class QualityGate:
         exact_app = environment.pop("DETACH_QUALITY_EXACT_APP", "")
         exact_products = environment.pop("DETACH_QUALITY_EXACT_PRODUCTS", "")
         for name in (
-            "DETACH_RELEASE_TIMING_OVERRIDE",
             "DETACH_CONFIRM_RELEASE",
-            "DETACH_RELEASE_IGNORE_TIMING",
             "DETACH_VERSION",
             "DETACH_BUILD_VERSION",
             "DETACH_BUILD_ARCHS",
@@ -1282,7 +1444,11 @@ class QualityGate:
         )
         if stage == "app" and exact_app:
             environment["DETACH_QUALITY_EXACT_APP"] = exact_app
-        if stage in ("swift", "app", "ui-e2e", "quality-contracts") and exact_products:
+        # Provider suites read tmux and detach-state from the exact runtime
+        # products when a hosted shard bound them.
+        if stage in (
+            "swift", "app", "ui-e2e", "quality-contracts", "codex", "claude"
+        ) and exact_products:
             environment["DETACH_QUALITY_EXACT_PRODUCTS"] = exact_products
         if not self.test_direct:
             environment["DETACH_RELEASE_TESTS_DETACHED"] = "1"
@@ -1292,24 +1458,26 @@ class QualityGate:
         if stage not in self.selected or stage in self.results or stage in self.active:
             return
         if self.reusable(stage):
-            assert self.resume_dir is not None
-            prior = self.prior_results[stage]
-            print(f"quality-gate: reusing {stage} from matching evidence {self.resume_dir}")
-            origin = prior.origin_run if prior.origin_run != "-" else self.resume_dir.name
+            source = self.reuse_source(stage)
+            assert source is not None
+            source_dir, prior = source
+            kind = "hosted" if source_dir == self.hosted_dir else "matching"
+            print(f"quality-gate: reusing {stage} from {kind} evidence {source_dir}")
+            origin = prior.origin_run if prior.origin_run != "-" else source_dir.name
             reused_log = "-"
             if prior.log != "-":
                 reused_log = f"{stage}.reused.log"
-                shutil.copyfile(self.resume_dir / prior.log, self.run_dir / reused_log)
+                shutil.copyfile(source_dir / prior.log, self.run_dir / reused_log)
                 (self.run_dir / reused_log).chmod(0o600)
             if stage == "quality-contracts":
-                metrics = self.resume_dir / "quality-metrics.json"
+                metrics = source_dir / "quality-metrics.json"
                 if not metrics.is_file() or metrics.is_symlink():
                     raise GateError(
                         "reused quality-contracts evidence has no safe quality metrics"
                     )
                 shutil.copyfile(metrics, self.run_dir / "quality-metrics.json")
                 (self.run_dir / "quality-metrics.json").chmod(0o600)
-                swift_metrics = self.resume_dir / "quality-metrics-swift.json"
+                swift_metrics = source_dir / "quality-metrics-swift.json"
                 if swift_metrics.exists():
                     if not swift_metrics.is_file() or swift_metrics.is_symlink():
                         raise GateError(
@@ -1319,7 +1487,7 @@ class QualityGate:
                         swift_metrics, self.run_dir / "quality-metrics-swift.json"
                     )
                     (self.run_dir / "quality-metrics-swift.json").chmod(0o600)
-                opportunities = self.resume_dir / "coverage-opportunities.json"
+                opportunities = source_dir / "coverage-opportunities.json"
                 if not opportunities.is_file() or opportunities.is_symlink():
                     raise GateError(
                         "reused quality-contracts evidence has no safe coverage opportunities"
@@ -1331,7 +1499,7 @@ class QualityGate:
             self.record_result(
                 stage,
                 StageResult("reused", prior.duration, reused_log, 0, origin),
-                scenario_source=self.resume_dir / "stage-scenarios" / f"{stage}.jsonl",
+                scenario_source=source_dir / "stage-scenarios" / f"{stage}.jsonl",
             )
             return
         if self.prerequisite_failed(stage):
@@ -1396,7 +1564,8 @@ class QualityGate:
             )
             if re.search(
                 r"error creating .+\.sock \(Operation not permitted\)|"
-                r"sandbox\S* denied|deny\(1\)",
+                r"sandbox\S* denied|deny\(1\)|"
+                r"UI e2e: environment denied",
                 log,
             ):
                 result = "environment-failed"
@@ -1432,18 +1601,10 @@ class QualityGate:
 
     def run_post_ui_stages(self) -> None:
         pending = [stage for stage in POST_UI_STAGES if stage in self.selected]
-        budgets = self.budget_values()
-
-        def expected_seconds(stage: str) -> int:
-            value = budgets.get(f"stage_{stage.replace('-', '_')}_seconds_max")
-            if value is None or not POSITIVE_INTEGER.fullmatch(value):
-                raise GateError(f"release stage budget must rank scheduled stage: {stage}")
-            return int(value)
-
         pending.sort(
             key=lambda stage: (
                 stage != "gate-contract",
-                -expected_seconds(stage),
+                -POST_UI_STAGE_WEIGHTS.get(stage, 0),
                 self.all_stages.index(stage),
             )
         )
@@ -1503,68 +1664,18 @@ class QualityGate:
             if pending or any(stage in self.active for stage in POST_UI_STAGES):
                 time.sleep(PROCESS_POLL_SECONDS)
 
-    def budget_values(self) -> dict[str, str | None]:
-        if not self.release_budget.is_file() or self.release_budget.is_symlink():
-            raise GateError("release budget is missing or unsafe")
-        values: dict[str, list[str]] = {}
-        for line in self.release_budget.read_text(encoding="utf-8").splitlines():
-            fields = line.split("\t")
-            if len(fields) == 2:
-                values.setdefault(fields[0], []).append(fields[1])
-        return {
-            key: items[0] if len(items) == 1 else None
-            for key, items in values.items()
-        }
-
-    def stage_budget_override(self, stage: str) -> str:
-        suffix = stage.upper().replace("-", "_")
-        value = os.environ.get(
-            f"DETACH_QUALITY_GATE_TEST_STAGE_SECONDS_{suffix}", ""
-        )
-        if not value and stage == "codex":
-            value = os.environ.get("DETACH_QUALITY_GATE_TEST_CODEX_SECONDS", "")
-        return value
-
-    def enforce_stage_budget(self, stage: str) -> None:
-        if (
-            self.options.without_release_budget
-            or stage == "release-budget"
-            or "release-budget" in self.selected
-        ):
-            return
-        result = self.results[stage]
-        if result.status not in ("passed", "reused"):
-            return
-        override = self.stage_budget_override(stage)
-        if self.test_mode and not override:
-            return
-        measured = override or str(result.duration)
-        if not NONNEGATIVE_INTEGER.fullmatch(measured):
-            raise GateError(f"stage duration must be a non-negative integer: {stage}")
-        key = f"stage_{stage.replace('-', '_')}_seconds_max"
-        maximum = self.budget_values().get(key)
-        if maximum is None:
-            raise GateError(f"release stage budget is missing or duplicated: {stage}")
-        if not POSITIVE_INTEGER.fullmatch(maximum):
-            raise GateError(f"release stage budget must be a positive integer: {stage}")
-        if int(measured) > int(maximum):
-            log = result.log
-            if log == "-":
-                log = f"{stage}.log"
-                write_private(self.run_dir / log, "")
-            with (self.run_dir / log).open("a", encoding="utf-8") as output:
-                output.write(
-                    f"stage budget: {stage} regressed: {measured}s > {maximum}s\n"
-                )
-            self.record_result(
-                stage,
-                StageResult("failed", int(measured), log, 1, result.origin_run),
-            )
+    def inherited_timing_wall(self) -> int:
+        """Return the wall time carried from a resumed run as telemetry."""
+        if self.resume_dir is None:
+            return 0
+        raw = self.prior_manifest.get("timing_wall_seconds")
+        if raw is None or not NONNEGATIVE_INTEGER.fullmatch(raw):
+            raise GateError("resume timing wall duration is invalid")
+        return int(raw)
 
     def report(self, stage: str) -> None:
         if stage in self.reported:
             return
-        self.enforce_stage_budget(stage)
         result = self.results[stage]
         if result.status in ("failed", "environment-failed", "timeout"):
             if result.log != "-":
@@ -1591,92 +1702,6 @@ class QualityGate:
                 f"({result.duration}s; log={result.log})"
             )
         self.reported.add(stage)
-
-    def evaluate_release_budget(self) -> None:
-        if "release-budget" not in self.selected:
-            return
-        for stage in self.selected:
-            if stage == "release-budget":
-                continue
-            result = self.results.get(stage)
-            if result is None or result.status not in ("passed", "reused"):
-                print(
-                    f"quality-gate: blocking release-budget because {stage} is not passed",
-                    file=sys.stderr,
-                )
-                self.record_result(
-                    "release-budget", StageResult("blocked", 0, "-", 0)
-                )
-                return
-        values = self.budget_values()
-        if values.get("schema") != "2":
-            raise GateError("release budget schema is unsupported")
-        raw_elapsed = os.environ.get(
-            "DETACH_QUALITY_GATE_TEST_WALL_SECONDS",
-            str(int(time.time()) - self.started_epoch),
-        )
-        if not NONNEGATIVE_INTEGER.fullmatch(raw_elapsed):
-            raise GateError("test wall duration must be a non-negative integer")
-        elapsed = int(raw_elapsed)
-        inherited = 0
-        if self.resume_dir is not None:
-            raw_inherited = self.prior_manifest.get("timing_wall_seconds")
-            if raw_inherited is None or not NONNEGATIVE_INTEGER.fullmatch(raw_inherited):
-                raise GateError("resume timing wall duration is invalid")
-            inherited = int(raw_inherited)
-        self.effective_timing_wall = max(elapsed, inherited)
-        wall_maximum = values.get("wall_seconds_max")
-        if wall_maximum is None:
-            raise GateError("release wall budget is missing or duplicated")
-        if not POSITIVE_INTEGER.fullmatch(wall_maximum):
-            raise GateError("release wall budget must be a positive integer")
-        lines = [
-            f"invocation_wall_seconds\t{elapsed}",
-            f"inherited_wall_seconds\t{inherited}",
-            f"effective_wall_seconds\t{self.effective_timing_wall}\tmax\t{wall_maximum}",
-        ]
-        result = "passed"
-        exit_status = 0
-        if self.effective_timing_wall > int(wall_maximum):
-            lines.append(
-                f"release budget: wall time regressed: {self.effective_timing_wall}s > "
-                f"{wall_maximum}s"
-            )
-            result = "failed"
-            exit_status = 1
-        for stage in self.selected:
-            if stage == "release-budget":
-                continue
-            stage_result = self.results[stage]
-            override = self.stage_budget_override(stage)
-            duration = override or str(stage_result.duration)
-            if not NONNEGATIVE_INTEGER.fullmatch(duration):
-                raise GateError(f"stage duration must be a non-negative integer: {stage}")
-            key = f"stage_{stage.replace('-', '_')}_seconds_max"
-            maximum = values.get(key)
-            if maximum is None:
-                raise GateError(f"release stage budget is missing or duplicated: {stage}")
-            if not POSITIVE_INTEGER.fullmatch(maximum):
-                raise GateError(f"release stage budget must be a positive integer: {stage}")
-            lines.append(f"{stage}_seconds\t{duration}\tmax\t{maximum}")
-            if self.test_mode and not override:
-                continue
-            if int(duration) > int(maximum):
-                lines.append(
-                    f"release budget: {stage} regressed: {duration}s > {maximum}s"
-                )
-                result = "failed"
-                exit_status = 1
-        if result == "passed":
-            lines.append(
-                f"Release budget passed: wall={self.effective_timing_wall}s "
-                f"max={wall_maximum}s"
-            )
-        write_private(self.run_dir / "release-budget.log", "\n".join(lines) + "\n")
-        self.record_result(
-            "release-budget",
-            StageResult(result, 0, "release-budget.log", exit_status),
-        )
 
     def assemble_summary(self) -> None:
         for stage in self.selected:
@@ -1849,6 +1874,7 @@ class QualityGate:
             return 0
         self.prepare_evidence()
         self.validate_resume()
+        self.validate_hosted_reuse()
         self.write_manifest("running")
 
         def signal_handler(_signum: int, _frame: object) -> None:
@@ -1880,10 +1906,7 @@ class QualityGate:
             self.wait_for(("quality-contracts",))
             self.run_post_ui_stages()
             for stage in self.selected:
-                if stage != "release-budget":
-                    self.wait_for((stage,))
-            self.evaluate_release_budget()
-            self.wait_for(("release-budget",))
+                self.wait_for((stage,))
         except InterruptedRun:
             self.interrupt()
         finally:
@@ -1926,6 +1949,20 @@ def child_run(arguments: list[str], *, cwd: Path = ROOT, env: dict[str, str] | N
         print(f"quality-gate stage: cannot start {arguments[0]}: {error}", file=sys.stderr)
         return 2
     return process.returncode
+
+
+RUNTIME_PRODUCT_ROOT = Path("app/.build/quality-runtime")
+
+
+def provider_runtime_payload(root: Path) -> Path:
+    """Return the directory that holds tmux and detach-state for provider suites.
+
+    Hosted shards that bind exact products from the last green main use the
+    published runtime products. Everything else uses the freshly verified app.
+    """
+    if exact_products_enabled():
+        return root / RUNTIME_PRODUCT_ROOT
+    return root / "app/build/Detach.app/Contents/Resources/DetachCLI"
 
 
 def exact_products_enabled() -> bool:
@@ -2165,7 +2202,6 @@ def run_distribution_parts(root: Path, run_dir: Path) -> int:
 def run_static_contracts(root: Path, run_dir: Path) -> int:
     contracts = (
         ("documentation", [str(root / "tests/docs-contract.sh")]),
-        ("release-budget", [str(root / "tests/release-budget-ratchet.sh")]),
         ("shell-safety", [str(root / "tests/shell-safety.sh")]),
         ("suite-inventory", [str(root / "tests/test-suite-contract.sh")]),
     )
@@ -2244,6 +2280,7 @@ def run_static_stage(root: Path, run_dir: Path, mode: str, resolved_base: str) -
         "scripts/quality-metrics",
         "scripts/quality-mutation",
         "scripts/quality-baseline",
+        "scripts/quality-evidence",
         "scripts/quality-promote",
         "scripts/quality-history",
         "scripts/quality-care",
@@ -2331,6 +2368,12 @@ def gate_contract_definitions(
             "Quality baseline contracts passed",
         ),
         (
+            "quality-evidence.log",
+            [str(root / "tests/quality-evidence.sh")],
+            {},
+            "Quality evidence contracts passed",
+        ),
+        (
             "quality-promote.log",
             [str(root / "tests/quality-promote.sh")],
             {},
@@ -2365,12 +2408,6 @@ def gate_contract_definitions(
             [str(root / "tests/quality-mutation.sh")],
             {},
             "Quality mutation contracts passed",
-        ),
-        (
-            "release-budget-ratchet.log",
-            [str(root / "tests/release-budget-ratchet-contract.sh")],
-            {},
-            "Release budget ratchet contract tests passed",
         ),
         (
             "shell-safety.log",
@@ -2841,16 +2878,22 @@ def run_stage_worker(stage: str) -> int:
                 print("quality-gate: UI e2e emitted no coverage profile", file=sys.stderr)
                 return 2
         return status
-    payload = root / "app/build/Detach.app/Contents/Resources/DetachCLI"
+    payload = provider_runtime_payload(root)
     tmux = payload / "tmux"
     state = payload / "detach-state"
     if stage in ("codex", "claude"):
-        if not tmux.is_file() or not os.access(tmux, os.X_OK):
-            print(f"quality-gate: {stage} gate requires the app stage bundled tmux", file=sys.stderr)
-            return 2
-        if not state.is_file() or not os.access(state, os.X_OK):
+        print(f"quality-gate: {stage} runtime payload {payload}", file=sys.stderr)
+        if not tmux.is_file() or tmux.is_symlink() or not os.access(tmux, os.X_OK):
             print(
-                f"quality-gate: {stage} gate requires the app stage bundled state helper",
+                f"quality-gate: {stage} gate requires bundled tmux from the app stage "
+                "or exact runtime products",
+                file=sys.stderr,
+            )
+            return 2
+        if not state.is_file() or state.is_symlink() or not os.access(state, os.X_OK):
+            print(
+                f"quality-gate: {stage} gate requires the bundled state helper from the "
+                "app stage or exact runtime products",
                 file=sys.stderr,
             )
             return 2
