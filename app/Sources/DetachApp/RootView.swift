@@ -37,6 +37,8 @@ struct RootView: View {
     @ObservedObject var settingsNavigation: SettingsNavigation
 
     @State private var selectedID: String?
+    @State private var detailWidth: CGFloat = 0
+    @State private var initialTerminalSize: SessionTerminalSize?
     @State private var shortcutAssignments: [SessionShortcutAssignment] = []
     @State private var initialSetupComplete = false
 
@@ -64,27 +66,40 @@ struct RootView: View {
                             store: store,
                             selectedID: $selectedID,
                             navigation: navigation,
-                            shortcutAssignments: shortcutAssignments)
+                            shortcutAssignments: shortcutAssignments,
+                            initialTerminalSize: initialTerminalSize)
                     } detail: {
-                        if store.sessions.isEmpty && store.state == .ok {
-                            EmptySessionsView()
-                        } else if let session = selectedSession {
-                            SessionDetailSwitcher(
-                                session: session,
-                                store: store,
-                                detachPath: detachPath,
-                                sessionLogSnapshots: sessionLogSnapshots,
-                                terminalScreens: terminalScreens)
-                        } else {
-                            ContentUnavailableView {
-                                Label {
-                                    Text(L10n.string("Select a session"))
-                                } icon: {
-                                    Image(systemName: "terminal").foregroundStyle(Brand.gradient)
+                        Group {
+                            if store.sessions.isEmpty && store.state == .ok {
+                                EmptySessionsView()
+                            } else if let session = selectedSession {
+                                SessionDetailSwitcher(
+                                    session: session,
+                                    store: store,
+                                    detachPath: detachPath,
+                                    sessionLogSnapshots: sessionLogSnapshots,
+                                    terminalScreens: terminalScreens)
+                            } else {
+                                ContentUnavailableView {
+                                    Label {
+                                        Text(L10n.string("Select a session"))
+                                    } icon: {
+                                        Image(systemName: "terminal").foregroundStyle(Brand.gradient)
+                                    }
+                                } description: {
+                                    Text(L10n.string("All detach sessions from both providers are on the left"))
                                 }
-                            } description: {
-                                Text(L10n.string("All detach sessions from both providers are on the left"))
                             }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                            detailWidth = $0
+                            initialTerminalSize = SessionAttachController.initialStartSize(
+                                detailWidth: $0, fontPointSize: fontPointSize)
+                        }
+                        .onChange(of: fontPointSize) { _, size in
+                            initialTerminalSize = SessionAttachController.initialStartSize(
+                                detailWidth: detailWidth, fontPointSize: size)
                         }
                     }
 

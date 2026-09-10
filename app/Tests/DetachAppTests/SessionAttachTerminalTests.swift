@@ -333,6 +333,26 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
+    func testStartWidthMatchesTerminalAcrossWindowSizesAndFonts() throws {
+        for detailWidth: CGFloat in [720, 1100, 1500] {
+            for fontSize: CGFloat in [1, 11, 13, 14.6, 18, 100] {
+                let terminal = LocalProcessTerminalView(frame: NSRect(
+                    x: 0, y: 0,
+                    width: detailWidth - 2 * SessionDetailLayout.contentInset,
+                    height: 400))
+                terminal.font = SessionAttachController.terminalFont(
+                    pointSize: AppFontSize.clamped(fontSize))
+                let hint = try XCTUnwrap(SessionAttachController.initialStartSize(
+                    detailWidth: detailWidth, fontPointSize: fontSize))
+                XCTAssertEqual(hint.columns, terminal.terminal.cols)
+                XCTAssertEqual(hint.rows, 24)
+                if detailWidth >= 1500 { XCTAssertGreaterThan(hint.columns, 80) }
+            }
+        }
+        XCTAssertNil(SessionAttachController.initialStartSize(detailWidth: 0, fontPointSize: 13))
+    }
+
+    @MainActor
     func testCoordinatorOwnsThePublicAttachInvocation() throws {
         let session = try XCTUnwrap(Self.session())
         let view = SessionAttachTerminalView(

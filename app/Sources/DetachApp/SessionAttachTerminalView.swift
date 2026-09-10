@@ -701,6 +701,17 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
         return SessionTerminalSize(columns: view.terminal.cols, rows: view.terminal.rows)
     }
 
+    // Новый detail ещё не существует: ширину берём из основной области,
+    // высоту до подключения оставляем стандартной для detached tmux.
+    @MainActor
+    static func initialStartSize(detailWidth: CGFloat, fontPointSize: CGFloat) -> SessionTerminalSize? {
+        let width = detailWidth - 2 * SessionDetailLayout.contentInset
+        guard let measured = initialSize(
+            surfaceSize: CGSize(width: width, height: 100),
+            fontPointSize: AppFontSize.clamped(fontPointSize)) else { return nil }
+        return SessionTerminalSize(columns: measured.columns, rows: 24)
+    }
+
     static func terminate(process: LocalProcess, timeout: TimeInterval = 1) {
         let pid = process.shellPid
         process.terminate()
@@ -1045,4 +1056,8 @@ struct SessionAttachTerminalView: NSViewRepresentable {
             }
         }
     }
+}
+
+enum SessionDetailLayout {
+    static let contentInset: CGFloat = 16
 }

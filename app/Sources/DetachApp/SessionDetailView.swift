@@ -123,7 +123,7 @@ struct SessionDetailView: View {
             logView.layoutPriority(1)
             actionBar
         }
-        .padding(16)
+        .padding(SessionDetailLayout.contentInset)
         .onChange(of: session.id) { _, _ in
             interactionGeneration = UUID()
             logPoller = nil
@@ -202,6 +202,7 @@ struct SessionDetailView: View {
                     .appFont(.title2, weight: .bold)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .layoutPriority(1)
                     .help(session.displayTitle)
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG

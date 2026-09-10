@@ -1104,7 +1104,9 @@ if codex_part_selected lifecycle; then
   codex_scenario_event begin SC-SESSION-STOP-CODEX
   codex_scenario_event begin SC-SESSION-DELETE-CODEX
   COLORTERM=ambient-is-not-a-capability \
-    LC_ALL=C run_codex --name integration --detach -- "$literal_prompt"
+    LC_ALL=C "$DETACH" --terminal-size 137x47 codex start --name integration --detach -- "$literal_prompt"
+# Провайдер записывает размер до первого вывода и до подключения клиента.
+[ "$(awk '{print $1, $2}' "$FAKE_CODEX_ARGS_FILE.terminal-size")" = '47 137' ]
 
 wait_for_tmux_option "$SESSION" @detach_status running
 wait_for_tmux_option "$SESSION" set-titles on
@@ -1494,6 +1496,10 @@ done
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 tmux -L "$OUTER_SOCKET" has-session -t "=$outer_session"
 tmux -L "$OUTER_SOCKET" kill-server >/dev/null 2>&1 || true
+
+# Два public attach на разных PTY проверяют window-size latest и закрытие UI.
+python3 "$ROOT/tests/terminal_client_geometry.py" \
+  "$TMUX_TEST_BIN" "$SOCKET_PATH" "$DETACH" "$SESSION"
 
 # SwiftTerm closes the in-app attach client with SIGTERM. Attach through the
 # public CLI on a real PTY, terminate that client, and prove the managed
@@ -1905,11 +1911,12 @@ printf '{damaged rollout\n' >"$resume_rollout"
 export FAKE_CODEX_SLEEP=20
 export FAKE_CODEX_EXIT=0
 export FAKE_CODEX_FOREIGN_FIRST=0
-if ! run_codex recover --detach integration; then
+if ! "$DETACH" --terminal-size 151x39 codex recover --detach integration; then
   printf 'recover command returned a failure after starting the session\n' >&2
   exit 1
 fi
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
+[ "$(awk '{print $1, $2}' "$FAKE_CODEX_ARGS_FILE.terminal-size")" = '39 151' ]
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
 # A new run under the same name starts without the previous Stop intent.

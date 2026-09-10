@@ -18,10 +18,17 @@ esac
 
 printf '%s\n' "$*" >>"$INVOCATIONS"
 
+initial_terminal_size=""
 if [ "${1:-}" = --terminal-size ]; then
   [[ "${2:-}" =~ ^[1-9][0-9]{0,2}x[1-9][0-9]{0,2}$ ]] || exit 90
   printf '%s\n' "$2" >"$ROOT/fake/initial-terminal-size"
+  initial_terminal_size="$2"
   shift 2
+  case "${1:-}:${2:-}" in
+    codex:start|claude:start) set -- "$1" "${@:3}" ;;
+    codex:recover|claude:resume) ;;
+    *) printf 'unsupported sized startup fixture\n' >&2; exit 90 ;;
+  esac
 fi
 
 if [ "$#" -eq 2 ] && [ "$1" = watch ] && [ "$2" = --json ]; then
@@ -140,6 +147,12 @@ if [ "$#" -eq 10 ] && [ "$1" = client ] && [ "$2" = switch ] \
     ;;
   esac
   : >"$ROOT/fake/client-switch-requested"
+  attempts=0
+  while [ -f "$ROOT/fake/hold-client-switch" ] && [ "$attempts" -lt 200 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.01
+  done
+  [ ! -f "$ROOT/fake/hold-client-switch" ] || exit 75
   # Keep the old complete terminal frame visible while the command is in
   # flight. A private FIFO models tmux socket delivery without cross-process
   # signals that the packaged app sandbox can reject.
@@ -251,6 +264,7 @@ fi
 
 if [ "$#" -eq 4 ] && [ "$1" = codex ] && [ "$2" = recover ] \
     && [ "$3" = --detach ] && [ "$4" = detach-codex-ui-recoverable ]; then
+  printf '%s\n' "$initial_terminal_size" >"$ROOT/fake/recover-terminal-size"
   : >"$ROOT/fake/recovered"
   printf '%s\n' "$*" >>"$ACTIONS"
   exit 0
@@ -269,6 +283,7 @@ fi
 if [ "$#" -eq 6 ] && [ "$1" = claude ] && [ "$2" = resume ] \
     && [ "$3" = --name ] && [ "$4" = detach-claude-ui-completed ] \
     && [ "$5" = --detach ] && [ "$6" = a9f58f1d-1234-5678-9abc-def012342ed9 ]; then
+  printf '%s\n' "$initial_terminal_size" >"$ROOT/fake/resume-terminal-size"
   : >"$ROOT/fake/resumed"
   printf '%s\n' "$*" >>"$ACTIONS"
   attempts=0
@@ -295,7 +310,9 @@ if [ "$#" -eq 2 ] && [ "$1" = claude ] && [ "$2" = --detach ]; then
     printf 'new session started outside its selected project\n' >&2
     exit 65
   }
+  printf '%s\n' "$initial_terminal_size" >"$ROOT/fake/new-session-terminal-size"
   : >"$ROOT/fake/new-session-started"
+  [ "$(<"$STATE")" != empty ] || printf 'sessions\n' >"$STATE"
   printf '%s\n' "$*" >>"$ACTIONS"
   exit 0
 fi
@@ -311,6 +328,7 @@ if [ "$#" -eq 2 ] && [ "$1" = codex ] && [ "$2" = --detach ]; then
     exit 65
   }
   printf '%s\n' "$quick_cwd" >"$ROOT/fake/quick-chat-cwd"
+  printf '%s\n' "$initial_terminal_size" >"$ROOT/fake/quick-chat-terminal-size"
   : >"$ROOT/fake/quick-chat-started"
   printf '%s\n' "$*" >>"$ACTIONS"
   exit 0

@@ -52,6 +52,7 @@ struct SidebarView: View {
     @Binding var selectedID: String?
     @ObservedObject var navigation: MainNavigation
     let shortcutAssignments: [SessionShortcutAssignment]
+    var initialTerminalSize: SessionTerminalSize? = nil
     @AppStorage(AppSettings.defaultProjectsDirectoryKey, store: AppSettings.defaults)
     private var defaultProjectsDirectoryPath =
         AppSettings.defaultProjectsDirectoryPath
@@ -160,6 +161,7 @@ struct SidebarView: View {
                 store: store,
                 selectedID: $selectedID,
                 initialProjectDir: uiE2EInitialProjectDirectory,
+                terminalSize: initialTerminalSize,
                 projectPickerRoot: DirectoryPreference.configuredOrFallback(
                     path: defaultProjectsDirectoryPath,
                     fallback: FileManager.default.homeDirectoryForCurrentUser)
@@ -194,8 +196,10 @@ struct SidebarView: View {
         }
         .onChange(of: navigation.quickChatRequestID, initial: true) { _, requestID in
             guard requestID != nil else { return }
-            navigation.quickChatRequestID = nil
-            startQuickChat()
+            startRequestedQuickChat()
+        }
+        .onChange(of: initialTerminalSize) { _, _ in
+            startRequestedQuickChat()
         }
         .onChange(of: deletableFinishedSessions.map(\.id)) { _, currentIDs in
             let state = FinishedSelectionReconciliation.resolve(
@@ -462,6 +466,13 @@ struct SidebarView: View {
         }
     }
 
+    private func startRequestedQuickChat() {
+        // После открытия окна запрос может прийти раньше измерения detail.
+        guard navigation.quickChatRequestID != nil, initialTerminalSize != nil else { return }
+        navigation.quickChatRequestID = nil
+        startQuickChat()
+    }
+
     private func startQuickChat() {
         guard !isStartingQuickChat else { return }
         isStartingQuickChat = true
@@ -471,6 +482,7 @@ struct SidebarView: View {
                 store: store,
                 providerRawValue: quickChatProvider,
                 directoryPath: quickChatDirectoryPath,
+                terminalSize: initialTerminalSize,
                 onSessionAvailable: { sessionID in
                     selectedID = sessionID
                 })

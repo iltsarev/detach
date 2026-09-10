@@ -38,7 +38,7 @@ final class UIE2EConfigurationTests: XCTestCase {
     func testAcceptsOnlyKnownScenarios() throws {
         try withFixture { fixture in
             for scenario in [
-                "main", "failure", "settings", "onboarding-first-run",
+                "main", "failure", "settings", "terminal-width", "onboarding-first-run",
                 "onboarding-provider", "onboarding-approval",
             ] {
                 var environment = fixture.environment
