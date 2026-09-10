@@ -1223,22 +1223,83 @@ tmux -L "$SOCKET" list-keys -T root | grep -F 'S-Enter' | \
   grep -F 'send-keys M-Enter' | grep -F 'detach-root-original' >/dev/null
 tmux -L "$SOCKET" list-keys -T detach-root-original | grep -F 'S-Enter' | \
   grep -F 'send-keys Enter' >/dev/null
-# Exercise the actual client → tmux → raw-pane path. CSI-u Shift+Return must
-# arrive as the provider-compatible Option+Return bytes (Escape, carriage
-# return), rather than collapsing to ordinary Return as it did without the
-# managed root binding.
-shift_return_session="detach-shift-return-probe"
-shift_return_bytes="$TMP_ROOT/shift-return.bytes"
-tmux -L "$SOCKET" new-session -d -s "$shift_return_session" \
-  "/bin/sh -c 'stty raw -echo; /bin/dd bs=1 count=2 of=\"$shift_return_bytes\" 2>/dev/null'"
-{
-  /bin/sleep 0.5
-  printf '\033[13;2u'
-} | TERM=xterm-256color /usr/bin/perl -e 'alarm 6; exec @ARGV' \
-  /usr/bin/script -q /dev/null \
-  "$TMUX_TEST_BIN" -S "$SOCKET_PATH" attach-session -t "=$shift_return_session" \
-  >/dev/null
-[ "$(od -An -tx1 "$shift_return_bytes" | tr -d '[:space:]')" = "1b0d" ]
+# Проверяем байты клавиатуры через настоящий клиент и управляемый tmux.
+python3 - "$TMUX_TEST_BIN" "$SOCKET_PATH" "$TMP_ROOT" "$DETACH" <<'PY_TERMINAL_KEYBOARD'
+#!/usr/bin/env python3
+"""Проверка ввода встроенного терминала через управляемый tmux."""
+
+import os
+from pathlib import Path
+import pty
+import shlex
+import subprocess
+import sys
+import time
+
+
+def main():
+    binary, socket, directory, detach = sys.argv[1:]
+    root = Path(directory)
+    environment = dict(os.environ, TERM="xterm-256color", LC_ALL="en_US.UTF-8")
+
+    def tmux(*args):
+        return subprocess.check_output([binary, "-S", socket, *args], env=environment)
+
+    def wait_for(predicate):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        raise AssertionError("управляемый tmux не передал ожидаемый ввод")
+
+    reader = root / "keyboard-reader.py"
+    reader.write_text(
+        "import os,sys,tty\n"
+        "tty.setraw(0)\n"
+        "output=open(sys.argv[1],'wb',buffering=0)\n"
+        "while True: output.write(os.read(0,4096))\n")
+    original = subprocess.check_output([detach, "config", "tmux-extended-keys"],
+                                       text=True).strip()
+    try:
+        for mode, enter in [("on", b"\x1b\r"), ("off", b"\r")]:
+            subprocess.run([detach, "config", "tmux-extended-keys", mode], check=True)
+            name = "detach-keyboard-" + mode
+            output = root / (name + ".bytes")
+            tmux("new-session", "-d", "-s", name, shlex.join([
+                sys.executable, str(reader), str(output)]))
+            master, slave = pty.openpty()
+            child = None
+            try:
+                child = subprocess.Popen(
+                    [binary, "-S", socket, "attach-session", "-t", name],
+                    stdin=slave, stdout=slave, stderr=slave,
+                    env=environment, start_new_session=True)
+                os.close(slave)
+                wait_for(lambda: output.exists() and name.encode() in tmux(
+                    "list-clients", "-F", "#{client_session}"))
+                # Swift/AppKit-тесты отдельно доказывают этот результат роутинга,
+                # включая Kitty, автоповтор, смену фокуса и подавление keyUp.
+                controls = b"\x01\x01\x05\x15\x03\x16"
+                os.write(master, controls + b"\x1b[13;2u")
+                expected = controls + enter
+                wait_for(lambda: output.read_bytes() == expected)
+                # Следующий символ обнаружит лишние или потерянные байты.
+                os.write(master, b"x")
+                wait_for(lambda: output.read_bytes() == expected + b"x")
+            finally:
+                tmux("kill-session", "-t", name)
+                if child is not None:
+                    child.wait(timeout=3)
+                os.close(master)
+    finally:
+        subprocess.run([detach, "config", "tmux-extended-keys", original], check=True)
+    print("Клавиатура через управляемый tmux: on/off PASS")
+
+
+if __name__ == "__main__":
+    main()
+PY_TERMINAL_KEYBOARD
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:extkeys')" = "1" ]
 [ "$(tmux -L "$SOCKET" show-options -sv terminal-features | grep -Fxc -- '*:hyperlinks')" = "1" ]
 # Re-run the server configuration through a real attach. Attaching without a

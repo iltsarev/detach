@@ -1356,7 +1356,7 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
-    func testControlVReachesTheProviderAsTheRawClipboardImageShortcut() throws {
+    func testControlShortcutsReachPTYWithoutOrphanKittyReleases() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "detach-attach-control-shortcuts-\(UUID().uuidString)",
@@ -1381,35 +1381,43 @@ final class SessionAttachTerminalTests: XCTestCase {
             FileManager.default.fileExists(atPath: ready.path)
                 && terminal.process.running
         }
-        let controlC = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: .control,
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "\u{03}",
-            charactersIgnoringModifiers: "c",
-            isARepeat: false,
-            keyCode: 8))
-        let controlV = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: .control,
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "\u{16}",
-            charactersIgnoringModifiers: "v",
-            isARepeat: false,
-            keyCode: 9))
+        terminal.feed(text: "\u{1b}[>31u")
+        XCTAssertFalse(terminal.terminal.keyboardEnhancementFlags.isEmpty)
 
-        XCTAssertTrue(SessionAttachKeyboard.routeProviderShortcut(
-            from: controlC,
-            send: terminal.send))
-        XCTAssertTrue(SessionAttachKeyboard.routeProviderShortcut(
-            from: controlV,
-            send: terminal.send))
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: try XCTUnwrap(Self.session()),
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in })
+        for (press, release) in [
+            (
+                try keyEvent(
+                    keyCode: 8,
+                    modifiers: .control,
+                    characters: "\u{03}"),
+                try keyEvent(type: .keyUp, keyCode: 8, modifiers: [])
+            ),
+            (
+                try keyEvent(
+                    keyCode: 9,
+                    modifiers: .control,
+                    characters: "\u{16}"),
+                try keyEvent(type: .keyUp, keyCode: 9, modifiers: .control)
+            ),
+        ] {
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                press,
+                window: nil,
+                firstResponder: terminal,
+                in: terminal,
+                send: terminal.send))
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                release,
+                window: nil,
+                firstResponder: nil,
+                in: terminal,
+                send: terminal.send))
+        }
 
         try waitUntil {
             (try? Data(contentsOf: received).count) == 2
@@ -1445,6 +1453,360 @@ final class SessionAttachTerminalTests: XCTestCase {
             SessionAttachKeyboard.providerInput(for: controlV),
             [0x16])
         XCTAssertNil(SessionAttachKeyboard.providerInput(for: commandV))
+    }
+
+    func testGhosttyLineEditingShortcutsUsePhysicalCommandKeys() throws {
+        let physicalArrowFlags: NSEvent.ModifierFlags = [
+            .command,
+            .function,
+            .numericPad,
+            .capsLock,
+        ]
+        let expected: [(UInt16, NSEvent.ModifierFlags, [UInt8])] = [
+            (123, physicalArrowFlags, [0x01]),
+            (124, physicalArrowFlags, [0x05]),
+            (51, [.command, .capsLock], [0x15]),
+        ]
+
+        for (keyCode, modifiers, bytes) in expected {
+            let event = try keyEvent(keyCode: keyCode, modifiers: modifiers)
+            XCTAssertEqual(SessionAttachKeyboard.providerInput(for: event), bytes)
+        }
+
+        for keyCode in [UInt16(123), 124, 51] {
+            for extraModifier in [
+                NSEvent.ModifierFlags.control,
+                .option,
+                .shift,
+            ] {
+                let event = try keyEvent(
+                    keyCode: keyCode,
+                    modifiers: [
+                        .command,
+                        extraModifier,
+                        .function,
+                        .numericPad,
+                        .capsLock,
+                    ])
+                XCTAssertNil(SessionAttachKeyboard.providerInput(for: event))
+            }
+            XCTAssertNil(SessionAttachKeyboard.providerInput(
+                for: try keyEvent(
+                    keyCode: keyCode,
+                    modifiers: [.function, .numericPad, .capsLock])))
+        }
+    }
+
+    func testShiftReturnUsesStableExtendedKeySequence() throws {
+        let expected = Array("\u{1b}[13;2u".utf8)
+        XCTAssertEqual(
+            SessionAttachKeyboard.providerInput(
+                for: try keyEvent(
+                    keyCode: 36,
+                    modifiers: [.shift, .capsLock],
+                    characters: "\r")),
+            expected)
+
+        for extraModifier in [
+            NSEvent.ModifierFlags.command,
+            .control,
+            .option,
+        ] {
+            XCTAssertNil(SessionAttachKeyboard.providerInput(
+                for: try keyEvent(
+                    keyCode: 36,
+                    modifiers: [.shift, extraModifier],
+                    characters: "\r")))
+        }
+        XCTAssertNil(SessionAttachKeyboard.providerInput(
+            for: try keyEvent(
+                keyCode: 36,
+                modifiers: [],
+                characters: "\r")))
+
+        let release = try keyEvent(
+            type: .keyUp,
+            keyCode: 36,
+            modifiers: [.shift, .capsLock],
+            characters: "\r")
+        XCTAssertNil(SessionAttachKeyboard.providerInput(for: release))
+    }
+
+    @MainActor
+    func testShiftReturnReachesPTYAfterKittyNegotiation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "detach-shift-return-shortcut-\(UUID().uuidString)",
+                isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ready = root.appendingPathComponent("ready")
+        let received = root.appendingPathComponent("received")
+        let terminal = LocalProcessTerminalView(frame: .zero)
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: [
+                "-c",
+                "stty raw -echo; : > '\(ready.path)'; "
+                    + "dd bs=1 count=7 of='\(received.path)' 2>/dev/null",
+            ],
+            environment: ["PATH=/bin:/usr/bin"])
+        defer { SessionAttachController.terminate(process: terminal.process) }
+
+        try waitUntil {
+            FileManager.default.fileExists(atPath: ready.path)
+                && terminal.process.running
+        }
+        terminal.feed(text: "\u{1b}[>31u")
+        XCTAssertFalse(terminal.terminal.keyboardEnhancementFlags.isEmpty)
+
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: try XCTUnwrap(Self.session()),
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in })
+        let event = try keyEvent(
+            keyCode: 36,
+            modifiers: .shift,
+            characters: "\r")
+
+        XCTAssertNil(coordinator.routeKeyboardEvent(
+            event,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: terminal.send))
+        try waitUntil {
+            (try? Data(contentsOf: received).count) == 7
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: received),
+            Data("\u{1b}[13;2u".utf8))
+
+        let release = try keyEvent(
+            type: .keyUp,
+            keyCode: 36,
+            modifiers: [],
+            characters: "\r")
+        var releaseBytes: [UInt8] = []
+        XCTAssertNil(coordinator.routeKeyboardEvent(
+            release,
+            window: nil,
+            firstResponder: nil,
+            in: terminal,
+            send: { releaseBytes.append(contentsOf: $0) }))
+        XCTAssertTrue(releaseBytes.isEmpty)
+
+        let plainPress = try keyEvent(
+            keyCode: 36,
+            modifiers: [],
+            characters: "\r")
+        let plainRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 36,
+            modifiers: [],
+            characters: "\r")
+        XCTAssertTrue(coordinator.routeKeyboardEvent(
+            plainPress,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: { _ in }) === plainPress)
+        XCTAssertTrue(coordinator.routeKeyboardEvent(
+            plainRelease,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: { _ in }) === plainRelease)
+
+        let unfocusedPress = try keyEvent(
+            keyCode: 36,
+            modifiers: .shift,
+            characters: "\r")
+        let unfocusedRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 36,
+            modifiers: [],
+            characters: "\r")
+        XCTAssertTrue(coordinator.routeKeyboardEvent(
+            unfocusedPress,
+            window: nil,
+            firstResponder: nil,
+            in: terminal,
+            send: { _ in }) === unfocusedPress)
+        XCTAssertTrue(coordinator.routeKeyboardEvent(
+            unfocusedRelease,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: { _ in }) === unfocusedRelease)
+    }
+
+    @MainActor
+    func testGhosttyLineEditingShortcutsReachPTYAfterKittyNegotiation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "detach-command-editing-shortcuts-\(UUID().uuidString)",
+                isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ready = root.appendingPathComponent("ready")
+        let received = root.appendingPathComponent("received")
+        let terminal = LocalProcessTerminalView(frame: .zero)
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: [
+                "-c",
+                "stty raw -echo; : > '\(ready.path)'; "
+                    + "dd bs=1 count=3 of='\(received.path)' 2>/dev/null",
+            ],
+            environment: ["PATH=/bin:/usr/bin"])
+        defer { SessionAttachController.terminate(process: terminal.process) }
+
+        try waitUntil {
+            FileManager.default.fileExists(atPath: ready.path)
+                && terminal.process.running
+        }
+        terminal.feed(text: "\u{1b}[>31u")
+        XCTAssertFalse(terminal.terminal.keyboardEnhancementFlags.isEmpty)
+
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: try XCTUnwrap(Self.session()),
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in })
+
+        for (press, release) in [
+            (
+                try keyEvent(
+                    keyCode: 123,
+                    modifiers: [.command, .function, .numericPad]),
+                try keyEvent(type: .keyUp, keyCode: 123, modifiers: [])
+            ),
+            (
+                try keyEvent(
+                    keyCode: 124,
+                    modifiers: [.command, .function, .numericPad]),
+                try keyEvent(type: .keyUp, keyCode: 124, modifiers: .command)
+            ),
+            (
+                try keyEvent(keyCode: 51, modifiers: .command),
+                try keyEvent(type: .keyUp, keyCode: 51, modifiers: [])
+            ),
+        ] {
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                press,
+                window: nil,
+                firstResponder: terminal,
+                in: terminal,
+                send: terminal.send))
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                release,
+                window: nil,
+                firstResponder: nil,
+                in: terminal,
+                send: terminal.send))
+        }
+
+        try waitUntil {
+            (try? Data(contentsOf: received).count) == 3
+        }
+        XCTAssertEqual(try Data(contentsOf: received), Data([0x01, 0x05, 0x15]))
+    }
+
+    @MainActor
+    func testHandledKeyUpsTrackOverlappingAndRepeatedPresses() throws {
+        let terminal = LocalProcessTerminalView(frame: .zero)
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: try XCTUnwrap(Self.session()),
+            screenCache: SessionTerminalScreenCache(),
+            onTerminated: { _ in })
+        var received: [UInt8] = []
+        let leftPress = try keyEvent(
+            keyCode: 123,
+            modifiers: [.command, .function, .numericPad])
+        let rightPress = try keyEvent(
+            keyCode: 124,
+            modifiers: [.command, .function, .numericPad])
+        let repeatedLeft = try keyEvent(
+            keyCode: 123,
+            modifiers: [.command, .function, .numericPad],
+            isARepeat: true)
+
+        for press in [leftPress, rightPress, repeatedLeft] {
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                press,
+                window: nil,
+                firstResponder: terminal,
+                in: terminal,
+                send: { received.append(contentsOf: $0) }))
+        }
+        XCTAssertEqual(received, [0x01, 0x05, 0x01])
+
+        let rightRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 124,
+            modifiers: [])
+        let leftRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 123,
+            modifiers: [])
+        XCTAssertNil(coordinator.routeKeyboardEvent(
+            rightRelease,
+            window: nil,
+            firstResponder: nil,
+            in: terminal,
+            send: { _ in }))
+        XCTAssertNil(coordinator.routeKeyboardEvent(
+            leftRelease,
+            window: nil,
+            firstResponder: nil,
+            in: terminal,
+            send: { _ in }))
+
+        let duplicateRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 123,
+            modifiers: [])
+        XCTAssertTrue(coordinator.routeKeyboardEvent(
+            duplicateRelease,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: { _ in }) === duplicateRelease)
+
+        let backspacePress = try keyEvent(
+            keyCode: 51,
+            modifiers: .command)
+        XCTAssertNil(coordinator.routeKeyboardEvent(
+            backspacePress,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: { _ in }))
+        let replacementPress = try keyEvent(
+            keyCode: 51,
+            modifiers: [.command, .shift])
+        XCTAssertTrue(coordinator.routeKeyboardEvent(
+            replacementPress,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: { _ in }) === replacementPress)
+        let replacementRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 51,
+            modifiers: [])
+        XCTAssertTrue(coordinator.routeKeyboardEvent(
+            replacementRelease,
+            window: nil,
+            firstResponder: terminal,
+            in: terminal,
+            send: { _ in }) === replacementRelease)
     }
 
     func testNativeTerminalCommandsUsePhysicalCommandKeys() throws {
@@ -1495,6 +1857,42 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertNil(SessionAttachKeyboard.appAction(for: shiftedPaste))
     }
 
+    func testPromptJumpShortcutsAcceptPhysicalArrowFlagsOnly() throws {
+        let physicalArrowFlags: NSEvent.ModifierFlags = [
+            .command,
+            .function,
+            .numericPad,
+            .capsLock,
+        ]
+        XCTAssertEqual(
+            SessionAttachKeyboard.appAction(
+                for: try keyEvent(keyCode: 126, modifiers: physicalArrowFlags)),
+            .jumpToPrompt(.previous))
+        XCTAssertEqual(
+            SessionAttachKeyboard.appAction(
+                for: try keyEvent(keyCode: 125, modifiers: physicalArrowFlags)),
+            .jumpToPrompt(.next))
+
+        for keyCode in [UInt16(126), 125] {
+            for extraModifier in [
+                NSEvent.ModifierFlags.control,
+                .option,
+                .shift,
+            ] {
+                let event = try keyEvent(
+                    keyCode: keyCode,
+                    modifiers: [
+                        .command,
+                        extraModifier,
+                        .function,
+                        .numericPad,
+                        .capsLock,
+                    ])
+                XCTAssertNil(SessionAttachKeyboard.appAction(for: event))
+            }
+        }
+    }
+
     @MainActor
     func testNativeTerminalActionsCallSwiftTermCommands() {
         let terminal = RecordingTerminalView(frame: .zero)
@@ -1507,6 +1905,71 @@ final class SessionAttachTerminalTests: XCTestCase {
             .paste,
             .find(Int(NSFindPanelAction.showFindPanel.rawValue)),
         ])
+    }
+
+    @MainActor
+    func testPromptJumpUsesOSC133OriginsAndSkipsContinuationRows() throws {
+        let terminal = LocalProcessTerminalView(
+            frame: .zero,
+            font: nil,
+            options: TerminalOptions(cols: 8, rows: 3, scrollback: 50))
+        terminal.feed(text: """
+        \u{1b}]133;A\u{07}first-long-prompt\r\nfirst-output\r\n
+        \u{1b}]133;A\u{07}second-long-prompt\r\nsecond-output\r\n
+        \u{1b}]133;A\u{07}third-long-prompt\r\nthird-output\r\ntrailing\r\n
+        """)
+
+        var promptRows: [Int] = []
+        var row = 0
+        while terminal.terminal.bufferLine(atRow: row) != nil {
+            if terminal.terminal.semanticRowKind(at: row) == .initial {
+                promptRows.append(row)
+            }
+            row += 1
+        }
+        XCTAssertEqual(promptRows.count, 3)
+        guard promptRows.count == 3 else { return }
+        XCTAssertTrue((promptRows[0] + 1..<promptRows[1]).contains {
+            terminal.terminal.semanticRowKind(at: $0) == .continuation
+        })
+
+        terminal.scrollTo(row: promptRows[1])
+        SessionAttachTerminalView.Coordinator.perform(
+            .jumpToPrompt(.previous),
+            in: terminal)
+        XCTAssertEqual(terminal.terminal.getTopVisibleRow(), promptRows[0])
+
+        terminal.scrollTo(row: promptRows[0] + 1)
+        SessionAttachTerminalView.Coordinator.perform(
+            .jumpToPrompt(.next),
+            in: terminal)
+        XCTAssertEqual(terminal.terminal.getTopVisibleRow(), promptRows[1])
+
+        terminal.scrollTo(row: promptRows[1])
+        SessionAttachTerminalView.Coordinator.perform(
+            .jumpToPrompt(.next),
+            in: terminal)
+        XCTAssertEqual(terminal.terminal.getTopVisibleRow(), promptRows[2])
+    }
+
+    @MainActor
+    func testPromptJumpWithoutOSC133OriginsDoesNotMoveViewport() {
+        let terminal = LocalProcessTerminalView(
+            frame: .zero,
+            font: nil,
+            options: TerminalOptions(cols: 20, rows: 3, scrollback: 20))
+        terminal.feed(text: "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n")
+        terminal.scrollTo(row: 1)
+        let originalRow = terminal.terminal.getTopVisibleRow()
+
+        SessionAttachTerminalView.Coordinator.perform(
+            .jumpToPrompt(.previous),
+            in: terminal)
+        XCTAssertEqual(terminal.terminal.getTopVisibleRow(), originalRow)
+        SessionAttachTerminalView.Coordinator.perform(
+            .jumpToPrompt(.next),
+            in: terminal)
+        XCTAssertEqual(terminal.terminal.getTopVisibleRow(), originalRow)
     }
 
     @MainActor
@@ -1539,6 +2002,16 @@ final class SessionAttachTerminalTests: XCTestCase {
             in: terminal,
             send: { received = $0 }))
         XCTAssertEqual(received, [0x16])
+        let controlVRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 9,
+            modifiers: [])
+        XCTAssertNil(coordinator.routeKeyboardEvent(
+            controlVRelease,
+            window: nil,
+            firstResponder: nil,
+            in: terminal,
+            send: { _ in }))
 
         let commandPaste = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
@@ -1560,6 +2033,46 @@ final class SessionAttachTerminalTests: XCTestCase {
             send: { _ in },
             performAppAction: { action = $0 }))
         XCTAssertEqual(action, .paste)
+        let commandPasteRelease = try keyEvent(
+            type: .keyUp,
+            keyCode: 9,
+            modifiers: [])
+        XCTAssertNil(coordinator.routeKeyboardEvent(
+            commandPasteRelease,
+            window: nil,
+            firstResponder: nil,
+            in: terminal,
+            send: { _ in }))
+
+        for (keyCode, promptAction) in [
+            (UInt16(126), SessionAttachKeyboard.AppAction.jumpToPrompt(.previous)),
+            (125, .jumpToPrompt(.next)),
+        ] {
+            let event = try keyEvent(
+                keyCode: keyCode,
+                modifiers: [.command, .function, .numericPad])
+            received = []
+            action = nil
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                event,
+                window: nil,
+                firstResponder: terminal,
+                in: terminal,
+                send: { received = $0 },
+                performAppAction: { action = $0 }))
+            XCTAssertEqual(action, promptAction)
+            XCTAssertTrue(received.isEmpty)
+            let release = try keyEvent(
+                type: .keyUp,
+                keyCode: keyCode,
+                modifiers: [])
+            XCTAssertNil(coordinator.routeKeyboardEvent(
+                release,
+                window: nil,
+                firstResponder: nil,
+                in: terminal,
+                send: { _ in }))
+        }
 
         XCTAssertTrue(coordinator.routeKeyboardEvent(
             controlV,
@@ -1567,6 +2080,26 @@ final class SessionAttachTerminalTests: XCTestCase {
             firstResponder: nil,
             in: terminal,
             send: { _ in }) === controlV)
+    }
+
+    private func keyEvent(
+        type: NSEvent.EventType = .keyDown,
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags,
+        characters: String = "x",
+        isARepeat: Bool = false
+    ) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: type,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: isARepeat,
+            keyCode: keyCode))
     }
 
     private func bufferText(_ terminal: HeadlessTerminal) -> String {
