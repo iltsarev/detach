@@ -408,6 +408,22 @@ final class DetachStateTests: XCTestCase {
             expectedSessionID: "session-1"))
     }
 
+    func testCodexJSONLValidationSkipsLaterRecordsWithoutPayloadOrIdentity() {
+        let laterWithoutPayload = Data("""
+        {"payload":{"id":"session-1"}}
+        {"type":"event_msg"}
+        """.utf8)
+        let laterWithoutIdentity = Data("""
+        {"payload":{"id":"session-1"}}
+        {"payload":{"type":"task_started","turn_id":"turn-1"}}
+        """.utf8)
+
+        XCTAssertTrue(TranscriptDocument.isValid(
+            laterWithoutPayload, provider: .codex, expectedSessionID: "session-1"))
+        XCTAssertTrue(TranscriptDocument.isValid(
+            laterWithoutIdentity, provider: .codex, expectedSessionID: "session-1"))
+    }
+
     func testJSONLValidationStreamsGeneratedChunksWithoutRetainingTheTranscript() throws {
         let root = Data(#"{"payload":{"id":"session-1"}}"#.utf8)
         let event = Data(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#.utf8)
