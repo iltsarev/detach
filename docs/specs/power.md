@@ -191,6 +191,9 @@ user-specific path. Native power protection requires no Apple Events or
 Automation entitlement.
 
 The default initial acquire carries an eight-second absolute server deadline.
+The helper measures that deadline on its clock. It clamps every acquire
+deadline to at most eight seconds from now and rejects a past deadline. A
+client Unix timestamp is not the server budget.
 If protection is not confirmed before it, root rolls back only that request's
 persisted lease, restores a previous matching lease when applicable, and
 reconciles the owned setting before returning failure. This prevents a timed-out
@@ -204,9 +207,12 @@ status request every two seconds per session.
 The low-battery threshold is 10% while on battery power. The helper releases
 closed-lid protection it owns, the wrapper releases its IOKit assertion, and the
 provider is allowed to finish only while the Mac remains awake. Initial
-acquisition fails closed at low battery. A borrowed external setting cannot be
-turned off, so status must never falsely report the low-battery safe state while
-that setting remains active.
+acquisition fails closed at low battery. If the battery reader fails after
+Detach owns closed-lid protection, the helper restores that owned setting
+before it returns the failure. Cached status must not report that closed-lid
+protection is inactive while Detach still owns the setting. A borrowed
+external setting cannot be turned off, so status must never falsely report
+the low-battery safe state while that setting remains active.
 
 Thermal safety uses only public `ProcessInfo.thermalState`. `serious` and
 `critical` latch safety immediately: the helper restores Detach-owned
@@ -220,7 +226,9 @@ retained failure; a release that still fails stays surfaced. `nominal` and
 helper persists this cooldown across restart, and an unknown reading cannot
 clear it. The raw
 `nominal|fair|serious|critical|unknown` value and latch cross helper status, CLI
-JSON, watchdog, tmux, and app. Low battery wins the combined reason when both
+JSON, watchdog, tmux, and app. Typed status JSON requires
+`thermal_safety_active`. A missing field does not mean that thermal safety
+is inactive. Low battery wins the combined reason when both
 guards are active, while the thermal fields remain visible. Borrowed external
 `disablesleep` is never disabled, so neither safety state may falsely claim the
 Mac can sleep while it remains active.

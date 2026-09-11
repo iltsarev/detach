@@ -276,6 +276,63 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertFalse(cached.helperReachable)
     }
 
+    func testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertEqual(backend.writes, [true, false])
+        XCTAssertFalse(backend.enabled)
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertFalse(cached.helperReachable)
+        // After restore, an inactive lid claim is honest. The failure
+        // snapshot must not have been published while ownership remained.
+        XCTAssertFalse(cached.closedLidProtectionActive)
+        XCTAssertNotEqual(store.state?.ownsClosedLidProtection, true)
+    }
+
+    func testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        backend.disablingFailure = ExpectedFailure.battery
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertTrue(backend.enabled)
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, true)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertTrue(cached.closedLidProtectionActive)
+        XCTAssertFalse(cached.helperReachable)
+    }
+
     func testAcquireRejectsAnExpiredRequestBeforePersisting() throws {
         let store = FakeStore()
         let backend = FakeBackend(enabled: false)
@@ -353,6 +410,39 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
                 .requestExpired)
         }
         XCTAssertTrue(backend.writes.isEmpty)
+        XCTAssertFalse(backend.enabled)
+        XCTAssertEqual(store.state?.leases, [])
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
+    }
+
+    func testAcquireClampsAFarFutureClientDeadlineToTheServerBudget() throws {
+        let clock = TestClock(now)
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        backend.onSet = { enabled in
+            if enabled {
+                clock.date = self.now.addingTimeInterval(
+                    PowerHelperLeaseService.maximumAcquireDeadline + 1)
+            }
+        }
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: FakeBatteryReader(lowBattery: false),
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { clock.date },
+            leaseTimeout: 120)
+
+        XCTAssertThrowsError(try service.acquireLease(
+            identity,
+            assertionActive: true,
+            requestDeadline: now.addingTimeInterval(10_000)
+        )) { error in
+            XCTAssertEqual(
+                error as? PowerHelperLeaseServiceError,
+                .requestExpired)
+        }
+        XCTAssertEqual(backend.writes, [true, false])
         XCTAssertFalse(backend.enabled)
         XCTAssertEqual(store.state?.leases, [])
         XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
