@@ -785,7 +785,77 @@ semver_compare() {
 }
 
 sha256_file() {
-  "$SHASUM_BIN" -a 256 "$1" | awk '{print $1}'
+  "$SHASUM_BIN" -a 256 "$1" | "$AWK_BIN" '{print $1}'
+}
+
+regular_executable() {
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -x "$1" ]
+}
+
+require_payload_member() {
+  regular_executable "$1" || die "payload $2 must be a regular executable file"
+}
+
+INSTALL_INCOMING=""
+INSTALL_OUTGOING=""
+INSTALL_TARGET=""
+INSTALL_PREVIOUS_LINK=""
+INSTALL_SYMLINK_SWITCHED=0
+INSTALL_ACTIVATION_DONE=0
+
+rollback_install_activation() {
+  local link_tmp
+  [ "$INSTALL_ACTIVATION_DONE" -eq 0 ] || return 0
+  if [ "$INSTALL_SYMLINK_SWITCHED" -eq 1 ]; then
+    if [ -n "$INSTALL_PREVIOUS_LINK" ]; then
+      link_tmp="$BIN_DIR/.detach-link-rollback.$$"
+      "$RM_BIN" -f "$link_tmp"
+      if "$LN_BIN" -s "$INSTALL_PREVIOUS_LINK" "$link_tmp" && \
+         "$MV_BIN" -f "$link_tmp" "$BIN_DIR/detach"; then
+        :
+      else
+        "$RM_BIN" -f "$link_tmp"
+      fi
+    else
+      "$RM_BIN" -f "$BIN_DIR/detach"
+    fi
+    INSTALL_SYMLINK_SWITCHED=0
+  fi
+  if [ -n "$INSTALL_OUTGOING" ] && [ -d "$INSTALL_OUTGOING" ] && \
+     [ -n "$INSTALL_TARGET" ]; then
+    case "$INSTALL_TARGET" in
+      "$LIBEXEC_ROOT/versions/"*)
+        if [ -e "$INSTALL_TARGET" ] || [ -L "$INSTALL_TARGET" ]; then
+          "$RM_BIN" -rf "$INSTALL_TARGET"
+        fi
+        "$MV_BIN" "$INSTALL_OUTGOING" "$INSTALL_TARGET" || true
+        ;;
+    esac
+    INSTALL_OUTGOING=""
+  fi
+  if [ -n "$INSTALL_INCOMING" ] && [ -d "$INSTALL_INCOMING" ]; then
+    case "$INSTALL_INCOMING" in
+      "$LIBEXEC_ROOT/versions/.incoming-"*)
+        "$RM_BIN" -rf "$INSTALL_INCOMING" || true
+        ;;
+    esac
+    INSTALL_INCOMING=""
+  fi
+}
+
+commit_install_activation() {
+  INSTALL_ACTIVATION_DONE=1
+  trap - EXIT
+  if [ -n "$INSTALL_OUTGOING" ] && [ -d "$INSTALL_OUTGOING" ]; then
+    case "$INSTALL_OUTGOING" in
+      "$LIBEXEC_ROOT/versions/.outgoing-"*)
+        "$RM_BIN" -rf "$INSTALL_OUTGOING" || die "cannot remove outgoing payload"
+        ;;
+      *) die "unsafe outgoing path" ;;
+    esac
+  fi
+  INSTALL_OUTGOING=""
+  INSTALL_INCOMING=""
 }
 
 current_version() {
@@ -1062,6 +1132,7 @@ install_locked() {
   local payload_id target
   local installed_version installed_build installed_payload comparison stage link_tmp current
   local active_dir manifest_version manifest_build manifest_payload manifest_executable
+  local payload_ready=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1103,11 +1174,14 @@ install_locked() {
   require_executable "$ID_BIN" id
   require_executable "$LAUNCHCTL_BIN" launchctl
   require_executable "$PLUTIL_BIN" plutil
-  [ -x "$payload_dir/detach" ] || die "payload detach is missing or not executable"
-  [ -x "$payload_dir/detach-core" ] || die "payload detach-core is missing or not executable"
-  [ -x "$payload_dir/detach-state" ] || die "payload detach-state is missing or not executable"
-  [ -x "$payload_dir/detach-power" ] || die "payload detach-power is missing or not executable"
-  [ -x "$payload_dir/tmux" ] || die "payload tmux is missing or not executable"
+  require_payload_member "$payload_dir/detach" detach
+  require_payload_member "$payload_dir/detach-core" detach-core
+  require_payload_member "$payload_dir/detach-state" detach-state
+  require_payload_member "$payload_dir/detach-power" detach-power
+  require_payload_member "$payload_dir/tmux" tmux
+  if [ -e "$payload_dir/detach-install" ] || [ -L "$payload_dir/detach-install" ]; then
+    require_payload_member "$payload_dir/detach-install" detach-install
+  fi
   [ -f "$version_file" ] || die "version file not found: $version_file"
 
   IFS= read -r version <"$version_file" || die "cannot read version file"
@@ -1129,7 +1203,7 @@ install_locked() {
   payload_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
     "$version" "$build" "$detach_hash" "$core_hash" "$installer_hash" \
     "$state_hash" "$power_hash" "$tmux_hash" | \
-    "$SHASUM_BIN" -a 256 | awk '{print $1}')"
+    "$SHASUM_BIN" -a 256 | "$AWK_BIN" '{print $1}')"
   [ "${#payload_id}" -eq 64 ] || die "cannot calculate payload id"
   target="$LIBEXEC_ROOT/versions/$version-${payload_id:0:12}"
 
@@ -1207,12 +1281,17 @@ install_locked() {
   ensure_tmux_socket_dir
 
   if [ -d "$target" ]; then
-    if [ -x "$target/detach" ] && [ -x "$target/detach-core" ] && \
-       [ -x "$target/detach-install" ] && [ -x "$target/detach-state" ] && \
-       [ -x "$target/detach-power" ] && [ -x "$target/tmux" ] && \
-       [ -f "$target/VERSION" ] && \
-       [ -f "$target/BUILD" ] && [ "$(head -n 1 "$target/BUILD")" = "$build" ] && \
-       [ -f "$target/PAYLOAD_ID" ] && [ "$(head -n 1 "$target/PAYLOAD_ID")" = "$payload_id" ] && \
+    if regular_executable "$target/detach" && \
+       regular_executable "$target/detach-core" && \
+       regular_executable "$target/detach-install" && \
+       regular_executable "$target/detach-state" && \
+       regular_executable "$target/detach-power" && \
+       regular_executable "$target/tmux" && \
+       [ -f "$target/VERSION" ] && [ ! -L "$target/VERSION" ] && \
+       [ -f "$target/BUILD" ] && [ ! -L "$target/BUILD" ] && \
+       [ "$(head -n 1 "$target/BUILD")" = "$build" ] && \
+       [ -f "$target/PAYLOAD_ID" ] && [ ! -L "$target/PAYLOAD_ID" ] && \
+       [ "$(head -n 1 "$target/PAYLOAD_ID")" = "$payload_id" ] && \
        [ "$(sha256_file "$target/detach")" = "$detach_hash" ] && \
        [ "$(sha256_file "$target/detach-core")" = "$core_hash" ] && \
        [ "$(sha256_file "$target/detach-install")" = "$installer_hash" ] && \
@@ -1220,18 +1299,22 @@ install_locked() {
        [ "$(sha256_file "$target/detach-power")" = "$power_hash" ] && \
        [ "$(sha256_file "$target/tmux")" = "$tmux_hash" ] && \
        [ "$("$target/detach" __version 2>/dev/null)" = "$version" ]; then
-      :
+      payload_ready=1
     else
       [ "$repair" -eq 1 ] || die "existing immutable payload is invalid: $target (run Repair)"
       managed_sessions_present && \
         die "Repair is unsafe while a detach tmux session is present; stop or delete it first"
-      "$RM_BIN" -rf "$target" || die "cannot remove invalid payload"
     fi
   fi
 
-  if [ ! -d "$target" ]; then
+  if [ "$payload_ready" -eq 0 ]; then
+    INSTALL_TARGET="$target"
+    INSTALL_ACTIVATION_DONE=0
+    INSTALL_SYMLINK_SWITCHED=0
+    trap rollback_install_activation EXIT
     stage="$LIBEXEC_ROOT/versions/.incoming-$version-${payload_id:0:12}-$$"
     case "$stage" in "$LIBEXEC_ROOT/versions/.incoming-"*) ;; *) die "unsafe staging path" ;; esac
+    INSTALL_INCOMING="$stage"
     "$RM_BIN" -rf "$stage" || die "cannot clear staging directory"
     "$INSTALL_BIN" -d -m 0755 "$stage" || die "cannot create staging directory"
     "$INSTALL_BIN" -m 0755 "$payload_dir/detach" "$stage/detach" || die "cannot stage detach"
@@ -1239,7 +1322,7 @@ install_locked() {
     "$INSTALL_BIN" -m 0755 "$payload_dir/detach-state" "$stage/detach-state" || die "cannot stage detach-state"
     "$INSTALL_BIN" -m 0755 "$payload_dir/detach-power" "$stage/detach-power" || die "cannot stage detach-power"
     "$INSTALL_BIN" -m 0755 "$payload_dir/tmux" "$stage/tmux" || die "cannot stage tmux"
-    if [ -x "$payload_dir/detach-install" ]; then
+    if regular_executable "$payload_dir/detach-install"; then
       "$INSTALL_BIN" -m 0755 "$payload_dir/detach-install" "$stage/detach-install" || die "cannot stage installer"
     else
       "$INSTALL_BIN" -m 0755 "$SELF" "$stage/detach-install" || die "cannot stage installer"
@@ -1257,7 +1340,17 @@ install_locked() {
     [ "$(sha256_file "$stage/detach-power")" = "$power_hash" ] || die "staged detach-power hash mismatch"
     [ "$(sha256_file "$stage/tmux")" = "$tmux_hash" ] || die "staged tmux hash mismatch"
     [ "$("$stage/detach" __version 2>/dev/null)" = "$version" ] || die "staged CLI version mismatch"
+    if [ -d "$target" ]; then
+      INSTALL_OUTGOING="$LIBEXEC_ROOT/versions/.outgoing-$version-${payload_id:0:12}-$$"
+      case "$INSTALL_OUTGOING" in
+        "$LIBEXEC_ROOT/versions/.outgoing-"*) ;;
+        *) die "unsafe outgoing path" ;;
+      esac
+      "$RM_BIN" -rf "$INSTALL_OUTGOING" || die "cannot clear outgoing directory"
+      "$MV_BIN" "$target" "$INSTALL_OUTGOING" || die "cannot displace live payload"
+    fi
     "$MV_BIN" "$stage" "$target" || die "cannot activate payload directory"
+    INSTALL_INCOMING=""
   fi
 
   # Profile setup does not execute the CLI, so finish it before switching the
@@ -1265,16 +1358,31 @@ install_locked() {
   configure_shell_path
   cleanup_legacy_cli_watchdog
 
+  write_manifest "$version" "$build" "$payload_id" "$source" "$target" \
+    "$payload_dir" "$version_file" "$SELF" || die "cannot write install manifest"
+  migrate_config || die "cannot migrate Detach configuration"
+  [ "$("$target/detach" __version 2>/dev/null)" = "$version" ] || \
+    die "activated payload failed validation"
+
+  if [ -L "$BIN_DIR/detach" ]; then
+    INSTALL_PREVIOUS_LINK="$(readlink "$BIN_DIR/detach")"
+  else
+    INSTALL_PREVIOUS_LINK=""
+  fi
+  if [ -z "${INSTALL_TARGET:-}" ]; then
+    INSTALL_TARGET="$target"
+    INSTALL_ACTIVATION_DONE=0
+    trap rollback_install_activation EXIT
+  fi
   link_tmp="$BIN_DIR/.detach-link.$$"
   "$RM_BIN" -f "$link_tmp"
   "$LN_BIN" -s "$target/detach" "$link_tmp" || die "cannot create CLI symlink"
   "$MV_BIN" -f "$link_tmp" "$BIN_DIR/detach" || die "cannot switch CLI symlink"
-  write_manifest "$version" "$build" "$payload_id" "$source" "$target" \
-    "$payload_dir" "$version_file" "$SELF" || die "cannot write install manifest"
-  migrate_config || die "cannot migrate Detach configuration"
+  INSTALL_SYMLINK_SWITCHED=1
 
   current="$("$BIN_DIR/detach" __version 2>/dev/null || true)"
   [ "$current" = "$version" ] || die "activated CLI failed validation"
+  commit_install_activation
   printf 'Installed detach %s (build %s, payload %s)\n' "$version" "$build" "${payload_id:0:12}"
   printf 'CLI: %s\n' "$BIN_DIR/detach"
   printf 'Command: detach (open a new Terminal window)\n'
