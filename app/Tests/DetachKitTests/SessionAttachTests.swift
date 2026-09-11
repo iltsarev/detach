@@ -156,7 +156,18 @@ final class SessionAttachTests: XCTestCase {
         name: String = "detach-codex-proj-abcd1234"
     ) -> Session {
         SessionListParser.parse("""
-        {"schema":1,"provider":"\(provider.rawValue)","session_name":"\(name)","name":"proj","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        {"schema":1,"provider":"\(provider.rawValue)","session_name":"\(name)","name":"proj","effective_status":"\(status.rawValue)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":null,"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"health_actions":\(healthActionsJSON(for: status))}
         """).sessions[0]
+    }
+
+    private func healthActionsJSON(for status: EffectiveStatus) -> String {
+        switch status {
+        case .starting, .running, .recovering, .hung:
+            return #"["attach","stop"]"#
+        case .recoverable:
+            return #"["recover","delete"]"#
+        default:
+            return #"["resume","delete"]"#
+        }
     }
 }

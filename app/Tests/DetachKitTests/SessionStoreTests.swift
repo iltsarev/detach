@@ -870,9 +870,13 @@ final class SessionStoreTests: XCTestCase {
 
     func testBulkFinishedDeleteContinuesAfterFailureAndRefreshesOnce() async throws {
         let cli = FakeCLI()
-        let firstLine = line.replacingOccurrences(
-            of: #""effective_status":"running""#,
-            with: #""effective_status":"completed""#)
+        let firstLine = line
+            .replacingOccurrences(
+                of: #""effective_status":"running""#,
+                with: #""effective_status":"completed""#)
+            .replacingOccurrences(
+                of: #""health_actions":["attach","stop"]"#,
+                with: #""health_actions":["resume","delete"]"#)
         let secondLine = firstLine
             .replacingOccurrences(of: "codex", with: "claude")
             .replacingOccurrences(of: "detach-claude-p-1", with: "detach-claude-p-2")

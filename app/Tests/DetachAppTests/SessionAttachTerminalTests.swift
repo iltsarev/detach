@@ -1607,8 +1607,19 @@ final class SessionAttachTerminalTests: XCTestCase {
         let created = createdAt.map { "\"\($0)\"" } ?? "null"
         let lifecycle = lifecycleID.map { "\"\($0)\"" } ?? "null"
         return SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":\(created),"lifecycle_id":\(lifecycle),"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":\(created),"lifecycle_id":\(lifecycle),"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"health_actions":\(healthActionsJSON(for: status))}
         """).sessions.first
+    }
+
+    private static func healthActionsJSON(for status: String) -> String {
+        switch status {
+        case "starting", "running", "recovering", "hung":
+            return #"["attach","stop"]"#
+        case "recoverable":
+            return #"["recover","delete"]"#
+        default:
+            return #"["resume","delete"]"#
+        }
     }
 
     private static func invocation() -> SessionAttachInvocation {
