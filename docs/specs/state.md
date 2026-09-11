@@ -7,9 +7,10 @@ metadata, JSONL, health, reconcile, storage, emit, and event operations.
 `meta snapshots` enumerates one owned sessions root through anchored directory
 descriptors. It rejects unsafe directories and opens only owned regular files
 of at most 1 MiB with `O_NOFOLLOW`. Storage metadata, checkpoint fallback
-metadata, and cached transcript validation use nonblocking file opens before
-they check the file type. This includes validation receipts. A FIFO cannot
-delay these reads while it waits for a writer.
+metadata, cached transcript validation, metadata patches, helper file input,
+and non-cached JSONL reads use nonblocking file opens before they check the
+file type. This includes validation receipts. A FIFO cannot delay these reads
+while it waits for a writer. A final-component symlink is not followed.
 Integer conversion must not trap. Storage reports allocated and logical bytes,
 excludes provider storage, does not follow symlinks, and authorizes cleanup
 only after a complete scan with explicit `cleanup_eligible: true`.
@@ -17,10 +18,12 @@ only after a complete scan with explicit `cleanup_eligible: true`.
 Per-session `meta.json` schema 1 stores internal `session_name`, optional
 `display_name`, and `run_token`; older documents remain valid. Each patch locks
 its read-change-atomic-replace transaction, so concurrent writers keep disjoint
-fields. Run tokens stop stale workers from overwriting replacement runs. New
-runs publish `health_schema=1`, exact worker/provider PIDs, heartbeat, and
-checkpoint epoch. Health combines tmux, run token, PID ownership, metadata, and
-checkpoint freshness. Stale data cannot make a proven live provider hung. A
+fields. The first metadata publication for a run holds `.meta-patch.lock`
+across replacement of `meta.json`. Run tokens stop stale workers from
+overwriting replacement runs. New runs publish `health_schema=1`, exact
+worker/provider PIDs, heartbeat, and checkpoint epoch. Health combines tmux,
+run token, PID ownership, metadata, and checkpoint freshness. Stale data cannot
+make a proven live provider hung. A
 runtime without managed tmux blocks mutations until its exact processes exit.
 `preserve_recovery_until_ready` is Boolean; `runtime_ready_at` and
 `runtime_shutdown_observed_at` are strings. A mistyped primary is unusable.
@@ -64,8 +67,10 @@ mtime. An unchanged identity skips the 256 KiB tail read.
 State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
 conversations. Public operations reject symlinked or foreign-owned mutable
-roots before traversal. The checked Codex SQLite backup is never restored
-automatically.
+roots before traversal. A mutable root path that contains a `.` or `..`
+component, including a trailing component, is rejected. Claude transcript
+validation requires a non-empty owned regular file that is not a symlink.
+The checked Codex SQLite backup is never restored automatically.
 
 Recover can rebuild an incomplete checkpoint from a valid live journal even
 when an interrupted publication left staging directories. It validates those

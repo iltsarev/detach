@@ -4198,6 +4198,73 @@ fi
 grep -Fx 'do not touch' "$unsafe_provider_target/sentinel" >/dev/null
 [ ! -e "$unsafe_provider_target/sessions" ]
 
+# A trailing . or .. component must fail before mkdir can walk to a parent
+# or chmod that parent.
+dot_parent="$TMP_ROOT/owned-dot-parent"
+mkdir -p "$dot_parent/dir"
+printf 'parent sentinel\n' >"$dot_parent/sentinel"
+if DETACH_CODEX_STATE_ROOT="$dot_parent/dir/.." run_codex list --json >/dev/null 2>&1; then
+  printf 'list accepted a provider state root that ends in /..\n' >&2
+  exit 1
+fi
+grep -Fx 'parent sentinel' "$dot_parent/sentinel" >/dev/null
+[ ! -e "$dot_parent/sessions" ]
+if DETACH_CODEX_STATE_ROOT="$dot_parent/dir/." run_codex list --json >/dev/null 2>&1; then
+  printf 'list accepted a provider state root that ends in /.\n' >&2
+  exit 1
+fi
+[ ! -e "$dot_parent/dir/sessions" ]
+
+# First publication of meta.json waits for the same .meta-patch.lock that
+# meta patch uses. A concurrent patch cannot replace disjoint fields.
+initial_lock_state="$TMP_ROOT/initial-meta-lock-state"
+initial_lock_session=detach-codex-initial-meta-lock
+initial_lock_dir="$initial_lock_state/sessions/$initial_lock_session"
+mkdir -p "$initial_lock_dir"
+"$STATE_HELPER" meta create "$initial_lock_dir/meta.json" \
+  --integer schema 1 \
+  --string session_name "$initial_lock_session" \
+  --string project_dir "$ROOT" \
+  --string status stopped \
+  --string sentinel_field keep-me
+initial_lock="$initial_lock_dir/.meta-patch.lock"
+: >"$initial_lock"
+/usr/bin/lockf -k -w "$initial_lock" /bin/sleep 60 &
+initial_lock_holder=$!
+initial_lock_wait=0
+while /usr/bin/lockf -k -w -t 0 "$initial_lock" true >/dev/null 2>&1; do
+  initial_lock_wait=$((initial_lock_wait + 1))
+  [ "$initial_lock_wait" -lt 100 ] || {
+    printf 'could not hold metadata patch lock for the publication test\n' >&2
+    kill "$initial_lock_holder" 2>/dev/null || true
+    exit 1
+  }
+  sleep 0.05
+done
+DETACH_CODEX_STATE_ROOT="$initial_lock_state" \
+  run_codex __write_initial_meta \
+    "$initial_lock_session" "$ROOT" "" 1 "$DETACH_CODEX_BIN" "" "" \
+    initial-meta-lock-run 0 >/dev/null 2>&1 &
+initial_lock_writer=$!
+initial_tmp_wait=0
+while ! ls -1 "$initial_lock_dir"/.meta-*.tmp >/dev/null 2>&1; do
+  if ! kill -0 "$initial_lock_writer" 2>/dev/null; then
+    break
+  fi
+  initial_tmp_wait=$((initial_tmp_wait + 1))
+  [ "$initial_tmp_wait" -lt 400 ] || break
+  sleep 0.05
+done
+[ "$("$STATE_HELPER" meta get "$initial_lock_dir/meta.json" sentinel_field)" = keep-me ]
+kill "$initial_lock_holder" 2>/dev/null || true
+wait "$initial_lock_holder" 2>/dev/null || true
+wait "$initial_lock_writer" || {
+  printf 'write_initial_meta failed after metadata patch lock release\n' >&2
+  exit 1
+}
+[ -z "$("$STATE_HELPER" meta get "$initial_lock_dir/meta.json" sentinel_field)" ]
+[ "$("$STATE_HELPER" meta get "$initial_lock_dir/meta.json" run_token)" = initial-meta-lock-run ]
+
 unsafe_list_state="$TMP_ROOT/unsafe-list-state"
 unsafe_list_target="$TMP_ROOT/unsafe-list-target"
 mkdir -p "$unsafe_list_state" "$unsafe_list_target"

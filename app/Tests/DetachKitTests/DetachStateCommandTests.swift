@@ -1505,6 +1505,31 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertTrue(completedAfterUnlock)
     }
 
+    func testMetaPatchRejectsFIFOWithoutWaitingForAWriter() throws {
+        let fifo = temporaryDirectory.appendingPathComponent("fifo-meta.json")
+        try checkWithoutWriter(fifo) {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+                "meta", "patch", fifo.path, "--string", "status", "running",
+            ]))
+        }
+    }
+
+    func testMetaPatchRejectsFinalComponentSymlink() throws {
+        let target = temporaryDirectory.appendingPathComponent("target-meta.json")
+        let link = temporaryDirectory.appendingPathComponent("link-meta.json")
+        try Data(#"{"schema":1,"session_name":"s","project_dir":"/tmp/p","run_token":"current","status":"stopped"}"#.utf8)
+            .write(to: target)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "patch", link.path,
+            "--run-token", "current",
+            "--string", "status", "running",
+        ]))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: target)) as? [String: Any])
+        XCTAssertEqual(object["status"] as? String, "stopped")
+    }
+
     func testMetaPatchEnforcesTheRuntimeLifecycleGraph() throws {
         let file = temporaryDirectory.appendingPathComponent("lifecycle-meta.json")
         try Data(#"{"schema":1,"session_name":"s","project_dir":"/tmp/p","run_token":"current","status":"starting","lifecycle_phase":"initializing"}"#.utf8)
@@ -1662,6 +1687,29 @@ final class DetachStateCommandTests: XCTestCase {
             "jsonl", "validate", "other", "-", "session",
         ])) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .invalidProvider("other"))
+        }
+    }
+
+    func testJSONLValidateRejectsFIFOWithoutWaitingForAWriter() throws {
+        let fifo = temporaryDirectory.appendingPathComponent("fifo.jsonl")
+        try checkWithoutWriter(fifo) {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+                "jsonl", "validate", "codex", fifo.path, "session-1",
+            ])) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidTranscript)
+            }
+        }
+    }
+
+    func testJSONLValidateRejectsFinalComponentSymlink() throws {
+        let target = temporaryDirectory.appendingPathComponent("target.jsonl")
+        let link = temporaryDirectory.appendingPathComponent("link.jsonl")
+        try Data(#"{"payload":{"id":"session-1"}}"#.utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate", "codex", link.path, "session-1",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidTranscript)
         }
     }
 
@@ -2573,6 +2621,32 @@ final class DetachStateCommandTests: XCTestCase {
             result[index] = newValue
         }
         return result
+    }
+
+    /// A regression must fail within a bound and leave no blocked test thread.
+    /// The rescue writer opens only after that failure and never supplies data.
+    private func checkWithoutWriter(
+        _ fifo: URL,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        operation: @escaping @Sendable () throws -> Void
+    ) throws {
+        XCTAssertEqual(mkfifo(fifo.path, 0o644), 0, file: file, line: line)
+        let completed = DispatchGroup()
+        completed.enter()
+        DispatchQueue.global().async {
+            defer { completed.leave() }
+            do { try operation() }
+            catch { XCTFail("Unexpected error: \(error)", file: file, line: line) }
+        }
+        let result = completed.wait(timeout: .now() + 1)
+        XCTAssertEqual(result, .success, "File validation waited for a FIFO writer", file: file, line: line)
+        if result == .timedOut {
+            let rescue = open(fifo.path, O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+            if rescue >= 0 { close(rescue) }
+            XCTAssertGreaterThanOrEqual(rescue, 0, file: file, line: line)
+            XCTAssertEqual(completed.wait(timeout: .now() + 1), .success, file: file, line: line)
+        }
     }
 
     private func storageReport(

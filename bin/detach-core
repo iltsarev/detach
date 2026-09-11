@@ -354,7 +354,7 @@ ensure_owned_state_directory() {
     *) die "$label must be absolute: $path" ;;
   esac
   case "$path" in
-    *$'\n'*|*$'\r'*|*/|*/./*|*/../*) die "$label is unsafe: $path" ;;
+    *$'\n'*|*$'\r'*|*/|*/./*|*/../*|*/.|*/..) die "$label is unsafe: $path" ;;
   esac
   [ ! -L "$path" ] || die "$label must not be a symlink: $path"
   if [ ! -e "$path" ]; then
@@ -2692,10 +2692,14 @@ write_initial_meta() {
     rm -f -- "$tmp"
     return 1
   }
-  mv -f -- "$tmp" "$meta" || {
+  # Hold the same flock as meta patch across the replace so a concurrent
+  # patch cannot publish over an in-flight first write. lockf releases the
+  # lock when this command exits, including on failure.
+  if ! "$LOCKF_BIN" -k -t 30 "$dir/.meta-patch.lock" \
+      /bin/mv -f -- "$tmp" "$meta"; then
     rm -f -- "$tmp"
     return 1
-  }
+  fi
   safe_owned_plain_file "$meta" && \
     "$STATE_BIN" meta snapshot "$meta" "$session" >/dev/null 2>&1
 }
@@ -2946,7 +2950,7 @@ valid_claude_transcript() {
   local path="$1"
   local expected_id="$2"
 
-  [ -s "$path" ] && \
+  safe_owned_plain_file "$path" && [ -s "$path" ] && \
     "$STATE_BIN" jsonl validate claude "$path" "$expected_id" >/dev/null 2>&1
 }
 
