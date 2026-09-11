@@ -7,12 +7,15 @@ export LC_ALL=C
 # The owner runs this in a terminal for the closed-lid confirmation. No Git
 # or GitHub output may wait in a pager.
 export GIT_PAGER=cat PAGER=cat GH_PAGER=cat
+# Leftover owner-shell DETACH_* skip flags must not reach child scripts.
+unset DETACH_INITIAL_RELEASE DETACH_SEPARATE_RELEASE_REPOSITORY
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 APP_ROOT="$ROOT/app"
 ENV_FILE="$ROOT/.env.release"
 IMPACT_SCRIPT="$ROOT/scripts/release-impact"
 TEST_MODE="${DETACH_RELEASE_TEST_MODE:-0}"
+INITIAL_RELEASE=0
 LOCKED=0
 LID_WRAPPER_PID=""
 INSTALL_TEMP=""
@@ -181,7 +184,7 @@ load_release_environment() {
       DETACH_SPARKLE_ED_KEY_FILE|DETACH_SPARKLE_KEY_ACCOUNT|\
       DETACH_GITHUB_REPOSITORY|DETACH_SPARKLE_FEED_URL|\
       DETACH_SPARKLE_DOWNLOAD_URL_PREFIX|DETACH_DOWNLOAD_URL|\
-      DETACH_GITHUB_RELEASE_TARGET|DETACH_SEPARATE_RELEASE_REPOSITORY)
+      DETACH_GITHUB_RELEASE_TARGET)
         ;;
       *) die "unsupported variable in .env.release: $key" ;;
     esac
@@ -887,11 +890,15 @@ build_release_artifacts() {
   if ! release_artifacts_valid; then
     verify_artifact_credentials
     note "building, signing and notarizing Detach $VERSION (build $BUILD)"
+    release_script_args=()
+    if [ "$INITIAL_RELEASE" = 1 ]; then
+      release_script_args+=(--initial-release)
+    fi
     DETACH_VERSION="$VERSION" \
       DETACH_BUILD_VERSION="$BUILD" \
       DETACH_RELEASE_TAG="$TAG" \
       DETACH_GITHUB_REPOSITORY="$REPOSITORY" \
-      "$APP_ROOT/scripts/release.sh"
+      "$APP_ROOT/scripts/release.sh" "${release_script_args[@]}"
   fi
   release_artifacts_valid || die 'release artifact validation failed'
   has_stage artifacts || record_stage artifacts
@@ -1172,7 +1179,7 @@ verify_published_release() {
 
 run_locked() {
   VERSION="$1"
-  valid_semver "$VERSION" || die 'usage: scripts/release-version X.Y.Z[-prerelease][+build]'
+  valid_semver "$VERSION" || die 'usage: scripts/release-version [--initial-release] X.Y.Z[-prerelease][+build]'
   load_release_environment
   validate_configuration
   if has_stage preflight; then
@@ -1209,18 +1216,30 @@ run_locked() {
 
 if [ "${1:-}" = __locked ]; then
   shift
+  if [ "${1:-}" = --initial-release ]; then
+    INITIAL_RELEASE=1
+    shift
+  fi
   [ "$#" -eq 1 ] || die 'internal lock invocation is invalid'
   LOCKED=1
   run_locked "$1"
   exit 0
 fi
 
-[ "$#" -eq 1 ] || die 'usage: scripts/release-version X.Y.Z[-prerelease][+build]'
-valid_semver "$1" || die 'usage: scripts/release-version X.Y.Z[-prerelease][+build]'
+if [ "${1:-}" = --initial-release ]; then
+  INITIAL_RELEASE=1
+  shift
+fi
+[ "$#" -eq 1 ] || die 'usage: scripts/release-version [--initial-release] X.Y.Z[-prerelease][+build]'
+valid_semver "$1" || die 'usage: scripts/release-version [--initial-release] X.Y.Z[-prerelease][+build]'
 mkdir -p "$APP_ROOT/build/release-workflow/$1"
 [ -d "$APP_ROOT/build/release-workflow/$1" ] && \
   [ ! -L "$APP_ROOT/build/release-workflow/$1" ] || \
   die 'invalid release workflow lock directory'
 chmod 0700 "$APP_ROOT/build/release-workflow/$1"
+lock_args=(__locked)
+if [ "$INITIAL_RELEASE" = 1 ]; then
+  lock_args+=(--initial-release)
+fi
 exec /usr/bin/lockf -t 0 "$APP_ROOT/build/release-workflow/$1/workflow.lock" \
-  "$0" __locked "$1"
+  "$0" "${lock_args[@]}" "$1"
