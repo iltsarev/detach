@@ -2861,7 +2861,9 @@ safe_plain_file() {
   [ "$(stat -f '%l' "$path" 2>/dev/null)" = 1 ]
 }
 
-safe_claude_restore_destination() {
+# The path is under the Claude home. No ancestor or leaf is a symlink.
+# The leaf may be absent, a regular file, or a directory.
+claude_restore_path_is_reachable() {
   local destination="$1"
   local home="$2"
   local relative
@@ -2887,28 +2889,66 @@ safe_claude_restore_destination() {
     case "$component" in ''|.|..) return 1 ;; esac
     current="$current/$component"
     [ ! -L "$current" ] || return 1
-    if [ -e "$current" ]; then
-      [ -d "$current" ] || return 1
-    elif [ -n "$remaining" ]; then
-      # Once an ancestor is absent, no deeper entry can exist yet. The later
-      # mkdir creates that suffix beneath the already-canonical Claude root.
-      break
+    if [ -n "$remaining" ]; then
+      if [ -e "$current" ]; then
+        [ -d "$current" ] || return 1
+      else
+        # Once an ancestor is absent, no deeper entry can exist yet.
+        break
+      fi
+    elif [ -e "$current" ]; then
+      [ -f "$current" ] || [ -d "$current" ] || return 1
     fi
   done
-  [ ! -e "$destination" ] || safe_plain_directory_tree "$destination"
+}
+
+safe_claude_restore_destination() {
+  local destination="$1"
+  local home="$2"
+
+  claude_restore_path_is_reachable "$destination" "$home" || return 1
+  if [ -e "$destination" ]; then
+    [ -d "$destination" ] || return 1
+    safe_plain_directory_tree "$destination"
+  fi
+}
+
+# Remove a Detach publish sibling. The path itself must be a reachable
+# regular file or directory. Contents may be unsafe; rm does not follow
+# a symlink leaf.
+discard_claude_restore_tmp() {
+  local tmp="$1"
+  local home="$2"
+
+  if [ ! -e "$tmp" ] && [ ! -L "$tmp" ]; then
+    return 0
+  fi
+  claude_restore_path_is_reachable "$tmp" "$home" || return 1
+  if [ -d "$tmp" ]; then
+    rm -rf "$tmp"
+  elif [ -f "$tmp" ]; then
+    rm -f "$tmp"
+  else
+    return 1
+  fi
 }
 
 preflight_claude_restore_publish_state() {
   local destination="$1"
   local home="$2"
-  local sibling
+  local old="$destination.detach.old"
+  local tmp="$destination.detach.tmp"
 
   safe_claude_restore_destination "$destination" "$home" || return 1
-  for sibling in "$destination.detach.old" "$destination.detach.tmp"; do
-    if [ -e "$sibling" ] || [ -L "$sibling" ]; then
-      safe_claude_restore_destination "$sibling" "$home" || return 1
-    fi
-  done
+  if [ -e "$old" ] || [ -L "$old" ]; then
+    safe_claude_restore_destination "$old" "$home" || return 1
+  fi
+  if [ -e "$tmp" ] || [ -L "$tmp" ]; then
+    # A leftover tmp is discarded during publish. Do not require a plain
+    # tree; unsafe contents inside a reachable directory must not wedge
+    # the next Recover.
+    claude_restore_path_is_reachable "$tmp" "$home" || return 1
+  fi
 }
 
 claude_transcript_candidates() {
@@ -3209,6 +3249,69 @@ claude_matching_checkpoint_exists() {
     return 0
   fi
   return 1
+}
+
+# Print the checkpoint metadata transcript path when that generation matches.
+claude_checkpoint_transcript_path() {
+  local session="$1"
+  local id="$2"
+  local checkpoint_dir
+  local checkpoint_meta
+  local path
+
+  checkpoint_dir="$(session_dir "$session")/checkpoint"
+  checkpoint_meta="$checkpoint_dir/meta.json"
+  [ -f "$checkpoint_meta" ] && [ ! -L "$checkpoint_meta" ] || return 1
+  "$STATE_BIN" meta usable "$checkpoint_meta" "$session" >/dev/null 2>&1 || \
+    return 1
+  "$STATE_BIN" meta matches "$checkpoint_meta" claude "$id" \
+    >/dev/null 2>&1 || return 1
+  path="$(
+    "$STATE_BIN" meta get "$checkpoint_meta" transcript_path 2>/dev/null
+  )" || return 1
+  [ -n "$path" ] || return 1
+  safe_claude_transcript_path "$path" "$id" || return 1
+  printf '%s\n' "$path"
+}
+
+# Print a unique existing projects/*/<id>.jsonl path, even when empty.
+# Return 2 when more than one safe file matches.
+claude_existing_transcript_path() {
+  local id="$1"
+  local candidate
+  local found=""
+
+  while IFS= read -r candidate; do
+    [ -f "$candidate" ] || continue
+    safe_claude_transcript_path "$candidate" "$id" || continue
+    [ -z "$found" ] || return 2
+    found="$candidate"
+  done < <(claude_transcript_candidates "$id" || true)
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
+# When primary transcript_path is empty, print a restore destination.
+# Prefer the matching checkpoint path, then a valid live file, then a
+# unique existing file. Return 2 when the live match is ambiguous.
+claude_transcript_path_for_empty_primary() {
+  local session="$1"
+  local id="$2"
+  local path
+  local status
+
+  if path="$(claude_checkpoint_transcript_path "$session" "$id")"; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  path="$(claude_transcript_for_id "$id" 2>/dev/null)"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  [ "$status" -eq 1 ] || return "$status"
+  claude_existing_transcript_path "$id"
 }
 
 claude_provider_entry_for_id_exists() {
@@ -3892,15 +3995,17 @@ restore_directory_checkpoint() {
     fi
   fi
   if [ -e "$tmp" ] || [ -L "$tmp" ]; then
-    safe_claude_restore_destination "$tmp" "$home" || return 1
-    rm -rf "$tmp" || return 1
+    discard_claude_restore_tmp "$tmp" "$home" || return 1
   fi
 
   cp -R "$backup" "$tmp" || {
-    if safe_claude_restore_destination "$tmp" "$home"; then rm -rf "$tmp"; fi
+    discard_claude_restore_tmp "$tmp" "$home" || true
     return 1
   }
-  safe_plain_directory_tree "$tmp" || return 1
+  safe_plain_directory_tree "$tmp" || {
+    discard_claude_restore_tmp "$tmp" "$home" || true
+    return 1
+  }
   if [ -e "$destination" ] || [ -L "$destination" ]; then
     safe_claude_restore_destination "$destination" "$home" || return 1
     mv "$destination" "$old" || return 1
@@ -3965,6 +4070,226 @@ restore_missing_checkpoint_files() {
   safe_claude_restore_destination "$destination" "$home"
 }
 
+discard_claude_restore_bundle_tmps() {
+  local transcript="$1"
+  local home="$2"
+  shift 2
+  local destination
+
+  discard_claude_restore_tmp "$transcript.detach.tmp" "$home" || true
+  for destination in "$@"; do
+    discard_claude_restore_tmp "$destination.detach.tmp" "$home" || true
+  done
+}
+
+rollback_claude_restore_bundle() {
+  local transcript="$1"
+  local home="$2"
+  local transcript_published="$3"
+  shift 3
+  local destination
+  local old
+
+  for destination in "$@"; do
+    old="$destination.detach.old"
+    if [ -e "$old" ] || [ -L "$old" ]; then
+      if [ -e "$destination" ] || [ -L "$destination" ]; then
+        discard_claude_restore_tmp "$destination" "$home" || true
+      fi
+      mv "$old" "$destination" || true
+    elif [ -e "$destination" ] || [ -L "$destination" ]; then
+      discard_claude_restore_tmp "$destination" "$home" || true
+    fi
+  done
+  if [ "$transcript_published" -eq 1 ]; then
+    old="$transcript.detach.old"
+    if [ -e "$old" ] || [ -L "$old" ]; then
+      if [ -e "$transcript" ] && [ ! -L "$transcript" ]; then
+        rm -f "$transcript" || true
+      fi
+      mv "$old" "$transcript" || true
+    elif [ -e "$transcript" ] && [ ! -L "$transcript" ]; then
+      rm -f "$transcript" || true
+    fi
+  fi
+}
+
+# Stage the transcript and companions, then publish them as one replacement.
+# A failure after the transcript swap rolls the published members back.
+publish_claude_restore_bundle() {
+  local backup="$1"
+  local transcript="$2"
+  local home="$3"
+  local id="$4"
+  shift 4
+  local -a sources=()
+  local -a dests=()
+  local -a published=()
+  local transcript_tmp="$transcript.detach.tmp"
+  local transcript_old="$transcript.detach.old"
+  local transcript_published=0
+  local source
+  local destination
+  local tmp
+  local old
+  local index
+
+  while [ "$#" -ge 2 ]; do
+    sources+=("$1")
+    dests+=("$2")
+    shift 2
+  done
+  [ "$#" -eq 0 ] || return 1
+
+  discard_claude_restore_tmp "$transcript_tmp" "$home" || return 1
+  if [ -e "$transcript_old" ] || [ -L "$transcript_old" ]; then
+    safe_plain_file "$transcript_old" || return 1
+    if [ -e "$transcript" ] || [ -L "$transcript" ]; then
+      rm -f "$transcript_old" || return 1
+    else
+      mv "$transcript_old" "$transcript" || return 1
+    fi
+  fi
+  for destination in ${dests[@]+"${dests[@]}"}; do
+    tmp="$destination.detach.tmp"
+    old="$destination.detach.old"
+    if [ -e "$old" ] || [ -L "$old" ]; then
+      safe_claude_restore_destination "$old" "$home" || return 1
+      if [ -e "$destination" ] || [ -L "$destination" ]; then
+        safe_claude_restore_destination "$destination" "$home" || return 1
+        rm -rf "$old" || return 1
+      else
+        mv "$old" "$destination" || return 1
+      fi
+    fi
+    discard_claude_restore_tmp "$tmp" "$home" || return 1
+  done
+
+  mkdir -p "$(dirname "$transcript")" || return 1
+  cp -p "$backup" "$transcript_tmp" || {
+    discard_claude_restore_tmp "$transcript_tmp" "$home" || true
+    return 1
+  }
+  valid_claude_transcript "$transcript_tmp" "$id" && \
+    safe_plain_file "$transcript_tmp" || {
+      discard_claude_restore_tmp "$transcript_tmp" "$home" || true
+      return 1
+    }
+
+  for ((index = 0; index < ${#sources[@]}; index++)); do
+    source="${sources[$index]}"
+    destination="${dests[$index]}"
+    tmp="$destination.detach.tmp"
+    mkdir -p "$(dirname "$destination")" || {
+      discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+      return 1
+    }
+    safe_claude_restore_destination "$(dirname "$destination")" "$home" || {
+      discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+      return 1
+    }
+    cp -R "$source" "$tmp" || {
+      discard_claude_restore_tmp "$tmp" "$home" || true
+      discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+      return 1
+    }
+    safe_plain_directory_tree "$tmp" || {
+      discard_claude_restore_tmp "$tmp" "$home" || true
+      discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+      return 1
+    }
+  done
+
+  if [ -e "$transcript" ] || [ -L "$transcript" ]; then
+    [ ! -L "$transcript" ] && safe_plain_file "$transcript" || {
+      discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+      return 1
+    }
+    mv "$transcript" "$transcript_old" || {
+      discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+      return 1
+    }
+  fi
+  if ! mv -f "$transcript_tmp" "$transcript"; then
+    if [ -e "$transcript_old" ] || [ -L "$transcript_old" ]; then
+      mv "$transcript_old" "$transcript" || true
+    fi
+    discard_claude_restore_bundle_tmps "$transcript" "$home" \
+      ${dests[@]+"${dests[@]}"}
+    return 1
+  fi
+  transcript_published=1
+  if [ "${DETACH_TEST_CLAUDE_RESTORE_FAIL_AFTER_TRANSCRIPT:-0}" = "1" ]; then
+    rollback_claude_restore_bundle \
+      "$transcript" "$home" "$transcript_published"
+    discard_claude_restore_bundle_tmps "$transcript" "$home" \
+      ${dests[@]+"${dests[@]}"}
+    return 1
+  fi
+
+  for ((index = 0; index < ${#dests[@]}; index++)); do
+    destination="${dests[$index]}"
+    tmp="$destination.detach.tmp"
+    old="$destination.detach.old"
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+      safe_claude_restore_destination "$destination" "$home" || {
+        rollback_claude_restore_bundle \
+          "$transcript" "$home" "$transcript_published" \
+          ${published[@]+"${published[@]}"}
+        discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+        return 1
+      }
+      mv "$destination" "$old" || {
+        rollback_claude_restore_bundle \
+          "$transcript" "$home" "$transcript_published" \
+          ${published[@]+"${published[@]}"}
+        discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+        return 1
+      }
+      if ! mv "$tmp" "$destination"; then
+        mv "$old" "$destination" || true
+        rollback_claude_restore_bundle \
+          "$transcript" "$home" "$transcript_published" \
+          ${published[@]+"${published[@]}"}
+        discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+        return 1
+      fi
+    else
+      mv "$tmp" "$destination" || {
+        rollback_claude_restore_bundle \
+          "$transcript" "$home" "$transcript_published" \
+          ${published[@]+"${published[@]}"}
+        discard_claude_restore_bundle_tmps "$transcript" "$home" \
+        ${dests[@]+"${dests[@]}"}
+        return 1
+      }
+    fi
+    published+=("$destination")
+  done
+
+  if [ -e "$transcript_old" ] || [ -L "$transcript_old" ]; then
+    safe_plain_file "$transcript_old" || return 1
+    rm -f "$transcript_old" || return 1
+  fi
+  for destination in ${published[@]+"${published[@]}"}; do
+    old="$destination.detach.old"
+    if [ -e "$old" ] || [ -L "$old" ]; then
+      safe_claude_restore_destination "$old" "$home" || return 1
+      rm -rf "$old" || return 1
+    fi
+    safe_claude_restore_destination "$destination" "$home" || return 1
+  done
+}
+
 restore_matching_claude_checkpoint() {
   local session="$1"
   local id="$2"
@@ -3973,13 +4298,11 @@ restore_matching_claude_checkpoint() {
   local checkpoint_dir
   local checkpoint_meta
   local backup
-  local tmp
   local restore=0
   local home
   local archive
   local stage=""
   local changed=0
-  local force_directories=0
   local source
   local destination
   local item
@@ -4143,122 +4466,42 @@ restore_matching_claude_checkpoint() {
   fi
   [ "$force_checkpoint" -eq 0 ] || restore=1
   if [ "$restore" -eq 1 ]; then
-    mkdir -p "$(dirname "$transcript")" || {
-      [ -z "$stage" ] || rm -rf "$stage"
-      return 1
-    }
-    tmp="$transcript.detach.tmp"
-    if [ -e "$tmp" ] || [ -L "$tmp" ]; then
-      safe_plain_file "$tmp" || {
+    local -a bundle_args=()
+    for ((index = 0; index < ${#restore_sources[@]}; index++)); do
+      bundle_args+=(
+        "${restore_sources[$index]}"
+        "${restore_destinations[$index]}"
+      )
+    done
+    if [ "${#bundle_args[@]}" -gt 0 ]; then
+      publish_claude_restore_bundle \
+        "$backup" "$transcript" "$home" "$id" "${bundle_args[@]}" || {
         [ -z "$stage" ] || rm -rf "$stage"
         return 1
       }
-      rm -f "$tmp" || {
+    else
+      publish_claude_restore_bundle \
+        "$backup" "$transcript" "$home" "$id" || {
         [ -z "$stage" ] || rm -rf "$stage"
         return 1
       }
     fi
-    cp -p "$backup" "$tmp" || {
-      [ -z "$stage" ] || rm -rf "$stage"
-      return 1
-    }
-    valid_claude_transcript "$tmp" "$id" || {
-      rm -f "$tmp"
-      [ -z "$stage" ] || rm -rf "$stage"
-      return 1
-    }
-    safe_plain_file "$tmp" || {
-      [ -z "$stage" ] || rm -rf "$stage"
-      return 1
-    }
-    mv -f "$tmp" "$transcript" || {
-      [ -z "$stage" ] || rm -rf "$stage"
-      return 1
-    }
     changed=1
-    force_directories=1
-  fi
-
-  if [ -n "$stage" ]; then
-    for source in \
-      "$stage/project-session" \
-      "$stage/file-history" \
-      "$stage/session-env"; do
-      case "$source" in
-        "$stage/project-session") destination="${transcript%.jsonl}" ;;
-        "$stage/file-history") destination="$home/file-history/$id" ;;
-        *) destination="$home/session-env/$id" ;;
-      esac
-      [ -d "$source" ] || continue
-      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
-        restore_directory_checkpoint "$source" "$destination" "$home" || {
-          rm -rf "$stage"
-          return 1
-        }
-        changed=1
-      else
-        restore_missing_checkpoint_files "$source" "$destination" "$home" || {
-          rm -rf "$stage"
-          return 1
-        }
-        [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
-      fi
-    done
-    for source in "$stage"/tasks/*; do
-      [ -d "$source" ] || continue
-      destination="$home/tasks/$(basename "$source")"
-      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
-        restore_directory_checkpoint "$source" "$destination" "$home" || {
-          rm -rf "$stage"
-          return 1
-        }
-        changed=1
-      else
-        restore_missing_checkpoint_files "$source" "$destination" "$home" || {
-          rm -rf "$stage"
-          return 1
-        }
-        [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
-      fi
-    done
-    for source in "$stage"/teams/*; do
-      [ -d "$source" ] || continue
-      destination="$home/teams/$(basename "$source")"
-      claude_team_destination_matches_id "$destination" "$id" || {
-        rm -rf "$stage"
-        return 1
-      }
-      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || \
-         [ -L "$destination" ] || [ ! -f "$destination/config.json" ]; then
-        restore_directory_checkpoint "$source" "$destination" "$home" || {
-          rm -rf "$stage"
-          return 1
-        }
-        changed=1
-      else
-        restore_missing_checkpoint_files "$source" "$destination" "$home" || {
-          rm -rf "$stage"
-          return 1
-        }
-        [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
-      fi
-    done
   else
-    for item in \
-      "claude-session|${transcript%.jsonl}" \
-      "claude-file-history|$home/file-history/$id" \
-      "claude-session-env|$home/session-env/$id"; do
-      source="$checkpoint_dir/${item%%|*}"
-      destination="${item#*|}"
-      if [ ! -e "$source" ] && [ ! -L "$source" ]; then
-        continue
-      fi
-      [ -d "$source" ] && [ ! -L "$source" ] || return 1
-      if [ "$force_directories" -eq 1 ] || [ ! -d "$destination" ] || [ -L "$destination" ]; then
-        restore_directory_checkpoint "$source" "$destination" "$home" || return 1
+    for ((index = 0; index < ${#restore_sources[@]}; index++)); do
+      source="${restore_sources[$index]}"
+      destination="${restore_destinations[$index]}"
+      if [ ! -d "$destination" ] || [ -L "$destination" ]; then
+        restore_directory_checkpoint "$source" "$destination" "$home" || {
+          [ -z "$stage" ] || rm -rf "$stage"
+          return 1
+        }
         changed=1
       else
-        restore_missing_checkpoint_files "$source" "$destination" "$home" || return 1
+        restore_missing_checkpoint_files "$source" "$destination" "$home" || {
+          [ -z "$stage" ] || rm -rf "$stage"
+          return 1
+        }
         [ "$RESTORE_MISSING_CHANGED" -eq 0 ] || changed=1
       fi
     done
@@ -6448,7 +6691,8 @@ resume_agent_session_locked() {
       rollout="$(read_meta_field "$session" transcript_path 2>/dev/null || true)"
     fi
     if [ -z "$rollout" ]; then
-      rollout="$(claude_transcript_for_id "$id" 2>/dev/null)"
+      rollout="$(claude_transcript_path_for_empty_primary "$session" "$id" \
+        2>/dev/null)"
       resolved_status=$?
       if [ "$resolved_status" -eq 2 ]; then
         die "multiple valid Claude transcripts were found for session '$id'"
@@ -6464,8 +6708,14 @@ resume_agent_session_locked() {
     if [ "$transcript_present" -eq 1 ]; then
       safe_claude_transcript_path "$rollout" "$id" || \
         die "Claude transcript for '$id' is missing or invalid"
-      valid_claude_transcript "$rollout" "$id" || \
+      if valid_claude_transcript "$rollout" "$id"; then
+        :
+      elif [ ! -s "$rollout" ] && \
+           claude_matching_checkpoint_exists "$session" "$id"; then
+        :
+      else
         die "Claude transcript for '$id' is missing or invalid"
+      fi
       "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
         "$SELF" __prepare_claude_resume_locked \
           "$session" "$id" "$rollout" transcript || \
@@ -6767,7 +7017,8 @@ recovery_request_is_valid() {
   saved_resume_args_path "$session" "$meta" >/dev/null || return 1
   if [ "$PROVIDER" = "claude" ]; then
     if [ -z "$transcript_path" ]; then
-      resolved_transcript="$(claude_transcript_for_id "$id" 2>/dev/null)"
+      resolved_transcript="$(claude_transcript_path_for_empty_primary \
+        "$session" "$id" 2>/dev/null)"
       resolved_status=$?
       case "$resolved_status" in
         0)
@@ -7729,7 +7980,14 @@ restore_rollout_if_needed() {
   if [ "$PROVIDER" = "claude" ]; then
     [ -n "$id" ] || die "no Claude session UUID was checkpointed"
     if [ -z "$rollout" ]; then
-      rollout="$(claude_transcript_for_id "$id" 2>/dev/null || true)"
+      local resolved_status=0
+      rollout="$(claude_transcript_path_for_empty_primary "$session" "$id" \
+        2>/dev/null)" || resolved_status=$?
+      case "$resolved_status" in
+        0) ;;
+        2) die "multiple valid Claude transcripts were found for session '$id'" ;;
+        *) die "no Claude transcript path was checkpointed" ;;
+      esac
     fi
     [ -n "$rollout" ] || die "no Claude transcript path was checkpointed"
     restore_matching_claude_checkpoint "$session" "$id" "$rollout" 1 || \
@@ -7874,7 +8132,8 @@ recover_session_prepare_locked() {
   [ -n "$id" ] || \
     die "no unambiguous $PROVIDER_LABEL session UUID was checkpointed"
   if [ "$PROVIDER" = "claude" ] && [ -z "$rollout" ]; then
-    rollout="$(claude_transcript_for_id "$id" 2>/dev/null)"
+    rollout="$(claude_transcript_path_for_empty_primary "$session" "$id" \
+      2>/dev/null)"
     resolved_status=$?
     case "$resolved_status" in
       0) ;;
@@ -8021,7 +8280,8 @@ recover_session_project_locked() {
   [ -n "$id" ] || \
     die "no unambiguous $PROVIDER_LABEL session UUID was checkpointed"
   if [ "$PROVIDER" = "claude" ] && [ -z "$rollout" ]; then
-    rollout="$(claude_transcript_for_id "$id" 2>/dev/null)"
+    rollout="$(claude_transcript_path_for_empty_primary "$session" "$id" \
+      2>/dev/null)"
     resolved_status=$?
     case "$resolved_status" in
       0) ;;

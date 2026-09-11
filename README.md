@@ -354,7 +354,8 @@ then refer to the conversation that is in use.
 - **Claude Code:** Detach saves the preassigned session UUID, transcript,
   project companion data, file history, session environment, tasks, and
   matching team data in one atomic archive. Explicit recovery restores a valid,
-  matching checkpoint and its companion artifacts before resume.
+  matching checkpoint and its companion artifacts before resume. If the live
+  transcript is empty or absent, recovery uses that checkpoint.
 - **Both:** Detach rejects unsafe paths, ambiguous or mismatched UUIDs,
   malformed JSONL, and invalid checkpoint contents.
 

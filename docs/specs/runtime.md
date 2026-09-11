@@ -164,7 +164,9 @@ the original copy tables immediately.
 
 Claude gets a wrapper-owned UUID via `--session-id`. Resume uses `--resume` with
 a valid transcript or matching checkpoint. It uses `--session-id` only if both
-are absent. A present invalid transcript fails closed. Startup companions such
+are absent. An empty or absent live transcript does not block that path when a
+matching Detach-owned checkpoint is valid. A present invalid transcript fails
+closed. Startup companions such
 as `session-env/<uuid>` or `tasks/session-<short>` are not transcript evidence
 and do not block that path. Codex binds identity
 after launch by matching the run-token originator in rollout files and SQLite;
@@ -192,6 +194,9 @@ Provider-created hard links become independent regular files in staging;
 archives and restore destinations still reject hard links and non-plain
 entries. Before any write, List and Recover validate the selected Claude source,
 companion trees, destinations, and `.detach.old` or `.detach.tmp` siblings.
+Claude restore stages the transcript and companions, then publishes them as one
+replacement. A crash cannot mix live files with checkpoint files. Recover
+discards a leftover `.detach.tmp` tree when that path is a Detach-owned entry.
 Unsafe optional data blocks recovery without changing its source. Task names
 match the UUID. Archived and existing team configs name that UUID as lead, so a
 checkpoint cannot replace another session's team. A valid selected live

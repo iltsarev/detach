@@ -1116,6 +1116,64 @@ preserved_worker_pid="$(tmux -L "$SOCKET" display-message -p \
 "$SCRIPT" claude stop "$human_label"
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
 
+# Recover must use a valid Detach-owned checkpoint when the live transcript
+# is empty and primary transcript_path is absent. A leftover .detach.tmp
+# tree with unsafe contents must not wedge that restore.
+: >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"
+"$STATE_HELPER" meta patch "$meta" --null transcript_path
+unsafe_restore_tmp="$CLAUDE_CONFIG_REAL_DIR/file-history/$session_id.detach.tmp"
+rm -rf "$unsafe_restore_tmp"
+mkdir -p "$unsafe_restore_tmp"
+ln -s "$TMP_ROOT/outside-claude-tmp-target" "$unsafe_restore_tmp/evil"
+empty_live_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$session\"")"
+[ "$(printf '%s' "$empty_live_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
+printf '%s' "$empty_live_json" | \
+  grep -F '"health_actions":["recover","delete"]' >/dev/null
+export FAKE_CLAUDE_EXPECT_RESTORED=1
+reset_fake_claude_ready
+"$SCRIPT" claude recover --detach "$human_label"
+wait_for_fake_claude_ready
+grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+grep -Fx -- "$session_id" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$STATE_HELPER" jsonl validate claude \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" "$session_id"
+[ ! -e "$unsafe_restore_tmp" ]
+[ -s "$CLAUDE_CONFIG_DIR/file-history/$session_id/fake-file@v1" ]
+"$SCRIPT" claude stop "$human_label"
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+
+# A forced failure after transcript publish must roll the bundle back. The
+# next Recover then publishes the complete checkpoint without mixed companions.
+expected_task="$(tar -xOf "$checkpoint/claude-session.tar" \
+  "./tasks/$session_id/task.json")"
+: >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"
+printf '{"task":"live-companion-sentinel"}\n' \
+  >"$CLAUDE_CONFIG_DIR/tasks/$session_id/task.json"
+export DETACH_TEST_CLAUDE_RESTORE_FAIL_AFTER_TRANSCRIPT=1
+if "$SCRIPT" claude recover --detach "$human_label"; then
+  unset DETACH_TEST_CLAUDE_RESTORE_FAIL_AFTER_TRANSCRIPT
+  printf 'Claude restore published a mixed bundle after a forced failure\n' >&2
+  exit 1
+fi
+unset DETACH_TEST_CLAUDE_RESTORE_FAIL_AFTER_TRANSCRIPT
+[ ! -s "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" ]
+[ "$(<"$CLAUDE_CONFIG_DIR/tasks/$session_id/task.json")" = \
+  '{"task":"live-companion-sentinel"}' ]
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+export FAKE_CLAUDE_EXPECT_RESTORED=1
+reset_fake_claude_ready
+"$SCRIPT" claude recover --detach "$human_label"
+wait_for_fake_claude_ready
+grep -Fx -- '--resume' "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
+"$STATE_HELPER" jsonl validate claude \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" "$session_id"
+[ "$(<"$CLAUDE_CONFIG_DIR/tasks/$session_id/task.json")" = "$expected_task" ]
+"$SCRIPT" claude stop "$human_label"
+! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
+export FAKE_CLAUDE_EXPECT_RESTORED=0
+
 # Reusing the harness name for session B must not publish over session A's
 # recovery bundle until the replacement run is ready. Hold the power wrapper
 # past one checkpoint interval, then prove cleanup and Recover still select A.
