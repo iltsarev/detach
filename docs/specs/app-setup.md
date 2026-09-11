@@ -57,9 +57,14 @@ Only ad-hoc builds disable library validation.
 32-byte Ed25519 public key.
 A generated or published appcast must contain exactly one arm64 hardware
 requirement, so Intel clients never see the update.
+Settings → Updates can enable automatic download only while automatic checks
+are on. The default is off. Sparkle then downloads a signed update in the
+background and installs the app when Detach quits. Authorization can still
+require confirmation. Do not set `SUAutomaticallyUpdate` in Info.plist.
 A Sparkle update replaces the app. Bootstrap activates the new
 immutable CLI payload before the watcher and first fresh list start. It does
-not rewrite live-session binaries. Sparkle errors
+not rewrite live-session binaries. Helper replacement stays deferred while a
+working lease exists. Sparkle errors
 for a disk image or App Translocation say to move Detach to
 `/Applications`. Temporary-directory and download errors say to check the
 network and free disk space, then retry. Archive, signature,

@@ -71,6 +71,7 @@
 "Automatic updates are unavailable: %@." = "Автообновления недоступны: %@.";
 "Automatic updates are unavailable: %@. This is expected for local development." = "Автообновления недоступны: %@. Для локальной разработки это нормально.";
 "Automatically check for updates" = "Автоматически проверять обновления";
+"Automatically download updates" = "Автоматически скачивать обновления";
 "Available: Claude" = "Доступен: Claude";
 "Available: Codex" = "Доступен: Codex";
 "Available: Codex and Claude" = "Доступны: Codex и Claude";
@@ -177,6 +178,7 @@
 "Setting Up Detach…" = "Настраиваем Detach…";
 "Something went wrong" = "Не получилось";
 "Sparkle checks in the background on its own schedule." = "Проверки выполняет Sparkle в фоне по собственному расписанию.";
+"Sparkle downloads a signed update and installs the app when Detach quits." = "Sparkle скачивает подписанное обновление и устанавливает приложение при выходе из Detach.";
 "Start a managed run in Detach." = "Запустите управляемую сессию в Detach.";
 "Start Codex or Claude in Detach" = "Запустить Codex или Claude в Detach";
 "Start" = "Запустить";

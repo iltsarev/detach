@@ -177,7 +177,7 @@ private extension SettingsDestination {
         case .terminal: 460
         case .notifications: 350
         case .system: 780
-        case .updates: 420
+        case .updates: 500
         }
     }
 }
@@ -1323,6 +1323,14 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Text(L10n.string(
                         "Sparkle checks in the background on its own schedule."))
+                        .settingsMessage()
+                    Toggle(L10n.string("Automatically download updates"), isOn: Binding(
+                        get: { updater.automaticallyDownloadsUpdates },
+                        set: { updater.setAutomaticallyDownloadsUpdates($0) }))
+                        .disabled(!updater.canAutomaticallyDownloadUpdates)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L10n.string(
+                        "Sparkle downloads a signed update and installs the app when Detach quits."))
                         .settingsMessage()
                 } else {
                     Text(L10n.string("Automatic updates are unavailable"))
