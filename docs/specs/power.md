@@ -172,9 +172,9 @@ contracts and existing deadlines.
 The app observes atomic watchdog heartbeat replacements from the nearest
 existing parent directory. It moves the watch closer as missing state
 directories appear. Each document replaces one freshness deadline; the
-deadline publishes `unknown` if the watchdog stops. Menu bar, Settings, and
-temperature notifications share this state and run no repeating heartbeat
-reader.
+deadline publishes `unknown` if the watchdog stops. Menu bar, Settings,
+session Mac Power, and temperature notifications share this state and run
+no repeating heartbeat reader.
 
 The watchdog heartbeat carries the effective power state and typed raw
 thermal state/latch. With notifications enabled, the app emits one
@@ -183,12 +183,17 @@ transition, including when borrowed external protection makes the effective
 power state unavailable; repeated documents never duplicate the warning.
 
 The watchdog is a signed per-user LaunchAgent with an embedded
-`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` at runtime, calls
-`detach power status --json` through the same process-group runner with a
-five-second deadline, and writes private health state. The privileged
-daemon is a distinct demand-launched LaunchDaemon. Neither plist may contain a
-user-specific path. Native power protection requires no Apple Events or
-Automation entitlement.
+`__TEXT,__info_plist`. It resolves the installed regular payload command
+at `~/.local/bin/detach`. The resolved path must be a regular file under
+`~/.local/libexec/detach/versions/<semver>-<hash>/` with sibling
+`detach-core`. The child does not inherit `DETACH_*_BIN` or `DYLD_*`.
+The watchdog may pass `DETACH_POWER_STATE_ROOT`. A non-payload or
+non-regular path is rejected. It calls `detach power status --json`
+through the same process-group runner with a five-second deadline, and
+writes private health state. The privileged daemon is a distinct
+demand-launched LaunchDaemon. Neither plist may contain a user-specific
+path. Native power protection requires no Apple Events or Automation
+entitlement.
 
 The default initial acquire carries an eight-second absolute server deadline.
 If protection is not confirmed before it, root rolls back only that request's

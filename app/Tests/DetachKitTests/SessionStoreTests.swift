@@ -270,7 +270,7 @@ private actor CancellableSleepProbe {
 @MainActor
 final class SessionStoreTests: XCTestCase {
     let line = """
-    {"schema":1,"provider":"codex","session_name":"detach-codex-p-1","name":"p-1","effective_status":"running","meta_status":"running","agent_session_id":"u1","project_dir":"/tmp/p","created_at":"2026-07-10T10:00:00Z","last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+    {"schema":1,"provider":"codex","session_name":"detach-codex-p-1","name":"p-1","effective_status":"running","meta_status":"running","agent_session_id":"u1","project_dir":"/tmp/p","created_at":"2026-07-10T10:00:00Z","last_checkpoint_at":null,"exit_status":null,"finished_at":null,"health_actions":["attach","stop"]}
     """
 
     func ok(_ stdout: String) -> Result<CLIResult, Error> {
@@ -870,9 +870,13 @@ final class SessionStoreTests: XCTestCase {
 
     func testBulkFinishedDeleteContinuesAfterFailureAndRefreshesOnce() async throws {
         let cli = FakeCLI()
-        let firstLine = line.replacingOccurrences(
-            of: #""effective_status":"running""#,
-            with: #""effective_status":"completed""#)
+        let firstLine = line
+            .replacingOccurrences(
+                of: #""effective_status":"running""#,
+                with: #""effective_status":"completed""#)
+            .replacingOccurrences(
+                of: #""health_actions":["attach","stop"]"#,
+                with: #""health_actions":["resume","delete"]"#)
         let secondLine = firstLine
             .replacingOccurrences(of: "codex", with: "claude")
             .replacingOccurrences(of: "detach-claude-p-1", with: "detach-claude-p-2")

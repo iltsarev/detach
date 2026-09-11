@@ -84,8 +84,42 @@ final class SessionIdentityTests: XCTestCase {
                        accuracy: 0.001, file: file, line: line)
         XCTAssertEqual(actualRGB.blueComponent, expectedRGB.blueComponent,
                        accuracy: 0.001, file: file, line: line)
-        XCTAssertEqual(actualRGB.alphaComponent, expectedRGB.alphaComponent,
+            XCTAssertEqual(actualRGB.alphaComponent, expectedRGB.alphaComponent,
                        accuracy: 0.001, file: file, line: line)
+    }
+}
+
+private final class SilentPowerChipCLI: DetachCLIRunning, @unchecked Sendable {
+    func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
+        CLIResult(exitCode: 0, stdout: "", stderr: "", timedOut: false)
+    }
+}
+
+@MainActor
+final class SessionDetailPowerChipTests: XCTestCase {
+    func testSessionPowerChipFollowsHeartbeatNotStaleListRow() throws {
+        let json = """
+        {"schema":1,"provider":"codex","session_name":"work","name":"work",\
+        "effective_status":"running","power_protection_state":"protected"}
+        """
+        let session = try XCTUnwrap(SessionListParser.parse(json).sessions.first)
+        XCTAssertEqual(session.powerProtectionState, .protected)
+
+        let view = SessionDetailView(
+            session: session,
+            store: SessionStore(cli: SilentPowerChipCLI()),
+            detachPath: "/tmp/detach",
+            powerProtectionState: .allowed,
+            terminalScreens: SessionTerminalScreenCache(),
+            cachedLog: nil)
+
+        XCTAssertEqual(view.displayedPowerStateForTesting, .allowed)
+        XCTAssertEqual(
+            SessionPowerPresentation.label(for: view.displayedPowerStateForTesting),
+            L10n.string("Mac can sleep"))
+        XCTAssertNotEqual(
+            SessionPowerPresentation.label(for: view.displayedPowerStateForTesting),
+            session.powerProtectionLabel)
     }
 }
 
