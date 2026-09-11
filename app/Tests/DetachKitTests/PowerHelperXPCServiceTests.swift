@@ -112,7 +112,8 @@ final class PowerHelperXPCServiceTests: XCTestCase {
     }
 
     func testPrepareAndCancelUnregistrationGateNewLeases() throws {
-        let bridge = try makeBridge(lowBattery: false)
+        let store = MemoryStore()
+        let bridge = try makeBridge(lowBattery: false, store: store)
         let prepared = expectation(description: "prepared")
         bridge.prepareForUnregistration { error in
             XCTAssertNil(error)
@@ -140,8 +141,29 @@ final class PowerHelperXPCServiceTests: XCTestCase {
         }
         wait(for: [cancelled], timeout: 1)
 
-        let accepted = expectation(description: "accepted")
+        let stillQuiescing = expectation(description: "same-process cancel stays quiesced")
         bridge.acquireLease(
+            sessionName: "session", runToken: "run", assertionActive: true,
+            requestDeadline: 200
+        ) { confirmed, error in
+            XCTAssertFalse(confirmed)
+            XCTAssertEqual(
+                error?.code,
+                PowerHelperXPCService.ErrorCode.serviceQuiescing.rawValue)
+            stillQuiescing.fulfill()
+        }
+        wait(for: [stillQuiescing], timeout: 1)
+
+        let successor = try makeBridge(lowBattery: false, store: store)
+        let successorCancelled = expectation(description: "successor cancelled")
+        successor.cancelUnregistration { error in
+            XCTAssertNil(error)
+            successorCancelled.fulfill()
+        }
+        wait(for: [successorCancelled], timeout: 1)
+
+        let accepted = expectation(description: "accepted")
+        successor.acquireLease(
             sessionName: "session", runToken: "run", assertionActive: true,
             requestDeadline: 200
         ) { confirmed, error in
@@ -254,18 +276,20 @@ final class PowerHelperXPCServiceTests: XCTestCase {
         wait(for: [active], timeout: 1)
 
         let cancelStore = MemoryStore()
-        let cancelBridge = try makeBridge(
+        let preparedBridge = try makeBridge(
             lowBattery: false, store: cancelStore)
         let prepared = expectation(description: "prepared for failed cancel")
-        cancelBridge.prepareForUnregistration { error in
+        preparedBridge.prepareForUnregistration { error in
             XCTAssertNil(error)
             prepared.fulfill()
         }
         wait(for: [prepared], timeout: 1)
 
         cancelStore.saveError = ExpectedFailure()
+        let successor = try makeBridge(
+            lowBattery: false, store: cancelStore)
         let failedCancel = expectation(description: "failed cancel")
-        cancelBridge.cancelUnregistration { error in
+        successor.cancelUnregistration { error in
             XCTAssertEqual(
                 error?.code,
                 PowerHelperXPCService.ErrorCode.generic.rawValue)
