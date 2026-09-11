@@ -5,13 +5,17 @@
 Detach.app installs an immutable payload below
 `~/.local/libexec/detach/versions/<semver>-<hash>/` and switches
 `~/.local/bin/detach` atomically. Payload order is `detach`, `detach-core`,
-`detach-install`, `detach-state`, `detach-power`, and `tmux`.
+`detach-install`, `detach-state`, `detach-power`, and `tmux`. Payload members
+are regular files.
 
-Install and Repair validate the payload before activation; failure keeps the
-active payload. A live or retained session defers replacement. One PATH entry
-supports all shells. `--keep-state` keeps checkpoints. `--purge-state`
-removes Detach state, not provider data. Uninstall restores an unchanged
-profile or removes only its entry. Source edits require app sync or Repair.
+Install and Repair stage and hash a replacement under `.incoming-*` before
+they replace a live version directory. They switch `~/.local/bin/detach` only
+after the version directory, install manifest, and direct `__version` proof
+succeed. Failure keeps the active payload. A live or retained session defers
+replacement. One PATH entry supports all shells. `--keep-state` keeps
+checkpoints. `--purge-state` removes Detach state, not provider data.
+Uninstall restores an unchanged profile or removes only its entry. Source
+edits require app sync or Repair.
 
 The app registers its power LaunchDaemon and per-user watchdog with
 `SMAppService`. The root helper needs one administrator approval. The portable

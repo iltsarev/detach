@@ -301,6 +301,58 @@ if "$bad_payload/detach-install" install --source app --payload-dir "$bad_payloa
 fi
 [ "$(readlink "$DETACH_INSTALL_BIN_DIR/detach")" = "$old_target" ]
 
+# Symlink payload members are rejected the same way verify-app.sh requires
+# regular files. The public CLI must stay on the proven payload.
+symlink_payload="$(make_payload symlink-member 0.1.4)"
+mv "$symlink_payload/tmux" "$symlink_payload/tmux.bin"
+ln -s "$symlink_payload/tmux.bin" "$symlink_payload/tmux"
+if "$symlink_payload/detach-install" install --source app \
+    --payload-dir "$symlink_payload" --version-file "$symlink_payload/VERSION" \
+    >"$TMP_ROOT/symlink-member.stdout" 2>"$TMP_ROOT/symlink-member.stderr"; then
+  printf 'symlink payload member unexpectedly installed\n' >&2
+  exit 1
+fi
+grep -F 'payload tmux must be a regular executable file' \
+  "$TMP_ROOT/symlink-member.stderr" >/dev/null
+[ "$(readlink "$DETACH_INSTALL_BIN_DIR/detach")" = "$old_target" ]
+[ "$("$DETACH_INSTALL_BIN_DIR/detach" __version)" = 0.1.0 ]
+
+# sha256_file and payload-id hashing must use $AWK_BIN, not PATH awk.
+mkdir -p "$TMP_ROOT/bad-awk"
+cat >"$TMP_ROOT/bad-awk/awk" <<'SH'
+#!/bin/bash
+printf 'path awk must not hash install payloads\n' >&2
+exit 1
+SH
+chmod 0755 "$TMP_ROOT/bad-awk/awk"
+PATH="$TMP_ROOT/bad-awk:$DETACH_INSTALL_BIN_DIR:/usr/bin:/bin" \
+  "$payload_v1/detach-install" install --source app --payload-dir "$payload_v1" \
+  --version-file "$payload_v1/VERSION"
+[ "$(readlink "$DETACH_INSTALL_BIN_DIR/detach")" = "$old_target" ]
+[ "$("$DETACH_INSTALL_BIN_DIR/detach" __version)" = 0.1.0 ]
+
+# A failed manifest write must not switch the public symlink onto an unproven
+# payload, even after the version directory is in place.
+mkdir -p "$TMP_ROOT/bin"
+cat >"$TMP_ROOT/bin/fail-manifest-mv" <<'SH'
+#!/bin/bash
+dest="${@: -1}"
+case "$dest" in
+  */install.json) exit 1 ;;
+esac
+exec /bin/mv "$@"
+SH
+chmod 0755 "$TMP_ROOT/bin/fail-manifest-mv"
+unproven_payload="$(make_payload unproven 0.1.8)"
+if DETACH_MV_BIN="$TMP_ROOT/bin/fail-manifest-mv" \
+  "$unproven_payload/detach-install" install --source app \
+    --payload-dir "$unproven_payload" --version-file "$unproven_payload/VERSION"; then
+  printf 'install unexpectedly switched after a manifest write failure\n' >&2
+  exit 1
+fi
+[ "$(readlink "$DETACH_INSTALL_BIN_DIR/detach")" = "$old_target" ]
+[ "$("$DETACH_INSTALL_BIN_DIR/detach" __version)" = 0.1.0 ]
+
 # Updating must stop before the public CLI changes while any old managed
 # session remains on either historical tmux socket. Retained panes are
 # intentionally included because their logs still belong to the old CLI.
@@ -533,6 +585,41 @@ if FAKE_TMUX_CURRENT_MODE=managed-retained \
   exit 1
 fi
 grep -F '# corruption' "$active_dir/detach-core" >/dev/null
+
+# Repair must keep the live same-version directory if staging fails.
+cat >"$TMP_ROOT/bin/fail-incoming-install" <<'SH'
+#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in
+    */.incoming-*|.incoming-*) exit 1 ;;
+  esac
+done
+exec /usr/bin/install "$@"
+SH
+chmod 0755 "$TMP_ROOT/bin/fail-incoming-install"
+if DETACH_INSTALL_BIN="$TMP_ROOT/bin/fail-incoming-install" \
+  "$DETACH_INSTALL_BIN_DIR/detach" repair; then
+  printf 'repair unexpectedly removed the live payload after a staging failure\n' >&2
+  exit 1
+fi
+[ -d "$active_dir" ]
+[ -x "$active_dir/detach" ]
+grep -F '# corruption' "$active_dir/detach-core" >/dev/null
+[ "$(cd -P "$(dirname "$(readlink "$DETACH_INSTALL_BIN_DIR/detach")")" && pwd)" = \
+  "$active_dir" ]
+
+# A failed manifest during Repair must restore the displaced live directory
+# and leave the public symlink off the unproven replacement.
+if DETACH_MV_BIN="$TMP_ROOT/bin/fail-manifest-mv" \
+  "$DETACH_INSTALL_BIN_DIR/detach" repair; then
+  printf 'repair unexpectedly activated a payload after a manifest write failure\n' >&2
+  exit 1
+fi
+[ -d "$active_dir" ]
+grep -F '# corruption' "$active_dir/detach-core" >/dev/null
+[ "$(cd -P "$(dirname "$(readlink "$DETACH_INSTALL_BIN_DIR/detach")")" && pwd)" = \
+  "$active_dir" ]
+[ ! -e "$DETACH_INSTALL_LIBEXEC_ROOT/versions/.outgoing-"* ]
 "$DETACH_INSTALL_BIN_DIR/detach" repair
 [ "$(shasum -a 256 "$active_dir/detach-core" | awk '{print $1}')" = \
   "$(shasum -a 256 "$payload_v2/detach-core" | awk '{print $1}')" ]
@@ -565,11 +652,14 @@ env -u DETACH_TMUX_BIN -u DETACH_STATE_BIN -u DETACH_POWER_BIN \
 plutil -extract schema raw -o - "$doctor_json" | grep -qx 1
 plutil -extract checks.1.id raw -o - "$doctor_json" | grep -qx cli
 doctor_check_index() {
-  local report="$1" id="$2"
-  plutil -p "$report" | awk -v wanted="$id" '
-  $1 ~ /^[0-9]+$/ && $2 == "=>" && $3 == "{" { idx = $1 }
-  $2 == "=>" && $3 == "\"" wanted "\"" { print idx; exit }
-'
+  local report="$1" id="$2" index=0 found
+  while found="$(plutil -extract "checks.$index.id" raw -o - "$report" 2>/dev/null)"; do
+    if [ "$found" = "$id" ]; then
+      printf '%s\n' "$index"
+      return 0
+    fi
+    index=$((index + 1))
+  done
 }
 watchdog_index="$(doctor_check_index "$doctor_json" watchdog)"
 [ -n "$watchdog_index" ]

@@ -678,7 +678,7 @@ Detach.app handles updates. Settings shows installation health, CLI repair,
 helper status, and removal of Detach-owned components.
 
 Detach changes the active CLI only after it validates a complete payload. If an
-update fails, the active CLI does not change. A normal app update does not
+update or Repair fails, the active CLI and its payload stay in place. A normal app update does not
 interrupt live sessions. If a working session holds a power lease, Detach keeps
 the current helper and session dashboard. It retries the helper update after
 the leases are released and the app becomes active again. Repairing a damaged
