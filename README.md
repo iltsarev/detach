@@ -671,6 +671,7 @@ checkpoint can still offer Resume or Recover.
 
 Checkpoints protect provider conversation state, not repository files. Detach
 does not roll source code back. It does not replace version control or backups.
+Report a vulnerability through the [Security policy](SECURITY.md).
 
 ## Repair, update, and uninstall
 
