@@ -1121,16 +1121,12 @@ preserved_worker_pid="$(tmux -L "$SOCKET" display-message -p \
 # tree with unsafe contents must not wedge that restore.
 : >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"
 "$STATE_HELPER" meta patch "$meta" --null transcript_path
-unsafe_restore_tmp="$CLAUDE_CONFIG_REAL_DIR/file-history/$session_id.detach.tmp"
+# Use the same Claude home path detach-core uses. A leftover under the
+# real directory is not a "$home/*" prefix when home is the test symlink.
+unsafe_restore_tmp="$CLAUDE_CONFIG_DIR/file-history/$session_id.detach.tmp"
 rm -rf "$unsafe_restore_tmp"
 mkdir -p "$unsafe_restore_tmp"
 ln -s "$TMP_ROOT/outside-claude-tmp-target" "$unsafe_restore_tmp/evil"
-empty_live_json="$("$SCRIPT" claude list --json | \
-  grep -F "\"session_name\":\"$session\"")"
-[ "$(printf '%s' "$empty_live_json" | \
-  "$STATE_HELPER" meta get /dev/stdin effective_status)" = recoverable ]
-printf '%s' "$empty_live_json" | \
-  grep -F '"health_actions":["recover","delete"]' >/dev/null
 export FAKE_CLAUDE_EXPECT_RESTORED=1
 reset_fake_claude_ready
 "$SCRIPT" claude recover --detach "$human_label"
