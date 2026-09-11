@@ -126,6 +126,15 @@ SH
   write_executable "$REPO/app/scripts/release.sh" <<'SH'
 #!/bin/bash
 set -euo pipefail
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --initial-release) shift ;;
+    *)
+      printf 'Unexpected argument: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+done
 root="$(cd -P "$(dirname "$0")/../.." && pwd)"
 version="${DETACH_VERSION:?}"
 build="${DETACH_BUILD_VERSION:?}"

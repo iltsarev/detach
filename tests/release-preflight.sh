@@ -26,6 +26,7 @@ install -m 0755 "$MAKE_DMG" "$TEST_APP/scripts/make-dmg.sh"
 install -m 0644 "$BUNDLE_MODE_POLICY" "$TEST_APP/scripts/bundle-modes.sh"
 install -m 0755 /usr/bin/true "$SPARKLE_BIN/generate_appcast"
 printf '%s\n' 1.2.3 >"$TEST_REPO/VERSION"
+printf '%s\n' 'app/build/' >"$TEST_REPO/.gitignore"
 
 [ -x "$APPCAST_VERIFIER" ]
 bash -n "$APPCAST_VERIFIER" "$MAKE_DMG" "$BUNDLE_MODE_POLICY"
@@ -112,6 +113,24 @@ grep -F 'DETACH_DMG_VERIFY_PRODUCTION=1' \
   printf 'release must enable production verification in the DMG builder\n' >&2
   exit 1
 }
+if grep -F 'INITIAL_RELEASE="${DETACH_INITIAL_RELEASE:-0}"' \
+    "$TEST_APP/scripts/release.sh" >/dev/null; then
+  printf 'release must not treat ambient DETACH_INITIAL_RELEASE as authorization\n' >&2
+  exit 1
+fi
+grep -F -- '--initial-release' "$TEST_APP/scripts/release.sh" >/dev/null || {
+  printf 'release must accept an explicit --initial-release flag\n' >&2
+  exit 1
+}
+grep -F -- '[--initial-release]' "$ROOT/scripts/release-version" >/dev/null || {
+  printf 'release-version must document the --initial-release flag\n' >&2
+  exit 1
+}
+grep -F 'unset DETACH_INITIAL_RELEASE DETACH_SEPARATE_RELEASE_REPOSITORY' \
+  "$ROOT/scripts/release-version" >/dev/null || {
+  printf 'release-version must drop ambient release skip flags\n' >&2
+  exit 1
+}
 for public_mode_contract in \
   'chmod 0644 "$UPDATE_ZIP"' \
   'chmod 0644 "$DMG"' \
@@ -189,7 +208,6 @@ if (
     DETACH_SPARKLE_PUBLIC_ED_KEY="$PUBLIC_KEY" \
     DETACH_SPARKLE_DOWNLOAD_URL_PREFIX=https://example.invalid/releases/v1.2.3/ \
     DETACH_DOWNLOAD_URL=https://example.invalid/releases \
-    DETACH_INITIAL_RELEASE=1 \
     "$TEST_APP/scripts/release.sh"
 ) >"$release_stdout" 2>"$release_stderr"; then
   printf 'release preflight unexpectedly completed successfully\n' >&2
@@ -210,6 +228,89 @@ grep -F 'Developer ID signing identity is not installed or valid' \
 }
 grep -Fx -- '-p --account dev.tsarev.detach' "$TMP_ROOT/generate-keys.log" >/dev/null || {
   printf 'release used an unexpected default Sparkle key account\n' >&2
+  exit 1
+}
+
+if "$ROOT/scripts/release-version" \
+    >"$TMP_ROOT/release-version-usage.stdout" \
+    2>"$TMP_ROOT/release-version-usage.stderr"; then
+  printf 'release-version accepted a missing version\n' >&2
+  exit 1
+fi
+grep -F -- '--initial-release' "$TMP_ROOT/release-version-usage.stderr" >/dev/null || {
+  printf 'release-version usage must name --initial-release\n' >&2
+  exit 1
+}
+
+cat >"$FAKE_BIN/security" <<'SH'
+#!/bin/bash
+printf '%s\n' '  1) ABCD "Developer ID Application: Detach Tests"'
+SH
+cat >"$FAKE_BIN/xcrun" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = notarytool ] && [ "${2:-}" = history ]; then
+  printf '%s\n' '{}'
+  exit 0
+fi
+exit 64
+SH
+cat >"$FAKE_BIN/curl" <<'SH'
+#!/bin/bash
+exit 22
+SH
+chmod 0755 "$FAKE_BIN/security" "$FAKE_BIN/xcrun" "$FAKE_BIN/curl"
+
+run_release_appcast_preflight() {
+  local label="$1"
+  shift
+  (
+    cd -P "$TMP_ROOT"
+    env -i \
+      PATH="$FAKE_BIN:/usr/bin:/bin" \
+      HOME="$TMP_ROOT/home" \
+      CLANG_MODULE_CACHE_PATH="$TMP_ROOT/module-cache" \
+      SWIFTPM_MODULECACHE_OVERRIDE="$TMP_ROOT/module-cache" \
+      FAKE_GENERATE_KEYS_LOG="$TMP_ROOT/generate-keys-appcast.log" \
+      FAKE_PUBLIC_KEY="$PUBLIC_KEY" \
+      FAKE_SWIFT_LOG="$TMP_ROOT/swift-appcast.log" \
+      DETACH_CODESIGN_IDENTITY='Developer ID Application: Detach Tests' \
+      DETACH_NOTARY_PROFILE=detach-tests \
+      DETACH_BUILD_VERSION=1 \
+      DETACH_SPARKLE_FEED_URL=https://example.invalid/appcast.xml \
+      DETACH_SPARKLE_PUBLIC_ED_KEY="$PUBLIC_KEY" \
+      DETACH_SPARKLE_DOWNLOAD_URL_PREFIX=https://example.invalid/releases/v1.2.3/ \
+      DETACH_DOWNLOAD_URL=https://example.invalid/releases \
+      "$@"
+  ) >"$TMP_ROOT/$label.stdout" 2>"$TMP_ROOT/$label.stderr"
+}
+
+if run_release_appcast_preflight appcast-ambient \
+    DETACH_INITIAL_RELEASE=1 \
+    "$TEST_APP/scripts/release.sh"; then
+  printf 'release skipped appcast monotonicity from ambient DETACH_INITIAL_RELEASE\n' >&2
+  exit 1
+fi
+grep -F 'Cannot verify the previous appcast' \
+  "$TMP_ROOT/appcast-ambient.stderr" >/dev/null || {
+  printf 'ambient DETACH_INITIAL_RELEASE did not fail closed on appcast fetch\n' >&2
+  sed -n '1,20p' "$TMP_ROOT/appcast-ambient.stderr" >&2
+  exit 1
+}
+
+if run_release_appcast_preflight appcast-flag \
+    "$TEST_APP/scripts/release.sh" --initial-release; then
+  printf 'release unexpectedly completed after --initial-release\n' >&2
+  exit 1
+fi
+if grep -F 'Cannot verify the previous appcast' \
+    "$TMP_ROOT/appcast-flag.stderr" >/dev/null; then
+  printf 'explicit --initial-release still blocked on a failed appcast fetch\n' >&2
+  sed -n '1,20p' "$TMP_ROOT/appcast-flag.stderr" >&2
+  exit 1
+fi
+grep -F 'make-app.sh' "$TMP_ROOT/appcast-flag.stderr" >/dev/null || {
+  printf 'explicit --initial-release did not continue past appcast preflight\n' >&2
+  sed -n '1,20p' "$TMP_ROOT/appcast-flag.stderr" >&2
   exit 1
 }
 
