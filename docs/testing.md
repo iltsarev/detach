@@ -124,8 +124,9 @@
   temporary state and tmux server for inspection. Use
   `DETACH_CLAUDE_TEST_KEEP=1` with the Claude command.
 - Long-lived provider fixtures use bounded release files. They do not use a
-  fixed sleep window for liveness checks. Failure artifacts identify the
-  failing test line.
+  fixed sleep window for liveness checks. On a suite failure, the suite log
+  prints the failing command, then the line, then the artifact path. Expected
+  public-CLI refusals do not print unmarked `die` text on the suite log.
 - `tests/distribution.sh` — immutable install/upgrade/repair/doctor/uninstall
   coverage for the fixed payload (`detach`, `detach-core`, `detach-install`,
   `detach-state`, `detach-power`, and `tmux`) with a temporary home.
