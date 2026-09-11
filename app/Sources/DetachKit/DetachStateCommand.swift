@@ -1389,16 +1389,15 @@ public enum DetachStateCommand {
         return ManagedTranscriptRegistry(all: all, live: live)
     }
 
-    private static func readOwnedMetadataFile(
-        in directory: Int32,
-        name: String
+    private static let maximumOwnedRegularFileBytes: off_t = 1_048_576
+
+    /// Reads an already-opened owned regular file of at most 1 MiB.
+    /// The caller must open with `O_NONBLOCK|O_NOFOLLOW` before type checks.
+    private static func readOpenedOwnedRegularFile(
+        _ descriptor: Int32,
+        maximumBytes: off_t = maximumOwnedRegularFileBytes
     ) -> Data? {
-        let descriptor = openat(
-            directory, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { return nil }
-        defer { close(descriptor) }
         var item = stat()
-        let maximumBytes: off_t = 1_048_576
         guard fstat(descriptor, &item) == 0,
               isRegularFile(item),
               item.st_uid == geteuid(),
@@ -1418,6 +1417,43 @@ public enum DetachStateCommand {
             return true
         }
         return complete ? data : nil
+    }
+
+    /// Opens an owned regular file without following a final-component symlink
+    /// or blocking on a FIFO that waits for a writer.
+    private static func openOwnedRegularFile(atPath path: String) throws -> Int32 {
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        var item = stat()
+        guard fstat(descriptor, &item) == 0,
+              isRegularFile(item),
+              item.st_uid == geteuid() else {
+            close(descriptor)
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return descriptor
+    }
+
+    private static func readOwnedRegularFile(atPath path: String) throws -> Data {
+        let descriptor = try openOwnedRegularFile(atPath: path)
+        defer { close(descriptor) }
+        guard let data = readOpenedOwnedRegularFile(descriptor) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return data
+    }
+
+    private static func readOwnedMetadataFile(
+        in directory: Int32,
+        name: String
+    ) -> Data? {
+        let descriptor = openat(
+            directory, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        return readOpenedOwnedRegularFile(descriptor)
     }
 
     private static func isDirectory(_ item: stat) -> Bool {
@@ -1543,7 +1579,7 @@ public enum DetachStateCommand {
             allowRunToken: true)
         let url = fileURL(path)
         try withMetadataPatchLock(for: url) {
-            let original = try Data(contentsOf: url)
+            let original = try readOwnedRegularFile(atPath: path)
             let updated = try SessionMetadataDocument.patch(
                 original,
                 expectedRunToken: mutation.expectedRunToken,
@@ -1692,8 +1728,11 @@ public enum DetachStateCommand {
                     reading: .standardInput, paths: paths)
             }
         } else {
+            let descriptor = try openOwnedRegularFile(atPath: path)
+            defer { close(descriptor) }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
             scalar = try TranscriptDocument.firstScalar(
-                inFileAt: fileURL(path), paths: paths)
+                reading: handle, paths: paths)
         }
         guard let scalar else {
             return Data()
@@ -1725,8 +1764,16 @@ public enum DetachStateCommand {
                     expectedSessionID: expectedSessionID)
             }
         } else {
+            let descriptor: Int32
+            do {
+                descriptor = try openOwnedRegularFile(atPath: path)
+            } catch {
+                throw DetachStateCommandError.invalidTranscript
+            }
+            defer { close(descriptor) }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
             valid = try TranscriptDocument.isValid(
-                fileAt: fileURL(path),
+                reading: handle,
                 provider: provider,
                 expectedSessionID: expectedSessionID)
         }
@@ -2014,7 +2061,7 @@ public enum DetachStateCommand {
         standardInput: Data?
     ) throws -> Data {
         guard path == "/dev/stdin" || path == "-" else {
-            return try Data(contentsOf: fileURL(path))
+            return try readOwnedRegularFile(atPath: path)
         }
         if let standardInput {
             return standardInput
@@ -2073,9 +2120,9 @@ public enum DetachStateCommand {
             return boundedTail
         }
 
-        let url = fileURL(path)
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
+        let descriptor = try openOwnedRegularFile(atPath: path)
+        defer { close(descriptor) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         let size = try handle.seekToEnd()
         try handle.seek(toOffset: size > maximumByteCount ? size - maximumByteCount : 0)
         return try handle.readToEnd() ?? Data()
