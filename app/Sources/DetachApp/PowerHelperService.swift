@@ -359,20 +359,10 @@ final class PowerHelperService {
             case .preparing:
                 switch status {
                 case .enabled:
-                    let lifetimeStatus = try lifetimeBarrierStatus()
-                    if lifetimeStatus == .missing
-                        || lifetimeStatus == .released {
-                        // launchd/BTM can keep an enabled job after its helper
-                        // failed to spawn or exited. A missing or unlocked
-                        // lifetime barrier proves there is no live helper to
-                        // prepare over XPC, so replay unregister directly.
-                        transaction.phase = .unregisterSubmitted
-                        transaction.bootSessionIdentifier =
-                            try currentBootSession()
-                        transaction.lifetimeBarrierExpected = false
-                        try handoffStore.save(transaction)
-                        continue
-                    }
+                    // KeepAlive can still spawn a helper while the job is
+                    // enabled, even when this boot's lifetime lock is missing
+                    // or released. Do not skip prepare; fail closed unless
+                    // prepare succeeds and the lock is held.
                     let preparation = try await lifecycle
                         .prepareForUnregistration()
                     guard preparation == .prepared else {

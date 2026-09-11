@@ -131,6 +131,10 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
     private let statusLock = NSLock()
     private var state: PowerHelperPersistentState
     private var isTerminating = false
+    /// Set only after this process completes prepare. A cancel on that same
+    /// generation must not persist a cleared flag while SMAppService
+    /// unregister can still be in flight.
+    private var preparedUnregistrationInThisProcess = false
     /// Read-only XPC status must never launch pmset. The daemon populates this
     /// cache during startup before accepting clients, then refreshes it from
     /// mutations and the periodic reconciler.
@@ -221,11 +225,13 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
                 do {
                     try restoreOwnedProtectionLocked()
                     _ = try reconcileAndCacheLocked()
+                    preparedUnregistrationInThisProcess = true
                 } catch {
                     // A failed preflight must leave the still-registered
                     // service usable. Persist the reopened gate; if that save
                     // itself fails, durable state remains fail-closed.
                     let preparationError = error
+                    preparedUnregistrationInThisProcess = false
                     var candidate = state
                     candidate.unregistrationPending = false
                     try replaceState(candidate)
@@ -235,12 +241,17 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
         }
     }
 
-    /// Reopens the lease gate when SMAppService failed to unregister or when a
-    /// later app launch recovers an interrupted unregister operation.
+    /// Reopens the lease gate after a replacement helper starts, or when a
+    /// new process loads durable pending state. A cancel on the same process
+    /// that prepared does not clear the flag: unregister may still be in
+    /// flight, and the next generation must stay quiesced.
     @discardableResult
     public func cancelUnregistration() throws -> PowerProtectionStatus {
         try synchronized {
             try recordingFailureLocked {
+                if preparedUnregistrationInThisProcess {
+                    return try reconcileAndCacheLocked()
+                }
                 if state.unregistrationPending {
                     var candidate = state
                     candidate.unregistrationPending = false

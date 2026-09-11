@@ -72,11 +72,11 @@ or watchdog. The app, helper, and watchdog must have their exact code
 identifiers and the same valid Team ID. An ad-hoc build or preview stays
 read-only at this boundary.
 
-An enabled registration needs a held root lifetime lock before the app calls
-the helper's prepare method. A missing or released lifetime lock proves that no
-helper process can answer. The app then skips XPC preparation and replays the
-submitted unregister phase under the system and per-user transaction locks.
-Only a busy lifetime lock permits the prepare call. A replacement is not
+Do not skip XPC prepare only because the lifetime lock is missing or released
+while the job is enabled. KeepAlive can still start a helper that holds leases.
+The app calls prepare, or it fails closed, until it has proof that the helper
+cannot answer. Only a successful prepare and a busy lifetime lock permit the
+submitted unregister phase. A replacement is not
 registered until the old lifetime lock is released or an exact absent-job
 callback provides the required completion barrier.
 Lifetime and system handoff probes reject special files without waiting for
@@ -102,13 +102,15 @@ kernel `flock` across the complete asynchronous SMAppService transaction. This
 is the machine-wide single-writer barrier across Fast User Switching, and the
 kernel releases it if the app crashes. Only the current non-root console user's
 app may perform register or unregister mutations, checked again immediately
-before each mutation. Root persists `unregistration_pending`, blocks
-acquire/renew without a wall-clock expiry, and restores and reads back only the
-setting Detach owns.
+before each mutation. Root persists `unregistration_pending` until unregister
+completion or a proven absent job. A cancel during an in-flight unregister does
+not clear that flag. Root blocks acquire/renew without a wall-clock expiry, and
+restores and reads back only the setting Detach owns.
 
 The helper takes a root-owned lifetime `flock` before its listener answers and
-holds it until exit. An enabled job without this boot's lock is dead. The app
-writes `unregisterSubmitted` only after it observes that lock. Registration
+holds it until exit. A missing lock does not prove that an enabled job cannot
+start. The app writes `unregisterSubmitted` only after a successful prepare
+and a held lock. Registration
 needs the fresh unregister callback, or exact `notRegistered` status plus the
 released lock or a changed boot UUID; `unavailable` is insufficient. Errors
 keep the journal and root gate closed. After an app crash, another console user
@@ -138,7 +140,8 @@ rejected. Detach does not promise session survival across logout.
 
 Helper state is durable at `/var/db/dev.tsarev.detach/power-state.json`, with a
 private `0700` directory, `0600` regular file, symlink rejection, atomic writes,
-and file/directory fsync. Ownership intent is persisted before changing power
+and file/directory fsync. Load accepts only a root-owned `0600` regular file
+under that parent. Ownership intent is persisted before changing power
 state. A pre-existing enabled setting is borrowed and never disabled. A setting
 Detach enabled is restored after the last live lease, a stale lease, low
 battery, or orderly SIGTERM/SIGINT handling. After shutdown begins, the helper
