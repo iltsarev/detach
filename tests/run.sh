@@ -101,6 +101,20 @@ run_codex() {
   "$SCRIPT" codex "$@"
 }
 
+expect_cli_refusal() {
+  local label="$1"
+  shift
+  local stdout_file="$TMP_ROOT/expected-refusal.stdout"
+  local stderr_file="$TMP_ROOT/expected-refusal.stderr"
+  if "$@" >"$stdout_file" 2>"$stderr_file"; then
+    printf 'expected CLI refusal succeeded: %s\n' "$label" >&2
+    cat "$stderr_file" >&2
+    return 1
+  fi
+  printf 'expected CLI refusal: %s\n' "$label" >&2
+  return 0
+}
+
 # Mirrors blend_session_color in detach-core so the tint contract is pinned
 # independently of the implementation.
 expected_tint() {
@@ -139,6 +153,9 @@ preserve_failure_diagnostics() {
   find "$TMP_ROOT" -maxdepth 3 -type f -print 2>/dev/null | \
     sed "s#^$TMP_ROOT#TMP_ROOT#" | LC_ALL=C sort >"$ARTIFACT_DIR/file-inventory.txt"
   chmod 0600 "$ARTIFACT_DIR/file-inventory.txt"
+  if [ -n "$FAILURE_COMMAND" ]; then
+    printf 'Codex test failed command: %s\n' "$FAILURE_COMMAND" >&2
+  fi
   [ -z "$FAILURE_LINE" ] || printf 'Codex test failed at line %s\n' "$FAILURE_LINE" >&2
   printf 'Codex diagnostics preserved at %s\n' "$ARTIFACT_DIR" >&2
 }
@@ -791,11 +808,9 @@ grep -F 'requires an explicit start, resume, or recover command' "$TMP_ROOT/inva
   printf '%s\n' "$delete_source" | \
     grep -F 'publish_session_event' >/dev/null
 
-if FAKE_POWER_STATE=unavailable run_codex --name power-preflight --detach -- \
-  'must not start without power protection' >/dev/null 2>&1; then
-  printf 'start unexpectedly passed an unavailable power preflight\n' >&2
-  exit 1
-fi
+FAKE_POWER_STATE=unavailable expect_cli_refusal 'start without power protection' \
+  run_codex --name power-preflight --detach -- \
+  'must not start without power protection'
 ! tmux -L "$SOCKET" has-session -t '=detach-codex-power-preflight' 2>/dev/null
 
 readiness_output=""
@@ -820,17 +835,13 @@ if grep -F 'tmux_environment_args >' "$ROOT/bin/detach-core" >/dev/null; then
   printf 'runtime still writes tmux environment arguments to disk\n' >&2
   exit 1
 fi
-if FAKE_POWER_STATE=low_battery run_codex --name power-preflight --detach -- \
-  'must not start at low battery' >/dev/null 2>&1; then
-  printf 'start unexpectedly passed the low-battery power preflight\n' >&2
-  exit 1
-fi
+FAKE_POWER_STATE=low_battery expect_cli_refusal 'start at low battery' \
+  run_codex --name power-preflight --detach -- \
+  'must not start at low battery'
 ! tmux -L "$SOCKET" has-session -t '=detach-codex-power-preflight' 2>/dev/null
-if FAKE_POWER_STATE=temperature run_codex --name power-preflight --detach -- \
-  'must not start during thermal safety' >/dev/null 2>&1; then
-  printf 'start unexpectedly passed the temperature power preflight\n' >&2
-  exit 1
-fi
+FAKE_POWER_STATE=temperature expect_cli_refusal 'start during thermal safety' \
+  run_codex --name power-preflight --detach -- \
+  'must not start during thermal safety'
 ! tmux -L "$SOCKET" has-session -t '=detach-codex-power-preflight' 2>/dev/null
 
 # A tmux server keeps the cwd from which it was first daemonized. Simulate an
@@ -1890,10 +1901,8 @@ cp -p "$resume_rollout" "$live_rollout_copy"
 # the missing checkpoint as proof that the provider data is usable.
 rm -f "$checkpoint/rollout.jsonl"
 printf '{damaged rollout\n' >"$resume_rollout"
-if run_codex recover --detach integration; then
-  printf 'Codex Recover accepted an invalid live rollout without a checkpoint\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'invalid live rollout without checkpoint' \
+  run_codex recover --detach integration
 ! tmux -L "$SOCKET" has-session -t "=$SESSION" 2>/dev/null
 cp -p "$live_rollout_copy" "$resume_rollout"
 cp -p "$resume_checkpoint_copy" "$checkpoint/rollout.jsonl"
@@ -2054,10 +2063,8 @@ fresh_lifecycle_id="$("$STATE_HELPER" meta get "$meta" lifecycle_id)"
 [ -n "$fresh_lifecycle_id" ]
 [ "$fresh_lifecycle_id" != "$previous_lifecycle_id" ]
 [ "$fresh_lifecycle_id" != "$fresh_run_token" ]
-if run_codex --name integration --detach -- 'must not replace a running task'; then
-  printf 'new default start unexpectedly replaced a running task\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'start over running task' \
+  run_codex --name integration --detach -- 'must not replace a running task'
 [ "$("$STATE_HELPER" meta get "$meta" run_token)" = "$fresh_run_token" ]
 run_codex stop integration
 
@@ -2556,10 +2563,8 @@ missing_args_json="$(run_codex list --json | \
 [ "$(printf '%s' "$missing_args_json" | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
 printf '%s' "$missing_args_json" | grep -F '"health_actions":["delete"]' >/dev/null
-if run_codex recover --detach integration >/dev/null 2>&1; then
-  printf 'Codex Recover accepted a missing saved-options file\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'missing saved-options file' \
+  run_codex recover --detach integration
 grep -Fx '{damaged rollout' "$expected_rollout" >/dev/null
 cmp -s "$missing_args_meta_copy" "$meta"
 mv "$missing_args_copy" "$resume_args_file"
@@ -2572,10 +2577,8 @@ torn_args_json="$(run_codex list --json | \
 [ "$(printf '%s' "$torn_args_json" | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
 printf '%s' "$torn_args_json" | grep -F '"health_actions":["delete"]' >/dev/null
-if run_codex recover --detach integration >/dev/null 2>&1; then
-  printf 'Codex Recover accepted a torn saved-options file\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'torn saved-options file' \
+  run_codex recover --detach integration
 grep -Fx '{damaged rollout' "$expected_rollout" >/dev/null
 cmp -s "$missing_args_meta_copy" "$meta"
 mv "$valid_args_copy" "$resume_args_file"
@@ -2611,10 +2614,8 @@ launch_gap_json="$(run_codex list --json | \
 [ "$(printf '%s' "$launch_gap_json" | \
   "$STATE_HELPER" meta get /dev/stdin health_reason)" = runtime_quiescence_unproven ]
 printf '%s' "$launch_gap_json" | grep -F '"health_actions":[]' >/dev/null
-if run_codex recover --detach integration >/dev/null 2>&1; then
-  printf 'Codex Recover accepted a launch gap without provider identity\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'launch gap without provider identity' \
+  run_codex recover --detach integration
 [ -f "$launch_gap_ready" ]
 diff -qr "$launch_gap_checkpoint_copy" "$checkpoint" >/dev/null
 rm -f "$launch_gap_ready"
@@ -2646,14 +2647,10 @@ prelaunch_unknown_json="$(run_codex list --json | \
 [ "$(printf '%s' "$prelaunch_unknown_json" | \
   "$STATE_HELPER" meta get /dev/stdin health_reason)" = runtime_quiescence_unproven ]
 printf '%s' "$prelaunch_unknown_json" | grep -F '"health_actions":[]' >/dev/null
-if run_codex recover --detach integration >/dev/null 2>&1; then
-  printf 'Codex Recover inferred shutdown from missing launch artifacts\n' >&2
-  exit 1
-fi
-if run_codex delete --force integration >/dev/null 2>&1; then
-  printf 'Codex Delete inferred shutdown from missing launch artifacts\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'recover missing launch artifacts' \
+  run_codex recover --detach integration
+expect_cli_refusal 'delete missing launch artifacts' \
+  run_codex delete --force integration
 [ -z "$("$STATE_HELPER" meta get "$meta" \
   runtime_shutdown_observed_at 2>/dev/null || true)" ]
 cmp -s "$prelaunch_unknown_meta_copy" "$meta"
@@ -2768,16 +2765,10 @@ for ready_typed_case in preserve ready shutdown; do
   [ "$(printf '%s' "$ready_typed_json" | \
     "$STATE_HELPER" meta get /dev/stdin effective_status)" = corrupt ]
   printf '%s' "$ready_typed_json" | grep -F '"health_actions":[]' >/dev/null
-  if run_codex recover --detach "$ready_name" >/dev/null 2>&1; then
-    printf 'Codex Recover accepted mistyped %s metadata\n' \
-      "$ready_typed_case" >&2
-    exit 1
-  fi
-  if run_codex delete --force "$ready_name" >/dev/null 2>&1; then
-    printf 'Codex Delete accepted mistyped %s metadata\n' \
-      "$ready_typed_case" >&2
-    exit 1
-  fi
+  expect_cli_refusal "mistyped $ready_typed_case recover" \
+    run_codex recover --detach "$ready_name"
+  expect_cli_refusal "mistyped $ready_typed_case delete" \
+    run_codex delete --force "$ready_name"
   diff -qr "$ready_typed_checkpoint_copy" "$ready_checkpoint" >/dev/null
   cp -p "$ready_typed_meta_copy" "$ready_meta"
 done
@@ -3222,10 +3213,8 @@ if "$DETACH" storage cleanup --dry-run --json --session "$SESSION" >/dev/null 2>
   printf 'storage cleanup unexpectedly planned a running session\n' >&2
   exit 1
 fi
-if run_codex delete --force integration; then
-  printf 'delete unexpectedly removed a running session\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'delete running session' \
+  run_codex delete --force integration
 tmux -L "$SOCKET" has-session -t "=$SESSION"
 run_codex stop integration
 storage_report="$("$DETACH" storage --json)"
@@ -3774,26 +3763,18 @@ worker_crash_json="$(run_codex list --json | \
   runtime_process_without_tmux ]
 [ "$(printf '%s' "$worker_crash_json" | "$STATE_HELPER" meta get /dev/stdin cleanup_eligible)" = false ]
 printf '%s' "$worker_crash_json" | grep -F '"health_actions":[]' >/dev/null
-if run_codex stop "$worker_crash_name" >/dev/null 2>&1; then
-  printf 'stop unexpectedly changed state while a provider survived its worker\n' >&2
-  exit 1
-fi
-if run_codex recover --detach "$worker_crash_name" >/dev/null 2>&1; then
-  printf 'recover unexpectedly started over a surviving provider\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'stop over surviving provider' \
+  run_codex stop "$worker_crash_name"
+expect_cli_refusal 'recover over surviving provider' \
+  run_codex recover --detach "$worker_crash_name"
 tmux -L "$SOCKET" has-session -t "=$worker_crash_session"
 [ "$(tmux -L "$SOCKET" display-message -p \
   -t "$worker_crash_pane" '#{pane_dead}')" = "1" ]
-if run_codex delete --force "$worker_crash_name" >/dev/null 2>&1; then
-  printf 'delete unexpectedly removed state for a surviving provider\n' >&2
-  exit 1
-fi
-if run_codex --name "$worker_crash_name" --detach -- \
-    'must not start over a surviving provider' >/dev/null 2>&1; then
-  printf 'start unexpectedly replaced state for a surviving provider\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'delete surviving provider' \
+  run_codex delete --force "$worker_crash_name"
+expect_cli_refusal 'start over surviving provider' \
+  run_codex --name "$worker_crash_name" --detach -- \
+  'must not start over a surviving provider'
 kill -0 "$worker_crash_provider_pid"
 ! "$DETACH" reconcile --dry-run --json | grep -F "$worker_crash_session" >/dev/null
 ! "$DETACH" cleanup --dry-run --json | grep -F "$worker_crash_session" >/dev/null
@@ -3825,14 +3806,10 @@ worker_crash_fallback_json="$(run_codex list --json | \
 [ "$(printf '%s' "$worker_crash_fallback_json" | \
   "$STATE_HELPER" meta get /dev/stdin reconcile_action)" = none ]
 printf '%s' "$worker_crash_fallback_json" | grep -F '"health_actions":[]' >/dev/null
-if run_codex recover --detach "$worker_crash_name" >/dev/null 2>&1; then
-  printf 'recover used fallback checkpoint metadata to remove retained tmux\n' >&2
-  exit 1
-fi
-if run_codex delete --force "$worker_crash_name" >/dev/null 2>&1; then
-  printf 'delete used fallback checkpoint metadata to remove retained tmux\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'recover via fallback checkpoint metadata' \
+  run_codex recover --detach "$worker_crash_name"
+expect_cli_refusal 'delete via fallback checkpoint metadata' \
+  run_codex delete --force "$worker_crash_name"
 tmux -L "$SOCKET" has-session -t "=$worker_crash_session"
 diff -qr "$worker_crash_checkpoint_copy" \
   "$(dirname "$worker_crash_checkpoint")" >/dev/null
@@ -3847,24 +3824,16 @@ worker_crash_mismatch_json="$(run_codex list --json | \
 [ "$(printf '%s' "$worker_crash_mismatch_json" | \
   "$STATE_HELPER" meta get /dev/stdin health_reason)" = run_token_mismatch ]
 printf '%s' "$worker_crash_mismatch_json" | grep -F '"health_actions":[]' >/dev/null
-if run_codex recover --detach "$worker_crash_name" >/dev/null 2>&1; then
-  printf 'recover removed a retained tmux run with a mismatched token\n' >&2
-  exit 1
-fi
-if run_codex delete --force "$worker_crash_name" >/dev/null 2>&1; then
-  printf 'delete removed a retained tmux run with a mismatched token\n' >&2
-  exit 1
-fi
-if run_codex --name "$worker_crash_name" --detach -- \
-    'must not replace mismatched retained tmux' >/dev/null 2>&1; then
-  printf 'start replaced a retained tmux run with a mismatched token\n' >&2
-  exit 1
-fi
-if run_codex resume --name "$worker_crash_name" --detach \
-    "$worker_crash_id" >/dev/null 2>&1; then
-  printf 'resume replaced a retained tmux run with a mismatched token\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'recover mismatched retained tmux' \
+  run_codex recover --detach "$worker_crash_name"
+expect_cli_refusal 'delete mismatched retained tmux' \
+  run_codex delete --force "$worker_crash_name"
+expect_cli_refusal 'start over mismatched retained tmux' \
+  run_codex --name "$worker_crash_name" --detach -- \
+  'must not replace mismatched retained tmux'
+expect_cli_refusal 'resume mismatched retained tmux' \
+  run_codex resume --name "$worker_crash_name" --detach \
+  "$worker_crash_id"
 tmux -L "$SOCKET" has-session -t "=$worker_crash_session"
 cmp -s "$worker_crash_meta_copy" "$worker_crash_meta"
 diff -qr "$worker_crash_checkpoint_copy" \
