@@ -1326,7 +1326,10 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertTrue(barrierStates.isEmpty)
     }
 
-    func testEnabledZombieRegistrationWithoutLifetimeBarrierDoesNotUnregisterWithoutPrepare() async {
+    // Keep the historical regression ID. A missing lifetime lock is not
+    // proof that KeepAlive cannot spawn a helper, so this path now fails
+    // closed at prepare instead of unregistering to reregister.
+    func testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister() async {
         let backend = FakePowerHelperBackend(
             status: .enabled,
             registrations: [.success(.enabled)])

@@ -1,3 +1,4 @@
+import Darwin
 import Security
 import XCTest
 @testable import DetachKit
@@ -765,6 +766,173 @@ final class PowerHelperPlatformTests: XCTestCase {
                     error as? PowerHelperPlatformError, .insecureStatePath)
             }
         }
+    }
+
+    func testSecureFileStoreLoadRejectsRelativeAndRootStateNames() {
+        for url in [
+            URL(fileURLWithPath: "/var/db/dev.tsarev.detach/."),
+            URL(fileURLWithPath: "/var/db/dev.tsarev.detach/.."),
+            URL(fileURLWithPath: "/"),
+        ] {
+            XCTAssertThrowsError(
+                try SecureFilePowerHelperStateStore(fileURL: url).load()
+            ) { error in
+                XCTAssertEqual(
+                    error as? PowerHelperPlatformError, .insecureStatePath)
+            }
+        }
+    }
+
+    func testSecureFileStoreLoadReturnsNilWhenOwnedDirectoryHasNoStateFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+
+        XCTAssertNil(try makeUserOwnedStateStore(
+            fileURL: root.appendingPathComponent("state.json")).load())
+    }
+
+    func testSecureFileStoreLoadRejectsSymlinkAndFileParents() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        let realDirectory = root.appendingPathComponent("real")
+        let linkedDirectory = root.appendingPathComponent("linked")
+        try FileManager.default.createDirectory(
+            at: realDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: linkedDirectory.path,
+            withDestinationPath: realDirectory.path)
+
+        XCTAssertThrowsError(try SecureFilePowerHelperStateStore(
+            fileURL: linkedDirectory.appendingPathComponent("state.json")
+        ).load()) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError, .insecureStatePath)
+        }
+
+        let ordinaryFile = root.appendingPathComponent("not-a-directory")
+        try Data().write(to: ordinaryFile)
+        XCTAssertThrowsError(try SecureFilePowerHelperStateStore(
+            fileURL: ordinaryFile.appendingPathComponent("state.json")
+        ).load()) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError, .insecureStatePath)
+        }
+    }
+
+    func testSecureFileStoreLoadRejectsDirectoryAndHardLinkedStateFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let directoryState = root.appendingPathComponent("state-dir.json")
+        try FileManager.default.createDirectory(
+            at: directoryState,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+
+        XCTAssertThrowsError(
+            try makeUserOwnedStateStore(fileURL: directoryState).load()
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError, .insecureStatePath)
+        }
+
+        let payload = Data(
+            #"{"schema":1,"owns_closed_lid_protection":false,"leases":[]}"#.utf8)
+        let original = root.appendingPathComponent("state.json")
+        let linked = root.appendingPathComponent("state-link.json")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: original.path,
+            contents: payload,
+            attributes: [.posixPermissions: 0o600]))
+        XCTAssertEqual(link(original.path, linked.path), 0)
+
+        XCTAssertThrowsError(
+            try makeUserOwnedStateStore(fileURL: linked).load()
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError, .insecureStatePath)
+        }
+    }
+
+    func testSecureFileStoreLoadSurfacesUnreadableStateFile() throws {
+        try XCTSkipIf(
+            geteuid() == 0, "permission checks do not constrain the root user")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let stateURL = root.appendingPathComponent("state.json")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: stateURL.path,
+            contents: Data("{}".utf8),
+            attributes: [.posixPermissions: 0o000]))
+
+        XCTAssertThrowsError(
+            try makeUserOwnedStateStore(fileURL: stateURL).load()
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError,
+                .fileSystem(operation: "open", code: EACCES))
+        }
+    }
+
+    func testSecureFileStoreLoadSurfacesUnsearchableStateDirectory() throws {
+        try XCTSkipIf(
+            geteuid() == 0, "permission checks do not constrain the root user")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000], ofItemAtPath: root.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: root.path)
+        }
+
+        XCTAssertThrowsError(
+            try makeUserOwnedStateStore(
+                fileURL: root.appendingPathComponent("state.json")).load()
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperPlatformError,
+                .fileSystem(operation: "open directory", code: EACCES))
+        }
+    }
+
+    func testSecureFileStoreLoadRejectsEmptyOwnedStateAsUndecodable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detach-power-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let stateURL = root.appendingPathComponent("state.json")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: stateURL.path,
+            contents: Data(),
+            attributes: [.posixPermissions: 0o600]))
+
+        XCTAssertThrowsError(
+            try makeUserOwnedStateStore(fileURL: stateURL).load()
+        ) { XCTAssertTrue($0 is DecodingError) }
     }
 
     func testClientCodeRequirementPinsAppleAnchorIdentifierAndTeam() {
