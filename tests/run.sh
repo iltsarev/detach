@@ -565,6 +565,8 @@ grep -F 'requires an explicit start, resume, or recover command' "$TMP_ROOT/inva
     "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
   [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
     "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin power_protection_state)" = unknown ]
   [ -z "$(find "$public_list_tmp" -mindepth 1 -print -quit)" ]
 
   # A caller can terminate the public frontend by PID (for example during app

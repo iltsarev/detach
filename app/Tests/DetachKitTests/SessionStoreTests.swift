@@ -270,7 +270,7 @@ private actor CancellableSleepProbe {
 @MainActor
 final class SessionStoreTests: XCTestCase {
     let line = """
-    {"schema":1,"provider":"codex","session_name":"detach-codex-p-1","name":"p-1","effective_status":"running","meta_status":"running","agent_session_id":"u1","project_dir":"/tmp/p","created_at":"2026-07-10T10:00:00Z","last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+    {"schema":1,"provider":"codex","session_name":"detach-codex-p-1","name":"p-1","effective_status":"running","meta_status":"running","agent_session_id":"u1","project_dir":"/tmp/p","created_at":"2026-07-10T10:00:00Z","last_checkpoint_at":null,"exit_status":null,"finished_at":null,"health_actions":["attach","stop"]}
     """
 
     func ok(_ stdout: String) -> Result<CLIResult, Error> {

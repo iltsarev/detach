@@ -91,6 +91,8 @@ struct SessionDetailView: View {
     let session: Session
     let store: SessionStore
     let detachPath: String
+    /// Fresh watchdog heartbeat. Session Mac Power does not use the last list row.
+    var powerProtectionState: PowerProtectionState = .unknown
     let terminalScreens: SessionTerminalScreenCache
     /// Supplied before the first body pass so a warm non-live log cannot flash
     /// an empty placeholder while `.task` starts its background refresh.
@@ -398,6 +400,10 @@ struct SessionDetailView: View {
 #if DEBUG
     var logContentForTesting: NSAttributedString { logContent }
 
+    var displayedPowerStateForTesting: PowerProtectionState {
+        displayedPowerState
+    }
+
     func refreshVisibleLogForTesting() async { await refreshVisibleLog() }
 
     func refreshVisibleLogForTesting(
@@ -472,19 +478,31 @@ struct SessionDetailView: View {
 // quality-coverage:end ui-e2e-instrumentation
     }
 
+    private var displayedPowerState: PowerProtectionState {
+        SessionPowerPresentation.displayedState(heartbeat: powerProtectionState)
+    }
+
+    private var displayedPowerLabel: String {
+        SessionPowerPresentation.label(for: displayedPowerState)
+    }
+
+    private var displayedPowerImage: String {
+        SessionPowerPresentation.systemImage(for: displayedPowerState)
+    }
+
     private var embeddedTerminalPowerChip: some View {
         Label(
-            session.powerProtectionLabel,
-            systemImage: session.powerProtectionSystemImage)
+            displayedPowerLabel,
+            systemImage: displayedPowerImage)
             .font(.system(size: 10, weight: .medium))
             .lineLimit(1)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(Capsule().fill(.quaternary.opacity(0.6)))
             .foregroundStyle(SessionDetailSignalPresentation.powerColor(
-                for: session.powerProtectionState))
+                for: displayedPowerState))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(Text(session.powerProtectionLabel))
+            .accessibilityLabel(Text(displayedPowerLabel))
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
             .background {
@@ -531,17 +549,17 @@ struct SessionDetailView: View {
                     .accessibilityHidden(true)
 
                 Label(
-                    session.powerProtectionLabel,
-                    systemImage: session.powerProtectionSystemImage)
+                    displayedPowerLabel,
+                    systemImage: displayedPowerImage)
                     .font(.system(size: 10, weight: .medium))
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .frame(minHeight: 18)
                     .background(Color(nsColor: ANSIParser.terminalBackground))
                     .foregroundStyle(SessionDetailSignalPresentation.powerColor(
-                        for: session.powerProtectionState))
+                        for: displayedPowerState))
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(Text(session.powerProtectionLabel))
+                    .accessibilityLabel(Text(displayedPowerLabel))
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
                     .background {

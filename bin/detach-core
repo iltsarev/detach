@@ -7149,7 +7149,7 @@ list_session_records() {
   local session_color
   local power_status
   local reported_power_state
-  local power_state="unavailable"
+  local power_state="unknown"
   local health_output
   local health_payload
   local worker_pid

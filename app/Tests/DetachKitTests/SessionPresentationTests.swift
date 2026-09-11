@@ -42,54 +42,81 @@ final class SessionPresentationTests: XCTestCase {
 
     func testEveryEffectiveStatusHasConsistentLifecyclePresentation() {
         let cases: [(
-            EffectiveStatus, String, Bool, SessionSection, [SessionAction]
+            EffectiveStatus, String, Bool, SessionSection
         )] = [
-            (.starting, "starting", true, .active, [.attach, .stop]),
-            (.running, "running", true, .active, [.attach, .stop]),
-            (.recovering, "recovering", true, .active, [.attach, .stop]),
-            (.hung, "hung", true, .problems, [.attach, .stop]),
-            (.completed, "completed", false, .finished, [.resume, .delete]),
-            (.failed, "failed", false, .finished, [.resume, .delete]),
-            (.interrupted, "interrupted", false, .finished, [.resume, .delete]),
-            (.stopped, "stopped", false, .finished, [.resume, .delete]),
-            (.recoverable, "recoverable", false, .problems, [.recover, .delete]),
-            (.orphaned, "orphaned", false, .problems, [.resume, .delete]),
-            (.corrupt, "corrupt", false, .problems, [.delete]),
-            (.collision, "name collision", false, .problems, []),
-            (.unknown, "unknown", false, .problems, [.delete]),
+            (.starting, "starting", true, .active),
+            (.running, "running", true, .active),
+            (.recovering, "recovering", true, .active),
+            (.hung, "hung", true, .problems),
+            (.completed, "completed", false, .finished),
+            (.failed, "failed", false, .finished),
+            (.interrupted, "interrupted", false, .finished),
+            (.stopped, "stopped", false, .finished),
+            (.recoverable, "recoverable", false, .problems),
+            (.orphaned, "orphaned", false, .problems),
+            (.corrupt, "corrupt", false, .problems),
+            (.collision, "name collision", false, .problems),
+            (.unknown, "unknown", false, .problems),
         ]
 
-        for (status, displayStatus, isLive, section, actions) in cases {
+        for (status, displayStatus, isLive, section) in cases {
             let session = make(status)
             XCTAssertEqual(session.displayStatus, L10n.string(displayStatus), "status=\(status)")
             XCTAssertEqual(session.isLive, isLive, "status=\(status)")
             XCTAssertEqual(session.section, section, "status=\(status)")
-            XCTAssertEqual(session.availableActions, actions, "status=\(status)")
+            XCTAssertEqual(session.availableActions, [], "status=\(status)")
+            XCTAssertNil(session.healthActions, "status=\(status)")
         }
     }
 
-    func testActions() {
-        XCTAssertEqual(make(.running).availableActions, [.attach, .stop])
-        XCTAssertEqual(make(.completed).availableActions, [.resume, .delete])
-        XCTAssertEqual(make(.completed, uuid: nil).availableActions, [.delete])
-        XCTAssertEqual(make(.stopped).availableActions, [.resume, .delete])
-        XCTAssertEqual(make(.recoverable).availableActions, [.recover, .delete])
-        XCTAssertEqual(make(.orphaned, uuid: nil).availableActions, [.delete])
-        XCTAssertEqual(make(.corrupt).availableActions, [.delete])
-        XCTAssertEqual(make(.collision).availableActions, [])
+    func testOmittedAndNullHealthActionsOfferNoMutations() {
+        XCTAssertNil(make(.running).healthActions)
+        XCTAssertEqual(make(.running).availableActions, [])
+        XCTAssertEqual(make(.completed).availableActions, [])
+        XCTAssertEqual(make(.recoverable).availableActions, [])
+        XCTAssertFalse(make(.completed).canDeleteFromFinishedList)
+
+        let nullActions = #"{"schema":1,"provider":"codex","session_name":"detach-codex-null","name":"null","effective_status":"running","health_actions":null}"#
+        let session = SessionListParser.parse(nullActions).sessions[0]
+        XCTAssertNil(session.healthActions)
+        XCTAssertEqual(session.availableActions, [])
+    }
+
+    func testTypedHealthActionsAreTheOnlyMutations() {
+        var session = make(.running)
+        session.healthActions = [.attach, .stop]
+        XCTAssertEqual(session.availableActions, [.attach, .stop])
+        session.healthActions = [.resume, .delete]
+        XCTAssertEqual(session.availableActions, [.resume, .delete])
+        session.healthActions = []
+        XCTAssertEqual(session.availableActions, [])
     }
 
     func testFinishedBulkDeleteUsesTypedDeletePermission() {
-        XCTAssertTrue(make(.completed).canDeleteFromFinishedList)
-        XCTAssertTrue(make(.failed).canDeleteFromFinishedList)
-        XCTAssertTrue(make(.interrupted).canDeleteFromFinishedList)
-        XCTAssertTrue(make(.stopped).canDeleteFromFinishedList)
-        XCTAssertFalse(make(.running).canDeleteFromFinishedList)
-        XCTAssertFalse(make(.recoverable).canDeleteFromFinishedList)
+        var completed = make(.completed)
+        completed.healthActions = [.resume, .delete]
+        var failed = make(.failed)
+        failed.healthActions = [.resume, .delete]
+        var interrupted = make(.interrupted)
+        interrupted.healthActions = [.resume, .delete]
+        var stopped = make(.stopped)
+        stopped.healthActions = [.resume, .delete]
+        var running = make(.running)
+        running.healthActions = [.attach, .stop]
+        var recoverable = make(.recoverable)
+        recoverable.healthActions = [.recover, .delete]
+
+        XCTAssertTrue(completed.canDeleteFromFinishedList)
+        XCTAssertTrue(failed.canDeleteFromFinishedList)
+        XCTAssertTrue(interrupted.canDeleteFromFinishedList)
+        XCTAssertTrue(stopped.canDeleteFromFinishedList)
+        XCTAssertFalse(running.canDeleteFromFinishedList)
+        XCTAssertFalse(recoverable.canDeleteFromFinishedList)
 
         var blocked = make(.completed)
         blocked.healthActions = []
         XCTAssertFalse(blocked.canDeleteFromFinishedList)
+        XCTAssertFalse(make(.completed).canDeleteFromFinishedList)
     }
 
     func testTypedHealthActionsOverrideLegacyStatusHeuristics() throws {
@@ -169,11 +196,13 @@ final class SessionPresentationTests: XCTestCase {
     }
 
     func testWaitingTurnHasAttentionStatusWhileRemainingActive() {
-        let waiting = make(.running, turnState: .waiting)
+        var waiting = make(.running, turnState: .waiting)
         XCTAssertTrue(waiting.isWaitingForUser)
         XCTAssertTrue(waiting.isLive)
         XCTAssertEqual(waiting.displayStatus, L10n.string("answer ready"))
         XCTAssertEqual(waiting.section, .answerReady)
+        XCTAssertEqual(waiting.availableActions, [])
+        waiting.healthActions = [.attach, .stop]
         XCTAssertEqual(waiting.availableActions, [.attach, .stop])
     }
 
@@ -204,6 +233,24 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertEqual(
             make(.running).powerProtectionLabel,
             L10n.string("Sleep status unknown"))
+    }
+
+    func testSessionPowerChipFollowsHeartbeatNotListRow() {
+        let session = make(.running, powerState: .protected)
+        XCTAssertEqual(session.powerProtectionState, .protected)
+        XCTAssertEqual(session.powerProtectionLabel, L10n.string("Mac stays awake"))
+
+        let displayed = SessionPowerPresentation.displayedState(heartbeat: .allowed)
+        XCTAssertEqual(displayed, .allowed)
+        XCTAssertEqual(
+            SessionPowerPresentation.label(for: displayed),
+            L10n.string("Mac can sleep"))
+        XCTAssertEqual(
+            SessionPowerPresentation.systemImage(for: displayed),
+            "moon.zzz")
+        XCTAssertNotEqual(
+            SessionPowerPresentation.label(for: displayed),
+            session.powerProtectionLabel)
     }
 
     func testPowerStatusCoversTransitionsAndEverySystemImage() {
