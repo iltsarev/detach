@@ -1701,6 +1701,36 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testJSONLFirstRejectsFIFOWithoutWaitingForAWriter() throws {
+        let fifo = temporaryDirectory.appendingPathComponent("fifo-first.jsonl")
+        try checkWithoutWriter(fifo) {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+                "jsonl", "first", fifo.path, "payload.id",
+            ]))
+        }
+    }
+
+    func testMetaGetRejectsFIFOWithoutWaitingForAWriter() throws {
+        let fifo = temporaryDirectory.appendingPathComponent("fifo-get.json")
+        try checkWithoutWriter(fifo) {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+                "meta", "get", fifo.path, "status",
+            ]))
+        }
+    }
+
+    func testInputDataRejectsAnOwnedRegularFileLargerThanOneMebibyte() throws {
+        let file = temporaryDirectory.appendingPathComponent("oversized.json")
+        var data = Data(#"{"status":"stopped"}"#.utf8)
+        data.append(contentsOf: repeatElement(UInt8(0x20), count: 1_048_577))
+        try data.write(to: file)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "meta", "get", file.path, "status",
+        ])) { error in
+            XCTAssertEqual((error as? CocoaError)?.code, .fileReadUnknown)
+        }
+    }
+
     func testJSONLValidateRejectsFinalComponentSymlink() throws {
         let target = temporaryDirectory.appendingPathComponent("target.jsonl")
         let link = temporaryDirectory.appendingPathComponent("link.jsonl")
