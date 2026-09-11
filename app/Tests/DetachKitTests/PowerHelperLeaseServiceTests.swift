@@ -352,6 +352,49 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertTrue(backend.writes.isEmpty)
     }
 
+    func testAcquireRejectsANonFiniteRequestDeadlineBeforePersisting() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend)
+
+        for raw in [TimeInterval.nan, .infinity, -.infinity] {
+            XCTAssertThrowsError(try service.acquireLease(
+                identity,
+                assertionActive: true,
+                requestDeadline: Date(timeIntervalSince1970: raw)
+            )) { error in
+                XCTAssertEqual(
+                    error as? PowerHelperLeaseServiceError,
+                    .requestExpired)
+            }
+        }
+        XCTAssertNil(store.state)
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testBatteryReadFailureRestoresNothingWhenClosedLidIsNotOwned() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        XCTAssertEqual(try service.reconcile().state, .allowed)
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertTrue(backend.writes.isEmpty)
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertFalse(cached.closedLidProtectionActive)
+    }
+
     func testAcquireRollsBackProtectionWhenDeadlineExpiresDuringMutation() throws {
         let clock = TestClock(now)
         let store = FakeStore()

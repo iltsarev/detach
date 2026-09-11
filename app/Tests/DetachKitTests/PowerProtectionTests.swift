@@ -361,6 +361,12 @@ final class PowerProtectionTests: XCTestCase {
             PowerProtectionStatus.self, from: Data(json.utf8)))
     }
 
+    func testLegacyPowerStatusDecodesUnknownThermalDetail() {
+        let json = #"{"state":"allowed","lease_count":0,"assertion_active":false,"closed_lid_protection_active":false,"helper_reachable":true,"transition_in_progress":false,"low_battery":false}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            PowerProtectionStatus.self, from: Data(json.utf8)))
+    }
+
     func testCoordinatorOwnsAndRestoresClosedLidProtection() {
         let backend = FakeClosedLidBackend(enabled: false)
         var coordinator = PowerProtectionCoordinator()
