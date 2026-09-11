@@ -585,6 +585,9 @@ resume_auto() {
   local session_name
   local project_dir
   local live
+  local requested_name=""
+  local expect_requested_name=0
+  local bound_short=""
   local resume_args=( "$@" )
 
   [ "$#" -gt 0 ] || die "resume requires a session UUID"
@@ -666,6 +669,31 @@ resume_auto() {
   [ -n "$project_dir" ] && [ -d "$project_dir" ] || \
     die "saved project directory is unavailable: ${project_dir:-unknown}"
   cd -P "$project_dir" >/dev/null 2>&1 || die "could not enter saved project directory: $project_dir"
+  if [ "$has_name" -eq 1 ] && [ -n "$session_name" ]; then
+    requested_name=""
+    expect_requested_name=0
+    bound_short=""
+    for arg in "${resume_args[@]}"; do
+      if [ "$expect_requested_name" -eq 1 ]; then
+        requested_name="$arg"
+        break
+      fi
+      case "$arg" in
+        -n|--name)
+          expect_requested_name=1
+          ;;
+        --name=*)
+          requested_name="${arg#--name=}"
+          break
+          ;;
+      esac
+    done
+    bound_short="${session_name#detach-${provider}-}"
+    if [ "$requested_name" != "$session_name" ] && \
+       [ "$requested_name" != "$bound_short" ]; then
+      die "session UUID already belongs to a different session name: $session_name"
+    fi
+  fi
   if [ "$has_name" -eq 0 ] && [ -n "$session_name" ]; then
     exec_provider "$provider" resume --name "$session_name" "${resume_args[@]}"
   fi

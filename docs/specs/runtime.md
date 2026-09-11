@@ -108,8 +108,10 @@ detach-power run --session <name> --run-token <token>
 
 Metadata has a typed phase machine: `initializing`, `starting`, `running`,
 `stopping`, `finalizing`, `terminal`. Invalid transitions fail; `status` stores
-outcomes. List hides `initializing`. The worker emits `starting` only after its
-metadata and tmux identity match; only then can provider PID be absent. The
+outcomes. List hides `initializing` unless a managed pane or proven ownership
+remains, or `preserve_recovery_until_ready` is true. The worker emits
+`starting` only after its metadata and tmux identity match; only then can
+provider PID be absent. The
 power wrapper confirms both layers and publishes readiness and exact provider
 PID. The starter proves ancestry before `running` and prints `Started` last.
 HUP/INT/TERM forward while the wrapper releases its lease and assertion;
@@ -173,8 +175,9 @@ user thread (for example `/clear`), discovery rebinds identity, transcript, and
 checkpoints to the newest originator-matched thread within one heartbeat or
 checkpoint tick, records superseded thread IDs so the next switch stays
 unambiguous, and keeps the current binding on a creation-time tie. Subagent
-threads never rebind a session. Wrapper-owned provider flags are rejected;
-policy defaults apply only without an allowed override.
+threads never rebind a session. Public `resume --name` rejects a UUID that
+already belongs to a different session name. Wrapper-owned provider flags are
+rejected; policy defaults apply only without an allowed override.
 
 By default, a per-session lock protects a checkpoint every 300 s. It has
 metadata, validated provider JSONL, pane capture, and a repository root from a

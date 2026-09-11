@@ -432,10 +432,11 @@ public enum TranscriptDocument {
         }
     }
 
-    /// Validates every non-empty JSONL record and the provider-specific root
+    /// Validates every non-empty JSONL record and the provider-specific
     /// identity contract. Claude permits records without `sessionId`, but at
-    /// least one record must identify the expected session and no record may
-    /// identify a different one.
+    /// least one record must identify the expected session. Codex requires
+    /// that identity on record 0. Later Codex records may omit it. No record
+    /// may identify a different session.
     public static func isValid(
         _ data: Data,
         provider: Provider,
@@ -499,13 +500,22 @@ public enum TranscriptDocument {
         ) { record, recordIndex in
             switch provider {
             case .codex:
-                guard recordIndex == 0 else { return true }
                 guard let payload = record["payload"] as? [String: Any] else {
-                    providerContractValid = false
-                    return false
+                    if recordIndex == 0 {
+                        providerContractValid = false
+                        return false
+                    }
+                    return true
                 }
                 let identifier = payload["id"] as? String
                     ?? payload["session_id"] as? String
+                if recordIndex == 0 {
+                    providerContractValid = identifier == expectedSessionID
+                    return providerContractValid
+                }
+                guard let identifier else {
+                    return true
+                }
                 providerContractValid = identifier == expectedSessionID
                 return providerContractValid
 

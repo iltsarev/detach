@@ -7275,12 +7275,19 @@ list_session_records() {
       fi
       continue
     fi
-    # `initializing` metadata exists only so the worker and starter can share
-    # one typed document. It is not a coherent list record until the worker has
-    # published its exact PID against the configured tmux run token.
+    # A private initializing handoff stays hidden. A managed pane or a recorded
+    # worker means the owner can still Attach or Stop, so List keeps the row.
     if [ "$META_LIFECYCLE_PHASE" = "initializing" ] && \
        [ "$META_PRESERVE_RECOVERY_UNTIL_READY" != "true" ]; then
-      continue
+      tmux_health_snapshot "$session"
+      case "$TMUX_HEALTH_STATE" in
+        live|dead) ;;
+        *)
+          case "$META_WORKER_PID" in
+            ''|*[!0-9]*) continue ;;
+          esac
+          ;;
+      esac
     fi
     health_status="$META_STATUS"
     health_id="$META_AGENT_SESSION_ID"
