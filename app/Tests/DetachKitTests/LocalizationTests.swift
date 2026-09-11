@@ -125,6 +125,8 @@ final class LocalizationTests: XCTestCase {
             "Detach cannot update from this app location. Move Detach to /Applications. The active CLI did not change. Then try again.",
             "Detach could not prepare or download the update: %@. The active CLI did not change. Check the network connection and free disk space. Then try again.",
             "Detach rejected or could not install the update: %@. The active CLI did not change. Download the latest DMG. If the CLI does not match the app, open Detach settings, select System, and run Repair.",
+            "Automatically download updates",
+            "Sparkle downloads a signed update and installs the app when Detach quits.",
         ]
 
         for key in keys {

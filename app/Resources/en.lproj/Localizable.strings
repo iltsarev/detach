@@ -71,6 +71,7 @@
 "Automatic updates are unavailable: %@." = "Automatic updates are unavailable: %@.";
 "Automatic updates are unavailable: %@. This is expected for local development." = "Automatic updates are unavailable: %@. This is expected for local development.";
 "Automatically check for updates" = "Automatically check for updates";
+"Automatically download updates" = "Automatically download updates";
 "Available: Claude" = "Available: Claude";
 "Available: Codex" = "Available: Codex";
 "Available: Codex and Claude" = "Available: Codex and Claude";
@@ -177,6 +178,7 @@
 "Setting Up Detach…" = "Setting Up Detach…";
 "Something went wrong" = "Something went wrong";
 "Sparkle checks in the background on its own schedule." = "Sparkle checks in the background on its own schedule.";
+"Sparkle downloads a signed update and installs the app when Detach quits." = "Sparkle downloads a signed update and installs the app when Detach quits.";
 "Start a managed run in Detach." = "Start a managed run in Detach.";
 "Start Codex or Claude in Detach" = "Start Codex or Claude in Detach";
 "Start" = "Start";
