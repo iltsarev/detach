@@ -246,6 +246,7 @@ route	500	tests/*	unknown	safe	docs/specs/documentation.md
 route	900	VERSION	release-tool	safe	docs/specs/release.md
 route	900	BUILD	release-tool	safe	docs/specs/release.md
 route	900	README.md	docs	safe	docs/specs/documentation.md
+route	900	SECURITY.md	docs	safe	docs/specs/documentation.md
 route	900	.gitignore	metadata	safe	docs/specs/documentation.md
 route	900	.gitattributes	metadata	safe	docs/specs/documentation.md
 route	800	.github/*	unknown	safe	docs/specs/documentation.md

@@ -54,6 +54,7 @@ required=(
   docs/quality-gates.md
   docs/exec-plan-template.md
   .github/pull_request_template.md
+  SECURITY.md
 )
 for file in "${required[@]}"; do
   [ -f "$ROOT/$file" ] || fail "missing $file"

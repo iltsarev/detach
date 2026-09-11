@@ -25,6 +25,7 @@ It lists current specification ownership and verification links.
 - `AGENTS.md`
 - `CLAUDE.md`
 - `README.md`
+- `SECURITY.md`
 - `app/.gitignore`
 - `docs/assets/*`
 - `docs/quality-gates.md`
