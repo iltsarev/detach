@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import DetachKit
 
@@ -603,11 +604,30 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
                 .serviceQuiescing)
         }
 
-        _ = try service.cancelUnregistration()
+        let successor = try makeService(store: store, backend: backend)
+        _ = try successor.cancelUnregistration()
         XCTAssertEqual(store.state?.unregistrationPending, false)
         XCTAssertEqual(
-            try service.acquireLease(identity, assertionActive: true).state,
+            try successor.acquireLease(identity, assertionActive: true).state,
             .protected)
+    }
+
+    func testCancelDuringInFlightUnregisterDoesNotClearPendingFlag() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend)
+
+        try service.prepareForUnregistration()
+        _ = try service.cancelUnregistration()
+
+        XCTAssertEqual(store.state?.unregistrationPending, true)
+        XCTAssertThrowsError(
+            try service.acquireLease(identity, assertionActive: true)
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperLeaseServiceError,
+                .serviceQuiescing)
+        }
     }
 
     func testPrepareForUnregistrationNeverDisablesBorrowedProtection() throws {
@@ -1088,11 +1108,16 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
             .appendingPathComponent("detach-power-lease-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(
-            at: root, withIntermediateDirectories: true)
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
         let stateURL = root.appendingPathComponent("state.json")
         let corrupt = Data("not-json".utf8)
         try corrupt.write(to: stateURL)
-        let store = SecureFilePowerHelperStateStore(fileURL: stateURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: stateURL.path)
+        let store = SecureFilePowerHelperStateStore(
+            fileURL: stateURL, expectedOwner: UInt32(geteuid()))
         let backend = FakeBackend(enabled: false)
 
         let service = try PowerHelperLeaseService(
@@ -1123,12 +1148,17 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
             .appendingPathComponent("detach-power-lease-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(
-            at: root, withIntermediateDirectories: true)
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
         let stateURL = root.appendingPathComponent("state.json")
         try Data(
             #"{"schema":2,"owns_closed_lid_protection":true,"leases":[]}"#.utf8
         ).write(to: stateURL)
-        let store = SecureFilePowerHelperStateStore(fileURL: stateURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: stateURL.path)
+        let store = SecureFilePowerHelperStateStore(
+            fileURL: stateURL, expectedOwner: UInt32(geteuid()))
         // The unreadable file claimed ownership of a setting that is still
         // enabled. A clean start must treat it as borrowed and never
         // disable it.

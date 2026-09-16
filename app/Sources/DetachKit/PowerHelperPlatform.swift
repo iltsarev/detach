@@ -587,18 +587,23 @@ public final class SecureFilePowerHelperStateStore:
     public static let defaultFileURL = URL(
         fileURLWithPath: "/var/db/dev.tsarev.detach/power-state.json")
     public static let maximumBytes = 1_048_576
+    private static let requiredFileMode: mode_t = 0o600
+    private static let requiredDirectoryMode: mode_t = 0o700
 
     private let fileURL: URL
     private let fileManager: FileManager
+    private let expectedOwner: UInt32
     private let directorySyncer: (Int32) -> Int32
 
     public convenience init(
         fileURL: URL = SecureFilePowerHelperStateStore.defaultFileURL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        expectedOwner: UInt32 = 0
     ) {
         self.init(
             fileURL: fileURL,
             fileManager: fileManager,
+            expectedOwner: expectedOwner,
             directorySyncer: Darwin.fsync)
     }
 
@@ -607,25 +612,54 @@ public final class SecureFilePowerHelperStateStore:
     init(
         fileURL: URL,
         fileManager: FileManager,
+        expectedOwner: UInt32 = 0,
         directorySyncer: @escaping (Int32) -> Int32
     ) {
         self.fileURL = fileURL
         self.fileManager = fileManager
+        self.expectedOwner = expectedOwner
         self.directorySyncer = directorySyncer
     }
 
     public func load() throws -> PowerHelperPersistentState? {
-        guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
-        try rejectSymbolicLink(fileURL)
-        let attributes = try fileManager.attributesOfItem(atPath: fileURL.path)
-        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+        let directory = fileURL.deletingLastPathComponent()
+        let fileName = fileURL.lastPathComponent
+        guard !fileName.isEmpty, fileName != ".", fileName != "..",
+              !fileName.contains("/") else {
             throw PowerHelperPlatformError.insecureStatePath
         }
-        if let size = attributes[.size] as? NSNumber,
-           size.intValue > Self.maximumBytes {
-            throw PowerHelperPlatformError.stateTooLarge
+        let directoryDescriptor = Darwin.open(
+            directory.path,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryDescriptor >= 0 else {
+            let code = errno
+            if code == ENOENT { return nil }
+            if code == ELOOP || code == ENOTDIR {
+                throw PowerHelperPlatformError.insecureStatePath
+            }
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "open directory", code: code)
         }
-        let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+        defer { Darwin.close(directoryDescriptor) }
+
+        let descriptor = fileName.withCString { name in
+            Darwin.openat(
+                directoryDescriptor, name,
+                O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else {
+            let code = errno
+            if code == ENOENT { return nil }
+            if code == ELOOP {
+                throw PowerHelperPlatformError.insecureStatePath
+            }
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "open", code: code)
+        }
+        defer { Darwin.close(descriptor) }
+
+        try validateLoadedDirectory(directoryDescriptor)
+        let data = try readValidatedStateFile(descriptor)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         return try decoder.decode(PowerHelperPersistentState.self, from: data)
@@ -702,6 +736,66 @@ public final class SecureFilePowerHelperStateStore:
         if values.isSymbolicLink == true {
             throw PowerHelperPlatformError.insecureStatePath
         }
+    }
+
+    private func validateLoadedDirectory(_ descriptor: Int32) throws {
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0 else {
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "fstat directory", code: errno)
+        }
+        let mode = metadata.st_mode
+        guard (mode & S_IFMT) == S_IFDIR,
+              UInt32(metadata.st_uid) == expectedOwner,
+              (mode & mode_t(0o777)) == Self.requiredDirectoryMode else {
+            throw PowerHelperPlatformError.insecureStatePath
+        }
+    }
+
+    private func readValidatedStateFile(_ descriptor: Int32) throws -> Data {
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0 else {
+            throw PowerHelperPlatformError.fileSystem(
+                operation: "fstat", code: errno)
+        }
+        let mode = metadata.st_mode
+        guard (mode & S_IFMT) == S_IFREG,
+              metadata.st_nlink == 1,
+              UInt32(metadata.st_uid) == expectedOwner,
+              (mode & mode_t(0o777)) == Self.requiredFileMode else {
+            throw PowerHelperPlatformError.insecureStatePath
+        }
+        let size = Int(metadata.st_size)
+        guard size >= 0 else {
+            throw PowerHelperPlatformError.insecureStatePath
+        }
+        if size > Self.maximumBytes {
+            throw PowerHelperPlatformError.stateTooLarge
+        }
+        var data = Data(count: size)
+        if size > 0 {
+            try data.withUnsafeMutableBytes { buffer in
+                guard let baseAddress = buffer.baseAddress else { return }
+                var offset = 0
+                while offset < size {
+                    let count = Darwin.read(
+                        descriptor, baseAddress.advanced(by: offset),
+                        size - offset)
+                    if count < 0 {
+                        if errno == EINTR { continue }
+                        throw PowerHelperPlatformError.fileSystem(
+                            operation: "read", code: errno)
+                    }
+                    if count == 0 { break }
+                    offset += Int(count)
+                }
+                guard offset == size else {
+                    throw PowerHelperPlatformError.fileSystem(
+                        operation: "read", code: EIO)
+                }
+            }
+        }
+        return data
     }
 
     private func atomicWrite(_ data: Data, to destination: URL) throws {
