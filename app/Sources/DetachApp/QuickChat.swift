@@ -67,6 +67,7 @@ enum QuickChatLaunch {
         providerRawValue: String,
         directoryPath: String,
         fileManager: FileManager = .default,
+        terminalSize: SessionTerminalSize? = nil,
         onSessionAvailable: (@MainActor (String) -> Void)? = nil,
         createProjectDirectory: (URL, FileManager) throws -> URL = {
             try QuickChatProjectDirectory.create(inside: $0, fileManager: $1)
@@ -101,7 +102,8 @@ enum QuickChatLaunch {
                 provider: provider,
                 projectDirectory: projectDirectory,
                 name: nil,
-                prompt: nil)
+                prompt: nil,
+                terminalSize: terminalSize)
         }
 
         let existingIDs = existingSessionIDs(in: store.sessions)
@@ -111,7 +113,8 @@ enum QuickChatLaunch {
                     provider: provider,
                     projectDirectory: projectDirectory,
                     name: nil,
-                    prompt: nil))
+                    prompt: nil,
+                    terminalSize: terminalSize))
             }
             group.addTask {
                 .session(await waitForSession(

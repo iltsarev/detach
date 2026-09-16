@@ -18,6 +18,8 @@ approved_invocation() {
   if [[ "$invocation" =~ ^--terminal-size\ [1-9][0-9]{0,2}x[1-9][0-9]{0,2}\ (.*)$ ]]; then
     invocation="${BASH_REMATCH[1]}"
     case "$invocation" in
+      'claude start --detach') invocation='claude --detach' ;;
+      'codex start --detach') invocation='codex --detach' ;;
       'codex recover --detach detach-codex-ui-recoverable'|\
       'claude resume --name detach-claude-ui-completed --detach a9f58f1d-1234-5678-9abc-def012342ed9') ;;
       *) return 1 ;;
@@ -476,6 +478,13 @@ run_app_scenario() {
     exit 1
   fi
 
+  while IFS= read -r invocation; do
+    approved_invocation "$invocation" || {
+      printf 'UI e2e %s: unapproved fixture invocation: %s\n' "$scenario" "$invocation" >&2
+      exit 1
+    }
+  done <"$FAKE_DIR/invocations.log"
+
   for check in "$@"; do
     actual="$(plutil -extract "checks.$check_index" raw -o - "$RESULT")"
     [ "$actual" = "$check" ] || {
@@ -484,6 +493,10 @@ run_app_scenario() {
       exit 1
     }
     case "$check" in
+      terminal-start-uses-visible-width|terminal-resize-updates-grid|\
+      terminal-recover-first-frame-uses-visible-width|terminal-resume-first-frame-uses-visible-width|\
+      terminal-late-switch-keeps-latest-selection-and-pty|\
+      quick-chat-uses-visible-width|\
       background-app-starts-without-focus|disconnected-stop-blocks-action|\
       finished-selection-clears-scrollbar|session-uuid-copies-from-text-side|\
       live-session-hosts-attach-client|\
@@ -538,6 +551,14 @@ run_app_scenario() {
   printf 'UI e2e: %s passed in %ss (attempt %s)\n' "$scenario" \
     "$((SECONDS - scenario_started))" "$attempt"
 }
+
+run_app_scenario terminal-width empty 20 \
+  terminal-start-uses-visible-width \
+  terminal-resize-updates-grid \
+  quick-chat-uses-visible-width \
+  terminal-recover-first-frame-uses-visible-width \
+  terminal-resume-first-frame-uses-visible-width \
+  terminal-late-switch-keeps-latest-selection-and-pty
 
 run_app_scenario main sessions 32 \
   background-app-starts-without-focus \
@@ -602,9 +623,9 @@ running_attach_count="$(grep -Fxc \
   "$TEST_ROOT/invocations-main.log" || true)"
 switch_count="$(grep -Fc 'client switch --pid ' \
   "$TEST_ROOT/invocations-main.log" || true)"
-claude_start_count="$(grep -Fxc 'claude --detach' \
+claude_start_count="$(grep -Ec '^(claude --detach|--terminal-size [1-9][0-9]{0,2}x[1-9][0-9]{0,2} claude start --detach)$' \
   "$TEST_ROOT/invocations-main.log" || true)"
-codex_start_count="$(grep -Fxc 'codex --detach' \
+codex_start_count="$(grep -Ec '^(codex --detach|--terminal-size [1-9][0-9]{0,2}x[1-9][0-9]{0,2} codex start --detach)$' \
   "$TEST_ROOT/invocations-main.log" || true)"
 quick_attach_count="$(grep -Fxc \
   'codex attach --terminal-features sync detach-codex-ui-quick' \

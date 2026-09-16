@@ -163,6 +163,17 @@ Start, Resume, and Recover run inside Detach and do not require an outer
 terminal. The selected external terminal remains available as a fallback for
 Attach, Resume, and Recover.
 
+New session and Quick chat pass the main terminal width before the provider
+starts, including when the session list is empty. They measure the main detail
+area with the terminal font, not the New session sheet. The detached start uses
+24 rows until attachment supplies the visible height. Resizing the window then
+uses the normal terminal and tmux size updates.
+
+With both an embedded and an external client attached, tmux uses the size of
+the last active client (`window-size latest`). Input in the embedded terminal
+restores its width. Closing the external client also restores the embedded
+size. Closing both clients leaves the managed provider running.
+
 Resume and Recover show the new terminal as soon as the session can accept an
 attachment. Startup checks continue, and Detach reports any startup error.
 With the current CLI, the provider receives the visible terminal size before

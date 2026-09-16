@@ -108,7 +108,7 @@ struct UIE2EConfiguration: Sendable {
         }
         let scenario = environment["DETACH_UI_E2E_SCENARIO"] ?? "main"
         guard [
-            "main", "failure", "settings", "onboarding-first-run",
+            "main", "failure", "settings", "terminal-width", "onboarding-first-run",
             "onboarding-provider", "onboarding-approval",
         ].contains(scenario) else {
             try fail("DETACH_UI_E2E_SCENARIO is unsupported")

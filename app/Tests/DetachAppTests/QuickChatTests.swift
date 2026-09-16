@@ -70,6 +70,22 @@ final class QuickChatTests: XCTestCase {
         XCTAssertTrue(project.lastPathComponent.hasPrefix("detach-chat-"))
     }
 
+    func testQuickChatPassesWidthWithAndWithoutEarlySelection() async {
+        for earlySelection in [false, true] {
+            let cli = QuickChatRecordingCLI()
+            var selection: (@MainActor (String) -> Void)?
+            if earlySelection { selection = { (_: String) in } }
+            _ = await QuickChatLaunch.start(
+                store: SessionStore(cli: cli), providerRawValue: "codex", directoryPath: "/tmp",
+                terminalSize: SessionTerminalSize(columns: 137, rows: 24),
+                onSessionAvailable: selection,
+                createProjectDirectory: { directory, _ in directory },
+                waitForSession: { _, _, _, _ in nil })
+            XCTAssertEqual(cli.calls.first?.arguments,
+                           ["--terminal-size", "137x24", "codex", "start", "--detach"])
+        }
+    }
+
     func testQuickChatUsesConfiguredProviderAndWorkingDirectory() async {
         let directory = try! XCTUnwrap(
             DirectoryPreference.existingDirectoryURL(path: "/tmp"))

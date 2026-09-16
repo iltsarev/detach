@@ -8,6 +8,7 @@ struct NewSessionSheet: View {
     let store: SessionStore
     @Binding var selectedID: String?
     let projectPickerRoot: URL
+    let terminalSize: SessionTerminalSize?
 
     @State private var projectDir: URL?
     @State private var provider: Provider = .claude
@@ -25,10 +26,12 @@ struct NewSessionSheet: View {
         showsAdvanced: Bool = false,
         initialProjectDir: URL? = nil,
         initialLaunchFailure: String? = nil,
+        terminalSize: SessionTerminalSize? = nil,
         projectPickerRoot: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
         self.store = store
         self.projectPickerRoot = projectPickerRoot
+        self.terminalSize = terminalSize
         _selectedID = selectedID
         _name = State(initialValue: initialName)
         _showAdvanced = State(initialValue: showsAdvanced)
@@ -327,7 +330,8 @@ struct NewSessionSheet: View {
             provider: provider,
             projectDirectory: projectDir,
             name: normalizedName,
-            prompt: NewSessionLaunch.trimmedPrompt(prompt))
+            prompt: NewSessionLaunch.trimmedPrompt(prompt),
+            terminalSize: terminalSize)
         launchFailure = nil
         if let message = result.message {
             launchFailure = message

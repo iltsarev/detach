@@ -424,6 +424,42 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertTrue(cli.calls.contains(["codex", "delete", "--force", "detach-codex-p-1"]))
     }
 
+    func testStartDetachedPassesWidthBeforeProviderLaunch() async {
+        for provider in [Provider.codex, .claude] {
+            let cli = FakeCLI()
+            let store = SessionStore(cli: cli)
+            _ = await store.startDetached(
+                provider: provider,
+                projectDirectory: URL(fileURLWithPath: "/tmp/p"),
+                name: "wide", prompt: "first output",
+                terminalSize: SessionTerminalSize(columns: 137, rows: 47))
+            XCTAssertEqual(cli.calls.first, [
+                "--terminal-size", "137x47", provider.rawValue, "start",
+                "--name", "wide", "--detach", "--", "first output",
+            ])
+        }
+    }
+
+    func testStartSizeRetriesOnlyBeforeAnOlderFrontendDispatches() async {
+        for (stderr, stdout, timedOut, retries) in [
+            ("detach: unknown command: --terminal-size\n", "", false, true),
+            ("provider startup failed", "", false, false),
+            ("detach: unknown command: --terminal-size", "Started", false, false),
+            ("detach: unknown command: --terminal-size", "", true, false),
+        ] {
+            let cli = FakeCLI()
+            cli.responses["--terminal-size 137x47 codex start --detach"] = .success(CLIResult(
+                exitCode: 1, stdout: stdout, stderr: stderr, timedOut: timedOut))
+            let result = await SessionStore(cli: cli).startDetached(
+                provider: .codex, projectDirectory: URL(fileURLWithPath: "/tmp/p"),
+                name: nil, prompt: nil,
+                terminalSize: SessionTerminalSize(columns: 137, rows: 47))
+            XCTAssertEqual(cli.calls.filter { $0 == ["codex", "--detach"] }.count,
+                           retries ? 1 : 0)
+            XCTAssertEqual(result.message == nil, retries)
+        }
+    }
+
     func testStartDetachedUsesProjectAndSelectsTheNewTypedSession() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = ok(line)

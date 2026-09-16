@@ -595,7 +595,8 @@ public final class SessionStore {
         provider: Provider,
         projectDirectory: URL,
         name: String?,
-        prompt: String?
+        prompt: String?,
+        terminalSize: SessionTerminalSize? = nil
     ) async -> SessionStartResult {
         let existingIDs = Set(sessions.map(\.id))
         var arguments = [provider.rawValue]
@@ -608,10 +609,21 @@ public final class SessionStore {
         }
 
         do {
-            let result = try await cli.run(
-                arguments: arguments,
+            var result = try await cli.run(
+                arguments: terminalSize.map {
+                    $0.arguments + [provider.rawValue, "start"] + arguments.dropFirst()
+                } ?? arguments,
                 timeout: 120,
                 currentDirectoryURL: projectDirectory)
+            // Повтор допустим только после отказа старого CLI до запуска.
+            if terminalSize != nil, result.exitCode == 1, !result.timedOut,
+               result.stdout.isEmpty,
+               result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                == "detach: unknown command: --terminal-size" {
+                result = try await cli.run(
+                    arguments: arguments, timeout: 120,
+                    currentDirectoryURL: projectDirectory)
+            }
             guard !result.timedOut else {
                 await refresh()
                 return SessionStartResult(
