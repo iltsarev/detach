@@ -70,12 +70,21 @@ the hint. No startup failure or timeout permits this retry.
 Terminal I/O is event-driven. CoreGraphics repaints on changes and uses a
 steady cursor. No terminal poller or frame loop runs. `Command-C/V/F` provide
 native copy, paste, and find. `Ctrl-C` and `Ctrl-V` reach providers as
-conventional control bytes. An empty native selection cannot clear the
-clipboard; tmux copies its mouse selection on release. Explicit and detected
-links show an underline on hover and open on a plain click. A selection drag
-does not open a link. A Finder drop sends shell-safe paths without
-reading files. Live views move Mac Power to metadata. An exited client offers
-Reconnect.
+conventional control bytes. `Command-Left/Right` send `Ctrl-A/E`, and
+`Command-Backspace` sends `Ctrl-U`, regardless of enhanced keyboard mode.
+`Command-Up/Down` move the local viewport between OSC 133 prompt origins and
+do nothing when no origin exists; they never send shell-history keys. The marks
+must reach SwiftTerm. Ordinary marks consumed by tmux are not available to this
+local navigation. Detach does not enable or configure prompt passthrough.
+`Shift-Return` sends tmux's stable CSI-u `S-Enter` input regardless of enhanced
+keyboard mode; the managed tmux toggle maps it to multiline input or ordinary
+Return. Handled presses suppress their paired releases across autorepeat and
+focus changes.
+An empty native selection cannot clear the clipboard; tmux copies its mouse
+selection on release. Explicit and detected links show an underline on hover
+and open on a plain click. A selection drag does not open a link. A Finder drop
+sends shell-safe paths without reading files. Live views move Mac Power to
+metadata. An exited client offers Reconnect.
 
 The embedded attach client always uses a UTF-8 character locale. A conflicting
 inherited locale cannot change how tmux encodes its output. Native paste sends

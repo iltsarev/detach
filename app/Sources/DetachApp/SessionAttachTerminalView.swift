@@ -541,46 +541,84 @@ enum SessionAttachRendering {
 /// Preserves provider shortcuts that must reach the child as conventional
 /// control bytes, even after the child negotiates an enhanced keyboard mode.
 enum SessionAttachKeyboard {
+    enum PromptDirection: Int, Equatable {
+        case previous = -1
+        case next = 1
+    }
+
     enum AppAction: Equatable {
         case copy
         case paste
         case find
+        case jumpToPrompt(PromptDirection)
+    }
+
+    /// `.function`, `.numericPad`, and `.capsLock` describe the physical key
+    /// event. They are not extra chord modifiers; AppKit sets the first two on
+    /// arrow events even when the user presses only Command and an arrow.
+    private static func chordFlags(for event: NSEvent) -> NSEvent.ModifierFlags {
+        event.modifierFlags.intersection([.command, .control, .option, .shift])
     }
 
     static func appAction(for event: NSEvent) -> AppAction? {
-        let flags = event.modifierFlags.intersection(
-            [.command, .control, .option, .shift, .function])
-        guard flags == .command else { return nil }
+        guard chordFlags(for: event) == .command else { return nil }
         switch event.keyCode {
         case 8: return .copy
         case 9: return .paste
         case 3: return .find
+        case 126: return .jumpToPrompt(.previous) // Command-Up
+        case 125: return .jumpToPrompt(.next) // Command-Down
         default: return nil
         }
     }
 
     static func providerInput(for event: NSEvent) -> [UInt8]? {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains(.control),
-              flags.intersection([.command, .option, .shift, .function]).isEmpty else {
+        guard event.type == .keyDown else { return nil }
+        switch chordFlags(for: event) {
+        case .control:
+            switch event.keyCode {
+            case 8: return [0x03] // Control-C
+            case 9: return [0x16] // Control-V
+            default: return nil
+            }
+        case .command:
+            switch event.keyCode {
+            case 123: return [0x01] // Command-Left, Ghostty: Control-A
+            case 124: return [0x05] // Command-Right, Ghostty: Control-E
+            case 51: return [0x15] // Command-Backspace, Ghostty: Control-U
+            default: return nil
+            }
+        case .shift:
+            switch event.keyCode {
+            case 36:
+                // Always identify Shift+Return to managed tmux. Its existing
+                // toggle decides whether this becomes multiline input or an
+                // ordinary Return, independently of SwiftTerm's kitty mode.
+                return Array("\u{1b}[13;2u".utf8)
+            default: return nil
+            }
+        default:
             return nil
-        }
-        switch event.keyCode {
-        case 8: return [0x03] // Control-C
-        case 9: return [0x16] // Control-V
-        default: return nil
         }
     }
 
-    @discardableResult
-    static func routeProviderShortcut(
-        from event: NSEvent,
-        send: ([UInt8]) -> Void
-    ) -> Bool {
-        guard let bytes = providerInput(for: event) else { return false }
-        send(bytes)
-        return true
+    /// Finds the next OSC 133 prompt origin relative to the viewport. Prompt
+    /// continuation rows are deliberately skipped, matching Ghostty's local
+    /// `jump_to_prompt` action rather than sending shell-history keys.
+    static func promptTargetRow(
+        in terminal: Terminal,
+        direction: PromptDirection
+    ) -> Int? {
+        var row = terminal.getTopVisibleRow() + direction.rawValue
+        while terminal.bufferLine(atRow: row) != nil {
+            if terminal.semanticRowKind(at: row) == .initial {
+                return row
+            }
+            row += direction.rawValue
+        }
+        return nil
     }
+
 }
 
 enum SessionAttachDroppedPaths {
@@ -868,6 +906,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         var onSwitchFailed: (String) -> Void
         private let switchCLI: any DetachCLIRunning
         private var keyboardMonitor: Any?
+        private var suppressedKeyUps: Set<UInt16> = []
         private weak var attachedView: LocalProcessTerminalView?
         private var desiredSession: Session
         private var switchTask: Task<Void, Never>?
@@ -974,7 +1013,9 @@ struct SessionAttachTerminalView: NSViewRepresentable {
 
         func installKeyboardMonitor(for view: LocalProcessTerminalView) {
             removeKeyboardMonitor()
-            keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            keyboardMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.keyDown, .keyUp]
+            ) {
                 [weak self, weak view] event in
                 guard let self, let view else { return event }
                 return self.routeKeyboardEvent(
@@ -994,20 +1035,39 @@ struct SessionAttachTerminalView: NSViewRepresentable {
             send: ([UInt8]) -> Void,
             performAppAction: ((SessionAttachKeyboard.AppAction) -> Void)? = nil
         ) -> NSEvent? {
+            // Consume every paired release whose press Detach handled. In
+            // Kitty report-all-keys mode, forwarding only the release would
+            // otherwise emit an orphan sequence into the provider PTY.
+            if event.type == .keyUp,
+               suppressedKeyUps.remove(event.keyCode) != nil {
+                return nil
+            }
+            // A fresh press proves that a prior release for this physical key
+            // was lost during a focus or window transition. Repeats belong to
+            // the current press and must keep its pending release suppressed.
+            if event.type == .keyDown, !event.isARepeat {
+                suppressedKeyUps.remove(event.keyCode)
+            }
             guard window === view.window,
                   Self.isFocused(view, firstResponder: firstResponder) else {
                 return event
             }
+            guard event.type == .keyDown else { return event }
             if let action = SessionAttachKeyboard.appAction(for: event) {
+                suppressedKeyUps.insert(event.keyCode)
                 (performAppAction ?? { Self.perform($0, in: view) })(action)
                 return nil
             }
-            return SessionAttachKeyboard.routeProviderShortcut(
-                from: event,
-                send: send) ? nil : event
+            guard let bytes = SessionAttachKeyboard.providerInput(for: event) else {
+                return event
+            }
+            suppressedKeyUps.insert(event.keyCode)
+            send(bytes)
+            return nil
         }
 
         func removeKeyboardMonitor() {
+            suppressedKeyUps.removeAll()
             guard let keyboardMonitor else { return }
             NSEvent.removeMonitor(keyboardMonitor)
             self.keyboardMonitor = nil
@@ -1035,6 +1095,13 @@ struct SessionAttachTerminalView: NSViewRepresentable {
                 let menuItem = NSMenuItem()
                 menuItem.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
                 view.performFindPanelAction(menuItem)
+            case .jumpToPrompt(let direction):
+                guard let row = SessionAttachKeyboard.promptTargetRow(
+                    in: view.terminal,
+                    direction: direction) else {
+                    return
+                }
+                view.scrollTo(row: row)
             }
         }
 

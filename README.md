@@ -138,7 +138,15 @@ The embedded terminal keeps the shortcuts that matter:
 | Give Codex or Claude Code an image from the clipboard | `Ctrl-V` |
 | Interrupt a command or close a provider overlay | `Ctrl-C` |
 | Find terminal output | `Cmd-F` |
+| Move to the start or end of provider input | `Cmd-←` / `Cmd-→` |
+| Delete provider input back to its start | `Cmd-Backspace` |
+| Jump to the previous or next OSC 133 prompt mark | `Cmd-↑` / `Cmd-↓` |
 | Replace an exited terminal client without restarting the agent | **Reconnect** |
+
+Prompt jumping stays local to the terminal viewport. It requires OSC 133 marks
+in the embedded terminal's own buffer. Managed tmux consumes ordinary prompt
+marks, so they do not enable these shortcuts. Without delivered marks, the
+shortcuts do nothing. Detach does not configure prompt passthrough.
 
 With managed mouse input, tmux copies the selection when you release the
 mouse button. `Cmd-C` keeps that copy when there is no native selection.

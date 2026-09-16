@@ -420,6 +420,19 @@ enum UIE2ETestDriver {
             let pasteboardSnapshot = captureGeneralPasteboard()
             defer { restoreGeneralPasteboard(pasteboardSnapshot) }
             let pasteboardGeneration = NSPasteboard.general.changeCount
+            guard let uuidView = elements().compactMap({ $0 as? UIE2EGeometryView })
+                .first(where: { $0.identifierValue == "session-uuid-chip" }) else {
+                throw Failure(message: "UUID chip has no measured view")
+            }
+            // Показать кнопку в горизонтальной ленте перед настоящим кликом.
+            uuidView.scrollToVisible(uuidView.bounds)
+            if let scroll = uuidView.enclosingScrollView {
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+            try await waitUntil("UUID chip is visible for copying") {
+                uuidView.publishFrame()
+                return uuidView.visibleRect.contains(uuidView.bounds)
+            }
             try await clickMeasuredControl(
                 identifier: "session-uuid-chip",
                 name: "session UUID chip text",
@@ -735,7 +748,7 @@ enum UIE2ETestDriver {
             bulkDeleteButton = try await element(identifier: "finished-delete-button")
             try requireSemanticControl(bulkDeleteButton, name: "bulk delete action")
             let confirmDelete = try await clickUntilSheetButton(
-                bulkDeleteButton, name: "bulk delete action", label: "Delete")
+                bulkDeleteButton, name: "bulk delete action", label: L10n.string("Delete"))
             try requireSemanticControl(confirmDelete, name: "delete confirmation")
             try await clickUntil(
                 confirmDelete,
