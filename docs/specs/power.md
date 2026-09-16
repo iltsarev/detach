@@ -80,7 +80,11 @@ helper process can answer. The app then skips XPC preparation and replays the
 submitted unregister phase under the system and per-user transaction locks.
 Only a busy lifetime lock permits the prepare call. A replacement is not
 registered until the old lifetime lock is released or an exact absent-job
-callback provides the required completion barrier.
+callback provides the required completion barrier. An absent-job callback is
+`kSMErrorJobNotFound` or the `SMAppServiceErrorDomain` `EPERM` reply that
+macOS 26 returns for a label without a Background Task Management record. The
+app accepts either reply only with exact `notRegistered` status and the
+lifetime-barrier wait; an `EPERM` reply for a live record stays fail-closed.
 Lifetime and system handoff probes reject special files without waiting for
 a FIFO writer. File validation precedes lock acquisition. Activity and source
 handoff readers also reject special files without blocking and keep the
