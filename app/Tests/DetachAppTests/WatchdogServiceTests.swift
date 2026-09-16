@@ -661,10 +661,10 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(store.transaction?.phase, .unregisterSubmitted)
     }
 
-    func testReplayDoesNotTreatOperationInProgressAsJobAbsence() async {
-        let inProgress = NSError(
-            domain: "SMAppServiceErrorDomain",
-            code: 1)
+    func testReplayAcceptsAbsentRecordRejectionAfterLifetimeRelease() async throws {
+        // macOS 26 reports an absent BTM record as EPERM in the SMAppService
+        // domain instead of kSMErrorJobNotFound. The replay must still cross
+        // the lifetime barrier before it registers.
         let store = MemoryWatchdogHandoffStore(
             transaction: WatchdogHandoffTransaction(
                 phase: .unregisterSubmitted,
@@ -672,7 +672,39 @@ final class WatchdogServiceTests: XCTestCase {
         let backend = FakeWatchdogBackend(
             status: .notRegistered,
             registrations: [.success(.enabled)],
-            unregistrations: [.failure(inProgress)])
+            unregistrations: [.failure(Self.absentRecordRejection)])
+        var barriers: [WatchdogLifetimeBarrierStatus] = [.busy, .released]
+        var delays: [UInt64] = []
+        let fixture = makeFixture(
+            backend: backend,
+            handoffStore: store,
+            lifetimeBarrierStatus: { barriers.removeFirst() },
+            sleep: { delays.append($0) })
+        defer { fixture.cleanup() }
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(delays, [1_000_000_000])
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertTrue(barriers.isEmpty)
+        XCTAssertNil(store.transaction)
+        XCTAssertEqual(
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
+            "digest-current")
+    }
+
+    func testAbsentRecordRejectionWithLiveRecordRemainsFailClosed() async {
+        // BTM also answers EPERM for mutations it forbids by policy. A record
+        // that BTM still reports cannot be treated as already removed.
+        let store = MemoryWatchdogHandoffStore(
+            transaction: WatchdogHandoffTransaction(
+                phase: .unregisterSubmitted,
+                targetDigest: "digest-current"))
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)],
+            unregistrations: [.failure(Self.absentRecordRejection)])
         let fixture = makeFixture(backend: backend, handoffStore: store)
         defer { fixture.cleanup() }
 
@@ -681,13 +713,17 @@ final class WatchdogServiceTests: XCTestCase {
             XCTFail("Expected replay to remain fail-closed")
         } catch {
             XCTAssertEqual((error as NSError).domain, "SMAppServiceErrorDomain")
-            XCTAssertEqual((error as NSError).code, 1)
+            XCTAssertEqual((error as NSError).code, Int(EPERM))
         }
 
         XCTAssertEqual(backend.unregisterCalls, 1)
         XCTAssertEqual(backend.registerCalls, 0)
         XCTAssertEqual(store.transaction?.phase, .unregisterSubmitted)
     }
+
+    private static let absentRecordRejection = NSError(
+        domain: "SMAppServiceErrorDomain", code: Int(EPERM),
+        userInfo: [NSLocalizedFailureReasonErrorKey: "Operation not permitted"])
 
     private func makeFixture(
         backend: FakeWatchdogBackend,

@@ -759,13 +759,21 @@ final class PowerHelperService {
     }
 
     private static func isAlreadyUnregisteredError(_ error: Error) -> Bool {
-        // SMAppService documents kSMErrorJobNotFound as the only error that
-        // proves this replay found no registered job. Other errors (notably an
-        // operation-in-progress response) must not be combined with status and
-        // a released process lock to manufacture a completion barrier.
+        // SMAppService documents kSMErrorJobNotFound for a replay that finds
+        // no registered job, but macOS 26 does not return it. When Background
+        // Task Management has no record for the label, smd rejects the
+        // unregister and SMAppService surfaces the raw errno inside its own
+        // domain: code 1 (EPERM, "Operation not permitted"). Without this
+        // shape a first install with a stale lifetime file never leaves
+        // `unregisterSubmitted`. Either code only classifies the reply. The
+        // caller still requires exact `notRegistered` status and the lifetime
+        // barrier, so an EPERM policy denial against a live record stays
+        // fail-closed. Other codes must not be combined with status and a
+        // released process lock to manufacture a completion barrier.
         let nsError = error as NSError
-        return nsError.domain == "SMAppServiceErrorDomain"
-            && nsError.code == Int(kSMErrorJobNotFound)
+        guard nsError.domain == "SMAppServiceErrorDomain" else { return false }
+        return nsError.code == Int(kSMErrorJobNotFound)
+            || nsError.code == Int(EPERM)
     }
 
     private func rememberDefinition(_ digest: String) {
