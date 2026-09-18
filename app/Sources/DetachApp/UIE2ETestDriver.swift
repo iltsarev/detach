@@ -885,7 +885,10 @@ enum UIE2ETestDriver {
                 FileManager.default.fileExists(atPath: configuration.root
                     .appendingPathComponent("fake/quick-chat-started").path)
             }
-            try await waitUntil("quick chat selection") {
+            try await clickMeasuredUntil(
+                identifier: "session-row-detach-codex-ui-quick",
+                name: "quick chat session",
+                outcome: "quick chat selection") {
                 find(identifier: "session-detail-detach-codex-ui-quick") != nil
             }
             checks.append("quick-chat-command-starts-session")
@@ -1029,6 +1032,13 @@ enum UIE2ETestDriver {
         // cached accessibility frame from before a programmatic window move.
         try await verifySettingsTextGrowth(in: settingsWindow, visible: visible)
         checks.append("settings-text-growth-stays-on-screen")
+        // A leftover Settings window keeps Command-T and Command-1 off the
+        // main session surface, so Quick chat starts without an attach or
+        // switch.
+        settingsWindow.performClose(nil)
+        try await waitUntil("settings window closes") {
+            !settingsWindow.isVisible
+        }
         return checks
     }
 
