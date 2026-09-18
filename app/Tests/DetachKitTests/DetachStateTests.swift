@@ -299,7 +299,11 @@ final class DetachStateTests: XCTestCase {
     }
 
     func testFileAndHandleTranscriptAPIsPreserveStreamingContracts() throws {
-        let data = Data("""
+        let valid = Data("""
+        {"payload":{"id":"session-1"}}
+        {"payload":{"session_id":"session-1"}}
+        """.utf8)
+        let scalar = Data("""
         {"payload":{"id":"session-1"}}
         {"payload":{"session_id":"fallback"}}
         """.utf8)
@@ -308,7 +312,7 @@ final class DetachStateTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let transcript = directory.appendingPathComponent("rollout.jsonl")
-        try data.write(to: transcript)
+        try valid.write(to: transcript)
 
         XCTAssertEqual(
             try TranscriptDocument.firstScalar(inFileAt: transcript, paths: ["payload.id"]),
@@ -317,7 +321,7 @@ final class DetachStateTests: XCTestCase {
             fileAt: transcript, provider: .codex, expectedSessionID: "session-1"))
 
         let scalarPipe = Pipe()
-        scalarPipe.fileHandleForWriting.write(data)
+        scalarPipe.fileHandleForWriting.write(scalar)
         try scalarPipe.fileHandleForWriting.close()
         XCTAssertEqual(
             try TranscriptDocument.firstScalar(
@@ -325,7 +329,7 @@ final class DetachStateTests: XCTestCase {
             .string("fallback"))
 
         let validationPipe = Pipe()
-        validationPipe.fileHandleForWriting.write(data)
+        validationPipe.fileHandleForWriting.write(valid)
         try validationPipe.fileHandleForWriting.close()
         XCTAssertTrue(try TranscriptDocument.isValid(
             reading: validationPipe.fileHandleForReading,
@@ -342,6 +346,14 @@ final class DetachStateTests: XCTestCase {
         {"payload":{"id":"session-2"}}
         {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
         """.utf8)
+        let laterForeign = Data("""
+        {"payload":{"id":"session-1"}}
+        {"type":"event_msg","payload":{"id":"session-2","type":"task_started"}}
+        """.utf8)
+        let laterForeignSessionID = Data("""
+        {"payload":{"id":"session-1"}}
+        {"payload":{"session_id":"session-2"}}
+        """.utf8)
         let malformed = Data("""
         {"payload":{"id":"session-1"}}
         not-json
@@ -351,6 +363,10 @@ final class DetachStateTests: XCTestCase {
             valid, provider: .codex, expectedSessionID: "session-1"))
         XCTAssertFalse(TranscriptDocument.isValid(
             foreign, provider: .codex, expectedSessionID: "session-1"))
+        XCTAssertFalse(TranscriptDocument.isValid(
+            laterForeign, provider: .codex, expectedSessionID: "session-1"))
+        XCTAssertFalse(TranscriptDocument.isValid(
+            laterForeignSessionID, provider: .codex, expectedSessionID: "session-1"))
         XCTAssertFalse(TranscriptDocument.isValid(
             malformed, provider: .codex, expectedSessionID: "session-1"))
     }
@@ -390,6 +406,22 @@ final class DetachStateTests: XCTestCase {
             Data(#"{"payload":{}}"#.utf8),
             provider: .codex,
             expectedSessionID: "session-1"))
+    }
+
+    func testCodexJSONLValidationSkipsLaterRecordsWithoutPayloadOrIdentity() {
+        let laterWithoutPayload = Data("""
+        {"payload":{"id":"session-1"}}
+        {"type":"event_msg"}
+        """.utf8)
+        let laterWithoutIdentity = Data("""
+        {"payload":{"id":"session-1"}}
+        {"payload":{"type":"task_started","turn_id":"turn-1"}}
+        """.utf8)
+
+        XCTAssertTrue(TranscriptDocument.isValid(
+            laterWithoutPayload, provider: .codex, expectedSessionID: "session-1"))
+        XCTAssertTrue(TranscriptDocument.isValid(
+            laterWithoutIdentity, provider: .codex, expectedSessionID: "session-1"))
     }
 
     func testJSONLValidationStreamsGeneratedChunksWithoutRetainingTheTranscript() throws {
