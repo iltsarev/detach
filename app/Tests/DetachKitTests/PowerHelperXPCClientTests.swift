@@ -12,6 +12,8 @@ final class PowerHelperXPCClientTests: XCTestCase {
         var releaseError: Error?
         var prepareError: Error?
         var cancelError: Error?
+        var setThresholdError: Error?
+        private(set) var setThresholdCalls: [Int] = []
         private(set) var acquired: [(PowerLeaseIdentity, Bool)] = []
         private(set) var renewed: [(PowerLeaseIdentity, Bool)] = []
         private(set) var released: [PowerLeaseIdentity] = []
@@ -52,6 +54,11 @@ final class PowerHelperXPCClientTests: XCTestCase {
             cancelCalls += 1
             if let cancelError { throw cancelError }
         }
+
+        func setLowBatteryThreshold(_ percent: Int) throws {
+            setThresholdCalls.append(percent)
+            if let setThresholdError { throw setThresholdError }
+        }
     }
 
     func testObjectiveCProtocolCanBackAnNSXPCInterface() {
@@ -75,6 +82,7 @@ final class PowerHelperXPCClientTests: XCTestCase {
         assertTransportFailure { try transport.releaseLease(identity) }
         assertTransportFailure { try transport.prepareForUnregistration() }
         assertTransportFailure { try transport.cancelUnregistration() }
+        assertTransportFailure { try transport.setLowBatteryThreshold(15) }
     }
 
     func testReplyTimesOutAndAcceptsOnlyTheFirstResolution() throws {
@@ -106,6 +114,18 @@ final class PowerHelperXPCClientTests: XCTestCase {
             NSXPCPowerHelperTransport.defaultTimeout / 3 + 0.001)
     }
 
+    func testVoidReplyMapsSuccessAndFailureWithoutGuessing() {
+        var succeeded: Result<Bool, Error>?
+        PowerHelperXPCVoidReply.finish(nil) { succeeded = $0 }
+        XCTAssertEqual(try? succeeded?.get(), true)
+
+        var failed: Result<Bool, Error>?
+        PowerHelperXPCVoidReply.finish(ExpectedFailure()) { failed = $0 }
+        XCTAssertThrowsError(try failed?.get()) {
+            XCTAssertTrue($0 is ExpectedFailure)
+        }
+    }
+
     func testPublicErrorsDescribeFailuresPrecisely() {
         XCTAssertEqual(
             PowerHelperLifecycleError.activeLeases.localizedDescription,
@@ -113,6 +133,10 @@ final class PowerHelperXPCClientTests: XCTestCase {
         XCTAssertEqual(
             PowerHelperLifecycleError.serviceQuiescing.localizedDescription,
             "power helper is preparing to unregister")
+        XCTAssertEqual(
+            PowerHelperLifecycleError.invalidLowBatteryThreshold
+                .localizedDescription,
+            "low-battery threshold must be 10, 15, or 20")
         XCTAssertEqual(
             PowerHelperXPCError.unavailable("connection invalidated")
                 .localizedDescription,
@@ -227,9 +251,11 @@ final class PowerHelperXPCClientTests: XCTestCase {
 
         try client.prepareForUnregistration()
         try client.cancelUnregistration()
+        try client.setLowBatteryThreshold(20)
 
         XCTAssertEqual(transport.prepareCalls, 1)
         XCTAssertEqual(transport.cancelCalls, 1)
+        XCTAssertEqual(transport.setThresholdCalls, [20])
     }
 
     func testLifecycleServiceErrorsAreMappedToStableClientErrors() {
@@ -247,6 +273,16 @@ final class PowerHelperXPCClientTests: XCTestCase {
         }
         XCTAssertThrowsError(try client.cancelUnregistration()) {
             XCTAssertEqual($0 as? PowerHelperLifecycleError, .serviceQuiescing)
+        }
+
+        transport.setThresholdError = NSError(
+            domain: PowerHelperXPCService.errorDomain,
+            code: PowerHelperXPCService.ErrorCode.invalidLowBatteryThreshold
+                .rawValue)
+        XCTAssertThrowsError(try client.setLowBatteryThreshold(7)) {
+            XCTAssertEqual(
+                $0 as? PowerHelperLifecycleError,
+                .invalidLowBatteryThreshold)
         }
     }
 

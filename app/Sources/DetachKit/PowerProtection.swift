@@ -40,6 +40,7 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
     public let lowBattery: Bool
     public let thermalState: PowerThermalState
     public let thermalSafetyActive: Bool
+    public let lowBatteryThreshold: PowerLowBatteryThreshold
 
     public init(
         state: PowerProtectionState,
@@ -50,7 +51,8 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
         transitionInProgress: Bool,
         lowBattery: Bool,
         thermalState: PowerThermalState = .nominal,
-        thermalSafetyActive: Bool = false
+        thermalSafetyActive: Bool = false,
+        lowBatteryThreshold: PowerLowBatteryThreshold = .default
     ) {
         self.state = state
         self.leaseCount = max(0, leaseCount)
@@ -61,6 +63,7 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
         self.lowBattery = lowBattery
         self.thermalState = thermalState
         self.thermalSafetyActive = thermalSafetyActive
+        self.lowBatteryThreshold = lowBatteryThreshold
     }
 
     public static func derive(
@@ -71,7 +74,8 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
         transitionInProgress: Bool,
         lowBattery: Bool,
         thermalState: PowerThermalState = .nominal,
-        thermalSafetyActive: Bool = false
+        thermalSafetyActive: Bool = false,
+        lowBatteryThreshold: PowerLowBatteryThreshold = .default
     ) -> PowerProtectionStatus {
         let normalizedLeaseCount = max(0, leaseCount)
         let state: PowerProtectionState
@@ -109,7 +113,8 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
             transitionInProgress: transitionInProgress,
             lowBattery: lowBattery,
             thermalState: thermalState,
-            thermalSafetyActive: thermalSafetyActive)
+            thermalSafetyActive: thermalSafetyActive,
+            lowBatteryThreshold: lowBatteryThreshold)
     }
 
     public init(from decoder: Decoder) throws {
@@ -127,6 +132,8 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
             PowerThermalState.self, forKey: .thermalState) ?? .unknown
         thermalSafetyActive = try container.decodeIfPresent(
             Bool.self, forKey: .thermalSafetyActive) ?? false
+        lowBatteryThreshold = PowerLowBatteryThreshold.parse(
+            try container.decodeIfPresent(Int.self, forKey: .lowBatteryThreshold))
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -139,6 +146,7 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
         case lowBattery = "low_battery"
         case thermalState = "thermal_state"
         case thermalSafetyActive = "thermal_safety_active"
+        case lowBatteryThreshold = "low_battery_threshold"
     }
 }
 
@@ -221,6 +229,7 @@ public struct PowerProtectionCoordinator: Sendable {
         lowBattery: Bool,
         thermalState: PowerThermalState = .nominal,
         thermalSafetyActive: Bool = false,
+        lowBatteryThreshold: PowerLowBatteryThreshold = .default,
         backend: any ClosedLidProtectionControlling,
         allowEnablingProtection: () -> Bool = { true }
     ) -> PowerProtectionStatus {
@@ -255,7 +264,8 @@ public struct PowerProtectionCoordinator: Sendable {
                         transitionInProgress: true,
                         lowBattery: lowBattery,
                         thermalState: thermalState,
-                        thermalSafetyActive: thermalSafetyActive)
+                        thermalSafetyActive: thermalSafetyActive,
+                        lowBatteryThreshold: lowBatteryThreshold)
                 }
                 try backend.setProtectionEnabled(true)
                 // Record ownership as soon as our mutation succeeds. If
@@ -273,7 +283,8 @@ public struct PowerProtectionCoordinator: Sendable {
                 transitionInProgress: false,
                 lowBattery: lowBattery,
                 thermalState: thermalState,
-                thermalSafetyActive: thermalSafetyActive)
+                thermalSafetyActive: thermalSafetyActive,
+                lowBatteryThreshold: lowBatteryThreshold)
         } catch {
             return PowerProtectionStatus.derive(
                 leaseCount: liveLeases.count,
@@ -283,7 +294,8 @@ public struct PowerProtectionCoordinator: Sendable {
                 transitionInProgress: false,
                 lowBattery: lowBattery,
                 thermalState: thermalState,
-                thermalSafetyActive: thermalSafetyActive)
+                thermalSafetyActive: thermalSafetyActive,
+                lowBatteryThreshold: lowBatteryThreshold)
         }
     }
 }

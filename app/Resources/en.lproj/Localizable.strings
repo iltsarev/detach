@@ -251,7 +251,11 @@
 "Sleep Protection Helper" = "Sleep Protection Helper";
 "Stop active Detach sessions before removing the power helper." = "Stop active Detach sessions before removing the power helper.";
 "Switch to this macOS user before updating the power helper." = "Switch to this macOS user before updating the power helper.";
-"At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.";
+"10% (default)" = "10% (default)";
+"This is the default floor. At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep." = "This is the default floor. At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.";
+"Detach releases sleep protection earlier. At 15% battery or below, or during serious thermal pressure, the Mac can sleep so overnight work does not drain a small reserve." = "Detach releases sleep protection earlier. At 15% battery or below, or during serious thermal pressure, the Mac can sleep so overnight work does not drain a small reserve.";
+"Detach keeps more reserve. At 20% battery or below, or during serious thermal pressure, the Mac can sleep instead of running until the battery is empty." = "Detach keeps more reserve. At 20% battery or below, or during serious thermal pressure, the Mac can sleep instead of running until the battery is empty.";
+"Release sleep protection at" = "Release sleep protection at";
 "The background monitor reported power state: %@" = "The background monitor reported power state: %@";
 "The background power monitor has not started yet" = "The background power monitor has not started yet";
 "The background power monitor is starting or needs attention" = "The background power monitor is starting or needs attention";
@@ -332,7 +336,7 @@
 "No active agent sessions" = "No active agent sessions";
 "Sessions waiting for replies: %d" = "Sessions waiting for replies: %d";
 "Active sessions without sleep protection: %d" = "Active sessions without sleep protection: %d";
-"Protection released until power is connected" = "Protection released until power is connected";
+"Protection released at %d%% until power is connected" = "Protection released at %d%% until power is connected";
 "Confirming sleep protection…" = "Confirming sleep protection…";
 "The native power helper is unreachable" = "The native power helper is unreachable";
 "No fresh report from the background monitor" = "No fresh report from the background monitor";
@@ -351,7 +355,7 @@
 "Sleep protection — Detach Power Helper" = "Sleep protection — Detach Power Helper";
 "Background power monitor — Detach" = "Background power monitor — Detach";
 "Confirming protection readiness…" = "Confirming protection readiness…";
-"A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery or serious thermal pressure, protection is released so the Mac can sleep. No Apple Events or third-party tools are used." = "A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery or serious thermal pressure, protection is released so the Mac can sleep. No Apple Events or third-party tools are used.";
+"A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. Low battery or serious thermal pressure releases protection so the Mac can sleep. No Apple Events or third-party tools are used." = "A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. Low battery or serious thermal pressure releases protection so the Mac can sleep. No Apple Events or third-party tools are used.";
 "Detach manages Codex CLI and Claude Code sessions. Install at least one — it stays yours; Detach never bundles or replaces it." = "Detach manages Codex CLI and Claude Code sessions. Install at least one — it stays yours; Detach never bundles or replaces it.";
 "Detected — verifying…" = "Detected — verifying…";
 "Not detected yet. Check the Terminal output — network, npm permissions — then try again." = "Not detected yet. Check the Terminal output — network, npm permissions — then try again.";

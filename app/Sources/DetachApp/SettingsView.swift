@@ -21,7 +21,7 @@ struct MacPowerSettingsPresentation: Equatable {
         case noActiveSessions
         case waitingSessions(Int)
         case sessionsNotHolding(Int)
-        case lowBattery
+        case lowBattery(PowerLowBatteryThreshold)
         case temperature
         case confirming
         case helperUnreachable
@@ -38,7 +38,8 @@ struct MacPowerSettingsPresentation: Equatable {
         watchdogStatus: WatchdogStatus,
         distributionMatchesBundle: Bool,
         activeSessionCount: Int? = nil,
-        workingSessionCount: Int? = nil
+        workingSessionCount: Int? = nil,
+        lowBatteryThreshold: PowerLowBatteryThreshold = .default
     ) {
         self.state = state
         if helperStatus == .requiresApproval {
@@ -75,7 +76,7 @@ struct MacPowerSettingsPresentation: Equatable {
                 reason = .noActiveSessions
             }
         case .lowBattery:
-            reason = .lowBattery
+            reason = .lowBattery(lowBatteryThreshold)
         case .temperature:
             reason = .temperature
         case .transitioning:
@@ -96,6 +97,29 @@ struct MacPowerSettingsPresentation: Equatable {
         case .temperature: "Mac can sleep: temperature"
         case .unavailable: "Sleep protection unavailable"
         case .unknown: "Sleep status unknown"
+        }
+    }
+}
+
+extension PowerLowBatteryThreshold {
+    var pickerTitle: String {
+        switch self {
+        case .percent10: L10n.string("10% (default)")
+        case .percent15, .percent20: "\(rawValue)%"
+        }
+    }
+
+    var settingsExplanation: String {
+        switch self {
+        case .percent10:
+            L10n.string(
+                "This is the default floor. At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep.")
+        case .percent15:
+            L10n.string(
+                "Detach releases sleep protection earlier. At 15% battery or below, or during serious thermal pressure, the Mac can sleep so overnight work does not drain a small reserve.")
+        case .percent20:
+            L10n.string(
+                "Detach keeps more reserve. At 20% battery or below, or during serious thermal pressure, the Mac can sleep instead of running until the battery is empty.")
         }
     }
 }
@@ -176,7 +200,7 @@ private extension SettingsDestination {
         case .general: 620
         case .terminal: 460
         case .notifications: 350
-        case .system: 780
+        case .system: 860
         case .updates: 420
         }
     }
@@ -879,7 +903,7 @@ struct SettingsView: View {
 
     // MARK: - System
 
-    private var systemTab: some View {
+    var systemTab: some View {
         Form {
             Section {
                 NightSceneIllustration()
@@ -910,8 +934,19 @@ struct SettingsView: View {
                 if let error = installation.watchdogError {
                     Text(error).settingsMessage(color: .red)
                 }
-                Text(L10n.string(
-                    "At 10% battery or below, or during serious thermal pressure, Detach releases its sleep protection so the Mac can sleep."))
+                Picker(
+                    L10n.string("Release sleep protection at"),
+                    selection: lowBatteryThresholdBinding
+                ) {
+                    ForEach(PowerLowBatteryThreshold.allCases, id: \.self) { value in
+                        Text(value.pickerTitle).tag(value)
+                    }
+                }
+                .disabled(
+                    !installation.powerHelperReadinessConfirmed
+                        || installation.isBusy)
+                .accessibilityIdentifier("settings-low-battery-threshold")
+                Text(installation.lowBatteryThreshold.settingsExplanation)
                     .settingsMessage()
             }
             Section(L10n.string("Bundled Runtime")) {
@@ -1118,6 +1153,14 @@ struct SettingsView: View {
         }
     }
 
+    var lowBatteryThresholdBinding: Binding<PowerLowBatteryThreshold> {
+        Binding(
+            get: { installation.lowBatteryThreshold },
+            set: { newValue in
+                Task { await installation.setLowBatteryThreshold(newValue) }
+            })
+    }
+
     var macPowerPresentation: MacPowerSettingsPresentation {
         // A cached cold-start row is presentation only and carries no power claim.
         let counts = MacPowerActiveSessions.counts(
@@ -1128,7 +1171,8 @@ struct SettingsView: View {
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
             activeSessionCount: counts.active,
-            workingSessionCount: counts.working)
+            workingSessionCount: counts.working,
+            lowBatteryThreshold: installation.lowBatteryThreshold)
     }
 
     private var macPowerHeroRow: some View {

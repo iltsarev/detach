@@ -346,6 +346,19 @@ final class PowerProtectionTests: XCTestCase {
         XCTAssertTrue(status.thermalSafetyActive)
     }
 
+    func testLowBatteryThresholdParsesOnlyTheDocumentedPresets() {
+        XCTAssertEqual(PowerLowBatteryThreshold.parse(nil), .percent10)
+        XCTAssertEqual(PowerLowBatteryThreshold.parse(7), .percent10)
+        XCTAssertEqual(PowerLowBatteryThreshold.parse(10), .percent10)
+        XCTAssertEqual(PowerLowBatteryThreshold.parse(15), .percent15)
+        XCTAssertEqual(PowerLowBatteryThreshold.parse(20), .percent20)
+        XCTAssertEqual(PowerLowBatteryThreshold.parse(25), .percent10)
+        XCTAssertEqual(PowerLowBatteryThreshold.minimum, .percent10)
+        XCTAssertEqual(
+            Set(PowerLowBatteryThreshold.allCases.map(\.rawValue)),
+            [10, 15, 20])
+    }
+
     func testLegacyPowerStatusDecodesUnknownThermalDetail() throws {
         let json = #"{"state":"allowed","lease_count":0,"assertion_active":false,"closed_lid_protection_active":false,"helper_reachable":true,"transition_in_progress":false,"low_battery":false}"#
         let status = try JSONDecoder().decode(
@@ -353,6 +366,7 @@ final class PowerProtectionTests: XCTestCase {
 
         XCTAssertEqual(status.thermalState, .unknown)
         XCTAssertFalse(status.thermalSafetyActive)
+        XCTAssertEqual(status.lowBatteryThreshold, .default)
     }
 
     func testCoordinatorOwnsAndRestoresClosedLidProtection() {

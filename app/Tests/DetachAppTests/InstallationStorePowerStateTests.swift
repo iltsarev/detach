@@ -411,6 +411,130 @@ final class InstallationStorePowerStateTests: XCTestCase {
             powerStateRoot: root)
 
         XCTAssertEqual(store.powerProtectionState, .protected)
+        XCTAssertEqual(store.lowBatteryThreshold, .percent10)
+    }
+
+    func testHealthyHeartbeatPublishesTheHelperLowBatteryFloor() throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":15}"#,
+            to: root)
+
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root)
+
+        XCTAssertEqual(store.lowBatteryThreshold, .percent15)
+    }
+
+    func testSetLowBatteryThresholdWritesThroughTheHelper() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":10}"#,
+            to: root)
+        let powerHelper = InstallationPowerHelperProbe(status: .enabled)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root,
+            powerHelper: powerHelper)
+
+        await store.setLowBatteryThreshold(.percent20)
+        XCTAssertEqual(powerHelper.lastThreshold, .percent20)
+        XCTAssertEqual(store.lowBatteryThreshold, .percent20)
+        XCTAssertNil(store.powerHelperError)
+        store.refreshPowerProtectionState()
+        XCTAssertEqual(store.lowBatteryThreshold, .percent20)
+
+        powerHelper.setThresholdError = InstallationProbeError.powerHelper
+        await store.setLowBatteryThreshold(.percent15)
+        XCTAssertEqual(store.lowBatteryThreshold, .percent20)
+        XCTAssertEqual(store.powerHelperError, "power helper probe failed")
+    }
+
+    func testReorderedThresholdCompletionsFollowTheLatestHelperFloor() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":10}"#,
+            to: root)
+        let powerHelper = ControllableThresholdProbe()
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root,
+            powerHelper: powerHelper)
+
+        let first = Task { await store.setLowBatteryThreshold(.percent20) }
+        await powerHelper.waitUntilAcceptedCount(1)
+        let second = Task { await store.setLowBatteryThreshold(.percent15) }
+        await powerHelper.waitUntilAcceptedCount(2)
+        XCTAssertEqual(powerHelper.accepted, [.percent20, .percent15])
+        XCTAssertEqual(powerHelper.current, .percent15)
+
+        powerHelper.complete(.percent15)
+        powerHelper.complete(.percent20)
+        await first.value
+        await second.value
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":15}"#,
+            to: root)
+        store.refreshPowerProtectionState()
+        XCTAssertEqual(store.lowBatteryThreshold, .percent15)
+        XCTAssertNil(store.powerHelperError)
+    }
+
+    func testFailedThresholdWriteDoesNotLatchTheRejectedFloor() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":10}"#,
+            to: root)
+        let powerHelper = ControllableThresholdProbe()
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root,
+            powerHelper: powerHelper)
+
+        let write = Task { await store.setLowBatteryThreshold(.percent15) }
+        await powerHelper.waitUntilAcceptedCount(1)
+        powerHelper.fail(.percent15, InstallationProbeError.powerHelper)
+        await write.value
+
+        XCTAssertEqual(store.lowBatteryThreshold, .percent10)
+        XCTAssertEqual(store.powerHelperError, "power helper probe failed")
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":10}"#,
+            to: root)
+        store.refreshPowerProtectionState()
+        XCTAssertEqual(store.lowBatteryThreshold, .percent10)
+    }
+
+    func testFreshHeartbeatReconcilesWhenHelperFloorChangedBeforeConfirm() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":10}"#,
+            to: root)
+        let powerHelper = ControllableThresholdProbe()
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test",
+            powerStateRoot: root,
+            powerHelper: powerHelper)
+
+        let write = Task { await store.setLowBatteryThreshold(.percent20) }
+        await powerHelper.waitUntilAcceptedCount(1)
+        powerHelper.complete(.percent20)
+        await write.value
+        XCTAssertEqual(store.lowBatteryThreshold, .percent20)
+
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":15}"#,
+            to: root)
+        store.refreshPowerProtectionState()
+        XCTAssertEqual(store.lowBatteryThreshold, .percent15)
     }
 
     func testStaleHeartbeatDoesNotClaimPowerState() throws {
@@ -1457,6 +1581,8 @@ private final class InstallationPowerHelperProbe:
     private(set) var enableCallCount = 0
     private(set) var disableCallCount = 0
     private(set) var openSettingsCallCount = 0
+    private(set) var lastThreshold: PowerLowBatteryThreshold?
+    var setThresholdError: Error?
 
     init(
         status: PowerHelperRegistrationStatus,
@@ -1486,6 +1612,81 @@ private final class InstallationPowerHelperProbe:
 
     func openApprovalSettings() {
         openSettingsCallCount += 1
+    }
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        lastThreshold = threshold
+        if let setThresholdError { throw setThresholdError }
+    }
+}
+
+@MainActor
+private final class ControllableThresholdProbe: InstallationPowerHelperServicing {
+    var status: PowerHelperRegistrationStatus = .enabled
+    private(set) var accepted: [PowerLowBatteryThreshold] = []
+    private(set) var current: PowerLowBatteryThreshold = .percent10
+    private var inflight:
+        [(
+            threshold: PowerLowBatteryThreshold,
+            continuation: CheckedContinuation<Void, Error>
+        )] = []
+    private var acceptedWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func reconcileAfterAppUpdate() async throws
+        -> PowerHelperReconciliationOutcome
+    {
+        .complete
+    }
+
+    func enable() async throws {
+        status = .enabled
+    }
+
+    func disable() async throws {
+        status = .notRegistered
+    }
+
+    func openApprovalSettings() {}
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        accepted.append(threshold)
+        current = threshold
+        try await withCheckedThrowingContinuation { continuation in
+            inflight.append((threshold, continuation))
+            let waiters = acceptedWaiters
+            acceptedWaiters.removeAll(keepingCapacity: true)
+            for waiter in waiters { waiter.resume() }
+        }
+    }
+
+    func waitUntilAcceptedCount(_ count: Int) async {
+        while accepted.count < count {
+            await withCheckedContinuation { continuation in
+                acceptedWaiters.append(continuation)
+            }
+        }
+    }
+
+    func complete(_ threshold: PowerLowBatteryThreshold) {
+        resume(threshold, result: .success(()))
+    }
+
+    func fail(_ threshold: PowerLowBatteryThreshold, _ error: Error) {
+        resume(threshold, result: .failure(error))
+    }
+
+    private func resume(
+        _ threshold: PowerLowBatteryThreshold,
+        result: Result<Void, Error>
+    ) {
+        guard let index = inflight.firstIndex(where: {
+            $0.threshold == threshold
+        }) else {
+            XCTFail("no in-flight low-battery write for \(threshold.rawValue)%")
+            return
+        }
+        let item = inflight.remove(at: index)
+        item.continuation.resume(with: result)
     }
 }
 

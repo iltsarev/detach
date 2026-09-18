@@ -92,6 +92,7 @@ struct WatchdogHeartbeat: Codable {
     let powerState: String?
     let thermalState: String?
     let thermalSafetyActive: Bool?
+    let lowBatteryThreshold: Int?
     let exitStatus: Int32
 
     enum CodingKeys: String, CodingKey {
@@ -101,6 +102,7 @@ struct WatchdogHeartbeat: Codable {
         case powerState = "power_state"
         case thermalState = "thermal_state"
         case thermalSafetyActive = "thermal_safety_active"
+        case lowBatteryThreshold = "low_battery_threshold"
         case exitStatus = "exit_status"
     }
 }
@@ -110,6 +112,7 @@ func recordHeartbeat(
     powerState: String? = nil,
     thermalState: String? = nil,
     thermalSafetyActive: Bool? = nil,
+    lowBatteryThreshold: Int? = nil,
     exitStatus: Int32
 ) {
     let heartbeat = WatchdogHeartbeat(
@@ -119,6 +122,7 @@ func recordHeartbeat(
         powerState: powerState,
         thermalState: thermalState,
         thermalSafetyActive: thermalSafetyActive,
+        lowBatteryThreshold: lowBatteryThreshold,
         exitStatus: exitStatus)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -185,11 +189,13 @@ do {
         let state: String
         let thermalState: String
         let thermalSafetyActive: Bool
+        let lowBatteryThreshold: Int?
 
         enum CodingKeys: String, CodingKey {
             case state
             case thermalState = "thermal_state"
             case thermalSafetyActive = "thermal_safety_active"
+            case lowBatteryThreshold = "low_battery_threshold"
         }
     }
     let knownStates: Set<String> = [
@@ -213,6 +219,8 @@ do {
         powerState: powerStatus.state,
         thermalState: powerStatus.thermalState,
         thermalSafetyActive: powerStatus.thermalSafetyActive,
+        lowBatteryThreshold: PowerLowBatteryThreshold.parse(
+            powerStatus.lowBatteryThreshold).rawValue,
         exitStatus: 0)
     exit(0)
 } catch {

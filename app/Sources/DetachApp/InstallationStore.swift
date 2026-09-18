@@ -27,6 +27,7 @@ protocol InstallationPowerHelperServicing: AnyObject {
     func enable() async throws
     func disable() async throws
     func openApprovalSettings()
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws
 }
 
 extension PowerHelperService: InstallationPowerHelperServicing {}
@@ -74,6 +75,7 @@ final class InstallationStore {
     private(set) var lastInstallMessage: String?
     private(set) var distributionMatchesBundle = false
     private(set) var powerProtectionState: PowerProtectionState = .unknown
+    private(set) var lowBatteryThreshold: PowerLowBatteryThreshold = .default
     /// True only after a coordinated reconciliation finished with the helper
     /// reported `.enabled` and no error — the readiness barrier. A bare
     /// `SMAppService.status` read is never sufficient: after approval the
@@ -113,6 +115,18 @@ final class InstallationStore {
         OSAllocatedUnfairLock<UInt64>(initialState: 0)
     @ObservationIgnored var onPowerSnapshot:
         (@MainActor (PowerHeartbeatSnapshot) async -> Void)?
+    /// The latest requested floor. A stale heartbeat must not put the
+    /// Settings copy back to the previous value, and a late completion of an
+    /// older picker write must not replace it.
+    @ObservationIgnored private var pendingLowBatteryThreshold:
+        PowerLowBatteryThreshold?
+    /// Heartbeat observed when the latest accepted write completed. A later
+    /// healthy document can replace pending even when the floor differs.
+    @ObservationIgnored private var pendingLowBatteryBarrier:
+        PowerHeartbeatSnapshot?
+    @ObservationIgnored private var lowBatteryWriteGeneration: UInt64 = 0
+    @ObservationIgnored private var acknowledgedLowBatteryThreshold:
+        PowerLowBatteryThreshold?
 
     init(
         detachPath: String,
@@ -170,6 +184,7 @@ final class InstallationStore {
             bundledMetadata = nil
         }
         powerProtectionState = watchdogHeartbeat.effectivePowerState
+        lowBatteryThreshold = watchdogHeartbeat.effectiveLowBatteryThreshold
     }
 
     static func makeDistributionClient(
@@ -203,6 +218,36 @@ final class InstallationStore {
         // higher number is never the older document.
         let sequence = nextPowerSnapshotSequence()
         publishPowerSnapshot(heartbeatReader.read(), sequence: sequence)
+    }
+
+    func setLowBatteryThreshold(
+        _ threshold: PowerLowBatteryThreshold
+    ) async {
+        lowBatteryWriteGeneration += 1
+        let generation = lowBatteryWriteGeneration
+        presentLowBatteryThreshold(threshold)
+        pendingLowBatteryThreshold = threshold
+
+        do {
+            try await powerHelper.setLowBatteryThreshold(threshold)
+            guard generation == lowBatteryWriteGeneration else { return }
+            powerHelperError = nil
+            acknowledgedLowBatteryThreshold = threshold
+            pendingLowBatteryThreshold = threshold
+            pendingLowBatteryBarrier = watchdogHeartbeatStorage
+            presentLowBatteryThreshold(threshold)
+            refreshPowerProtectionState()
+        } catch {
+            guard generation == lowBatteryWriteGeneration else { return }
+            powerHelperError = error.localizedDescription
+            pendingLowBatteryThreshold = acknowledgedLowBatteryThreshold
+            if acknowledgedLowBatteryThreshold == nil {
+                pendingLowBatteryBarrier = nil
+            }
+            presentLowBatteryThreshold(
+                acknowledgedLowBatteryThreshold
+                    ?? watchdogHeartbeat.effectiveLowBatteryThreshold)
+        }
     }
 
     private func nextPowerSnapshotSequence() -> UInt64 {
@@ -262,10 +307,51 @@ final class InstallationStore {
         if snapshot.effectivePowerState != powerProtectionState {
             powerProtectionState = snapshot.effectivePowerState
         }
+        applyLowBatteryThreshold(from: snapshot)
         guard presentedStateChanged || isInitialObservation,
               let onPowerSnapshot else { return }
         Task { @MainActor in
             await onPowerSnapshot(snapshot)
+        }
+    }
+
+    private func applyLowBatteryThreshold(from snapshot: PowerHeartbeatSnapshot) {
+        if let pending = pendingLowBatteryThreshold {
+            if snapshot.healthy, shouldReleasePendingLowBatteryThreshold(
+                pending: pending, snapshot: snapshot)
+            {
+                pendingLowBatteryThreshold = nil
+                pendingLowBatteryBarrier = nil
+                acknowledgedLowBatteryThreshold = snapshot.lowBatteryThreshold
+            } else {
+                presentLowBatteryThreshold(pending)
+                return
+            }
+        }
+        presentLowBatteryThreshold(snapshot.effectiveLowBatteryThreshold)
+    }
+
+    private func shouldReleasePendingLowBatteryThreshold(
+        pending: PowerLowBatteryThreshold,
+        snapshot: PowerHeartbeatSnapshot
+    ) -> Bool {
+        if snapshot.lowBatteryThreshold == pending {
+            return true
+        }
+        guard let barrier = pendingLowBatteryBarrier else {
+            return false
+        }
+        // A later helper floor in a new presented document wins. A
+        // timestamp-only rewrite of the same presented state does not.
+        return !snapshot.hasSamePresentedState(as: barrier)
+            && snapshot.lowBatteryThreshold != barrier.lowBatteryThreshold
+    }
+
+    private func presentLowBatteryThreshold(
+        _ threshold: PowerLowBatteryThreshold
+    ) {
+        if lowBatteryThreshold != threshold {
+            lowBatteryThreshold = threshold
         }
     }
 

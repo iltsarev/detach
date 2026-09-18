@@ -10,6 +10,7 @@ public struct PowerHeartbeatSnapshot: Equatable, Sendable {
     public let powerState: PowerProtectionState?
     public let thermalState: PowerThermalState?
     public let thermalSafetyActive: Bool
+    public let lowBatteryThreshold: PowerLowBatteryThreshold
     public let checkedAt: Date?
     public let isFresh: Bool
 
@@ -31,6 +32,12 @@ public struct PowerHeartbeatSnapshot: Equatable, Sendable {
         healthy && thermalSafetyActive
     }
 
+    /// A missing, stale, or unhealthy heartbeat never guesses a last value.
+    public var effectiveLowBatteryThreshold: PowerLowBatteryThreshold {
+        guard healthy else { return .default }
+        return lowBatteryThreshold
+    }
+
     public init(
         statusURL: URL,
         state: String?,
@@ -38,7 +45,8 @@ public struct PowerHeartbeatSnapshot: Equatable, Sendable {
         checkedAt: Date?,
         isFresh: Bool,
         thermalState: PowerThermalState? = nil,
-        thermalSafetyActive: Bool = false
+        thermalSafetyActive: Bool = false,
+        lowBatteryThreshold: PowerLowBatteryThreshold = .default
     ) {
         self.statusURL = statusURL
         self.state = state
@@ -47,6 +55,7 @@ public struct PowerHeartbeatSnapshot: Equatable, Sendable {
         self.isFresh = isFresh
         self.thermalState = thermalState
         self.thermalSafetyActive = thermalSafetyActive
+        self.lowBatteryThreshold = lowBatteryThreshold
     }
 
     public func age(relativeTo now: Date) -> TimeInterval? {
@@ -62,6 +71,7 @@ public struct PowerHeartbeatSnapshot: Equatable, Sendable {
             && powerState == other.powerState
             && thermalState == other.thermalState
             && thermalSafetyActive == other.thermalSafetyActive
+            && lowBatteryThreshold == other.lowBatteryThreshold
             && isFresh == other.isFresh
     }
 }
@@ -80,6 +90,7 @@ public struct PowerHeartbeatReader: Sendable {
         let checkedAt: String?
         let thermalState: String?
         let thermalSafetyActive: Bool?
+        let lowBatteryThreshold: Int?
 
         enum CodingKeys: String, CodingKey {
             case state
@@ -87,6 +98,7 @@ public struct PowerHeartbeatReader: Sendable {
             case checkedAt = "checked_at"
             case thermalState = "thermal_state"
             case thermalSafetyActive = "thermal_safety_active"
+            case lowBatteryThreshold = "low_battery_threshold"
         }
     }
 
@@ -152,7 +164,9 @@ public struct PowerHeartbeatReader: Sendable {
             thermalState: payload.thermalState.map {
                 PowerThermalState(rawValue: $0) ?? .unknown
             },
-            thermalSafetyActive: payload.thermalSafetyActive ?? false)
+            thermalSafetyActive: payload.thermalSafetyActive ?? false,
+            lowBatteryThreshold: PowerLowBatteryThreshold.parse(
+                payload.lowBatteryThreshold))
     }
 
     private static func parseTimestamp(_ raw: String) -> Date? {

@@ -1,7 +1,8 @@
 import Foundation
 
 /// Root-side XPC bridge. It exposes no general command execution surface: the
-/// client can only manage renewable leases and request a typed status.
+/// client can only manage renewable leases, the typed low-battery floor, and
+/// request a typed status.
 public final class PowerHelperXPCService:
     NSObject, DetachPowerHelperXPCProtocol, @unchecked Sendable
 {
@@ -12,6 +13,7 @@ public final class PowerHelperXPCService:
         case activeLeases = 2
         case serviceQuiescing = 3
         case requestExpired = 4
+        case invalidLowBatteryThreshold = 5
     }
 
     private let service: PowerHelperLeaseService
@@ -108,6 +110,21 @@ public final class PowerHelperXPCService:
         }
     }
 
+    public func setLowBatteryThreshold(
+        percent: Int,
+        reply: @escaping (NSError?) -> Void
+    ) {
+        do {
+            guard let threshold = PowerLowBatteryThreshold(rawValue: percent) else {
+                throw PowerHelperLeaseServiceError.invalidLowBatteryThreshold
+            }
+            _ = try service.setLowBatteryThreshold(threshold)
+            reply(nil)
+        } catch {
+            reply(Self.nsError(error))
+        }
+    }
+
     private static func nsError(_ error: Error) -> NSError {
         let code: ErrorCode
         switch error as? PowerHelperLeaseServiceError {
@@ -117,6 +134,8 @@ public final class PowerHelperXPCService:
             code = .serviceQuiescing
         case .requestExpired:
             code = .requestExpired
+        case .invalidLowBatteryThreshold:
+            code = .invalidLowBatteryThreshold
         default:
             code = .generic
         }

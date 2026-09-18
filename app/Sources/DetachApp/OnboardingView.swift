@@ -328,7 +328,7 @@ struct OnboardingView: View {
                 }
                 if showsPermissionsExplainer {
                     Text(L10n.string(
-                        "A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. At 10% battery or serious thermal pressure, protection is released so the Mac can sleep. No Apple Events or third-party tools are used."))
+                        "A narrowly scoped helper keeps the Mac awake with the lid closed while an agent works. Low battery or serious thermal pressure releases protection so the Mac can sleep. No Apple Events or third-party tools are used."))
                         .appFont(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

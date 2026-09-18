@@ -63,7 +63,8 @@ struct MenuBarPresentation: Equatable {
             watchdogStatus: watchdogStatus,
             distributionMatchesBundle: distributionMatchesBundle,
             activeSessionCount: active.count,
-            workingSessionCount: working.count)
+            workingSessionCount: working.count,
+            lowBatteryThreshold: heartbeat.effectiveLowBatteryThreshold)
         ageSeconds = heartbeat.healthy
             ? heartbeat.age(relativeTo: now).map { max(0, Int($0)) }
             : nil
@@ -158,8 +159,10 @@ extension MacPowerSettingsPresentation.Reason {
             L10n.format("Sessions waiting for replies: %d", count)
         case let .sessionsNotHolding(count):
             L10n.format("Active sessions without sleep protection: %d", count)
-        case .lowBattery:
-            L10n.string("Protection released until power is connected")
+        case let .lowBattery(threshold):
+            L10n.format(
+                "Protection released at %d%% until power is connected",
+                threshold.rawValue)
         case .temperature:
             L10n.string("Protection released until the Mac cools")
         case .confirming:
