@@ -41,6 +41,8 @@ final class UpdaterService: ObservableObject {
 
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var automaticallyChecksForUpdates = false
+    @Published private(set) var automaticallyDownloadsUpdates = false
+    @Published private(set) var allowsAutomaticUpdates = false
     @Published private(set) var updateErrorMessage: String?
     @Published private(set) var lastCheckFoundNoUpdate = false
 
@@ -79,6 +81,8 @@ final class UpdaterService: ObservableObject {
 
         let updater = updaterController.updater
         automaticallyChecksForUpdates = updater.automaticallyChecksForUpdates
+        automaticallyDownloadsUpdates = updater.automaticallyDownloadsUpdates
+        allowsAutomaticUpdates = updater.allowsAutomaticUpdates
 
         updater.publisher(for: \.canCheckForUpdates)
             .sink { [weak self] value in
@@ -89,6 +93,18 @@ final class UpdaterService: ObservableObject {
         updater.publisher(for: \.automaticallyChecksForUpdates)
             .sink { [weak self] value in
                 self?.automaticallyChecksForUpdates = value
+            }
+            .store(in: &cancellables)
+
+        updater.publisher(for: \.automaticallyDownloadsUpdates)
+            .sink { [weak self] value in
+                self?.automaticallyDownloadsUpdates = value
+            }
+            .store(in: &cancellables)
+
+        updater.publisher(for: \.allowsAutomaticUpdates)
+            .sink { [weak self] value in
+                self?.allowsAutomaticUpdates = value
             }
             .store(in: &cancellables)
 
@@ -126,6 +142,25 @@ final class UpdaterService: ObservableObject {
     func setAutomaticallyChecksForUpdates(_ enabled: Bool) {
         guard isAvailable else { return }
         updaterController.updater.automaticallyChecksForUpdates = enabled
+    }
+
+    /// Sparkle owns availability: automatic checks, or `SUAllowsAutomaticUpdates`.
+    var canAutomaticallyDownloadUpdates: Bool {
+        Self.canAutomaticallyDownloadUpdates(
+            isAvailable: isAvailable,
+            allowsAutomaticUpdates: allowsAutomaticUpdates)
+    }
+
+    func setAutomaticallyDownloadsUpdates(_ enabled: Bool) {
+        guard isAvailable, updaterController.updater.allowsAutomaticUpdates else { return }
+        updaterController.updater.automaticallyDownloadsUpdates = enabled
+    }
+
+    static func canAutomaticallyDownloadUpdates(
+        isAvailable: Bool,
+        allowsAutomaticUpdates: Bool
+    ) -> Bool {
+        isAvailable && allowsAutomaticUpdates
     }
 
     private func recordUpdateCycleResult(_ error: Error?) {

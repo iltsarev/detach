@@ -17,8 +17,21 @@ final class UpdaterServiceTests: XCTestCase {
 
         service.checkForUpdates()
         service.setAutomaticallyChecksForUpdates(true)
+        service.setAutomaticallyDownloadsUpdates(true)
         XCTAssertFalse(service.canCheckForUpdates)
         XCTAssertFalse(service.automaticallyChecksForUpdates)
+        XCTAssertFalse(service.automaticallyDownloadsUpdates)
+        XCTAssertFalse(service.allowsAutomaticUpdates)
+        XCTAssertFalse(service.canAutomaticallyDownloadUpdates)
+    }
+
+    func testAutomaticDownloadFollowsSparkleAllowsAutomaticUpdates() {
+        XCTAssertFalse(UpdaterService.canAutomaticallyDownloadUpdates(
+            isAvailable: false, allowsAutomaticUpdates: true))
+        XCTAssertFalse(UpdaterService.canAutomaticallyDownloadUpdates(
+            isAvailable: true, allowsAutomaticUpdates: false))
+        XCTAssertTrue(UpdaterService.canAutomaticallyDownloadUpdates(
+            isAvailable: true, allowsAutomaticUpdates: true))
     }
 
     func testExpectedNonFailureResultsDoNotOfferFallback() {

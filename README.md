@@ -677,6 +677,10 @@ does not roll source code back. It does not replace version control or backups.
 Detach.app handles updates. Settings shows installation health, CLI repair,
 helper status, and removal of Detach-owned components.
 
+Settings → Updates can check for a signed update in the background. When
+automatic download is on, Sparkle downloads that update and installs the app
+when Detach quits. Authorization can still require confirmation.
+
 Detach changes the active CLI only after it validates a complete payload. If an
 update fails, the active CLI does not change. A normal app update does not
 interrupt live sessions. If a working session holds a power lease, Detach keeps
