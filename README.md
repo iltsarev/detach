@@ -198,7 +198,8 @@ retained transcript tail.
 
 Power status is event-driven too. An atomic watchdog report wakes the app when
 it changes. One deadline marks a silent report stale. The menu bar, Settings,
-and notifications do not poll the same file on repeating timers.
+session Mac Power, and notifications share this heartbeat. They do not poll
+the same file on repeating timers.
 
 <details>
 <summary><strong>How a new in-app session starts</strong></summary>
@@ -223,7 +224,8 @@ Codex and Claude Code share one dashboard. Each managed session includes:
 - an interactive terminal for a live session and ANSI-aware retained logs for
   session history;
 - safe **Attach**, **Stop**, **Resume**, **Recover**, and **Delete** actions
-  selected from the proven session state;
+  selected from the proven session state; an omitted health action list
+  grants no mutations;
 - checkboxes in **Finished** for one-confirmation deletion of eligible
   sessions; a failed deletion does not stop the remaining deletions;
 - optional notifications for an answer, completion, failure, or recovery;

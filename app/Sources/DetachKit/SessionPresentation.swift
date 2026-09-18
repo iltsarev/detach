@@ -74,19 +74,7 @@ public extension Session {
     }
 
     var availableActions: [SessionAction] {
-        if let healthActions { return healthActions }
-        return switch effectiveStatus {
-        case .running, .starting, .recovering, .hung:
-            [.attach, .stop]
-        case .completed, .failed, .interrupted, .stopped, .orphaned:
-            agentSessionId != nil ? [.resume, .delete] : [.delete]
-        case .recoverable:
-            [.recover, .delete]
-        case .corrupt, .unknown:
-            [.delete]
-        case .collision:
-            []
-        }
+        healthActions ?? []
     }
 
     var displayTitle: String {
@@ -169,7 +157,26 @@ public extension Session {
     /// Human-readable sleep policy. Text is the primary signal because a
     /// moon/shield glyph alone is easy to interpret in opposite ways.
     var powerProtectionLabel: String {
-        switch powerProtectionState ?? .unknown {
+        SessionPowerPresentation.label(for: powerProtectionState ?? .unknown)
+    }
+
+    /// Temporary SF Symbols; the adjacent label carries the meaning.
+    var powerProtectionSystemImage: String {
+        SessionPowerPresentation.systemImage(for: powerProtectionState ?? .unknown)
+    }
+}
+
+/// Session Mac Power follows the fresh watchdog heartbeat. A list row is not
+/// a claim source.
+public enum SessionPowerPresentation {
+    public static func displayedState(
+        heartbeat: PowerProtectionState
+    ) -> PowerProtectionState {
+        heartbeat
+    }
+
+    public static func label(for state: PowerProtectionState) -> String {
+        switch state {
         case .protected: L10n.string("Mac stays awake")
         case .allowed: L10n.string("Mac can sleep")
         case .transitioning: L10n.string("Enabling sleep protection")
@@ -180,9 +187,8 @@ public extension Session {
         }
     }
 
-    /// Temporary SF Symbols; the adjacent label carries the meaning.
-    var powerProtectionSystemImage: String {
-        switch powerProtectionState ?? .unknown {
+    public static func systemImage(for state: PowerProtectionState) -> String {
+        switch state {
         case .protected: "shield.fill"
         case .allowed: "moon.zzz"
         case .transitioning: "arrow.triangle.2.circlepath"

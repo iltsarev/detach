@@ -40,8 +40,10 @@ typed health rules. A failed coherent List read keeps the previous rows.
 
 The dashboard separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
-and semantic color. Clicking the UUID chip copies the full UUID and shows
-**Copied**.
+and semantic color. Session Mac Power uses the fresh watchdog heartbeat.
+It does not use the last list row. An omitted or null `health_actions`
+list grants no mutations. Clicking the UUID chip copies the full UUID and
+shows **Copied**.
 
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.

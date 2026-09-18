@@ -142,21 +142,25 @@ do {
     let log = try FileHandle(forWritingTo: logURL)
     try log.seekToEnd()
 
-    guard fileManager.isExecutableFile(atPath: detachURL.path) else {
+    let command: URL
+    let childEnvironment: [String: String]
+    switch WatchdogCLI.resolve(
+        home: URL(fileURLWithPath: home, isDirectory: true),
+        environment: environment,
+        powerStateRoot: stateRoot
+    ) {
+    case .success(let resolution):
+        command = resolution.executableURL
+        childEnvironment = resolution.environment
+    case .failure:
         let message = "DetachWatchdog: CLI is not installed at \(detachURL.path)\n"
         try log.write(contentsOf: Data(message.utf8))
         recordHeartbeat(state: "cli_missing", exitStatus: 0)
         exit(0)
     }
 
-    var childEnvironment = environment
-    let commonPath = [
-        "\(home)/.local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
-    ].joined(separator: ":")
-    childEnvironment["PATH"] = commonPath
-    childEnvironment["DETACH_POWER_STATE_ROOT"] = stateRoot
     let statusResult = try BoundedProcessRunner().run(BoundedProcessRequest(
-        executableURL: detachURL,
+        executableURL: command,
         arguments: ["power", "status", "--json"],
         environment: childEnvironment,
         timeout: 5,

@@ -428,7 +428,7 @@ list_all() {
   local status=0
   local provider_status
   local power_status=""
-  local DETACH_LIST_POWER_STATE="unavailable"
+  local DETACH_LIST_POWER_STATE="unknown"
   local temporary_base temporary_root codex_output claude_output
   local codex_pid claude_pid codex_status=0 claude_status=0
 
@@ -441,7 +441,7 @@ list_all() {
     fi
     case "$DETACH_LIST_POWER_STATE" in
       allowed|transitioning|protected|low_battery|temperature|unavailable|unknown) ;;
-      *) DETACH_LIST_POWER_STATE="unavailable" ;;
+      *) DETACH_LIST_POWER_STATE="unknown" ;;
     esac
     export DETACH_LIST_POWER_STATE
   fi

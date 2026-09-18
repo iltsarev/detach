@@ -73,6 +73,7 @@ struct RootView: View {
                                 session: session,
                                 store: store,
                                 detachPath: detachPath,
+                                powerProtectionState: installation.powerProtectionState,
                                 sessionLogSnapshots: sessionLogSnapshots,
                                 terminalScreens: terminalScreens)
                         } else {
@@ -209,6 +210,7 @@ struct SessionDetailSwitcher: View {
     let session: Session
     let store: SessionStore
     let detachPath: String
+    let powerProtectionState: PowerProtectionState
     let sessionLogSnapshots: SessionLogSnapshotCache
     let terminalScreens: SessionTerminalScreenCache
 
@@ -219,12 +221,14 @@ struct SessionDetailSwitcher: View {
         session: Session,
         store: SessionStore,
         detachPath: String,
+        powerProtectionState: PowerProtectionState,
         sessionLogSnapshots: SessionLogSnapshotCache,
         terminalScreens: SessionTerminalScreenCache
     ) {
         self.session = session
         self.store = store
         self.detachPath = detachPath
+        self.powerProtectionState = powerProtectionState
         self.sessionLogSnapshots = sessionLogSnapshots
         self.terminalScreens = terminalScreens
         _transition = State(initialValue: SessionDetailTransitionState(
@@ -236,6 +240,7 @@ struct SessionDetailSwitcher: View {
             session: transition.presented,
             store: store,
             detachPath: detachPath,
+            powerProtectionState: powerProtectionState,
             terminalScreens: terminalScreens,
             cachedLog: cachedLog(for: transition.presented),
             retainedFrame: transition.outgoing.flatMap {
