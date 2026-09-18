@@ -2,6 +2,20 @@
 
 set -euo pipefail
 
+INITIAL_RELEASE=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --initial-release)
+      INITIAL_RELEASE=1
+      ;;
+    *)
+      printf 'Unexpected argument: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
 APP_ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd -P "$APP_ROOT/.." && pwd)"
 VERSION="${DETACH_VERSION:-$(<"$REPO_ROOT/VERSION")}"
@@ -16,7 +30,6 @@ REPOSITORY="${DETACH_GITHUB_REPOSITORY:-}"
 TAG="${DETACH_RELEASE_TAG:-v$VERSION}"
 DOWNLOAD_URL_PREFIX="${DETACH_SPARKLE_DOWNLOAD_URL_PREFIX:-}"
 DOWNLOAD_URL="${DETACH_DOWNLOAD_URL:-}"
-INITIAL_RELEASE="${DETACH_INITIAL_RELEASE:-0}"
 APP="$APP_ROOT/build/Detach.app"
 DMG="$APP_ROOT/build/Detach.dmg"
 NOTARY_ZIP="$APP_ROOT/build/Detach-$VERSION-notarization.zip"
@@ -58,10 +71,6 @@ esac
 }
 [[ "$BUILD_VERSION" =~ ^[1-9][0-9]*$ ]] || {
   printf 'DETACH_BUILD_VERSION is required and must be a positive monotonic integer\n' >&2
-  exit 1
-}
-[[ "$INITIAL_RELEASE" = 0 || "$INITIAL_RELEASE" = 1 ]] || {
-  printf 'DETACH_INITIAL_RELEASE must be 0 or 1\n' >&2
   exit 1
 }
 [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] || {
@@ -195,7 +204,7 @@ if curl --fail --location --silent --show-error --max-time 30 \
 else
   rm -f "$NOTARY_EVIDENCE/previous-appcast.xml"
   [ "$INITIAL_RELEASE" = 1 ] || {
-    printf 'Cannot verify the previous appcast; retry or set DETACH_INITIAL_RELEASE=1 for the first release\n' >&2
+    printf 'Cannot verify the previous appcast; retry or pass --initial-release to scripts/release-version for the first release\n' >&2
     exit 1
   }
 fi

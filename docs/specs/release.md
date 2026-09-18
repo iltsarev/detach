@@ -102,6 +102,14 @@ change real power state, upload assets, or claim publication.
 - The release orchestrator gives the lower-level publisher the exact manifest
   commit. The publisher requires the tag to match it and the current `HEAD` to
   contain it. The orchestrator separately rejects all other descendants.
+- The publisher requires the remote tag or explicit release target to resolve
+  to the built source commit. `DETACH_SEPARATE_RELEASE_REPOSITORY` does not
+  skip that identity check.
+- A failed live appcast fetch stops the release. The owner may pass
+  `--initial-release` to `scripts/release-version` for the first release.
+  That flag is the only authorization to skip live-appcast monotonicity.
+  The entry point gives the flag only to its artifact child. Ambient
+  `DETACH_INITIAL_RELEASE` is not authorization.
 - Sparkle remains pinned and signed inside-out. Production builds never carry
   the development library-validation exception. Appcasts contain exactly one
   arm64 hardware requirement.

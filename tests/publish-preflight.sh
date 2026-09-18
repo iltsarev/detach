@@ -32,6 +32,11 @@ grep -F '"$APPCAST_VERIFIER" "$APPCAST"' \
   printf 'publish must verify arm64 appcast hardware requirements\n' >&2
   exit 1
 }
+if grep -F '[ "$SEPARATE_RELEASE_REPOSITORY" = 1 ]' \
+    "$TEST_APP/scripts/publish-release.sh" >/dev/null; then
+  printf 'publish must not skip tag identity for a separate-release env\n' >&2
+  exit 1
+fi
 printf '%s\n' 'app/build/' >"$TEST_REPO/.gitignore"
 printf '%s\n' 'publish fixture' >"$TEST_REPO/README.md"
 git -C "$TEST_REPO" init -q
@@ -460,6 +465,86 @@ fi
   exit 1
 }
 grep -Fx 'auth status' "$GH_LOG" >/dev/null
+
+WRONG_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+cat >"$FAKE_BIN/gh" <<'SH'
+#!/bin/bash
+set -eu
+printf '%s\n' "$*" >>"${FAKE_GH_LOG:?}"
+grep -F 'spctl|--assess --type open --context context:primary-signature --verbose=2' \
+  "${FAKE_VALIDATION_LOG:?}" >/dev/null || exit 96
+case "${1:-} ${2:-}" in
+  'auth status') exit 0 ;;
+  'api repos/'*)
+    printf '%s\n' "${FAKE_REMOTE_COMMIT:?}"
+    ;;
+  *) exit 64 ;;
+esac
+SH
+chmod 0755 "$FAKE_BIN/gh"
+rm -f "$GH_LOG"
+: >"$TMP_ROOT/validation.log"
+if PATH="$FAKE_BIN:/usr/bin:/bin" \
+    FAKE_GH_LOG="$GH_LOG" \
+    FAKE_VALIDATION_LOG="$TMP_ROOT/validation.log" \
+    FAKE_REMOTE_COMMIT="$WRONG_COMMIT" \
+    DETACH_GITHUB_REPOSITORY="$REPOSITORY" \
+    DETACH_CONFIRM_PUBLISH="$EXPECTED_CONFIRMATION" \
+    DETACH_RELEASE_EXPECTED_COMMIT="$GIT_COMMIT" \
+    DETACH_SEPARATE_RELEASE_REPOSITORY=1 \
+    "$TEST_APP/scripts/publish-release.sh" \
+    >"$TMP_ROOT/separate-tag.stdout" 2>"$TMP_ROOT/separate-tag.stderr"; then
+  printf 'publish skipped remote-tag identity with ambient separate-release env\n' >&2
+  exit 1
+fi
+grep -F "Remote tag $TAG does not point to the built source commit" \
+  "$TMP_ROOT/separate-tag.stderr" >/dev/null
+if grep -E 'release create|release upload|release edit' "$GH_LOG" >/dev/null; then
+  printf 'publish mutated a release after tag identity failure\n' >&2
+  exit 1
+fi
+
+cat >"$FAKE_BIN/gh" <<'SH'
+#!/bin/bash
+set -eu
+printf '%s\n' "$*" >>"${FAKE_GH_LOG:?}"
+grep -F 'spctl|--assess --type open --context context:primary-signature --verbose=2' \
+  "${FAKE_VALIDATION_LOG:?}" >/dev/null || exit 96
+case "${1:-} ${2:-}" in
+  'auth status') exit 0 ;;
+  'api repos/'*)
+    case " $* " in
+      *"/${FAKE_MISSING_TAG:?} "*) exit 1 ;;
+    esac
+    printf '%s\n' "${FAKE_REMOTE_COMMIT:?}"
+    ;;
+  *) exit 64 ;;
+esac
+SH
+chmod 0755 "$FAKE_BIN/gh"
+rm -f "$GH_LOG"
+: >"$TMP_ROOT/validation.log"
+if PATH="$FAKE_BIN:/usr/bin:/bin" \
+    FAKE_GH_LOG="$GH_LOG" \
+    FAKE_VALIDATION_LOG="$TMP_ROOT/validation.log" \
+    FAKE_REMOTE_COMMIT="$WRONG_COMMIT" \
+    FAKE_MISSING_TAG="$TAG" \
+    DETACH_GITHUB_REPOSITORY="$REPOSITORY" \
+    DETACH_CONFIRM_PUBLISH="$EXPECTED_CONFIRMATION" \
+    DETACH_RELEASE_EXPECTED_COMMIT="$GIT_COMMIT" \
+    DETACH_GITHUB_RELEASE_TARGET=other-ref \
+    DETACH_SEPARATE_RELEASE_REPOSITORY=1 \
+    "$TEST_APP/scripts/publish-release.sh" \
+    >"$TMP_ROOT/separate-target.stdout" 2>"$TMP_ROOT/separate-target.stderr"; then
+  printf 'publish skipped release-target identity with ambient separate-release env\n' >&2
+  exit 1
+fi
+grep -F 'GitHub release target does not match the built source commit' \
+  "$TMP_ROOT/separate-target.stderr" >/dev/null
+if grep -E 'release create|release upload|release edit' "$GH_LOG" >/dev/null; then
+  printf 'publish mutated a release after target identity failure\n' >&2
+  exit 1
+fi
 
 # A safe retry may encounter a draft created by a previous interrupted upload.
 # It must validate every existing digest, upload only missing allowlisted files,
