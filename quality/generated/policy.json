@@ -2015,6 +2015,13 @@
       "test_domain": "docs"
     },
     {
+      "pattern": "SECURITY.md",
+      "priority": 900,
+      "release_domain": "safe",
+      "spec": "docs/specs/documentation.md",
+      "test_domain": "docs"
+    },
+    {
       "pattern": ".gitignore",
       "priority": 900,
       "release_domain": "safe",
@@ -2343,6 +2350,7 @@
         "AGENTS.md",
         "CLAUDE.md",
         "README.md",
+        "SECURITY.md",
         "app/.gitignore",
         "docs/assets/*",
         "docs/quality-gates.md",

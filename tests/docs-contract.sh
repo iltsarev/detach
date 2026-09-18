@@ -54,10 +54,23 @@ required=(
   docs/quality-gates.md
   docs/exec-plan-template.md
   .github/pull_request_template.md
+  SECURITY.md
 )
 for file in "${required[@]}"; do
   [ -f "$ROOT/$file" ] || fail "missing $file"
 done
+
+grep -F 'GitHub private vulnerability reporting' "$ROOT/SECURITY.md" >/dev/null ||
+  fail 'SECURITY.md must use GitHub private vulnerability reporting'
+grep -F 'suspected security vulnerability' "$ROOT/SECURITY.md" >/dev/null ||
+  fail 'SECURITY.md must limit the public-issue ban to suspected security vulnerabilities'
+grep -F 'Ordinary functional bugs' "$ROOT/SECURITY.md" >/dev/null ||
+  fail 'SECURITY.md must keep ordinary functional bugs on public issues'
+! grep -F 'Do not open a public issue for helper, state, or update bugs' \
+  "$ROOT/SECURITY.md" >/dev/null ||
+  fail 'SECURITY.md must not ban public issues for ordinary helper, state, or update bugs'
+grep -F '[Security policy](SECURITY.md)' "$ROOT/README.md" >/dev/null ||
+  fail 'README.md must link to SECURITY.md'
 
 spec_warning="$(awk -F '\t' '$1 == "limit" && $2 == "routed_spec_warning_bytes" {print $3}' \
   "$ROOT/quality/policy.tsv")"
