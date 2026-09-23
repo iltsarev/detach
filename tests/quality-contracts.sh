@@ -45,7 +45,21 @@ else
   build_path="$(cd -P "$APP_ROOT" && "${build_path_args[@]}")"
   test_binary="$build_path/DetachAppPackageTests.xctest/Contents/MacOS/DetachAppPackageTests"
   profdata="$build_path/codecov/default.profdata"
+  # Xcode 27 SwiftPM builds one bundle per test target that share one profile.
+  if [ ! -e "$test_binary" ] && \
+     [ -f "$build_path/DetachAppTests.xctest/Contents/MacOS/DetachAppTests" ]; then
+    test_binary="$build_path/DetachAppTests.xctest/Contents/MacOS/DetachAppTests"
+    test_objects=("$build_path/DetachKitTests.xctest/Contents/MacOS/DetachKitTests")
+    [ -f "${test_objects[0]}" ] && [ ! -L "${test_objects[0]}" ] || {
+      printf 'quality contracts: DetachKitTests coverage object is missing\n' >&2
+      exit 1
+    }
+  fi
 fi
+test_object_arguments=()
+for test_object in "${test_objects[@]+"${test_objects[@]}"}"; do
+  test_object_arguments+=(--test-object "$test_object")
+done
 [ -f "$test_binary" ] && [ ! -L "$test_binary" ] && \
   [ -f "$profdata" ] && [ ! -L "$profdata" ] || {
   printf 'quality contracts: run the coverage-enabled Swift stage first\n' >&2
@@ -79,6 +93,7 @@ opportunities="${DETACH_QUALITY_OPPORTUNITIES_OUTPUT:-$ROOT/app/build/quality-me
 arguments=(
   evaluate
   --test-binary "$test_binary"
+  "${test_object_arguments[@]+"${test_object_arguments[@]}"}"
   --profile "$profdata"
   --tests "$tests"
   --output "$output"
@@ -107,6 +122,7 @@ if [ -n "${DETACH_UI_COVERAGE_BINARY:-}" ]; then
   swift_output="${DETACH_QUALITY_SWIFT_METRICS_OUTPUT:-$(dirname "$output")/quality-metrics-swift.json}"
   "$ROOT/scripts/quality-metrics" evaluate \
     --test-binary "$test_binary" \
+    "${test_object_arguments[@]+"${test_object_arguments[@]}"}" \
     --profile "$profdata" \
     --tests "$tests" \
     --output "$swift_output" \
