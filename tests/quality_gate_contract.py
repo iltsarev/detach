@@ -411,6 +411,46 @@ class QualityGateContract(unittest.TestCase):
                 "source-rules.sh\n",
             )
 
+    def test_source_rules_reject_ignored_mutation_failures(self) -> None:
+        cases = {
+            # The #248 rollback shape: a failed move could lose a generation.
+            "bin/detach-core": ('    mv "$old" "$destination" || true\n', 1),
+            "bin/detach": (
+                '"$LOCKF_BIN" -k -t 30 "$lock" \\\n  "$SELF" publish || true\n', 1),
+            "scripts/install.sh": (
+                'state_update_meta_for_run "$s" "$t" --string a b || :\n', 1),
+            "app/Sources/Kit/Store.swift": (
+                "do { try save() } catch {}\n", 1),
+        }
+        allowed = {
+            "bin/detach-core": (
+                '    value="$("$STATE_BIN" meta get "$m" status 2>/dev/null || true)"\n'
+                '    rm -f "$tmp" || true  # quality: allow-ignored-failure cache cleanup\n',
+                0,
+            ),
+            "tests/example.sh": ('mv a b || true\n', 0),
+        }
+        for relative, (content, expected) in {**cases, **allowed}.items():
+            with self.subTest(relative=relative, expected=expected), \
+                    tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                target = root / relative
+                target.parent.mkdir(parents=True)
+                target.write_text(content, encoding="utf-8")
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                subprocess.run(["git", "-C", str(root), "add", relative], check=True)
+                result = subprocess.run(
+                    [str(ROOT / "tests/source-rules.sh")],
+                    env={
+                        **os.environ,
+                        "DETACH_SOURCE_RULES_TEST_MODE": "1",
+                        "DETACH_SOURCE_RULES_ROOT": str(root),
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_source_rules_reject_literal_swiftpm_layout_paths(self) -> None:
         # The pre-#267 UI coverage resolver hardcoded the Xcode 26 layout.
         cases = {

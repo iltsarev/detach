@@ -2000,7 +2000,7 @@ publish_session_event() {
   # cleanup suppresses the hint of its final checkpoint because its status
   # write publishes one moment later.
   [ "${DETACH_SUPPRESS_SESSION_EVENT:-0}" != "1" ] || return 0
-  "$STATE_BIN" events publish "$STATE_BASE_ROOT" >/dev/null 2>&1 || true
+  "$STATE_BIN" events publish "$STATE_BASE_ROOT" >/dev/null 2>&1 || true  # quality: allow-ignored-failure lossy change notification; the next state write republishes
 }
 
 # tmux runs this hook when the retained provider pane dies. Nothing else
@@ -5749,7 +5749,7 @@ worker_main() {
       --string lifecycle_phase terminal \
       --string status "$status_label" \
       --integer exit_status "$exit_status" \
-      --string finished_at "$(now_iso)" || true
+      --string finished_at "$(now_iso)" || true  # quality: allow-ignored-failure final phase after the committed closing record, which health reads
     replace_session_file_with_line \
       "$(session_dir "$session")/exit-status" "$exit_status" || \
       checkpoint_log "$session" "exit status publication failed" || true
@@ -6033,7 +6033,7 @@ start_tmux_session() {
         # No replacement worker or provider can exist, so this starter owns a
         # complete local shutdown observation for B.
         state_update_meta_for_run "$session" "$run_token" \
-          --string runtime_shutdown_observed_at "$(now_iso)" || true
+          --string runtime_shutdown_observed_at "$(now_iso)" || true  # quality: allow-ignored-failure positive shutdown observation; its absence keeps actions closed
       fi
       while [ "$terminal_committed" -eq 1 ] && \
             [ "$cleanup_attempts" -lt 40 ] && \
@@ -6044,7 +6044,7 @@ start_tmux_session() {
       if [ "$terminal_committed" -eq 1 ] && \
          replacement_runtime_is_quiescent "$session"; then
         state_update_meta_for_run "$session" "$run_token" \
-          --string runtime_shutdown_observed_at "$(now_iso)" || true
+          --string runtime_shutdown_observed_at "$(now_iso)" || true  # quality: allow-ignored-failure positive shutdown observation; its absence keeps actions closed
         rm -f "$power_ready_file" "$provider_pid_file"
       fi
       if [ "$preserve_checkpoint" = "1" ] && \
@@ -7550,7 +7550,7 @@ stop_session() {
       if checkpoint_run_may_publish "$session" "$run_token"; then
         "$LOCKF_BIN" -k -t 30 "$(checkpoint_lock_path "$session")" \
           "$SELF" __checkpoint_stop_edge_locked \
-            "$session" "$run_token" "$pane_pid" || true
+            "$session" "$run_token" "$pane_pid" || true  # quality: allow-ignored-failure best-effort stop-edge screen before the first signal
       fi
       provider_pid="$(read_meta_field "$session" provider_pid 2>/dev/null || true)"
       case "$provider_pid" in ''|*[!0-9]*) provider_pid="" ;; esac
