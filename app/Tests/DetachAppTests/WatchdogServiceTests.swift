@@ -474,7 +474,8 @@ final class WatchdogServiceTests: XCTestCase {
             store.transaction,
             WatchdogHandoffTransaction(
                 phase: .unregisterSubmitted,
-                targetDigest: "digest-current"))
+                targetDigest: "digest-current",
+                bootSessionIdentifier: Self.currentBoot))
         XCTAssertEqual(oldBackend.registerCalls, 0)
 
         // The production process would disappear here and lose its callback.
@@ -721,6 +722,121 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(store.transaction?.phase, .unregisterSubmitted)
     }
 
+    func testLegacyJournalRecordsBootBeforeReplayAndCompletesAfterRestart() async throws {
+        // A journal written before the boot field can stay stuck when
+        // unregister fails with an unclassified error. The replay records the
+        // boot first, so a restart provides the release proof.
+        let store = MemoryWatchdogHandoffStore(
+            transaction: WatchdogHandoffTransaction(
+                phase: .unregisterSubmitted,
+                targetDigest: "digest-current"))
+        let backend = FakeWatchdogBackend(
+            status: .notRegistered,
+            registrations: [.success(.enabled)],
+            unregistrations: [.failure(Self.unclassifiedRejection)])
+        let fixture = makeFixture(backend: backend, handoffStore: store)
+        defer { fixture.cleanup() }
+
+        do {
+            try await fixture.service.reconcileAfterAppUpdate()
+            XCTFail("Expected an unclassified error to remain fail-closed")
+        } catch {
+            XCTAssertEqual((error as NSError).code, 22)
+        }
+        XCTAssertEqual(store.transaction?.phase, .unregisterSubmitted)
+        XCTAssertEqual(
+            store.transaction?.bootSessionIdentifier, Self.currentBoot)
+
+        let restarted = makeService(
+            backend: backend,
+            defaults: fixture.defaults,
+            handoffStore: store,
+            bootSessionProvider: { Self.nextBoot })
+        try await restarted.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertNil(store.transaction)
+        XCTAssertEqual(
+            fixture.defaults.string(forKey: "powerWatchdogDefinitionDigest"),
+            "digest-current")
+    }
+
+    func testChangedBootWithLiveRecordStillReplaysUnregister() async throws {
+        let store = MemoryWatchdogHandoffStore(
+            transaction: WatchdogHandoffTransaction(
+                phase: .unregisterSubmitted,
+                targetDigest: "digest-current",
+                bootSessionIdentifier: Self.currentBoot))
+        let backend = FakeWatchdogBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)],
+            unregistrations: [.success])
+        let fixture = makeFixture(
+            backend: backend,
+            handoffStore: store,
+            bootSessionProvider: { Self.nextBoot })
+        defer { fixture.cleanup() }
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertNil(store.transaction)
+    }
+
+    func testSameBootDoesNotTreatNotRegisteredStatusAsCompletion() async {
+        let store = MemoryWatchdogHandoffStore(
+            transaction: WatchdogHandoffTransaction(
+                phase: .unregisterSubmitted,
+                targetDigest: "digest-current",
+                bootSessionIdentifier: Self.currentBoot))
+        let backend = FakeWatchdogBackend(
+            status: .notRegistered,
+            registrations: [.success(.enabled)],
+            unregistrations: [.failure(Self.unclassifiedRejection)])
+        let fixture = makeFixture(backend: backend, handoffStore: store)
+        defer { fixture.cleanup() }
+
+        do {
+            try await fixture.service.reconcileAfterAppUpdate()
+            XCTFail("Expected the same boot to require a completion barrier")
+        } catch {
+            XCTAssertEqual((error as NSError).code, 22)
+        }
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(store.transaction?.phase, .unregisterSubmitted)
+    }
+
+    func testJournalRejectsNonCanonicalBootIdentifier() {
+        XCTAssertFalse(WatchdogHandoffTransaction(
+            phase: .unregisterSubmitted,
+            targetDigest: nil,
+            bootSessionIdentifier: "not-a-uuid").isValid)
+        XCTAssertFalse(WatchdogHandoffTransaction(
+            phase: .unregisterSubmitted,
+            targetDigest: nil,
+            bootSessionIdentifier: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA")
+            .isValid)
+    }
+
+    func testJournalWithoutBootFieldStillDecodes() throws {
+        let data = Data(
+            #"{"phase":"unregisterSubmitted","schema":1,"targetDigest":"d"}"#
+                .utf8)
+        let transaction = try JSONDecoder().decode(
+            WatchdogHandoffTransaction.self, from: data)
+        XCTAssertTrue(transaction.isValid)
+        XCTAssertNil(transaction.bootSessionIdentifier)
+    }
+
+    fileprivate static let currentBoot = "11111111-1111-4111-8111-111111111111"
+    private static let nextBoot = "22222222-2222-4222-8222-222222222222"
+
+    private static let unclassifiedRejection = NSError(
+        domain: "SMAppServiceErrorDomain", code: Int(EINVAL))
+
     private static let absentRecordRejection = NSError(
         domain: "SMAppServiceErrorDomain", code: Int(EPERM),
         userInfo: [NSLocalizedFailureReasonErrorKey: "Operation not permitted"])
@@ -734,6 +850,9 @@ final class WatchdogServiceTests: XCTestCase {
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
         serviceMutationAllowed: @escaping () -> Bool = { true },
         digestProvider: @escaping () -> String? = { "digest-current" },
+        bootSessionProvider: @escaping () throws -> String = {
+            WatchdogServiceTests.currentBoot
+        },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> Fixture {
         let suite = "WatchdogServiceTests.\(UUID().uuidString)"
@@ -746,6 +865,7 @@ final class WatchdogServiceTests: XCTestCase {
             legacyWatchdogIsRunning: legacyWatchdogIsRunning,
             serviceMutationAllowed: serviceMutationAllowed,
             digestProvider: digestProvider,
+            bootSessionProvider: bootSessionProvider,
             sleep: sleep)
         return Fixture(
             service: service,
@@ -763,6 +883,9 @@ final class WatchdogServiceTests: XCTestCase {
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
         serviceMutationAllowed: @escaping () -> Bool = { true },
         digestProvider: @escaping () -> String? = { "digest-current" },
+        bootSessionProvider: @escaping () throws -> String = {
+            WatchdogServiceTests.currentBoot
+        },
         sleep: @escaping (UInt64) async throws -> Void = { _ in }
     ) -> WatchdogService {
         WatchdogService(
@@ -773,6 +896,7 @@ final class WatchdogServiceTests: XCTestCase {
             lifetimeBarrierStatus: lifetimeBarrierStatus,
             legacyWatchdogIsRunning: legacyWatchdogIsRunning,
             serviceMutationAllowed: serviceMutationAllowed,
+            bootSessionProvider: bootSessionProvider,
             sleep: sleep)
     }
 
