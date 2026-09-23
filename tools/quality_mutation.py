@@ -134,14 +134,40 @@ def load_corpus(path: Path, policy: Policy, *, test_mode: bool) -> list[Mutant]:
             raise MutationError(
                 f"mutant {mutant.identifier} has an invalid failure regex: {error}") from error
         if not test_mode:
-            if critical.get(mutant.source) != mutant.requirement:
+            # A critical source keeps its policy requirement. A trusted
+            # boundary outside the critical coverage set may carry a mutant
+            # for any declared requirement without joining that ratchet.
+            if mutant.source in critical:
+                if critical[mutant.source] != mutant.requirement:
+                    raise MutationError(
+                        f"mutant {mutant.identifier} does not match the critical-source policy")
+            elif mutant.requirement not in policy.requirements:
                 raise MutationError(
-                    f"mutant {mutant.identifier} does not match the critical-source policy")
+                    f"mutant {mutant.identifier} names an unknown requirement")
             if mutant.test_suite not in required_suites:
                 raise MutationError(
                     f"mutant {mutant.identifier} uses a suite outside the required inventory")
         mutants.append(mutant)
     return mutants
+
+
+# A change to the corpus or the runner revalidates every mutant.
+ALL_MUTANT_INPUTS = {"quality/mutations.json", "tools/quality_mutation.py"}
+
+
+def suite_file(test_suite: str) -> str:
+    target, suite = test_suite.split(".", 1)
+    return f"app/Tests/{target}/{suite}.swift"
+
+
+def changed_mutants(mutants: list[Mutant], changed: list[str]) -> list[Mutant]:
+    paths = {line.strip() for line in changed if line.strip()}
+    if paths & ALL_MUTANT_INPUTS:
+        return mutants
+    return [
+        mutant for mutant in mutants
+        if mutant.source in paths or suite_file(mutant.test_suite) in paths
+    ]
 
 
 def select(mutants: list[Mutant], identifier: str) -> Mutant:
@@ -495,7 +521,10 @@ def parser() -> argparse.ArgumentParser:
     subparsers = value.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate")
     subparsers.add_parser("list")
-    subparsers.add_parser("matrix")
+    matrix = subparsers.add_parser("matrix")
+    matrix.add_argument(
+        "--changed-files", type=Path,
+        help="select only mutants whose source or test suite file is listed")
     run = subparsers.add_parser("run")
     run.add_argument("--id", required=True)
     run.add_argument("--workspace", type=Path, default=ROOT)
@@ -535,6 +564,12 @@ def main() -> int:
                 print(mutant.identifier)
             return 0
         if args.command == "matrix":
+            if args.changed_files is not None:
+                mutants = changed_mutants(
+                    mutants,
+                    regular_file(args.changed_files, "changed file list")
+                    .read_text(encoding="utf-8").splitlines(),
+                )
             print(json.dumps({"include": [{"id": mutant.identifier} for mutant in mutants]}))
             return 0
         if args.command == "run":

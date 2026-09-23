@@ -48,9 +48,9 @@ policy_version="$("$ROOT/scripts/quality-policy" version)"
   fail 'README.md must not have a release scan pattern'
 [ "$("$ROOT/scripts/quality-policy" critical | wc -l | tr -d ' ')" = 13 ] || \
   fail 'critical source inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" suites | wc -l | tr -d ' ')" = 12 ] || \
+[ "$("$ROOT/scripts/quality-policy" suites | wc -l | tr -d ' ')" = 13 ] || \
   fail 'required Swift suite inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" requirements | wc -l | tr -d ' ')" = 23 ] || \
+[ "$("$ROOT/scripts/quality-policy" requirements | wc -l | tr -d ' ')" = 24 ] || \
   fail 'critical requirement inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" capabilities | wc -l | tr -d ' ')" = 12 ] || \
   fail 'capability inventory is incomplete'
