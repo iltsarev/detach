@@ -2411,6 +2411,12 @@ def gate_contract_definitions(
             "Quality mutation contracts passed",
         ),
         (
+            "quality-test-changes.log",
+            [str(root / "tests/quality-test-changes.sh")],
+            {},
+            "Quality test change contracts passed",
+        ),
+        (
             "shell-safety.log",
             [str(root / "tests/shell-safety-contract.sh")],
             {},

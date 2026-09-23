@@ -73,6 +73,10 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   corpus. `matrix --changed-files` selects the mutants a pull request touches.
   Mutation work runs in its own workflow beside the quality gate and is not a
   release stage.
+- `tools/quality_test_changes.py --base <ref>` lists removed or rewritten
+  assertion lines in tests that existed at `<ref>`, with the enclosing Swift
+  test name. Pull-request CI writes it to the job summary. It is advisory and
+  never fails a check.
 - `scripts/quality-promote` binds a successful pull-request artifact to its
   final `main` merge commit. It runs only in the hosted main-push workflow.
 
