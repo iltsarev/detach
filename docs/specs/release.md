@@ -27,6 +27,11 @@ change real power state, upload assets, or claim publication.
 - The pinned tmux source build may reuse only an arm64 product keyed by the
   builder, source checksums, SDK, compiler, and deployment target; every copied
   cache product passes the normal architecture and linkage validation.
+- The tmux build links with `-no_weak_imports`, and validation rejects any
+  weak `libSystem` import. A newer SDK cannot add a symbol that macOS 26 lacks.
+- Builds with Xcode 26 and Xcode 27 are valid. The bundled SwiftTerm resource
+  holds either the pinned `Shaders.metal` source or a `default.metallib` that
+  exports every renderer shader function.
 - The immutable payload order is `detach`, `detach-core`,
   `detach-install`, `detach-state`, `detach-power`, `tmux`.
   Installation activates a content-addressed version atomically.

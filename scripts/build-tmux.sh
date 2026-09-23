@@ -51,6 +51,12 @@ validate_tmux_binary() {
       /usr/bin/grep -E '(/opt/homebrew|/usr/local|/Users/|libevent|utf8proc)' >/dev/null; then
     return 1
   fi
+  # A weak import is an SDK symbol newer than the deployment target. It
+  # resolves to NULL on macOS 26 and crashes on first call.
+  if /usr/bin/nm -m "$binary" | /usr/bin/grep -F 'weak external' | \
+      /usr/bin/grep -F '(from libSystem)' >/dev/null; then
+    return 1
+  fi
 }
 
 fetch_source() {
@@ -111,7 +117,9 @@ build_arch() {
   [ -x "$cmake" ] || die "cmake is required to build the pinned libevent source"
   jobs="$(/usr/sbin/sysctl -n hw.logicalcpu 2>/dev/null || printf 4)"
   common_cflags="-arch $arch -isysroot $sdk -mmacosx-version-min=26.0 -O2"
-  common_ldflags="-arch $arch -isysroot $sdk -mmacosx-version-min=26.0"
+  # A newer SDK can declare functions that macOS 26 lacks. Refusing weak
+  # imports makes feature probes reject them and the final link fail closed.
+  common_ldflags="-arch $arch -isysroot $sdk -mmacosx-version-min=26.0 -Wl,-no_weak_imports"
   fingerprint="$({
     printf '%s\n' \
       'schema=1' \
@@ -152,6 +160,7 @@ build_arch() {
       -DCMAKE_OSX_ARCHITECTURES="$arch" \
       -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
       -DCMAKE_OSX_SYSROOT="$sdk" \
+      -DCMAKE_EXE_LINKER_FLAGS="-Wl,-no_weak_imports" \
       -DCMAKE_INSTALL_PREFIX="$prefix" \
       -DEVENT__LIBRARY_TYPE=STATIC \
       -DEVENT__DISABLE_OPENSSL=ON \

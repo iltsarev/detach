@@ -101,7 +101,7 @@ jobs:
             app/.build/quality-ui-release/arm64-apple-macosx/release/Sparkle.framework
             app/.build/quality-runtime/tmux
             app/.build/quality-runtime/detach-state
-          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
+          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'app/scripts/make-app.sh', 'scripts/build-tmux.sh', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
       - name: Restore exact packaged test app
         id: app-cache
         if: matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true')
@@ -245,7 +245,7 @@ jobs:
             app/.build/quality-ui-release/arm64-apple-macosx/release/Sparkle.framework
             app/.build/quality-runtime/tmux
             app/.build/quality-runtime/detach-state
-          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
+          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'app/scripts/make-app.sh', 'scripts/build-tmux.sh', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
       - name: Restore Swift and tmux caches
         id: swift-cache
         if: github.event_name != 'pull_request' && (steps.product-cache.outputs.cache-hit != 'true' || steps.app-cache.outputs.cache-hit != 'true')
@@ -324,7 +324,7 @@ jobs:
             app/.build/quality-ui-release/arm64-apple-macosx/release/Sparkle.framework
             app/.build/quality-runtime/tmux
             app/.build/quality-runtime/detach-state
-          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
+          key: detach-quality-products-v2-${{ runner.os }}-${{ runner.arch }}-xcode-26.6-${{ hashFiles('app/Package.swift', 'app/Package.resolved', 'app/Sources/**/*.swift', 'app/Tests/**/*.swift', 'app/Resources/DetachWatchdog-Info.plist', 'app/scripts/make-app.sh', 'scripts/build-tmux.sh', 'tools/quality_cache_warm.py', 'tools/quality_products.py', 'VERSION', 'BUILD') }}
       - name: Publish gate summary
         if: always()
         shell: bash

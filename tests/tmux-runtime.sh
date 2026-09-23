@@ -329,14 +329,20 @@ grep -F 'install -m 0644 "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE"' \
 grep -F 'cmp -s "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE"' \
   "$VERIFY_APP" >/dev/null
 
-# The pinned SwiftTerm shader is executable input because the renderer compiles
-# it at runtime. Packaging and verification require its exact bytes.
+# The pinned SwiftTerm shader is executable input. Xcode 26 bundles its exact
+# source bytes; Xcode 27 bundles the library compiled from that pinned source.
 [ -d "$SWIFTTERM_BUNDLE" ]
 [ ! -L "$SWIFTTERM_BUNDLE" ]
-[ -f "$SWIFTTERM_SHADER" ]
-[ ! -L "$SWIFTTERM_SHADER" ]
-[ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
-  "$SWIFTTERM_SHADER_SHA256" ]
+if [ -f "$SWIFTTERM_SHADER" ]; then
+  [ ! -L "$SWIFTTERM_SHADER" ]
+  [ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
+    "$SWIFTTERM_SHADER_SHA256" ]
+else
+  [ -s "$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib" ]
+  [ ! -L "$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib" ]
+  /usr/bin/strings -a "$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib" | \
+    /usr/bin/grep -Fqx terminal_color_fragment
+fi
 for packaging_script in "$MAKE_APP" "$VERIFY_APP"; do
   grep -F "SWIFTTERM_SHADER_SHA256=\"$SWIFTTERM_SHADER_SHA256\"" \
     "$packaging_script" >/dev/null

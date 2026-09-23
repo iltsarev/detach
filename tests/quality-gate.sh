@@ -103,6 +103,18 @@ if [ "$app_bind_line" -le "$app_build_line" ]; then
 fi
 grep -F 'key: detach-quality-products-v2-' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
+# The product cache key must cover every file in the product fingerprint;
+# otherwise a changed input restores a manifest that verification rejects.
+product_cache_keys="$(grep -F 'key: detach-quality-products-v2-' \
+  "$ROOT/.github/workflows/quality-gates.yml")"
+for product_input in $(python3 -c \
+    'import sys; sys.path.insert(0, sys.argv[1]); import quality_cache_warm as q; print(" ".join(q.PRODUCT_INPUT_FILES))' \
+    "$ROOT/tools"); do
+  if printf '%s\n' "$product_cache_keys" | grep -vF "'$product_input'" >/dev/null; then
+    printf 'product cache key omits fingerprint input %s\n' "$product_input" >&2
+    exit 1
+  fi
+done
 grep -F 'app/.build/quality-products-v1.json' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 grep -F 'app/.build/quality-runtime/detach-state' \

@@ -18,6 +18,7 @@ SWIFTTERM_VERSION="${DETACH_SWIFTTERM_VERSION:-1.19.0}"
 SWIFTTERM_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
 SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424aeb951df6856"
 SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
+SWIFTTERM_SHADER_FUNCTIONS="terminal_text_vertex terminal_cell_text_vertex terminal_text_fragment terminal_text_fragment_gray terminal_color_vertex terminal_cell_color_vertex terminal_color_fragment"
 REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
 VERIFY_PRODUCTION="${DETACH_VERIFY_PRODUCTION:-0}"
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
@@ -258,20 +259,34 @@ cmp -s "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE" || {
 }
 SWIFTTERM_BUNDLE="$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
 SWIFTTERM_SHADER="$SWIFTTERM_BUNDLE/Shaders.metal"
+SWIFTTERM_LIBRARY="$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib"
 [ -d "$SWIFTTERM_BUNDLE" ] && [ ! -L "$SWIFTTERM_BUNDLE" ] || {
   printf 'Missing bundled SwiftTerm resource bundle\n' >&2
   exit 1
 }
-[ -f "$SWIFTTERM_SHADER" ] && [ ! -L "$SWIFTTERM_SHADER" ] || {
+# Xcode 26 bundles the pinned shader source; Xcode 27 bundles the compiled
+# library. Either form must carry every function the renderer requires.
+if [ -f "$SWIFTTERM_SHADER" ] && [ ! -L "$SWIFTTERM_SHADER" ]; then
+  [ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
+    "$SWIFTTERM_SHADER_SHA256" ] || {
+    printf 'Bundled SwiftTerm Metal shader does not match SwiftTerm %s\n' \
+      "$SWIFTTERM_VERSION" >&2
+    exit 1
+  }
+elif [ -f "$SWIFTTERM_LIBRARY" ] && [ ! -L "$SWIFTTERM_LIBRARY" ] && \
+     [ -s "$SWIFTTERM_LIBRARY" ]; then
+  for swiftterm_function in $SWIFTTERM_SHADER_FUNCTIONS; do
+    /usr/bin/strings -a "$SWIFTTERM_LIBRARY" | \
+      /usr/bin/grep -Fqx "$swiftterm_function" || {
+      printf 'Bundled SwiftTerm Metal library lacks %s\n' \
+        "$swiftterm_function" >&2
+      exit 1
+    }
+  done
+else
   printf 'Missing or unsafe SwiftTerm Metal shader\n' >&2
   exit 1
-}
-[ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
-  "$SWIFTTERM_SHADER_SHA256" ] || {
-  printf 'Bundled SwiftTerm Metal shader does not match SwiftTerm %s\n' \
-    "$SWIFTTERM_VERSION" >&2
-  exit 1
-}
+fi
 plutil -p "$TMUX_THIRD_PARTY/provenance.json" >/dev/null
 [ -x "$TMUX_BUILDER" ] || {
   printf 'Bundled tmux builder is unavailable for provenance verification\n' >&2
