@@ -72,6 +72,7 @@ It lists current specification ownership and verification links.
 - `tools/quality_scenarios.py`
 - `tools/quality_security.py`
 - `tools/quality_shard.py`
+- `tools/quality_test_changes.py`
 
 ### Requirement verification
 

@@ -67,6 +67,10 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   deadline.
 - `scripts/quality-mutation` validates and runs the deterministic safety mutant
   corpus. Mutation work does not add to pull request latency.
+- `tools/quality_test_changes.py --base <ref>` lists removed or rewritten
+  assertion lines in tests that existed at `<ref>`, with the enclosing Swift
+  test name. Pull-request CI writes it to the job summary. It is advisory and
+  never fails a check.
 - `scripts/quality-promote` binds a successful pull-request artifact to its
   final `main` merge commit. It runs only in the hosted main-push workflow.
 

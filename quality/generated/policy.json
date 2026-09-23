@@ -1119,6 +1119,13 @@
       "test_domain": "policy"
     },
     {
+      "pattern": "tools/quality_test_changes.py",
+      "priority": 1000,
+      "release_domain": "safe",
+      "spec": "docs/specs/documentation.md",
+      "test_domain": "policy"
+    },
+    {
       "pattern": ".github/workflows/quality-mutations.yml",
       "priority": 1000,
       "release_domain": "safe",
@@ -2389,7 +2396,8 @@
         "tools/quality_promote.py",
         "tools/quality_scenarios.py",
         "tools/quality_security.py",
-        "tools/quality_shard.py"
+        "tools/quality_shard.py",
+        "tools/quality_test_changes.py"
       ],
       "path": "docs/specs/documentation.md",
       "requirements": [

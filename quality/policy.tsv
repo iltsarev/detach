@@ -118,6 +118,7 @@ route	1000	scripts/quality-merge	policy	safe	docs/specs/documentation.md
 route	1000	tools/quality_merge.py	policy	safe	docs/specs/documentation.md
 route	1000	scripts/quality-mutation	policy	safe	docs/specs/documentation.md
 route	1000	tools/quality_mutation.py	policy	safe	docs/specs/documentation.md
+route	1000	tools/quality_test_changes.py	policy	safe	docs/specs/documentation.md
 route	1000	.github/workflows/quality-mutations.yml	policy	safe	docs/specs/documentation.md
 route	1000	.github/workflows/quality-care.yml	policy	safe	docs/specs/documentation.md
 route	1000	.github/workflows/documentation-care.yml	policy	safe	docs/specs/documentation.md
