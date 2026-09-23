@@ -208,6 +208,10 @@ final class WatchdogService {
                     guard Self.isAlreadyUnregisteredError(error) else {
                         throw error
                     }
+                    // The EPERM shape of that reply is ambiguous on its own:
+                    // BTM also rejects mutations it forbids by policy. Only a
+                    // record that BTM itself reports absent may continue.
+                    guard status == .notRegistered else { throw error }
                     // An error callback may be immediate. For replay after a
                     // lost callback, require the new watchdog's lifetime lock
                     // to be released, or conservatively observe that a legacy
@@ -413,9 +417,14 @@ final class WatchdogService {
     }
 
     private static func isAlreadyUnregisteredError(_ error: Error) -> Bool {
+        // macOS 26 reports an absent BTM record as SMAppServiceErrorDomain
+        // code 1 (EPERM) instead of the documented kSMErrorJobNotFound; see
+        // PowerHelperService for the full rationale and the status guard that
+        // keeps this classification from becoming a completion barrier.
         let nsError = error as NSError
-        return nsError.domain == "SMAppServiceErrorDomain"
-            && nsError.code == Int(kSMErrorJobNotFound)
+        guard nsError.domain == "SMAppServiceErrorDomain" else { return false }
+        return nsError.code == Int(kSMErrorJobNotFound)
+            || nsError.code == Int(EPERM)
     }
 
     private func rememberDefinition(_ digest: String) {

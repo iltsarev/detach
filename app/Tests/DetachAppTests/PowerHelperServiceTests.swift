@@ -1146,14 +1146,137 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertNil(fixture.handoffStore.transaction)
     }
 
-    func testForeignReplayErrorIsNotMistakenForACompletionBarrier() async {
-        let operationInProgress = NSError(
-            domain: "SMAppServiceErrorDomain", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "operation in progress"])
+    func testFirstInstallWithStaleLifetimeFileRecoversFromAbsentRecordRejection() async throws {
+        // macOS 26 field shape: no journal and no registration, but a lifetime
+        // file left by an earlier helper generation forces the unregister
+        // replay. Background Task Management has no record for the label and
+        // SMAppService reports that rejection as EPERM in its own domain
+        // rather than the documented kSMErrorJobNotFound.
         let backend = FakePowerHelperBackend(
             status: .notRegistered,
             registrations: [.success(.enabled)],
-            unregisterError: operationInProgress)
+            unregisterError: Self.absentRecordRejection)
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .released })
+        defer { fixture.cleanup() }
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 1)
+        XCTAssertEqual(fixture.service.status, .enabled)
+        XCTAssertNil(fixture.handoffStore.transaction)
+        XCTAssertEqual(
+            fixture.defaults.string(forKey: "powerHelperDefinitionDigest"),
+            "digest-current")
+        XCTAssertFalse(fixture.defaults.bool(
+            forKey: "powerHelperDefinitionReconcilePending"))
+    }
+
+    func testAbsentRecordRejectionStillWaitsForReleasedLifetimeBarrier() async throws {
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered,
+            registrations: [.success(.enabled)],
+            unregisterError: Self.absentRecordRejection)
+        var probes = [
+            PowerHelperLifetimeBarrierStatus.busy,
+            .busy,
+            .released,
+        ]
+        var delays: [UInt64] = []
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: {
+                probes.isEmpty ? .released : probes.removeFirst()
+            },
+            sleep: { delays.append($0) })
+        defer { fixture.cleanup() }
+        fixture.handoffStore.transaction = makeTransaction(
+            phase: .unregisterSubmitted,
+            goal: .install,
+            digest: "digest-current",
+            lifetimeBarrierExpected: true)
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 1)
+        XCTAssertEqual(delays, [1_000_000_000, 1_000_000_000])
+        XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testAbsentRecordRejectionWithBusyLifetimeBarrierNeverRegisters() async {
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered,
+            registrations: [.success(.enabled)],
+            unregisterError: Self.absentRecordRejection)
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .busy })
+        defer { fixture.cleanup() }
+        fixture.handoffStore.transaction = makeTransaction(
+            phase: .unregisterSubmitted,
+            goal: .install,
+            digest: "digest-current",
+            lifetimeBarrierExpected: true)
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.service.reconcileAfterAppUpdate()
+        }
+
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 0)
+        XCTAssertEqual(
+            fixture.handoffStore.transaction?.phase,
+            .unregisterSubmitted)
+    }
+
+    func testAbsentRecordRejectionWithLiveRecordRemainsFailClosed() async {
+        // BTM also answers EPERM for mutations it forbids by policy. With a
+        // record still present, the reply cannot mean "nothing to remove".
+        let backend = FakePowerHelperBackend(
+            status: .enabled,
+            registrations: [.success(.enabled)],
+            unregisterError: Self.absentRecordRejection)
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .released })
+        defer { fixture.cleanup() }
+        fixture.handoffStore.transaction = makeTransaction(
+            phase: .unregisterSubmitted,
+            goal: .install,
+            digest: "digest-current",
+            lifetimeBarrierExpected: true)
+
+        do {
+            try await fixture.service.reconcileAfterAppUpdate()
+            XCTFail("Expected replay to remain fail-closed")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, "SMAppServiceErrorDomain")
+            XCTAssertEqual((error as NSError).code, Int(EPERM))
+        }
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 0)
+        XCTAssertEqual(fixture.lifecycle.cancelCalls, 0)
+        XCTAssertEqual(
+            fixture.handoffStore.transaction?.phase,
+            .unregisterSubmitted)
+    }
+
+    func testPOSIXDomainPermissionErrorIsNotACompletionBarrier() async {
+        // Only SMAppService's own reply shape is classified. The same errno
+        // from any other layer must not manufacture a completion barrier.
+        let posixError = NSError(
+            domain: NSPOSIXErrorDomain, code: Int(EPERM),
+            userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"])
+        let backend = FakePowerHelperBackend(
+            status: .notRegistered,
+            registrations: [.success(.enabled)],
+            unregisterError: posixError)
         let fixture = makeFixture(
             backend: backend,
             lifetimeBarrierStatus: { .released })
@@ -1170,6 +1293,13 @@ final class PowerHelperServiceTests: XCTestCase {
             fixture.handoffStore.transaction?.phase,
             .unregisterSubmitted)
     }
+
+    /// The exact reply observed on macOS 26 when Background Task Management
+    /// has no record for the label: `unregisterItem: failed, code=record not
+    /// found (-95)` surfaces through smd as `Operation not permitted`.
+    private static let absentRecordRejection = NSError(
+        domain: "SMAppServiceErrorDomain", code: Int(EPERM),
+        userInfo: [NSLocalizedFailureReasonErrorKey: "Operation not permitted"])
 
     func testMatchingJobNotFoundCodeFromForeignDomainIsNotACompletionBarrier() async {
         let foreignError = NSError(
