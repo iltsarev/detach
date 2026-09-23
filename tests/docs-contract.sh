@@ -122,6 +122,82 @@ git -C "$ROOT" check-ignore -q docs/work/example.md ||
 git -C "$ROOT" check-ignore -q presentations/internal.html ||
   fail 'internal presentation sources must remain ignored'
 
+skill="$ROOT/.agents/skills/detach/SKILL.md"
+[ -f "$skill" ] || fail 'Detach harness skill is missing'
+grep -F 'name: detach' "$skill" >/dev/null ||
+  fail 'harness skill must use name detach'
+grep -F 'detach list --json' "$skill" >/dev/null ||
+  fail 'harness skill must name detach list --json'
+grep -F 'detach power status --json' "$skill" >/dev/null ||
+  fail 'harness skill must name detach power status --json'
+grep -F '## Do not' "$skill" >/dev/null ||
+  fail 'harness skill must refuse unsolicited mutations'
+grep -F 'finished a turn' "$skill" >/dev/null ||
+  fail 'harness skill must treat waiting as a completed provider turn'
+grep -F 'embedded terminal' "$skill" >/dev/null ||
+  fail 'harness skill must name the Detach.app embedded terminal'
+! grep -F 'wants a reply' "$skill" >/dev/null ||
+  fail 'harness skill must not treat waiting as a request for a reply'
+! grep -F 'Detach Settings' "$skill" >/dev/null ||
+  fail 'harness skill must not send Attach to a Settings terminal'
+! grep -E 'tmux send-keys|detach-core ' "$skill" >/dev/null ||
+  fail 'harness skill must not teach pane injection or detach-core'
+! grep -F '.cursor/skills' "$skill" >/dev/null ||
+  fail 'harness skill must not bind to a host-only skills path'
+
+# The public non-start parser takes one positional session name. A `--`
+# separator is unexpected. Execute the documented forms so grep-only
+# examples cannot drift from the CLI.
+skill_session="detach-codex-example"
+skill_public_cli() {
+  DETACH_STATE_BIN="/nonexistent/detach-state" \
+  DETACH_TMUX_BIN="/nonexistent/tmux" \
+    "$ROOT/bin/detach" "$@" 2>&1 || true
+}
+
+skill_forms=0
+while IFS= read -r raw; do
+  line="$raw"
+  case "$line" in
+    *'`'*)
+      line="${line#*'`'}"
+      line="${line%%'`'*}"
+      ;;
+  esac
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  case "$line" in
+    'detach <provider> status -- '*|'detach <provider> logs -- '*|'detach <provider> attach -- '*)
+      fail "harness skill must not put -- before a session name: $line"
+      ;;
+    'detach <provider> status <session_name>'|\
+    'detach <provider> logs <session_name>'|\
+    'detach <provider> attach <session_name>')
+      skill_forms=$((skill_forms + 1))
+      action="${line#detach <provider> }"
+      action="${action%% *}"
+      output="$(skill_public_cli codex "$action" "$skill_session")"
+      case "$output" in
+        *'unexpected arguments'*)
+          fail "documented skill command was rejected by the public CLI: $line"
+          ;;
+      esac
+      ;;
+  esac
+done < "$skill"
+[ "$skill_forms" -ge 3 ] ||
+  fail 'harness skill must document positional status, logs, and attach forms'
+
+for action in status logs attach; do
+  output="$(skill_public_cli codex "$action" -- "$skill_session")"
+  case "$output" in
+    *"unexpected arguments for $action"*) ;;
+    *)
+      fail "public CLI must reject detach codex $action -- $skill_session"
+      ;;
+  esac
+done
+
 grep -F 'Hosted pull-request CI is readiness authority.' "$ROOT/AGENTS.md" >/dev/null ||
   fail 'agent instructions must identify hosted CI as readiness authority'
 grep -F 'They never claim merge readiness.' \
