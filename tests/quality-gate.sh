@@ -42,7 +42,7 @@ if grep -F 'github.event.pull_request.base.sha' \
   exit 1
 fi
 if [ "$(grep -Fc 'BASE_SHA="$(git rev-parse HEAD^1)"' \
-    "$ROOT/.github/workflows/quality-gates.yml")" -ne 4 ]; then
+    "$ROOT/.github/workflows/quality-gates.yml")" -ne 5 ]; then
   printf 'quality workflow did not derive every pull-request base from the tested merge\n' >&2
   exit 1
 fi
