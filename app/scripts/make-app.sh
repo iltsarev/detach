@@ -21,6 +21,7 @@ SWIFTTERM_VERSION="${DETACH_SWIFTTERM_VERSION:-1.19.0}"
 SWIFTTERM_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
 SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424aeb951df6856"
 SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
+SWIFTTERM_SHADER_FUNCTIONS="terminal_text_vertex terminal_cell_text_vertex terminal_text_fragment terminal_text_fragment_gray terminal_color_vertex terminal_cell_color_vertex terminal_color_fragment"
 APP="$APP_ROOT/build/Detach.app"
 PAYLOAD="$APP/Contents/Resources/DetachCLI"
 LAUNCH_AGENTS="$APP/Contents/Library/LaunchAgents"
@@ -165,21 +166,34 @@ install_swiftterm_resources() {
   local bin_path="$1"
   local bundle="$bin_path/SwiftTerm_SwiftTerm.bundle"
   local shader="$bundle/Shaders.metal"
+  local library="$bundle/Contents/Resources/default.metallib"
+  local function_name
 
   [ -d "$bundle" ] && [ ! -L "$bundle" ] || {
     printf 'SwiftPM did not produce SwiftTerm_SwiftTerm.bundle\n' >&2
     exit 1
   }
-  [ -f "$shader" ] && [ ! -L "$shader" ] || {
+  # Xcode 26 SwiftPM copies the pinned shader source, which the renderer
+  # compiles at runtime. Xcode 27 SwiftPM compiles the same pinned package
+  # source into default.metallib, which the renderer loads first.
+  if [ -f "$shader" ] && [ ! -L "$shader" ]; then
+    [ "$(/usr/bin/shasum -a 256 "$shader" | /usr/bin/awk '{print $1}')" = \
+      "$SWIFTTERM_SHADER_SHA256" ] || {
+      printf 'SwiftTerm Metal shader does not match SwiftTerm %s\n' \
+        "$SWIFTTERM_VERSION" >&2
+      exit 1
+    }
+  elif [ -f "$library" ] && [ ! -L "$library" ] && [ -s "$library" ]; then
+    for function_name in $SWIFTTERM_SHADER_FUNCTIONS; do
+      /usr/bin/strings -a "$library" | /usr/bin/grep -Fqx "$function_name" || {
+        printf 'SwiftTerm Metal library lacks %s\n' "$function_name" >&2
+        exit 1
+      }
+    done
+  else
     printf 'SwiftPM did not produce the pinned SwiftTerm Metal shader\n' >&2
     exit 1
-  }
-  [ "$(/usr/bin/shasum -a 256 "$shader" | /usr/bin/awk '{print $1}')" = \
-    "$SWIFTTERM_SHADER_SHA256" ] || {
-    printf 'SwiftTerm Metal shader does not match SwiftTerm %s\n' \
-      "$SWIFTTERM_VERSION" >&2
-    exit 1
-  }
+  fi
   ditto "$bundle" "$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
 }
 
