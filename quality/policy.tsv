@@ -255,7 +255,7 @@ capability	quality-system	docs/specs/documentation.md	QC-QUALITY-POLICY,QC-QUALI
 capability	documentation	docs/specs/documentation.md	QC-DOC-CONSISTENCY	J-DOCS-CONSISTENCY
 capability	session-lifecycle	docs/specs/runtime.md	QC-RUNTIME-OWNERSHIP,QC-RUNTIME-TRANSITION	J-SESSION-CREATE,J-SESSION-RECOVER,J-SESSION-STOP,J-SESSION-DELETE
 capability	session-state	docs/specs/state.md	QC-RUNTIME-STATE,QC-RUNTIME-STORAGE	J-SESSION-PERSIST,J-STATE-CLEANUP,J-STATE-RECOVER
-capability	power-protection	docs/specs/power.md	QC-POWER-ASSERTION,QC-POWER-AUTH,QC-POWER-LEASE,QC-POWER-XPC,QC-POWER-PROTECTION,QC-POWER-CLI,QC-POWER-PLATFORM	J-POWER-ENABLE,J-POWER-LOW-BATTERY,J-POWER-HELPER-LEASE,J-POWER-CLOSED-LID
+capability	power-protection	docs/specs/power.md	QC-POWER-ASSERTION,QC-POWER-AUTH,QC-POWER-LEASE,QC-POWER-XPC,QC-POWER-PROTECTION,QC-POWER-CLI,QC-POWER-PLATFORM,QC-POWER-HANDOFF	J-POWER-ENABLE,J-POWER-LOW-BATTERY,J-POWER-HELPER-LEASE,J-POWER-CLOSED-LID
 capability	app-experience	docs/specs/app.md	QC-HEALTH-FRESHNESS,QC-HEALTH-PRESENTATION,QC-APP-TIPS	J-APP-DASHBOARD,J-APP-DETAIL,J-APP-EMPTY,J-APP-FAILURE,J-APP-FOCUS,J-APP-NEW-SESSION
 capability	onboarding	docs/specs/app-setup.md	QC-APP-ONBOARDING	J-ONBOARD-FIRST-RUN,J-ONBOARD-PROVIDER,J-ONBOARD-APPROVAL
 capability	settings	docs/specs/app-setup.md	QC-APP-SETTINGS	J-SETTINGS-CHANGE
@@ -272,7 +272,7 @@ journey	J-STATE-RECOVER	session-state	QC-RUNTIME-STORAGE	SC-SESSION-RECOVER-CODE
 journey	J-SESSION-RECOVER	session-lifecycle	QC-RUNTIME-OWNERSHIP,QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE	A user recovers the exact owned session after interruption.
 journey	J-SESSION-STOP	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP	A user stops only the selected owned session.
 journey	J-SESSION-DELETE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE	A user deletes selected eligible sessions without affecting current work.
-journey	J-POWER-ENABLE	power-protection	QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM	SC-POWER-UNIT	A protected session acquires both required power protections.
+journey	J-POWER-ENABLE	power-protection	QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM,QC-POWER-HANDOFF	SC-POWER-UNIT	A protected session acquires both required power protections.
 journey	J-POWER-LOW-BATTERY	power-protection	QC-POWER-PROTECTION	SC-POWER-LOW-BATTERY	Low battery removes unsafe protection and reports the reason.
 journey	J-POWER-HELPER-LEASE	power-protection	QC-POWER-AUTH,QC-POWER-LEASE,QC-POWER-XPC	SC-POWER-HELPER	The helper accepts only an authorized bounded lease.
 journey	J-POWER-CLOSED-LID	power-protection	QC-POWER-PROTECTION	SC-POWER-CLOSED-LID	A protected session continues on supervised supported hardware with the lid closed.
@@ -342,6 +342,7 @@ suite	DetachAppTests.MenuBarPresentationTests
 suite	DetachAppTests.SetupGuidanceTests
 suite	DetachAppTests.TextSizeTests
 suite	DetachAppTests.UIE2EConfigurationTests
+suite	DetachAppTests.PowerHelperServiceTests
 suite	DetachAppTests.WatchdogServiceTests
 suite	DetachKitTests.DetachCLITests
 suite	DetachKitTests.DetachStateCommandTests
@@ -372,6 +373,7 @@ requirement	QC-POWER-XPC	docs/specs/power.md	The helper accepts only the typed p
 requirement	QC-POWER-PROTECTION	docs/specs/power.md	Low battery fails safe.
 requirement	QC-POWER-CLI	docs/specs/power.md	The power command reports and enforces typed protection state.
 requirement	QC-POWER-PLATFORM	docs/specs/power.md	Platform power operations preserve the helper safety boundary.
+requirement	QC-POWER-HANDOFF	docs/specs/power.md	Service registration handoff completes only after a proven lifetime barrier.
 requirement	QC-HEALTH-FRESHNESS	docs/specs/app.md	Health claims use typed fresh state.
 requirement	QC-HEALTH-PRESENTATION	docs/specs/app.md	The app presents typed health state without parsing terminal text.
 requirement	QC-RUNTIME-TRANSITION	docs/specs/runtime.md	Session transitions preserve exact process identity.

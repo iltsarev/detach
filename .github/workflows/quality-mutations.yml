@@ -2,6 +2,7 @@ name: Quality mutations
 
 on:
   workflow_dispatch:
+  pull_request:
   schedule:
     - cron: "17 5 * * 1"
 
@@ -15,21 +16,34 @@ concurrency:
 
 jobs:
   corpus:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
       matrix: ${{ steps.mutation-corpus.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - id: mutation-corpus
         name: Validate deterministic corpus
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           scripts/quality-mutation validate
-          printf 'matrix=%s\n' "$(scripts/quality-mutation matrix)" >>"$GITHUB_OUTPUT"
+          # A pull request runs only the mutants whose source or test suite
+          # it changes; the merge commit's first parent is the base.
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git diff --name-only HEAD^1 HEAD >"$RUNNER_TEMP/changed-files.txt"
+            matrix="$(scripts/quality-mutation matrix --changed-files "$RUNNER_TEMP/changed-files.txt")"
+          else
+            matrix="$(scripts/quality-mutation matrix)"
+          fi
+          printf 'matrix=%s\n' "$matrix" >>"$GITHUB_OUTPUT"
 
   mutation:
     needs: corpus
+    if: needs.corpus.outputs.matrix != '{"include": []}'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.corpus.outputs.matrix) }}
@@ -63,7 +77,7 @@ jobs:
           retention-days: 14
 
   score:
-    if: always()
+    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: mutation
     runs-on: ubuntu-latest
     timeout-minutes: 2

@@ -63,7 +63,8 @@
         "QC-POWER-XPC",
         "QC-POWER-PROTECTION",
         "QC-POWER-CLI",
-        "QC-POWER-PLATFORM"
+        "QC-POWER-PLATFORM",
+        "QC-POWER-HANDOFF"
       ],
       "spec": "docs/specs/power.md"
     },
@@ -493,7 +494,8 @@
         "QC-POWER-ASSERTION",
         "QC-POWER-LEASE",
         "QC-POWER-CLI",
-        "QC-POWER-PLATFORM"
+        "QC-POWER-PLATFORM",
+        "QC-POWER-HANDOFF"
       ],
       "scenarios": [
         "SC-POWER-UNIT"
@@ -782,6 +784,7 @@
     "DetachAppTests.SetupGuidanceTests",
     "DetachAppTests.TextSizeTests",
     "DetachAppTests.UIE2EConfigurationTests",
+    "DetachAppTests.PowerHelperServiceTests",
     "DetachAppTests.WatchdogServiceTests",
     "DetachKitTests.DetachCLITests",
     "DetachKitTests.DetachStateCommandTests",
@@ -840,6 +843,11 @@
       "id": "QC-POWER-PLATFORM",
       "spec": "docs/specs/power.md",
       "summary": "Platform power operations preserve the helper safety boundary."
+    },
+    {
+      "id": "QC-POWER-HANDOFF",
+      "spec": "docs/specs/power.md",
+      "summary": "Service registration handoff completes only after a proven lifetime barrier."
     },
     {
       "id": "QC-HEALTH-FRESHNESS",
@@ -2838,6 +2846,21 @@
             }
           ],
           "summary": "Platform power operations preserve the helper safety boundary."
+        },
+        {
+          "id": "QC-POWER-HANDOFF",
+          "journeys": [
+            "J-POWER-ENABLE"
+          ],
+          "scenarios": [
+            {
+              "command": "cd app && swift test --filter Power",
+              "id": "SC-POWER-UNIT",
+              "stage": "swift",
+              "status": "legacy-stage"
+            }
+          ],
+          "summary": "Service registration handoff completes only after a proven lifetime barrier."
         }
       ],
       "summary": "Power protection fails safe across both required layers."
