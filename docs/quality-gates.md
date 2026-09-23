@@ -217,9 +217,15 @@ There are no quarantined tests. A future quarantine needs an owner, reason, and
 expiry. It cannot remove release evidence. The packaged UI journeys are the
 only retry layer: every scenario and every attempt starts from a clean
 private state with no app state, fake CLI markers, attach client, or
-persisted defaults; a scenario whose app never reports a result, or reports
-a timeout, gets exactly one retry inside the stage budget, and the stage log
-records the retry. A reported assertion failure never retries.
+persisted defaults. A startup failure (the app never reports a result, or
+the driver never sees the test app activate) is runner environment and gets
+up to two retries. Another reported timeout gets one retry. All retries stay
+inside the stage budget, and the stage log records each retry and its class.
+A reported assertion failure never retries.
+
+A failed hosted quality run is retried only as a full workflow rerun. The
+aggregator requires one exact shard set from one attempt, so a failed-jobs
+rerun cannot pass.
 
 ## Impact and user journeys
 
