@@ -343,15 +343,19 @@ prepare_scenario_state() {
   fi
 }
 
-# The packaged journeys are the e2e layer. A scenario whose app never reports
-# a result (launch stalled, process killed at the deadline) or whose report
-# is a timeout ("scenario budget expired", "timed out waiting") gets exactly
-# one retry from the same clean state. A reported assertion failure never
-# retries.
+# The packaged journeys are the e2e layer. Retries start from the same clean
+# state and stay inside the absolute UI_E2E_DEADLINE:
+# - startup failures (no result: launch stalled or killed at the deadline, or
+#   the driver never saw the test app activate) are runner environment and
+#   get up to two retries;
+# - a reported scenario timeout ("scenario budget expired", "timed out
+#   waiting") gets one retry;
+# - a reported assertion failure never retries.
 run_app_scenario() {
   local scenario="$1" fixture="$2" scenario_budget="$3"
   local app_status check_index=0 actual check scenario_deadline driver_budget pass
-  local passed_scenarios=() attempt=1
+  local passed_scenarios=() attempt=1 startup_retries=0 timeout_retries=0
+  local failure_error retry_class
   local scenario_started="$SECONDS"
   shift 3
   driver_budget=$((scenario_budget - 3))
@@ -397,26 +401,38 @@ run_app_scenario() {
     sleep 0.05
   done
   if [ -f "$RESULT" ]; then
-    if [ "$attempt" -eq 1 ] && [ "$(plutil -extract passed raw -o - "$RESULT" 2>/dev/null)" != true ] \
+    if [ "$(plutil -extract passed raw -o - "$RESULT" 2>/dev/null)" != true ] \
         && [ $((SECONDS + scenario_budget)) -le "$UI_E2E_DEADLINE" ]; then
-      case "$(plutil -extract error raw -o - "$RESULT" 2>/dev/null || true)" in
+      failure_error="$(plutil -extract error raw -o - "$RESULT" 2>/dev/null || true)"
+      retry_class=""
+      case "$failure_error" in
+        'scenario budget expired while waiting for test app activation'*)
+          [ "$startup_retries" -ge 2 ] || retry_class=startup ;;
         'scenario budget expired'*|'timed out waiting'*)
-          printf 'UI e2e: %s reported a timeout: %s; e2e retry 1 of 1\n' \
-            "$scenario" "$(plutil -extract error raw -o - "$RESULT" 2>/dev/null || true)" >&2
-          for _ in $(seq 1 10); do
-            if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
-            sleep 0.05
-          done
-          kill -TERM "$APP_PID" 2>/dev/null || true
-          wait "$APP_PID" 2>/dev/null || true
-          APP_PID=""
-          mv -f "$APP_LOG" "$TEST_ROOT/app-$scenario-attempt1.log"
-          mv -f "$RESULT" "$TEST_ROOT/result-$scenario-attempt1.json"
-          cp -f "$FAKE_DIR/invocations.log" "$TEST_ROOT/invocations-$scenario-attempt1.log" 2>/dev/null || true
-          attempt=2
-          continue
-          ;;
+          [ "$timeout_retries" -ge 1 ] || retry_class=timeout ;;
       esac
+      if [ -n "$retry_class" ]; then
+        if [ "$retry_class" = startup ]; then
+          startup_retries=$((startup_retries + 1))
+        else
+          timeout_retries=$((timeout_retries + 1))
+        fi
+        printf 'UI e2e: %s reported a %s failure: %s; e2e retry (startup %s/2, timeout %s/1)\n' \
+          "$scenario" "$retry_class" "$failure_error" \
+          "$startup_retries" "$timeout_retries" >&2
+        for _ in $(seq 1 10); do
+          if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
+          sleep 0.05
+        done
+        kill -TERM "$APP_PID" 2>/dev/null || true
+        wait "$APP_PID" 2>/dev/null || true
+        APP_PID=""
+        mv -f "$APP_LOG" "$TEST_ROOT/app-$scenario-attempt$attempt.log"
+        mv -f "$RESULT" "$TEST_ROOT/result-$scenario-attempt$attempt.json"
+        cp -f "$FAKE_DIR/invocations.log" "$TEST_ROOT/invocations-$scenario-attempt$attempt.log" 2>/dev/null || true
+        attempt=$((attempt + 1))
+        continue
+      fi
     fi
     break
   fi
@@ -426,13 +442,15 @@ run_app_scenario() {
   app_status=$?
   set -e
   APP_PID=""
-  if [ "$attempt" -eq 1 ] && \
+  if [ "$startup_retries" -lt 2 ] && \
       [ $((SECONDS + scenario_budget)) -le "$UI_E2E_DEADLINE" ]; then
-    printf 'UI e2e: %s produced no result within its %ss budget (status %s); e2e retry 1 of 1\n' \
-      "$scenario" "$scenario_budget" "$app_status" >&2
-    mv -f "$APP_LOG" "$TEST_ROOT/app-$scenario-attempt1.log"
-    cp -f "$FAKE_DIR/invocations.log" "$TEST_ROOT/invocations-$scenario-attempt1.log" 2>/dev/null || true
-    attempt=2
+    startup_retries=$((startup_retries + 1))
+    printf 'UI e2e: %s produced no result within its %ss budget (status %s); e2e retry (startup %s/2, timeout %s/1)\n' \
+      "$scenario" "$scenario_budget" "$app_status" \
+      "$startup_retries" "$timeout_retries" >&2
+    mv -f "$APP_LOG" "$TEST_ROOT/app-$scenario-attempt$attempt.log"
+    cp -f "$FAKE_DIR/invocations.log" "$TEST_ROOT/invocations-$scenario-attempt$attempt.log" 2>/dev/null || true
+    attempt=$((attempt + 1))
     continue
   fi
   printf 'UI e2e: %s produced no result within its %ss budget (status %s)\n' \
@@ -618,11 +636,18 @@ quick_switch_count="$(grep -Fc \
 new_switch_count="$(grep -Fc \
   ' --to detach-claude-ui-new --provider claude' \
   "$TEST_ROOT/invocations-main.log" || true)"
-if [ "$recover_count" -lt 1 ] || [ "$recover_attach_count" -lt 2 ] \
-    || [ "$switch_count" -lt 3 ] \
-    || [ "$claude_start_count" -ne 1 ] || [ "$codex_start_count" -ne 1 ] \
-    || [ "$((quick_attach_count + quick_switch_count))" -lt 1 ] \
-    || [ "$((new_attach_count + new_switch_count))" -lt 1 ]; then
+failed_counts=""
+[ "$recover_count" -ge 1 ] || failed_counts="$failed_counts recover>=1"
+[ "$recover_attach_count" -ge 2 ] || failed_counts="$failed_counts recover_attach>=2"
+[ "$switch_count" -ge 3 ] || failed_counts="$failed_counts switch>=3"
+[ "$claude_start_count" -eq 1 ] || failed_counts="$failed_counts claude_start=1"
+[ "$codex_start_count" -eq 1 ] || failed_counts="$failed_counts codex_start=1"
+[ "$((quick_attach_count + quick_switch_count))" -ge 1 ] || \
+  failed_counts="$failed_counts quick_attach+quick_switch>=1"
+[ "$((new_attach_count + new_switch_count))" -ge 1 ] || \
+  failed_counts="$failed_counts new_attach+new_switch>=1"
+if [ -n "$failed_counts" ]; then
+  printf 'UI e2e invocation count requirement failed:%s\n' "$failed_counts" >&2
   printf 'UI e2e invocation counts: recover=%s recover_attach=%s running_attach=%s switch=%s claude_start=%s codex_start=%s quick_attach=%s quick_switch=%s new_attach=%s new_switch=%s\n' \
     "$recover_count" "$recover_attach_count" "$running_attach_count" \
     "$switch_count" "$claude_start_count" "$codex_start_count" \

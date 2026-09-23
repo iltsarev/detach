@@ -146,9 +146,11 @@
   screen produces `UI e2e: environment denied`, exit 2, and the gate records
   `environment-failed` instead of a product failure. Every scenario and
   attempt starts from a clean private state, and the smoke deletes the test
-  copy's preference domains through cfprefsd at the end. A scenario whose
-  app never reports a result, or reports a timeout, gets one retry; the log
-  records `e2e retry 1 of 1`. A reported assertion failure never retries.
+  copy's preference domains through cfprefsd at the end. A startup failure
+  (no result, or no test app activation) gets up to two retries; another
+  reported timeout gets one. The log records `e2e retry (startup N/2,
+  timeout N/1)`. A reported assertion failure never retries. A failed
+  count requirement names the counter.
   Do not grant
   it broader filesystem or production
   payload access. Its fake CLI allowlist covers only the exact status and stop

@@ -319,6 +319,7 @@ fi
 if [ "$#" -eq 3 ] && [ "$1" = codex ] && [ "$2" = attach ] \
     && [ "$3" = detach-codex-ui-quick ]; then
   printf 'UI fixture attach for %s\n' "$3"
+  : >"$ROOT/fake/quick-session-ready"
   exec /bin/cat
 fi
 

@@ -888,6 +888,12 @@ enum UIE2ETestDriver {
             try await waitUntil("quick chat selection") {
                 find(identifier: "session-detail-detach-codex-ui-quick") != nil
             }
+            // Selection precedes the embedded attach or switch. Closing the
+            // window before that event reaches the fake CLI loses it.
+            try await waitUntil("quick chat terminal attaches") {
+                FileManager.default.fileExists(atPath: configuration.root
+                    .appendingPathComponent("fake/quick-session-ready").path)
+            }
             checks.append("quick-chat-command-starts-session")
 
             guard let shortcutID = shortcuts.sessionID(for: 1) else {

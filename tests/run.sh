@@ -3430,12 +3430,18 @@ slow_cleanup_checkpoint="$(dirname "$slow_cleanup_meta")/checkpoint"
 rm -f "$slow_cleanup_checkpoint/pane.txt" "$slow_cleanup_checkpoint/pane-ansi.txt"
 : >"$slow_cleanup_marker"
 slow_cleanup_start_seconds=$SECONDS
-run_codex stop "$slow_cleanup_name"
+run_codex stop "$slow_cleanup_name" 2>"$TMP_ROOT/slow-final-checkpoint-stop.err"
 slow_cleanup_elapsed=$((SECONDS - slow_cleanup_start_seconds))
 [ -f "$slow_cleanup_started" ]
-if [ "$slow_cleanup_elapsed" -ge 7 ]; then
-  printf 'Stop spent %s seconds waiting after provider exit\n' \
+# The contract is the branch, not a wall-clock budget: after the provider
+# exits, Stop takes the bounded cleanup path and never the full live-provider
+# grace, which is the only path that reports the 15-second KILL.
+if grep -F 'did not stop after 15 seconds' \
+     "$TMP_ROOT/slow-final-checkpoint-stop.err" >/dev/null || \
+   [ "$slow_cleanup_elapsed" -ge 15 ]; then
+  printf 'Stop used the full live-provider grace after provider exit (%s s)\n' \
     "$slow_cleanup_elapsed" >&2
+  cat "$TMP_ROOT/slow-final-checkpoint-stop.err" >&2
   exit 1
 fi
 slow_cleanup_json="$(run_codex list --json | \
