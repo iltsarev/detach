@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# Qualify the current Xcode, SDK, and macOS build for releases. Run this once
+# after a toolchain or macOS change on the release Mac. It runs the complete
+# repository gate locally and records the identity only if every stage passes.
+
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+
+[ "$#" -eq 0 ] || { printf 'usage: scripts/quality-qualify\n' >&2; exit 2; }
+[ -z "$(git -C "$ROOT" status --porcelain)" ] || {
+  printf 'quality-qualify: the working tree must be clean\n' >&2
+  exit 1
+}
+commit="$(git -C "$ROOT" rev-parse HEAD)"
+printf 'quality-qualify: qualifying %s at %s\n' \
+  "$("$ROOT/scripts/release-toolchain" identity)" "$commit"
+"$ROOT/scripts/quality-gate" --mode repository
+[ "$(git -C "$ROOT" rev-parse HEAD)" = "$commit" ] || {
+  printf 'quality-qualify: HEAD changed during qualification\n' >&2
+  exit 1
+}
+"$ROOT/scripts/release-toolchain" record "$commit"

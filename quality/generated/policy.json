@@ -1273,6 +1273,13 @@
       "test_domain": "policy"
     },
     {
+      "pattern": "tests/source-rules*",
+      "priority": 1000,
+      "release_domain": "safe",
+      "spec": "docs/specs/documentation.md",
+      "test_domain": "policy"
+    },
+    {
       "pattern": "tests/docs-contract.sh",
       "priority": 990,
       "release_domain": "safe",
@@ -1882,6 +1889,20 @@
       "test_domain": "release-tool"
     },
     {
+      "pattern": "scripts/release-toolchain",
+      "priority": 900,
+      "release_domain": "safe",
+      "spec": "docs/specs/release.md",
+      "test_domain": "release-tool"
+    },
+    {
+      "pattern": "scripts/quality-qualify",
+      "priority": 900,
+      "release_domain": "safe",
+      "spec": "docs/specs/release.md",
+      "test_domain": "release-tool"
+    },
+    {
       "pattern": "scripts/*",
       "priority": 800,
       "release_domain": "unknown",
@@ -2373,6 +2394,7 @@
         "tests/security-*",
         "tests/security_*",
         "tests/shell-safety*",
+        "tests/source-rules*",
         "tests/test-suite-contract.sh",
         "tools/quality_baseline.py",
         "tools/quality_cache_warm.py",
@@ -3126,10 +3148,12 @@
         "app/scripts/publish-release.sh",
         "app/scripts/release.sh",
         "app/scripts/verify-appcast.sh",
+        "scripts/quality-qualify",
         "scripts/release-impact",
         "scripts/release-lid-probe",
         "scripts/release-pr",
         "scripts/release-sbom",
+        "scripts/release-toolchain",
         "scripts/release-version",
         "tests/publish-preflight.sh",
         "tests/release-impact.sh",

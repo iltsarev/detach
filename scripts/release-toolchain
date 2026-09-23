@@ -1,0 +1,119 @@
+#!/bin/bash
+
+# Release toolchain identity and qualification.
+#
+#   identity  print the current Xcode, SDK, and macOS build identity
+#   check     succeed if the identity matches the hosted CI Xcode pin or has a
+#             qualification record; otherwise explain and fail (seconds)
+#   record    write a qualification record for the current identity; only
+#             scripts/quality-qualify calls it after a full repository gate
+#
+# Hosted CI proves most release stages on its pinned Xcode. A release Mac on a
+# different toolchain reuses that evidence, so a toolchain change is qualified
+# once with the full local gate instead of inside every release.
+
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+TEST_MODE="${DETACH_RELEASE_TOOLCHAIN_TEST_MODE:-0}"
+RECORD_DIR="$ROOT/app/build/quality-qualification"
+WORKFLOW="$ROOT/.github/workflows/quality-gates.yml"
+
+die() {
+  printf 'release-toolchain: %s\n' "$*" >&2
+  exit 1
+}
+
+case "$TEST_MODE" in 0|1) ;; *) die 'invalid test mode' ;; esac
+if [ "$TEST_MODE" = 1 ]; then
+  RECORD_DIR="${DETACH_RELEASE_TOOLCHAIN_RECORD_DIR:-$RECORD_DIR}"
+fi
+
+xcode_version() {
+  if [ "$TEST_MODE" = 1 ] && [ -n "${DETACH_RELEASE_TOOLCHAIN_XCODE:-}" ]; then
+    printf '%s\n' "$DETACH_RELEASE_TOOLCHAIN_XCODE"
+    return
+  fi
+  /usr/bin/xcodebuild -version | /usr/bin/awk 'NR == 1 && $1 == "Xcode" {print $2}'
+}
+
+identity() {
+  local xcode sdk macos
+  if [ "$TEST_MODE" = 1 ] && [ -n "${DETACH_RELEASE_TOOLCHAIN_IDENTITY:-}" ]; then
+    printf '%s\n' "$DETACH_RELEASE_TOOLCHAIN_IDENTITY"
+    return
+  fi
+  xcode="$(/usr/bin/xcodebuild -version | /usr/bin/paste -sd ' ' -)"
+  sdk="$(/usr/bin/xcrun --sdk macosx --show-sdk-version)"
+  macos="$(/usr/bin/sw_vers -buildVersion)"
+  printf 'xcode=%s;sdk=%s;macos=%s\n' "$xcode" "$sdk" "$macos"
+}
+
+ci_xcode() {
+  local pins
+  pins="$(/usr/bin/sed -nE \
+    's#^[[:space:]]*DEVELOPER_DIR: /Applications/Xcode_([0-9][0-9.]*)\.app/Contents/Developer[[:space:]]*$#\1#p' \
+    "$WORKFLOW" | /usr/bin/sort -u)"
+  [ -n "$pins" ] && [ "$(printf '%s\n' "$pins" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 1 ] || \
+    die "hosted quality workflow must pin exactly one Xcode version"
+  printf '%s\n' "$pins"
+}
+
+record_path() {
+  local key
+  key="$(printf '%s' "$1" | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+  printf '%s/%s.json\n' "$RECORD_DIR" "$key"
+}
+
+check() {
+  local current_identity current_xcode pinned record
+  current_xcode="$(xcode_version)"
+  pinned="$(ci_xcode)"
+  if [ "$current_xcode" = "$pinned" ]; then
+    printf 'release-toolchain: Xcode %s matches the hosted CI pin\n' "$current_xcode"
+    return 0
+  fi
+  current_identity="$(identity)"
+  record="$(record_path "$current_identity")"
+  if [ -f "$record" ] && [ ! -L "$record" ] && \
+     [ "$(/usr/bin/plutil -extract identity raw -o - "$record" 2>/dev/null)" = "$current_identity" ]; then
+    printf 'release-toolchain: %s is qualified (%s)\n' "$current_identity" \
+      "$(/usr/bin/plutil -extract qualified_at raw -o - "$record")"
+    return 0
+  fi
+  die "Xcode $current_xcode differs from the hosted CI pin $pinned and this toolchain is not qualified ($current_identity). Run scripts/quality-qualify on this Mac first."
+}
+
+record() {
+  local commit="$1" current_identity path temporary
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || die 'record requires a full commit id'
+  current_identity="$(identity)"
+  path="$(record_path "$current_identity")"
+  /bin/mkdir -p "$RECORD_DIR"
+  /bin/chmod 0700 "$RECORD_DIR"
+  temporary="$(/usr/bin/mktemp "$RECORD_DIR/.record.XXXXXX")"
+  /usr/bin/python3 - "$temporary" "$current_identity" "$commit" <<'PY'
+import datetime, json, sys
+path, identity, commit = sys.argv[1:4]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "schema": 1,
+        "identity": identity,
+        "commit": commit,
+        "qualified_at": datetime.datetime.now(datetime.timezone.utc)
+            .strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }, handle, sort_keys=True)
+    handle.write("\n")
+PY
+  /bin/chmod 0600 "$temporary"
+  /bin/mv -f "$temporary" "$path"
+  printf 'release-toolchain: qualified %s\n' "$current_identity"
+}
+
+case "${1:-}" in
+  identity) [ "$#" -eq 1 ] || die 'identity takes no arguments'; identity ;;
+  ci-xcode) [ "$#" -eq 1 ] || die 'ci-xcode takes no arguments'; ci_xcode ;;
+  check) [ "$#" -eq 1 ] || die 'check takes no arguments'; check ;;
+  record) [ "$#" -eq 2 ] || die 'usage: release-toolchain record COMMIT'; record "$2" ;;
+  *) die 'usage: release-toolchain identity|ci-xcode|check|record COMMIT' ;;
+esac

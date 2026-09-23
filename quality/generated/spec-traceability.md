@@ -55,6 +55,7 @@ It lists current specification ownership and verification links.
 - `tests/security-*`
 - `tests/security_*`
 - `tests/shell-safety*`
+- `tests/source-rules*`
 - `tests/test-suite-contract.sh`
 - `tools/quality_baseline.py`
 - `tools/quality_cache_warm.py`
@@ -264,10 +265,12 @@ It lists current specification ownership and verification links.
 - `app/scripts/publish-release.sh`
 - `app/scripts/release.sh`
 - `app/scripts/verify-appcast.sh`
+- `scripts/quality-qualify`
 - `scripts/release-impact`
 - `scripts/release-lid-probe`
 - `scripts/release-pr`
 - `scripts/release-sbom`
+- `scripts/release-toolchain`
 - `scripts/release-version`
 - `tests/publish-preflight.sh`
 - `tests/release-impact.sh`
