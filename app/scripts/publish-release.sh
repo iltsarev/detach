@@ -19,7 +19,6 @@ DOWNLOAD_URL_PREFIX="${DETACH_SPARKLE_DOWNLOAD_URL_PREFIX:-https://github.com/$R
 DOWNLOAD_URL="${DETACH_DOWNLOAD_URL:-https://github.com/$REPOSITORY/releases/latest}"
 FEED_URL="${DETACH_SPARKLE_FEED_URL:-https://github.com/$REPOSITORY/releases/latest/download/appcast.xml}"
 RELEASE_TARGET="${DETACH_GITHUB_RELEASE_TARGET:-}"
-SEPARATE_RELEASE_REPOSITORY="${DETACH_SEPARATE_RELEASE_REPOSITORY:-0}"
 PUBLISH_CONFIRMATION="${DETACH_CONFIRM_PUBLISH:-}"
 ORCHESTRATED_COMMIT="${DETACH_RELEASE_EXPECTED_COMMIT:-}"
 RESUME_DRAFT="${DETACH_RESUME_DRAFT:-0}"
@@ -162,10 +161,6 @@ if [ -n "$RELEASE_TARGET" ]; then
     exit 1
   }
 fi
-[[ "$SEPARATE_RELEASE_REPOSITORY" = 0 || "$SEPARATE_RELEASE_REPOSITORY" = 1 ]] || {
-  printf 'DETACH_SEPARATE_RELEASE_REPOSITORY must be 0 or 1\n' >&2
-  exit 1
-}
 [[ "$RESUME_DRAFT" = 0 || "$RESUME_DRAFT" = 1 ]] || {
   printf 'DETACH_RESUME_DRAFT must be 0 or 1\n' >&2
   exit 1
@@ -335,14 +330,13 @@ verify_clean_worktree
 gh auth status >/dev/null
 
 # GitHub otherwise creates a missing tag from the repository's default branch.
-# An existing remote tag is explicit and is verified by `gh`. A separate
-# downloads repository may instead opt into creating the tag from a named,
-# resolved target; no implicit default-branch tag is allowed.
+# An existing remote tag is explicit and is verified by `gh`. A missing remote
+# tag requires an explicit resolved target. The tag or target commit must equal
+# the built source commit.
 REMOTE_TAG_COMMIT="$(gh api "repos/$REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null || true)"
 release_tag_args=()
 if [ -n "$REMOTE_TAG_COMMIT" ]; then
-  [ "$SEPARATE_RELEASE_REPOSITORY" = 1 ] || \
-    [ "$REMOTE_TAG_COMMIT" = "$GIT_COMMIT" ] || {
+  [ "$REMOTE_TAG_COMMIT" = "$GIT_COMMIT" ] || {
     printf 'Remote tag %s does not point to the built source commit\n' "$TAG" >&2
     exit 1
   }
@@ -359,8 +353,7 @@ else
     printf 'Cannot resolve GitHub release target: %s\n' "$RELEASE_TARGET" >&2
     exit 1
   }
-  [ "$SEPARATE_RELEASE_REPOSITORY" = 1 ] || \
-    [ "$REMOTE_TARGET_COMMIT" = "$GIT_COMMIT" ] || {
+  [ "$REMOTE_TARGET_COMMIT" = "$GIT_COMMIT" ] || {
     printf 'GitHub release target does not match the built source commit\n' >&2
     exit 1
   }
