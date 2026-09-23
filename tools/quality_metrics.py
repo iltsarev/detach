@@ -995,7 +995,11 @@ def evaluate(arguments: argparse.Namespace) -> int:
     if arguments.test_changed_lines and test_mode != "1":
         raise MetricsError("test changed-line evidence is test-only")
     if arguments.coverage_json:
-        if arguments.additional_object or arguments.additional_profile_directory:
+        if (
+            arguments.additional_object
+            or arguments.additional_profile_directory
+            or arguments.test_object
+        ):
             raise MetricsError("additional coverage inputs require a test binary")
         coverage_document = read_json(Path(arguments.coverage_json), "LLVM coverage")
         inferred_profile = arguments.coverage_profile or "swift"
@@ -1015,7 +1019,7 @@ def evaluate(arguments: argparse.Namespace) -> int:
         coverage_document = export_coverage(
             Path(arguments.test_binary),
             Path(arguments.profile),
-            additional_objects,
+            [Path(path) for path in arguments.test_object] + additional_objects,
             profile_directory,
         )
         inferred_profile = "combined" if additional_objects else "swift"
@@ -1096,6 +1100,9 @@ def parser() -> argparse.ArgumentParser:
     source.add_argument("--coverage-json")
     source.add_argument("--test-binary")
     evaluate_parser.add_argument("--profile")
+    # Xcode 27 SwiftPM builds one test bundle per target. Every bundle shares
+    # the Swift profile, so extra test objects do not change the coverage profile.
+    evaluate_parser.add_argument("--test-object", action="append", default=[])
     evaluate_parser.add_argument("--additional-object", action="append", default=[])
     evaluate_parser.add_argument("--additional-profile-directory", default="")
     evaluate_parser.add_argument(
