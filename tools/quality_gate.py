@@ -2601,10 +2601,34 @@ def tmux_preflight(tmux: Path) -> int:
 def ui_coverage_binary(root: Path, *, exact_products: bool = False) -> Path:
     if exact_products:
         return root / QUALITY_UI_BINARY
-    return (
-        root / "app/.build" / UI_COVERAGE_SCRATCH
-        / "arm64-apple-macosx/release/DetachApp"
+    # Xcode 26 and Xcode 27 SwiftPM use different product layouts. A fixed
+    # path can select a stale binary from the other toolchain, so ask SwiftPM.
+    result = subprocess.run(
+        [
+            "swift",
+            "build",
+            "--show-bin-path",
+            "--enable-code-coverage",
+            "--disable-sandbox",
+            "--disable-automatic-resolution",
+            "--cache-path",
+            str(root / "app/.build"),
+            "-c",
+            "release",
+            "--triple",
+            "arm64-apple-macosx26.0",
+            "--scratch-path",
+            str(root / "app/.build" / UI_COVERAGE_SCRATCH),
+        ],
+        cwd=root / "app",
+        check=True,
+        capture_output=True,
+        text=True,
     )
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        raise SystemExit("quality-gate: SwiftPM reported no UI coverage bin path")
+    return Path(lines[-1]) / "DetachApp"
 
 
 def split_swift_build_jobs(logical_cpus: int | None = None) -> tuple[int, int]:

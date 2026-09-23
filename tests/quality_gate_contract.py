@@ -185,9 +185,18 @@ class QualityGateContract(unittest.TestCase):
         self.assertEqual(split_swift_build_jobs(10), (5, 5))
         self.assertEqual(split_quality_pipeline_jobs(3), (1, 1, 1))
         self.assertEqual(split_quality_pipeline_jobs(10), (4, 3, 3))
+        bin_path = ROOT / "app/.build/quality-ui-release/out/Products/Release"
+        with patch("quality_gate.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(
+                [], 0, stdout=f"{bin_path}\n", stderr=""
+            )
+            self.assertEqual(ui_coverage_binary(ROOT), bin_path / "DetachApp")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["swift", "build", "--show-bin-path"])
+        self.assertIn("--enable-code-coverage", command)
         self.assertEqual(
-            ui_coverage_binary(ROOT),
-            ROOT / "app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp",
+            command[command.index("--scratch-path") + 1],
+            str(ROOT / "app/.build/quality-ui-release"),
         )
         self.assertEqual(
             ui_coverage_binary(ROOT, exact_products=True),
