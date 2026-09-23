@@ -95,8 +95,10 @@
   `scripts/quality-mutation run --id <id> --output <json> --log <log>` runs one
   mutant and restores its source. The weekly hosted workflow runs all mutants
   in parallel and requires a 100-percent score. Each mutant has a 240-second
-  deadline. This workflow does not run on pull requests. A successful run
-  updates the GitHub Pages dashboard with its score.
+  deadline. On a pull request the same workflow runs only the mutants whose
+  source or test suite file changed (all of them when the corpus or runner
+  changed); an unrelated pull request starts no macOS job. Only the main
+  run computes the score and updates the GitHub Pages dashboard.
 - `scripts/quality-gate --mode repository` — every automated repository check.
   Local use is diagnostic. Pull-request CI uses impact mode once with
   `ci-merge` authority. `--stage` is diagnostic only and is not

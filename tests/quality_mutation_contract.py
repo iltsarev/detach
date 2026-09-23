@@ -103,7 +103,11 @@ def main() -> int:
         "scripts/quality-mutation run",
         "scripts/quality-mutation summarize",
         "fail-fast: false",
-        "if: github.ref == 'refs/heads/main'",
+        "pull_request:",
+        "git diff --name-only HEAD^1 HEAD",
+        "scripts/quality-mutation matrix --changed-files",
+        "if: needs.corpus.outputs.matrix != '{\"include\": []}'",
+        "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
         "scripts/quality-care latest --optional",
         "care_args+=(--care-summary",
         "CARE_SUMMARY:",
@@ -136,6 +140,20 @@ def main() -> int:
             "include": [{"id": "first-safety-check"}, {"id": "second-safety-check"}]
         }:
             fail("mutation matrix is not deterministic")
+        changed = Path(raw) / "changed.txt"
+        for paths, expected_ids in (
+            (["app/Tests/TestModule/SecondTests.swift"], ["second-safety-check"]),
+            (["app/Sources/Test.swift"],
+             ["first-safety-check", "second-safety-check"]),
+            (["README.md"], []),
+            (["quality/mutations.json"],
+             ["first-safety-check", "second-safety-check"]),
+        ):
+            changed.write_text("\n".join(paths) + "\n", encoding="utf-8")
+            selected = json.loads(invoke(
+                manifest, ["matrix", "--changed-files", str(changed)]).stdout)
+            if [item["id"] for item in selected["include"]] != expected_ids:
+                fail(f"changed-file mutant selection is wrong for {paths}")
 
         results = Path(raw) / "results"
         killed = results / "first.json"

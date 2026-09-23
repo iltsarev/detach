@@ -229,9 +229,9 @@ def main() -> None:
     expect_error(
         source.replace(
             "journey\tJ-POWER-ENABLE\tpower-protection\t"
-            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM\t",
+            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM,QC-POWER-HANDOFF\t",
             "journey\tJ-POWER-ENABLE\tpower-protection\t"
-            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-PLATFORM\t",
+            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-PLATFORM,QC-POWER-HANDOFF\t",
             1,
         ),
         "capability requirement has no journey: power-protection#QC-POWER-CLI",
