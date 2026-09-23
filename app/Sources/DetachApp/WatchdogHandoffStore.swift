@@ -16,15 +16,28 @@ struct WatchdogHandoffTransaction: Codable, Equatable, Sendable {
     let schema: Int
     var phase: Phase
     var targetDigest: String?
+    /// Boot that submitted the unregister. Journals written before this field
+    /// decode as nil and receive the current boot on their next replay.
+    var bootSessionIdentifier: String?
 
-    init(phase: Phase, targetDigest: String?) {
+    init(
+        phase: Phase,
+        targetDigest: String?,
+        bootSessionIdentifier: String? = nil
+    ) {
         schema = Self.currentSchema
         self.phase = phase
         self.targetDigest = targetDigest
+        self.bootSessionIdentifier = bootSessionIdentifier
     }
 
     var isValid: Bool {
         guard schema == Self.currentSchema else { return false }
+        if let bootSessionIdentifier {
+            guard let bootUUID = UUID(uuidString: bootSessionIdentifier),
+                  bootUUID.uuidString.lowercased() == bootSessionIdentifier
+            else { return false }
+        }
         if phase == .registering { return targetDigest?.isEmpty == false }
         return targetDigest?.isEmpty != true
     }

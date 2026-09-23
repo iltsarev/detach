@@ -90,6 +90,7 @@ final class WatchdogService {
     private let lifetimeBarrierStatus: () throws -> WatchdogLifetimeBarrierStatus
     private let legacyWatchdogIsRunning: () throws -> Bool
     private let serviceMutationAllowed: () -> Bool
+    private let bootSessionProvider: () throws -> String
     private let sleep: (UInt64) async throws -> Void
     private var operationInFlight = false
 
@@ -110,6 +111,9 @@ final class WatchdogService {
         serviceMutationAllowed = {
             ServiceManagementMutationAdmission.currentBundleIsReleaseSigned
         }
+        bootSessionProvider = {
+            try SysctlBootSessionReader().currentBootSessionIdentifier()
+        }
         sleep = { try await Task.sleep(nanoseconds: $0) }
     }
 
@@ -122,6 +126,9 @@ final class WatchdogService {
             -> WatchdogLifetimeBarrierStatus = { .released },
         legacyWatchdogIsRunning: @escaping () throws -> Bool = { false },
         serviceMutationAllowed: @escaping () -> Bool = { true },
+        bootSessionProvider: @escaping () throws -> String = {
+            "00000000-0000-4000-8000-000000000001"
+        },
         sleep: @escaping (UInt64) async throws -> Void = {
             try await Task.sleep(nanoseconds: $0)
         }
@@ -133,6 +140,7 @@ final class WatchdogService {
         self.lifetimeBarrierStatus = lifetimeBarrierStatus
         self.legacyWatchdogIsRunning = legacyWatchdogIsRunning
         self.serviceMutationAllowed = serviceMutationAllowed
+        self.bootSessionProvider = bootSessionProvider
         self.sleep = sleep
     }
 
@@ -199,6 +207,23 @@ final class WatchdogService {
         for _ in 0..<8 {
             switch transaction.phase {
             case .unregisterSubmitted:
+                let currentBoot = try currentBootSession()
+                if let recordedBoot = transaction.bootSessionIdentifier,
+                   recordedBoot != currentBoot,
+                   status == .notRegistered {
+                    // A per-user agent from the recorded boot cannot still
+                    // be alive. Exact job absence completes the lost callback.
+                    transaction.phase = .removed
+                    transaction.bootSessionIdentifier = currentBoot
+                    try handoffStore.save(transaction)
+                    continue
+                }
+                if transaction.bootSessionIdentifier != currentBoot {
+                    // Record the boot before the side effect, so a journal
+                    // stuck after this replay can complete after a restart.
+                    transaction.bootSessionIdentifier = currentBoot
+                    try handoffStore.save(transaction)
+                }
                 do {
                     // Only a fresh success callback is documented to arrive
                     // after the old process has been killed. Status changes
@@ -353,6 +378,14 @@ final class WatchdogService {
             targetDigest: nil)
         try handoffStore.save(transaction)
         return transaction
+    }
+
+    private func currentBootSession() throws -> String {
+        let value = try bootSessionProvider()
+        guard UUID(uuidString: value) != nil else {
+            throw WatchdogServiceError.unregistrationBarrierDidNotComplete
+        }
+        return value.lowercased()
     }
 
     private func waitForReplayedUnregistrationBarrier() async throws {
