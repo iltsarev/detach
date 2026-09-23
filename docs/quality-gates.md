@@ -53,6 +53,10 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   not require dashboard-only manifest fields. Malformed telemetry evidence
   stays invalid. The tool cannot produce readiness evidence or decode an old
   layout.
+- `scripts/quality-qualify` qualifies the release Mac's Xcode, SDK, and
+  macOS build after a toolchain change: it runs `--mode repository` and
+  records the identity only when every stage passes. Releases check this
+  record in seconds and never rebuild for a toolchain change.
 - `scripts/quality-care validate` checks the versioned workflow eval corpus.
   `scripts/quality-care evaluate` grades diff impact and private-scope cases.
   `scripts/quality-care assess` compares the results with retained run latency.
@@ -130,7 +134,10 @@ on the release Mac.
 
 The policy defines these stages:
 
-- static syntax, documentation, suite inventory, and policy ratchets;
+- static syntax, documentation, suite inventory, policy ratchets, and
+  source rules (`tests/source-rules.sh`: a literal SwiftPM layout path is
+  allowed only in the hosted exact-product manifest or on a line marked
+  `quality: exact-product-path`);
 - gate self-contracts;
 - coverage-enabled Swift tests and automatic quality metrics;
 - development app build and verification;

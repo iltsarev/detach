@@ -141,6 +141,7 @@ route	1000	tests/release-sbom*	release-contract	safe	docs/specs/release.md
 route	1000	tests/release_sbom*	release-contract	safe	docs/specs/release.md
 route	1000	tests/shell-safety*	policy	safe	docs/specs/documentation.md
 route	1000	tests/test-suite-contract.sh	policy	safe	docs/specs/documentation.md
+route	1000	tests/source-rules*	policy	safe	docs/specs/documentation.md
 route	990	tests/docs-contract.sh	docs	safe	docs/specs/documentation.md
 route	950	*.md	docs	safe	docs/specs/documentation.md
 route	950	docs/assets/*	docs	safe	docs/specs/documentation.md
@@ -228,6 +229,8 @@ route	890	app/scripts/verify-appcast.sh	release-tool	safe	docs/specs/release.md
 route	880	app/scripts/*	app-script	safe	docs/specs/release.md
 route	900	scripts/release-version	release-tool	safe	docs/specs/release.md
 route	900	scripts/release-impact	release-tool	safe	docs/specs/release.md
+route	900	scripts/release-toolchain	release-tool	safe	docs/specs/release.md
+route	900	scripts/quality-qualify	release-tool	safe	docs/specs/release.md
 route	800	scripts/*	unknown	unknown	docs/specs/documentation.md
 route	900	tests/run.sh	codex-test	safe	docs/specs/runtime.md
 route	900	tests/fake-codex	codex-test	safe	docs/specs/runtime.md

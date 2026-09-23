@@ -92,14 +92,14 @@ RELEASE_COMPETING_INTEGRATION_STAGES = {"distribution"}
 UI_COVERAGE_SCRATCH = "quality-ui-release"
 SWIFT_TEST_SCRATCH = "quality-swift-tests"
 QUALITY_TEST_BUNDLE = Path(
-    "app/.build/quality-swift-tests/arm64-apple-macosx/debug/"
+    "app/.build/quality-swift-tests/arm64-apple-macosx/debug/"  # quality: exact-product-path
     "DetachAppPackageTests.xctest"
 )
 QUALITY_TEST_BINARY = (
     QUALITY_TEST_BUNDLE / "Contents/MacOS/DetachAppPackageTests"
 )
 QUALITY_UI_BINARY = Path(
-    "app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp"
+    "app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp"  # quality: exact-product-path
 )
 PROVIDER_TEST_PARTS = {
     # The Codex lane admits three parts at a time. Start the longest measured
@@ -2204,6 +2204,7 @@ def run_static_contracts(root: Path, run_dir: Path) -> int:
         ("documentation", [str(root / "tests/docs-contract.sh")]),
         ("shell-safety", [str(root / "tests/shell-safety.sh")]),
         ("suite-inventory", [str(root / "tests/test-suite-contract.sh")]),
+        ("source-rules", [str(root / "tests/source-rules.sh")]),
     )
     part_root = run_dir / "static-parts"
     part_root.mkdir(mode=0o700)

@@ -185,7 +185,7 @@ class QualityGateContract(unittest.TestCase):
         self.assertEqual(split_swift_build_jobs(10), (5, 5))
         self.assertEqual(split_quality_pipeline_jobs(3), (1, 1, 1))
         self.assertEqual(split_quality_pipeline_jobs(10), (4, 3, 3))
-        bin_path = ROOT / "app/.build/quality-ui-release/out/Products/Release"
+        bin_path = ROOT / "app/.build/quality-ui-release/out/Products/Release"  # quality: exact-product-path
         with patch("quality_gate.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 [], 0, stdout=f"{bin_path}\n", stderr=""
@@ -200,7 +200,7 @@ class QualityGateContract(unittest.TestCase):
         )
         self.assertEqual(
             ui_coverage_binary(ROOT, exact_products=True),
-            ROOT / "app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp",
+            ROOT / "app/.build/quality-ui-release/arm64-apple-macosx/release/DetachApp",  # quality: exact-product-path
         )
 
     def test_exact_hosted_app_is_verified_while_coverage_builds(self) -> None:
@@ -385,6 +385,7 @@ class QualityGateContract(unittest.TestCase):
                 "docs-contract.sh",
                 "shell-safety.sh",
                 "test-suite-contract.sh",
+                "source-rules.sh",
             )
             for name in names:
                 script = tests / name
@@ -405,6 +406,54 @@ class QualityGateContract(unittest.TestCase):
                 (logs / "suite-inventory.log").read_text(encoding="utf-8"),
                 "test-suite-contract.sh\n",
             )
+            self.assertEqual(
+                (logs / "source-rules.log").read_text(encoding="utf-8"),
+                "source-rules.sh\n",
+            )
+
+    def test_source_rules_reject_literal_swiftpm_layout_paths(self) -> None:
+        # The pre-#267 UI coverage resolver hardcoded the Xcode 26 layout.
+        cases = {
+            "tools/example.py": (
+                'root / "app/.build" / "quality-ui-release"'
+                ' / "arm64-apple-macosx/release/DetachApp"\n',  # quality: exact-product-path
+                1,
+            ),
+            "app/scripts/example.sh": (
+                'bin="$APP_ROOT/.build/out/Products/Release/Detach"\n',  # quality: exact-product-path
+                1,
+            ),
+            "tests/example.sh": (
+                'p="arm64-apple-macosx/debug/X"  # quality: exact-product-path\n',
+                0,
+            ),
+            "tools/quality_products.py": (
+                'P = "arm64-apple-macosx/debug/X"\n',  # quality: exact-product-path
+                0,
+            ),
+        }
+        for relative, (content, expected) in cases.items():
+            with self.subTest(relative=relative), \
+                    tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                target = root / relative
+                target.parent.mkdir(parents=True)
+                target.write_text(content, encoding="utf-8")
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                subprocess.run(
+                    ["git", "-C", str(root), "add", relative], check=True
+                )
+                result = subprocess.run(
+                    [str(ROOT / "tests/source-rules.sh")],
+                    env={
+                        **os.environ,
+                        "DETACH_SOURCE_RULES_TEST_MODE": "1",
+                        "DETACH_SOURCE_RULES_ROOT": str(root),
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
 
     def test_claude_parts_get_private_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
