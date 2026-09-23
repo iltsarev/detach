@@ -20,7 +20,7 @@ if { [ -n "$exact_test_binary" ] && [ -z "$exact_test_profile" ]; } || \
   exit 2
 fi
 if [ -n "$exact_test_binary" ]; then
-  expected_binary="$APP_ROOT/.build/quality-swift-tests/arm64-apple-macosx/debug/DetachAppPackageTests.xctest/Contents/MacOS/DetachAppPackageTests"
+  expected_binary="$APP_ROOT/.build/quality-swift-tests/arm64-apple-macosx/debug/DetachAppPackageTests.xctest/Contents/MacOS/DetachAppPackageTests"  # quality: exact-product-path
   case "$exact_test_profile" in "$ROOT"/app/build/quality-shards/*/*/exact-swift.profdata|"$ROOT"/app/build/quality-gates/*/exact-swift.profdata) ;; *)
     printf 'quality contracts: exact Swift profile path is not a quality evidence path\n' >&2
     exit 2

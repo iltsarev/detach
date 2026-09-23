@@ -104,6 +104,15 @@ change real power state, upload assets, or claim publication.
   later paths are release tooling, release documentation, or test-only source
   under `app/Tests/`. Product sources and build inputs remain rejected. The
   annotated tag and artifact manifest stay bound to the release commit.
+- If main carries release metadata that never published, a new release stops
+  and names that version. The owner resumes that release, or abandons it: a
+  pull request returns `BUILD` to the published build, and the local state
+  directory is renamed `abandoned-X.Y.Z-<commit>`. The unpublished tag stays.
+- Before any stage, including a resume, `scripts/release-toolchain check`
+  requires the local Xcode to match the hosted CI pin, or a qualification
+  record for the exact Xcode, SDK, and macOS build. `scripts/quality-qualify`
+  writes that record after a complete local repository gate. A release never
+  rebuilds for a toolchain change.
 - The release orchestrator gives the lower-level publisher the exact manifest
   commit. The publisher requires the tag to match it and the current `HEAD` to
   contain it. The orchestrator separately rejects all other descendants.

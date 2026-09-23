@@ -413,6 +413,23 @@ release_api_status() {
   esac
 }
 
+# Hosted evidence proves stages on the CI Xcode pin. A different toolchain is
+# qualified once by scripts/quality-qualify, never rebuilt inside a release.
+# This runs before any stage short-circuit, so a resume checks it too.
+verify_release_toolchain() {
+  if [ "$TEST_MODE" = 1 ]; then
+    [ -n "${DETACH_RELEASE_TEST_TOOLCHAIN_XCODE:-}" ] || return 0
+    DETACH_RELEASE_TOOLCHAIN_TEST_MODE=1 \
+      DETACH_RELEASE_TOOLCHAIN_XCODE="$DETACH_RELEASE_TEST_TOOLCHAIN_XCODE" \
+      DETACH_RELEASE_TOOLCHAIN_IDENTITY="${DETACH_RELEASE_TEST_TOOLCHAIN_IDENTITY:-test-identity}" \
+      DETACH_RELEASE_TOOLCHAIN_RECORD_DIR="${DETACH_RELEASE_TEST_TOOLCHAIN_RECORD_DIR:-$STATE_DIR/toolchain}" \
+      "$ROOT/scripts/release-toolchain" check || \
+        die 'release toolchain is not qualified'
+    return 0
+  fi
+  "$ROOT/scripts/release-toolchain" check || die 'release toolchain is not qualified'
+}
+
 verify_github_credentials() {
   command -v gh >/dev/null 2>&1 || die 'GitHub CLI (gh) is required'
   gh auth status >/dev/null
@@ -574,6 +591,14 @@ initialize_workflow() {
     die 'published release tag is missing locally'
   semver_greater_than "$VERSION" "$published_version" || \
     die "target version must be greater than published version ($published_version)"
+  # A prepared release that never published leaves VERSION and BUILD ahead of
+  # the published manifest. Name that state instead of a bare BUILD mismatch.
+  if [ "$current_version" != "$published_version" ]; then
+    if [ -n "$(remote_ref_commit "refs/tags/v$current_version")" ]; then
+      die "v$current_version is tagged but has no published GitHub Release (latest is $published_tag). Resume it with scripts/release-version $current_version, or abandon it as docs/specs/release.md describes."
+    fi
+    die "main carries unpublished release metadata $current_version (latest published is $published_tag). Resume scripts/release-version $current_version, or abandon it as docs/specs/release.md describes."
+  fi
   [ "$current_build" = "$published_build" ] || \
     die "tracked BUILD $current_build does not match published build $published_build"
   configured_build="${DETACH_BUILD_VERSION:-$((current_build + 1))}"
@@ -1186,6 +1211,7 @@ run_locked() {
   valid_semver "$VERSION" || die 'usage: scripts/release-version [--initial-release] X.Y.Z[-prerelease][+build]'
   load_release_environment
   validate_configuration
+  verify_release_toolchain
   if has_stage preflight; then
     load_workflow
     if has_stage verified; then
