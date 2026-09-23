@@ -75,6 +75,20 @@ tmux() {
   "$TMUX_TEST_BIN" "$@"
 }
 
+expect_cli_refusal() {
+  local label="$1"
+  shift
+  local stdout_file="$TMP_ROOT/expected-refusal.stdout"
+  local stderr_file="$TMP_ROOT/expected-refusal.stderr"
+  if "$@" >"$stdout_file" 2>"$stderr_file"; then
+    printf 'expected CLI refusal succeeded: %s\n' "$label" >&2
+    cat "$stderr_file" >&2
+    return 1
+  fi
+  printf 'expected CLI refusal: %s\n' "$label" >&2
+  return 0
+}
+
 # Mirrors blend_session_color in detach-core so the tint contract is pinned
 # independently of the implementation.
 expected_tint() {
@@ -113,6 +127,9 @@ preserve_failure_diagnostics() {
   find "$TMP_ROOT" -maxdepth 3 -type f -print 2>/dev/null | \
     sed "s#^$TMP_ROOT#TMP_ROOT#" | LC_ALL=C sort >"$ARTIFACT_DIR/file-inventory.txt"
   chmod 0600 "$ARTIFACT_DIR/file-inventory.txt"
+  if [ -n "$FAILURE_COMMAND" ]; then
+    printf 'Claude test failed command: %s\n' "$FAILURE_COMMAND" >&2
+  fi
   [ -z "$FAILURE_LINE" ] || printf 'Claude test failed at line %s\n' "$FAILURE_LINE" >&2
   printf 'Claude diagnostics preserved at %s\n' "$ARTIFACT_DIR" >&2
 }
@@ -526,10 +543,8 @@ TMUX_TMPDIR="$TMP_ROOT/unrelated-tmux-tmpdir" \
 
 # Exercise cross-provider routing while the fake Claude worker is definitely
 # live; the later metadata and checkpoint assertions intentionally do more IO.
-if "$SCRIPT" codex --name cross-provider --detach -- 'must not run beside Claude'; then
-  printf 'Codex unexpectedly started beside a running Claude task\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'Codex start beside Claude' \
+  "$SCRIPT" codex --name cross-provider --detach -- 'must not run beside Claude'
 "$STATE_HELPER" meta matches "$meta" claude "$session_id"
 test_sqlite "$CODEX_HOME/state_5.sqlite" \
   'CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at_ms INTEGER, updated_at_ms INTEGER, source TEXT, thread_source TEXT, cwd TEXT);'
@@ -553,10 +568,8 @@ rm -f "$CLAUDE_CONFIG_DIR/projects/foreign/$codex_only_id.jsonl"
 
 test_sqlite "$CODEX_HOME/state_5.sqlite" \
   "INSERT INTO threads (id, rollout_path, source, thread_source, cwd) VALUES ('$session_id', '/tmp/not-used.jsonl', 'cli', 'user', '$ROOT');"
-if "$SCRIPT" resume --detach "$session_id"; then
-  printf 'Cross-provider resume accepted a UUID shared by both providers\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'cross-provider UUID' \
+  "$SCRIPT" resume --detach "$session_id"
 test_sqlite "$CODEX_HOME/state_5.sqlite" "DELETE FROM threads WHERE id = '$session_id';"
 
 require_session_json() {
@@ -878,10 +891,8 @@ printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","con
   >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"
 unsafe_resume_live_hash="$(shasum -a 256 \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" | awk '{print $1}')"
-if "$SCRIPT" claude resume --name "$human_label" --detach "$session_id"; then
-  printf 'Claude Resume accepted an unsafe recovery destination\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'unsafe recovery destination' \
+  "$SCRIPT" claude resume --name "$human_label" --detach "$session_id"
 [ "$(shasum -a 256 "$checkpoint/claude-session.tar" | awk '{print $1}')" = \
   "$unsafe_resume_archive_hash" ]
 [ "$(shasum -a 256 "$checkpoint/meta.json" | awk '{print $1}')" = \
@@ -902,10 +913,8 @@ unsafe_restore_json="$("$SCRIPT" claude list --json | \
 [ "$(printf '%s' "$unsafe_restore_json" | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
 printf '%s' "$unsafe_restore_json" | grep -F '"health_actions":["delete"]' >/dev/null
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover accepted a symlink below its canonical config root\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'symlink below config root' \
+  "$SCRIPT" claude recover --detach "$human_label"
 grep -Fx '{damaged transcript' \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
 grep -Fx 'outside sentinel' "$unsafe_claude_outside/sentinel" >/dev/null
@@ -933,10 +942,8 @@ malicious_archive_json="$("$SCRIPT" claude list --json | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
 printf '%s' "$malicious_archive_json" | \
   grep -F '"health_actions":["delete"]' >/dev/null
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover accepted a special entry in its checkpoint archive\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'special archive entry' \
+  "$SCRIPT" claude recover --detach "$human_label"
 grep -Fx '{damaged transcript' \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
@@ -969,10 +976,8 @@ conflicting_archive_json="$("$SCRIPT" claude list --json | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
 printf '%s' "$conflicting_archive_json" | \
   grep -F '"health_actions":["delete"]' >/dev/null
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover accepted a structurally conflicting archive\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'conflicting archive' \
+  "$SCRIPT" claude recover --detach "$human_label"
 grep -Fx '{damaged transcript' \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
@@ -1004,10 +1009,8 @@ identity_archive_json="$("$SCRIPT" claude list --json | \
   grep -F "\"session_name\":\"$session\"")"
 [ "$(printf '%s' "$identity_archive_json" | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover accepted another session in its archive\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'foreign session in archive' \
+  "$SCRIPT" claude recover --detach "$human_label"
 grep -Fx '{damaged transcript' \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
 diff -qr "$foreign_team_guard" "$foreign_team" >/dev/null
@@ -1019,10 +1022,8 @@ identity_destination_json="$("$SCRIPT" claude list --json | \
   grep -F "\"session_name\":\"$session\"")"
 [ "$(printf '%s' "$identity_destination_json" | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover replaced a team owned by another session\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'foreign-owned team' \
+  "$SCRIPT" claude recover --detach "$human_label"
 diff -qr "$foreign_team_guard" "$foreign_team" >/dev/null
 mv -f "$identity_archive_good" "$checkpoint/claude-session.tar"
 rm -rf "$identity_archive_stage" "$foreign_team" "$foreign_team_guard"
@@ -1038,10 +1039,8 @@ unsafe_legacy_json="$("$SCRIPT" claude list --json | \
 [ "$(printf '%s' "$unsafe_legacy_json" | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
 printf '%s' "$unsafe_legacy_json" | grep -F '"health_actions":["delete"]' >/dev/null
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover accepted an unsafe legacy companion source\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'unsafe legacy companion' \
+  "$SCRIPT" claude recover --detach "$human_label"
 grep -Fx '{damaged transcript' \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
 rm "$checkpoint/claude-file-history"
@@ -1054,10 +1053,8 @@ dangling_legacy_json="$("$SCRIPT" claude list --json | \
   grep -F "\"session_name\":\"$session\"")"
 [ "$(printf '%s' "$dangling_legacy_json" | \
   "$STATE_HELPER" meta get /dev/stdin effective_status)" = orphaned ]
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover accepted a dangling legacy companion symlink\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'dangling legacy companion' \
+  "$SCRIPT" claude recover --detach "$human_label"
 grep -Fx '{damaged transcript' \
   "$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl" >/dev/null
 rm "$checkpoint/claude-file-history"
@@ -1402,18 +1399,14 @@ fi
 mkdir -p "$CLAUDE_CONFIG_DIR/projects/copy"
 cp -p "$CLAUDE_CONFIG_DIR/projects/fake/$second_id.jsonl" \
   "$CLAUDE_CONFIG_DIR/projects/copy/$second_id.jsonl"
-if "$SCRIPT" claude resume --name duplicate --detach "$second_id"; then
-  printf 'Claude resume accepted an ambiguous duplicate transcript\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'ambiguous duplicate transcript' \
+  "$SCRIPT" claude resume --name duplicate --detach "$second_id"
 
 outside="$TMP_ROOT/must-not-overwrite.jsonl"
 printf 'outside sentinel\n' >"$outside"
 "$STATE_HELPER" meta patch "$meta" --string transcript_path "$outside"
-if "$SCRIPT" claude recover --detach "$human_label"; then
-  printf 'Claude recover accepted an unsafe transcript path\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'unsafe transcript path' \
+  "$SCRIPT" claude recover --detach "$human_label"
 grep -Fx 'outside sentinel' "$outside" >/dev/null
 
 "$SCRIPT" claude delete --force "$human_label"
@@ -1470,10 +1463,8 @@ mkdir -p "$unsafe_team_dir"
 printf '{"leadSessionId":"unrelated"}\n' >"$unsafe_team_target"
 ln -s "$unsafe_team_target" "$unsafe_team_dir/config.json"
 : >"$FAKE_CLAUDE_ARGS_FILE"
-if "$SCRIPT" resume --detach "$empty_id" >/dev/null 2>&1; then
-  printf 'metadata-only Resume ignored an unsafe team config\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'unsafe metadata-only team' \
+  "$SCRIPT" resume --detach "$empty_id"
 [ ! -s "$FAKE_CLAUDE_ARGS_FILE" ]
 ! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
 rm -rf "$unsafe_team_dir"
@@ -1618,10 +1609,8 @@ blank_invalid_json="$("$SCRIPT" claude list --json | \
   "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
 reset_fake_claude_ready
 : >"$FAKE_CLAUDE_ARGS_FILE"
-if "$SCRIPT" resume --detach "$empty_id"; then
-  printf 'Resume treated a present invalid transcript as metadata-only\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'invalid transcript as metadata-only' \
+  "$SCRIPT" resume --detach "$empty_id"
 [ ! -s "$FAKE_CLAUDE_ARGS_FILE" ]
 ! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
 
@@ -1638,10 +1627,8 @@ rm -f \
   "$DETACH_CLAUDE_STATE_ROOT/sessions/$empty_session/checkpoint/transcript.jsonl"
 reset_fake_claude_ready
 : >"$FAKE_CLAUDE_ARGS_FILE"
-if "$SCRIPT" resume --detach "$empty_id"; then
-  printf 'Resume started Claude from a present invalid transcript\n' >&2
-  exit 1
-fi
+expect_cli_refusal 'invalid bound transcript' \
+  "$SCRIPT" resume --detach "$empty_id"
 [ ! -s "$FAKE_CLAUDE_ARGS_FILE" ]
 ! tmux -L "$SOCKET" has-session -t "=$empty_session" 2>/dev/null
 "$SCRIPT" claude delete --force "$empty_label"
