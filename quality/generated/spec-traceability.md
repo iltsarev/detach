@@ -174,6 +174,7 @@ It lists current specification ownership and verification links.
 | `QC-POWER-PROTECTION` | `J-POWER-LOW-BATTERY`<br>`J-POWER-CLOSED-LID` | `SC-POWER-LOW-BATTERY` (legacy-stage, `swift`)<br>`SC-POWER-CLOSED-LID` (manual-release, `publish-preflight`) | Low battery fails safe. |
 | `QC-POWER-CLI` | `J-POWER-ENABLE` | `SC-POWER-UNIT` (legacy-stage, `swift`) | The power command reports and enforces typed protection state. |
 | `QC-POWER-PLATFORM` | `J-POWER-ENABLE` | `SC-POWER-UNIT` (legacy-stage, `swift`) | Platform power operations preserve the helper safety boundary. |
+| `QC-POWER-HANDOFF` | `J-POWER-ENABLE` | `SC-POWER-UNIT` (legacy-stage, `swift`) | Service registration handoff completes only after a proven lifetime barrier. |
 
 ## `app`
 

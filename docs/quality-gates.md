@@ -70,7 +70,9 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   JSON. `scripts/quality-dashboard serve` binds to loopback and stops after its
   deadline.
 - `scripts/quality-mutation` validates and runs the deterministic safety mutant
-  corpus. Mutation work does not add to pull request latency.
+  corpus. `matrix --changed-files` selects the mutants a pull request touches.
+  Mutation work runs in its own workflow beside the quality gate and is not a
+  release stage.
 - `tools/quality_test_changes.py --base <ref>` lists removed or rewritten
   assertion lines in tests that existed at `<ref>`, with the enclosing Swift
   test name. Pull-request CI writes it to the job summary. It is advisory and
@@ -292,7 +294,11 @@ observed ratio. It is advisory and does not replace the last-green ratchet.
 A weekly and manual workflow runs each deterministic safety mutant in a
 separate bounded macOS job. The required mutation score is 100 percent. A
 survivor, timeout, or infrastructure-like failure is not a kill and fails the
-workflow.
+workflow. On a pull request the workflow runs only the mutants whose source or
+test suite file changed. A mutant source outside the critical coverage set
+names a declared requirement; this does not add the file to the coverage
+ratchet. Each mutant reproduces an escaped or fixed defect, for example the
+#259 absent-record reply accepted without `notRegistered` status.
 
 ## Continuous care
 

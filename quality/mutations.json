@@ -27,6 +27,42 @@
       "after": "isSymbolicLink(providerMetadata),",
       "test_suite": "DetachKitTests.DetachStateCommandTests",
       "failure_regex": "Test Suite 'Selected tests' failed"
+    },
+    {
+      "id": "helper-absent-reply-requires-not-registered",
+      "requirement": "QC-POWER-HANDOFF",
+      "source": "app/Sources/DetachApp/PowerHelperService.swift",
+      "before": "                    guard status == .notRegistered else {\n                        throw unregisterError\n                    }\n",
+      "after": "                    // mutant: absent-record reply accepted without notRegistered\n",
+      "test_suite": "DetachAppTests.PowerHelperServiceTests",
+      "failure_regex": "Test Suite 'Selected tests' failed"
+    },
+    {
+      "id": "watchdog-absent-reply-requires-not-registered",
+      "requirement": "QC-POWER-HANDOFF",
+      "source": "app/Sources/DetachApp/WatchdogService.swift",
+      "before": "guard status == .notRegistered else { throw error }",
+      "after": "_ = status // mutant: absent-record reply accepted without notRegistered",
+      "test_suite": "DetachAppTests.WatchdogServiceTests",
+      "failure_regex": "Test Suite 'Selected tests' failed"
+    },
+    {
+      "id": "watchdog-boot-proof-requires-changed-boot",
+      "requirement": "QC-POWER-HANDOFF",
+      "source": "app/Sources/DetachApp/WatchdogService.swift",
+      "before": "recordedBoot != currentBoot,",
+      "after": "recordedBoot == currentBoot,",
+      "test_suite": "DetachAppTests.WatchdogServiceTests",
+      "failure_regex": "Test Suite 'Selected tests' failed"
+    },
+    {
+      "id": "typed-state-open-refuses-symlink",
+      "requirement": "QC-RUNTIME-STATE",
+      "source": "app/Sources/DetachKit/DetachStateCommand.swift",
+      "before": "let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)\n        guard descriptor >= 0 else {\n            throw CocoaError(.fileReadNoSuchFile)",
+      "after": "let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)\n        guard descriptor >= 0 else {\n            throw CocoaError(.fileReadNoSuchFile)",
+      "test_suite": "DetachKitTests.DetachStateCommandTests",
+      "failure_regex": "Test Suite 'Selected tests' failed"
     }
   ]
 }
