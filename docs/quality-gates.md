@@ -131,9 +131,13 @@ on the release Mac.
 The policy defines these stages:
 
 - static syntax, documentation, suite inventory, policy ratchets, and
-  source rules (`tests/source-rules.sh`: a literal SwiftPM layout path is
+  source rules (`tests/source-rules.sh`): a literal SwiftPM layout path is
   allowed only in the hosted exact-product manifest or on a line marked
-  `quality: exact-product-path`);
+  `quality: exact-product-path`; in `bin/detach`, `bin/detach-core`, and
+  `scripts/install.sh`, a `mv`, `ln`, `rm`, `lockf`, or typed-state mutation
+  must not end in `|| true` or `|| :` unless the statement carries
+  `quality: allow-ignored-failure <reason>`; Swift sources must not contain
+  an empty `catch`;
 - gate self-contracts;
 - coverage-enabled Swift tests and automatic quality metrics;
 - development app build and verification;
