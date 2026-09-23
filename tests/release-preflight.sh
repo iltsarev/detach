@@ -393,5 +393,45 @@ grep -Fx 'source-mode 755' "$TMP_ROOT/hdiutil.log" >/dev/null || {
   shasum -a 256 -c "$(basename "$HOSTILE_DMG").sha256" >/dev/null
 )
 
+# Release toolchain qualification: the CI pin passes, another Xcode fails
+# until a record for its exact identity exists.
+TOOLCHAIN="$ROOT/scripts/release-toolchain"
+toolchain_records="$TMP_ROOT/toolchain-records"
+ci_pin="$("$TOOLCHAIN" ci-xcode)"
+[[ "$ci_pin" =~ ^[0-9]+(\.[0-9]+)*$ ]]
+DETACH_RELEASE_TOOLCHAIN_TEST_MODE=1 DETACH_RELEASE_TOOLCHAIN_XCODE="$ci_pin" \
+  DETACH_RELEASE_TOOLCHAIN_RECORD_DIR="$toolchain_records" \
+  "$TOOLCHAIN" check >/dev/null
+if DETACH_RELEASE_TOOLCHAIN_TEST_MODE=1 DETACH_RELEASE_TOOLCHAIN_XCODE=99.0 \
+     DETACH_RELEASE_TOOLCHAIN_IDENTITY='xcode=Xcode 99.0;sdk=99.0;macos=99A1' \
+     DETACH_RELEASE_TOOLCHAIN_RECORD_DIR="$toolchain_records" \
+     "$TOOLCHAIN" check 2>"$TMP_ROOT/toolchain.err"; then
+  printf 'unqualified release toolchain passed its check\n' >&2
+  exit 1
+fi
+grep -F 'scripts/quality-qualify' "$TMP_ROOT/toolchain.err" >/dev/null
+DETACH_RELEASE_TOOLCHAIN_TEST_MODE=1 \
+  DETACH_RELEASE_TOOLCHAIN_IDENTITY='xcode=Xcode 99.0;sdk=99.0;macos=99A1' \
+  DETACH_RELEASE_TOOLCHAIN_RECORD_DIR="$toolchain_records" \
+  "$TOOLCHAIN" record 0123456789abcdef0123456789abcdef01234567 >/dev/null
+DETACH_RELEASE_TOOLCHAIN_TEST_MODE=1 DETACH_RELEASE_TOOLCHAIN_XCODE=99.0 \
+  DETACH_RELEASE_TOOLCHAIN_IDENTITY='xcode=Xcode 99.0;sdk=99.0;macos=99A1' \
+  DETACH_RELEASE_TOOLCHAIN_RECORD_DIR="$toolchain_records" \
+  "$TOOLCHAIN" check >/dev/null
+# A record for another SDK or macOS build does not qualify this identity.
+if DETACH_RELEASE_TOOLCHAIN_TEST_MODE=1 DETACH_RELEASE_TOOLCHAIN_XCODE=99.0 \
+     DETACH_RELEASE_TOOLCHAIN_IDENTITY='xcode=Xcode 99.0;sdk=99.0;macos=99A2' \
+     DETACH_RELEASE_TOOLCHAIN_RECORD_DIR="$toolchain_records" \
+     "$TOOLCHAIN" check 2>/dev/null; then
+  printf 'a record for another macOS build qualified this toolchain\n' >&2
+  exit 1
+fi
+# The release checks the toolchain before any stage resume, and names an
+# unpublished prepared release instead of a bare BUILD mismatch.
+awk '/^run_locked\(\)/,/^}/' "$ROOT/scripts/release-version" | \
+  awk '/verify_release_toolchain/ {t=NR} /has_stage preflight/ {p=NR} END {exit !(t && p && t < p)}'
+grep -F 'is tagged but has no published GitHub Release' \
+  "$ROOT/scripts/release-version" >/dev/null
+
 "$ROOT/scripts/quality-scenarios" event pass SC-UPDATE-CHECK
 printf 'Detach release preflight tests passed\n'

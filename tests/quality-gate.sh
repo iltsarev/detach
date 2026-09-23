@@ -241,6 +241,8 @@ prepare_template() {
   chmod 0755 "$TEMPLATE_REPO/tests/docs-contract.sh"
   printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/test-suite-contract.sh"
   chmod 0755 "$TEMPLATE_REPO/tests/test-suite-contract.sh"
+  printf '#!/bin/bash\nexit 0\n' >"$TEMPLATE_REPO/tests/source-rules.sh"
+  chmod 0755 "$TEMPLATE_REPO/tests/source-rules.sh"
   printf '%s\n' baseline >"$TEMPLATE_REPO/README.md"
   printf '%s\n' actions.log results aggregate tampered-aggregate '*.out' /presentations/ \
     >"$TEMPLATE_REPO/.gitignore"
