@@ -113,5 +113,12 @@ text also means waiting. Thinking-only, metadata, and tool-use blocks do not
 prove a completed answer. Repeated final text and a later `turn_duration` keep
 the waiting turn ID. A new user request or an assistant `tool_use` continuation
 restores working. A pending `AskUserQuestion` still requires its matching
-result. Schema-4 summary receipts invalidate earlier cached turn states.
+result. A finished Claude turn stays working while a main-chain
+`run_in_background` shell or a workflow it started has no matching
+`task-notification` (by tool use ID) and no `TaskStop`; background agents do
+not count, because they record no notification. At most 32 such tasks are
+tracked. A cold tail that ends in a finished turn also replays these records
+from the last 4 MiB, because large records can push a launch above the tail.
+Schema-5 summary receipts carry them and invalidate earlier cached turn
+states.
 Typed cleanup uses `cleanup_eligible`.
