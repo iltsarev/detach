@@ -100,16 +100,17 @@ public enum SessionMetadataDocument {
         }
 
         try validateLifecycleMutation(from: original, to: object, changes: changes)
+        return try encodedMetadata(object)
+    }
 
+    private static func encodedMetadata(_ object: [String: Any]) throws -> Data {
         guard operationalFieldsAreTyped(object),
-              JSONSerialization.isValidJSONObject(object) else {
+              JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(
+                withJSONObject: object, options: [.sortedKeys]) else {
             throw DetachStateError.invalidMetadata
         }
-        do {
-            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        } catch {
-            throw DetachStateError.invalidMetadata
-        }
+        return data
     }
 
     /// Creates a new top-level metadata object from typed scalar changes.
@@ -128,16 +129,7 @@ public enum SessionMetadataDocument {
                 throw DetachStateError.invalidLifecyclePhase
             }
         }
-
-        guard operationalFieldsAreTyped(object),
-              JSONSerialization.isValidJSONObject(object) else {
-            throw DetachStateError.invalidMetadata
-        }
-        do {
-            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        } catch {
-            throw DetachStateError.invalidMetadata
-        }
+        return try encodedMetadata(object)
     }
 
     /// Applies the provider/session identity predicate used when discovering
