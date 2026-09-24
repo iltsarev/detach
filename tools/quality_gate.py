@@ -1951,6 +1951,56 @@ def child_run(arguments: list[str], *, cwd: Path = ROOT, env: dict[str, str] | N
     return process.returncode
 
 
+GITHUB_REMOTE = re.compile(
+    r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
+
+
+def local_coverage_baseline(root: Path, profile: str) -> str | None:
+    """Restore the green-main metrics that hosted CI compares against.
+
+    A local diagnostic without this baseline cannot see a critical coverage
+    regression that the hosted gate rejects. The restore is best effort: an
+    offline run keeps working and says that it did not compare.
+    """
+    if os.environ.get("DETACH_QUALITY_LOCAL_BASELINE") == "0":
+        return None
+    repository = os.environ.get("DETACH_QUALITY_REPOSITORY", "")
+    if not repository:
+        remote = subprocess.run(
+            ["git", "-C", str(root), "remote", "get-url", "origin"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+        ).stdout.strip()
+        match = GITHUB_REMOTE.match(remote)
+        repository = match.group(1) if match else ""
+    reason = "origin is not a GitHub repository"
+    if repository:
+        try:
+            process = subprocess.run(
+                [
+                    str(root / "scripts/quality-baseline"),
+                    "--repository", repository,
+                    "--profile", profile,
+                ],
+                cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=False, timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            reason = str(error)
+        else:
+            baseline = process.stdout.strip()
+            if process.returncode == 0 and baseline:
+                print(f"quality-gate: comparing coverage with green main: {baseline}")
+                return baseline
+            reason = process.stderr.strip() or f"exit {process.returncode}"
+    print(
+        "quality-metrics: advisory: green-main baseline unavailable, "
+        f"critical coverage was not compared ({reason})"
+    )
+    return None
+
+
 RUNTIME_PRODUCT_ROOT = Path("app/.build/quality-runtime")
 
 
@@ -2840,6 +2890,14 @@ def run_stage_worker(stage: str) -> int:
                 "DETACH_QUALITY_AUTHORITY": authority,
             }
         )
+        if authority == "local-diagnostic" and not environment.get(
+            "DETACH_QUALITY_BASELINE_ROOT"
+        ):
+            baseline = local_coverage_baseline(
+                root, "combined" if "ui-e2e" in selected else "swift"
+            )
+            if baseline:
+                environment["DETACH_QUALITY_BASELINE_ROOT"] = baseline
         if exact_products:
             environment.update(
                 {

@@ -294,6 +294,15 @@ malformed baseline evidence fails closed. Aggregate ratios, removed test
 identities, and changed-line coverage below the 90 percent floor are advisory.
 The stage prints them as `quality-metrics: advisory:` lines and stays green.
 
+A local diagnostic that selects `quality-contracts` restores the same
+green-main baseline through `scripts/quality-baseline` for the `origin`
+GitHub repository. Thus, it rejects a critical coverage regression before the
+push, with the same exact comparison as CI. If the restore fails (for example,
+offline or without `gh` authentication), the local stage continues without a
+comparison and prints an advisory line. Set `DETACH_QUALITY_LOCAL_BASELINE=0`
+to skip the restore. An explicit `DETACH_QUALITY_BASELINE_ROOT` always takes
+precedence.
+
 The UI aggregate includes Swift tests and the bounded packaged-app journeys.
 The separate opportunity artifact ranks current uncovered UI sources. Its risk
 order comes from the current policy route, release impact, requirements, and

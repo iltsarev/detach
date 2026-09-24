@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ from quality_gate import (  # noqa: E402
     gate_contract_definitions,
     gate_orchestrator_limit,
     include_gate_orchestrators,
+    local_coverage_baseline,
     parse_name_status,
     parse_options,
     provider_test_parts,
@@ -139,6 +141,51 @@ class QualityGateContract(unittest.TestCase):
         self.assertEqual(gate_orchestrator_limit(4), 2)
         self.assertEqual(gate_contract_process_limit(10), 4)
         self.assertEqual(gate_contract_process_limit(4), 4)
+
+    def test_local_baseline_compares_coverage_with_green_main(self) -> None:
+        root = Path("/repo")
+        calls: list[list[str]] = []
+
+        def fake_run(arguments, **_):
+            calls.append(list(arguments))
+            if arguments[0] == "git":
+                return subprocess.CompletedProcess(
+                    arguments, 0, "git@github.com:owner/detach.git\n", "")
+            if "--repository" in arguments:
+                return subprocess.CompletedProcess(arguments, 0, "/baseline\n", "")
+            raise AssertionError(arguments)
+
+        with patch.dict("os.environ", {}, clear=False), \
+                patch("quality_gate.subprocess.run", side_effect=fake_run):
+            os.environ.pop("DETACH_QUALITY_REPOSITORY", None)
+            os.environ.pop("DETACH_QUALITY_LOCAL_BASELINE", None)
+            with patch("sys.stdout"):
+                self.assertEqual(
+                    local_coverage_baseline(root, "swift"), "/baseline")
+            self.assertEqual(calls[-1], [
+                "/repo/scripts/quality-baseline", "--repository", "owner/detach",
+                "--profile", "swift",
+            ])
+
+            os.environ["DETACH_QUALITY_LOCAL_BASELINE"] = "0"
+            calls.clear()
+            self.assertIsNone(local_coverage_baseline(root, "swift"))
+            self.assertEqual(calls, [])
+
+    def test_unavailable_local_baseline_is_advisory(self) -> None:
+        def offline(arguments, **_):
+            return subprocess.CompletedProcess(
+                arguments, 2, "", "quality-baseline: gh api failed\n")
+
+        with patch.dict("os.environ", {"DETACH_QUALITY_REPOSITORY": "owner/detach"}), \
+                patch("quality_gate.subprocess.run", side_effect=offline), \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            os.environ.pop("DETACH_QUALITY_LOCAL_BASELINE", None)
+            self.assertIsNone(
+                local_coverage_baseline(Path("/repo"), "combined"))
+        self.assertIn(
+            "quality-metrics: advisory: green-main baseline unavailable", output.getvalue())
+        self.assertIn("gh api failed", output.getvalue())
 
     def test_public_shell_entry_point_is_thin(self) -> None:
         wrapper = (ROOT / "scripts/quality-gate").read_text(encoding="utf-8")
