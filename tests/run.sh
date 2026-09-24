@@ -1850,7 +1850,9 @@ tmux -L "$SOCKET" list-clients -F '#{client_session}' | \
   }
 tmux -L "$OUTER_SOCKET" send-keys -t "$interrupt_host" C-c
 attempts=0
-while [ ! -f "$interrupt_returned" ] && [ "$attempts" -lt 160 ]; do
+# The wait observes the detach event; the deadline only guards against a
+# hang. A loaded full gate can take longer than 16 seconds here.
+while [ ! -f "$interrupt_returned" ] && [ "$attempts" -lt 600 ]; do
   attempts=$((attempts + 1))
   sleep 0.1
 done
