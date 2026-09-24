@@ -1144,7 +1144,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 4)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 5)
 
         let unrelatedToolResult = Data("""
 
@@ -1238,7 +1238,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let updated = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
-        XCTAssertEqual(updated["schema"] as? Int, 4)
+        XCTAssertEqual(updated["schema"] as? Int, 5)
 
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()

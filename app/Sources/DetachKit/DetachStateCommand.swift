@@ -1053,10 +1053,22 @@ public enum DetachStateCommand {
         guard fstat(descriptor, &afterMetadata) == 0,
               let after = TranscriptValidationIdentity(afterMetadata),
               before == after else { return empty }
-        let summary = TranscriptDocument.summary(
+        var summary = TranscriptDocument.summary(
             ofTail: tail,
             provider: provider,
             startingFrom: continuation?.summary ?? TranscriptSummary())
+        if continuation == nil {
+            // A continuation carries pending background work forward; a cold
+            // tail may have cut off the launches of still-running work.
+            summary = TranscriptDocument.resolvingBackgroundWork(
+                summary, provider: provider
+            ) {
+                let deep = TranscriptDocument.backgroundSearchByteCount
+                guard (try? handle.seek(
+                    toOffset: size > deep ? size - deep : 0)) != nil else { return nil }
+                return try? handle.read(upToCount: Int(deep))
+            }
+        }
         let values = [
             summary.model ?? "",
             summary.contextUsed.map(String.init) ?? "",
@@ -1074,7 +1086,9 @@ public enum DetachStateCommand {
             contextWindow: summary.contextWindow,
             agentTurnState: summary.agentTurnState?.rawValue,
             agentTurnID: summary.agentTurnID,
-            pendingToolUseID: summary.pendingToolUseID)
+            pendingToolUseID: summary.pendingToolUseID,
+            pendingBackground: summary.pendingBackground.isEmpty
+                ? nil : summary.pendingBackground)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         if var receiptData = try? encoder.encode(receipt) {
@@ -1086,7 +1100,7 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 4
+        static let currentSchema = 5
         private static let overlapByteCount: UInt64 = 64 * 1_024
 
         var schema: Int
@@ -1099,6 +1113,7 @@ public enum DetachStateCommand {
         var agentTurnState: String?
         var agentTurnID: String?
         var pendingToolUseID: String?
+        var pendingBackground: [PendingBackgroundTask]?
 
         func snapshotValues(
             provider expectedProvider: Provider,
@@ -1159,6 +1174,8 @@ public enum DetachStateCommand {
                 agentTurnState: agentTurnState.flatMap(AgentTurnState.init(rawValue:)),
                 agentTurnID: agentTurnID)
             summary.pendingToolUseID = pendingToolUseID
+            summary.pendingBackground = Array(
+                (pendingBackground ?? []).suffix(PendingBackgroundTask.limit))
             return (offset, summary)
         }
 
@@ -1792,12 +1809,21 @@ public enum DetachStateCommand {
             throw DetachStateCommandError.invalidArguments
         }
         let provider = try provider(arguments[0])
-        let summary = TranscriptDocument.summary(
-            ofTail: try tail(
-                atPath: arguments[1],
-                maximumByteCount: 262_144,
-                standardInput: standardInput),
-            provider: provider)
+        let summary = TranscriptDocument.resolvingBackgroundWork(
+            TranscriptDocument.summary(
+                ofTail: try tail(
+                    atPath: arguments[1],
+                    maximumByteCount: 262_144,
+                    standardInput: standardInput),
+                provider: provider),
+            provider: provider,
+            deepTail: {
+                guard arguments[1] != "/dev/stdin", arguments[1] != "-" else { return nil }
+                return try? tail(
+                    atPath: arguments[1],
+                    maximumByteCount: TranscriptDocument.backgroundSearchByteCount,
+                    standardInput: nil)
+            })
 
         if arguments.count == 3 {
             let fields: [(String, String?)] = [
