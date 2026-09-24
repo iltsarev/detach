@@ -19,6 +19,7 @@ from quality_merge import (
     COMMIT,
     GitHub,
     MergeError,
+    completed_mutation_gate,
     execute as merge_exact_head,
     gate_run,
     validate_gate_jobs,
@@ -146,6 +147,12 @@ def validate_completed_gate(
     ):
         raise ReleasePrError("merged release pull request has no exact successful quality-gates run")
     validate_gate_jobs(github, repository, run)
+    try:
+        mutation_passed = completed_mutation_gate(github, repository, head, branch)
+    except MergeError as error:
+        raise ReleasePrError(str(error)) from error
+    if not mutation_passed:
+        raise ReleasePrError("merged release pull request has no exact successful mutation-gate run")
     return run["id"]
 
 

@@ -59,6 +59,7 @@ rules = [
         "strict_required_status_checks_policy": True,
         "required_status_checks": [{{
             "context": "quality-gates", "integration_id": 15368,
+        }}, {{"context": "mutation-gate", "integration_id": 15368,
         }}],
     }}}},
 ]
@@ -95,6 +96,19 @@ if arguments[:1] == ["api"]:
             "head": {{"sha": head, "ref": "quality/test", "repo": {{"full_name": "owner/repository"}}}},
             "base": {{"ref": "main", "sha": "{'d' * 40}"}},
         }}))
+    elif "workflows/quality-mutations.yml/runs" in endpoint:
+        print(json.dumps({{"workflow_runs": [{{
+            "id": 124, "run_attempt": 1, "event": "pull_request",
+            "head_sha": "{HEAD}", "status": "completed",
+            "conclusion": "failure" if mode == "failed-mutation" else "success",
+            "html_url": "https://github.example/actions/runs/124",
+            "head_branch": "quality/test",
+            "head_repository": {{"full_name": "owner/repository"}},
+            "path": ".github/workflows/quality-mutations.yml",
+            "pull_requests": [],
+        }}]}}))
+    elif endpoint.endswith("/actions/runs/124/jobs?filter=latest&per_page=100"):
+        print(json.dumps({{"jobs": [{{"name": "mutation-gate", "conclusion": "success"}}]}}))
     elif "workflows/quality-gates.yml/runs" in endpoint:
         conclusion = "failure" if mode == "failed-gate" else "success"
         print(json.dumps({{"workflow_runs": [{{
@@ -231,6 +245,7 @@ def main() -> None:
         require_failure(invoke(root, fake, "stale-head"), "head does not match")
         require_failure(invoke(root, fake, "stale-after-gate"), "head does not match")
         require_failure(invoke(root, fake, "failed-gate"), "completed as failure")
+        require_failure(invoke(root, fake, "failed-mutation"), "mutation run 124 completed as failure")
         require_failure(invoke(root, fake, repair=3), "policy maximum of 2")
 
         short_policy = root / "policy.tsv"

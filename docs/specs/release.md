@@ -17,8 +17,8 @@ change real power state, upload assets, or claim publication.
   tag, and publication steps. Push the release head to its unique
   `detach-release/vX.Y.Z` branch. `scripts/release-pr` creates or resumes one
   exact pull request. It validates the evidence path before it creates or
-  merges a pull request. The normal strict `quality-gates` job must pass before
-  bounded auto-merge. The final merge must have the tested source and release
+  merges a pull request. The normal strict `quality-gates` and `mutation-gate`
+  jobs must pass before bounded auto-merge. The final merge must have the tested source and release
   head as its ordered parents and the tested tree. Tag that merge, verify the
   remote `main` and tag, and remove only the matching temporary branch. No
   actor has a general `main` ruleset bypass or direct-main release path.

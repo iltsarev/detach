@@ -27,6 +27,12 @@ GH_API_ATTEMPTS = 3
 GH_API_RETRY_SECONDS = 1
 POLL_SECONDS = 5
 QUALITY_CHECK = "quality-gates"
+MUTATION_CHECK = "mutation-gate"
+# Every required status check, with the workflow file whose job reports it.
+REQUIRED_CHECKS = (
+    (QUALITY_CHECK, "quality-gates.yml"),
+    (MUTATION_CHECK, "quality-mutations.yml"),
+)
 GITHUB_ACTIONS_INTEGRATION_ID = 15368
 
 
@@ -156,8 +162,18 @@ def active_main_ruleset(document: Any) -> bool:
         not isinstance(status_checks, dict)
         or status_checks.get("strict_required_status_checks_policy") is not True
         or status_checks.get("do_not_enforce_on_create") is not False
-        or status_checks.get("required_status_checks")
-        != [{"context": QUALITY_CHECK, "integration_id": GITHUB_ACTIONS_INTEGRATION_ID}]
+        or not isinstance(status_checks.get("required_status_checks"), list)
+        or sorted(
+            status_checks["required_status_checks"],
+            key=lambda check: str(check.get("context")) if isinstance(check, dict) else "",
+        )
+        != sorted(
+            (
+                {"context": context, "integration_id": GITHUB_ACTIONS_INTEGRATION_ID}
+                for context, _ in REQUIRED_CHECKS
+            ),
+            key=lambda check: check["context"],
+        )
     ):
         return False
     return True
@@ -233,10 +249,14 @@ def validate_open_pull_request(
 
 
 def gate_run(
-    github: GitHub, repository: str, head: str, head_ref: str
+    github: GitHub,
+    repository: str,
+    head: str,
+    head_ref: str,
+    workflow: str = "quality-gates.yml",
 ) -> dict[str, Any] | None:
     response = github.api(
-        f"repos/{repository}/actions/workflows/quality-gates.yml/runs"
+        f"repos/{repository}/actions/workflows/{workflow}/runs"
         f"?event=pull_request&head_sha={head}&per_page=20"
     )
     runs = response.get("workflow_runs") if isinstance(response, dict) else None
@@ -248,7 +268,7 @@ def gate_run(
         and run.get("event") == "pull_request"
         and run.get("head_sha") == head
         and run.get("head_branch") == head_ref
-        and run.get("path") == ".github/workflows/quality-gates.yml"
+        and run.get("path") == f".github/workflows/{workflow}"
         and isinstance(run.get("head_repository"), dict)
         and run["head_repository"].get("full_name") == repository
         and type(run.get("id")) is int
@@ -257,7 +277,12 @@ def gate_run(
     return max(candidates, key=lambda run: (run["id"], run["run_attempt"]), default=None)
 
 
-def validate_gate_jobs(github: GitHub, repository: str, run: dict[str, Any]) -> None:
+def validate_gate_jobs(
+    github: GitHub,
+    repository: str,
+    run: dict[str, Any],
+    job_name: str = QUALITY_CHECK,
+) -> None:
     response = github.api(
         f"repos/{repository}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100"
     )
@@ -266,10 +291,25 @@ def validate_gate_jobs(github: GitHub, repository: str, run: dict[str, Any]) -> 
         raise MergeError("quality job response is malformed")
     matches = [
         job for job in jobs
-        if isinstance(job, dict) and job.get("name") == QUALITY_CHECK
+        if isinstance(job, dict) and job.get("name") == job_name
     ]
     if len(matches) != 1 or matches[0].get("conclusion") != "success":
-        raise MergeError("authoritative quality-gates job did not pass")
+        raise MergeError(f"authoritative {job_name} job did not pass")
+
+
+def completed_mutation_gate(
+    github: GitHub, repository: str, head: str, head_ref: str
+) -> bool:
+    """True once the exact-head mutation-gate job passed; raise on failure."""
+    run = gate_run(github, repository, head, head_ref, "quality-mutations.yml")
+    if run is None or run.get("status") != "completed":
+        return False
+    if run.get("conclusion") != "success":
+        raise MergeError(
+            f"mutation run {run['id']} completed as {run.get('conclusion')}"
+        )
+    validate_gate_jobs(github, repository, run, MUTATION_CHECK)
+    return True
 
 
 def sleep_until_next_poll(deadline: float, poll_seconds: float) -> None:
@@ -300,7 +340,9 @@ def wait_for_gate(
             validate_gate_jobs(github, repository, run)
             if not isinstance(run.get("html_url"), str):
                 raise MergeError("quality workflow URL is malformed")
-            return run
+            # Branch protection also requires mutation-gate at this head.
+            if completed_mutation_gate(github, repository, head, head_ref):
+                return run
         if time.monotonic() >= deadline:
             raise MergeError(
                 f"quality-gates did not pass within {timeout_seconds} seconds"

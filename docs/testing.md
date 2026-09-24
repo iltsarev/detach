@@ -231,8 +231,8 @@ increments it together with `VERSION` in one release commit, and creates one
 annotated tag. The invocation authorizes its automated commit, tag, and
 publication steps. It pushes the release head to a unique
 `detach-release/vX.Y.Z` branch. `scripts/release-pr` creates or resumes one
-exact pull request. The normal strict `quality-gates` job must pass before
-bounded exact-head auto-merge. The workflow verifies the final merge parents
+exact pull request. The normal strict `quality-gates` and `mutation-gate`
+jobs must pass before bounded exact-head auto-merge. The workflow verifies the final merge parents
 and tree, tags that merge, verifies remote `main` and the tag, and removes the
 matching temporary branch. It does not push release metadata directly to
 `main`. It then reuses the
