@@ -657,6 +657,62 @@ final class DetachStateTests: XCTestCase {
             .waiting)
     }
 
+    func testClaudeSummaryBoundsAndClearsBackgroundTasks() {
+        // A failed launch never runs, and a block-array result still names
+        // the task that a later TaskStop ends.
+        let transcript = Data("""
+        {"type":"assistant","uuid":"launch","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_bad","name":"Bash","input":{"command":"x","run_in_background":true}},{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"y","run_in_background":true}}]}}
+        {"type":"user","uuid":"results","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bad","is_error":true,"content":"denied"},{"type":"tool_result","tool_use_id":"toolu_ok","content":[{"type":"text","text":"Command running in background with ID: bblock."}]}]}}
+        """.utf8)
+        let launched = TranscriptDocument.summary(ofTail: transcript, provider: .claude)
+        XCTAssertEqual(
+            launched.pendingBackground,
+            [PendingBackgroundTask(toolUseID: "toolu_ok", taskID: "bblock")])
+
+        let stop = Data("""
+        {"type":"assistant","uuid":"stop","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_stop","name":"TaskStop","input":{"task_id":"bblock"}}]}}
+        """.utf8)
+        XCTAssertEqual(
+            TranscriptDocument.summary(
+                ofTail: stop, provider: .claude, startingFrom: launched).pendingBackground,
+            [])
+
+        // The pending list keeps only the newest launches.
+        let many = (0...PendingBackgroundTask.limit).map { index in
+            #"{"type":"assistant","uuid":"l\#(index)","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_\#(index)","name":"Bash","input":{"command":"x","run_in_background":true}}]}}"#
+        }.joined(separator: "\n")
+        let bounded = TranscriptDocument.summary(ofTail: Data(many.utf8), provider: .claude)
+        XCTAssertEqual(bounded.pendingBackground.count, PendingBackgroundTask.limit)
+        XCTAssertEqual(bounded.pendingBackground.first?.toolUseID, "toolu_1")
+
+        // A carried-forward task turns a final answer into working.
+        var carried = TranscriptSummary()
+        carried.pendingBackground = [PendingBackgroundTask(toolUseID: "toolu_ok")]
+        let answer = Data("""
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Waiting."}]}}
+        """.utf8)
+        let resumed = TranscriptDocument.summary(
+            ofTail: answer, provider: .claude, startingFrom: carried)
+        XCTAssertEqual(resumed.agentTurnState, .working)
+        XCTAssertEqual(resumed.agentTurnID, "answer")
+    }
+
+    func testClaudeSummaryStartsATurnForBlockArrayUserInput() {
+        let waiting = TranscriptDocument.summary(ofTail: Data("""
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+        """.utf8), provider: .claude)
+        XCTAssertEqual(waiting.agentTurnState, .waiting)
+
+        // Pasted images arrive as block arrays without any tool result.
+        let input = Data("""
+        {"type":"user","uuid":"next","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","source":{}}]}}
+        """.utf8)
+        let next = TranscriptDocument.summary(
+            ofTail: input, provider: .claude, startingFrom: waiting)
+        XCTAssertEqual(next.agentTurnState, .working)
+        XCTAssertEqual(next.agentTurnID, "next")
+    }
+
     func testClaudeSummaryIgnoresForegroundToolsAndBackgroundAgents() {
         // Background agents record no completion notification, so they
         // cannot hold the turn open; foreground tools finish in their turn.

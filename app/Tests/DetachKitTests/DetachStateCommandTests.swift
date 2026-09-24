@@ -1920,6 +1920,33 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(object["agent_turn_id"] as? String, "tail-turn")
     }
 
+    func testJSONLSummaryFindsBackgroundWorkAboveTheTailOnlyInFiles() throws {
+        var transcript = Data("""
+        {"type":"assistant","uuid":"launch","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_flow","name":"Workflow","input":{"script":"x"}}]}}
+
+        """.utf8)
+        transcript.append(Data(
+            #"{"type":"progress","data":"\#(String(repeating: "x", count: 300_000))"}"#.utf8))
+        transcript.append(Data("""
+
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Waiting."}]}}
+        """.utf8))
+        let file = temporaryDirectory.appendingPathComponent("background.jsonl")
+        try transcript.write(to: file)
+
+        func state(_ arguments: [String], _ input: Data = Data()) throws -> String? {
+            let output = try DetachStateCommand.run(
+                arguments: ["jsonl", "summary", "claude"] + arguments,
+                standardInput: input)
+            return try XCTUnwrap(
+                JSONSerialization.jsonObject(with: output) as? [String: Any]
+            )["agent_turn_state"] as? String
+        }
+        XCTAssertEqual(try state([file.path]), "working")
+        // Standard input is read once, so only its bounded tail is used.
+        XCTAssertEqual(try state(["-"], transcript), "waiting")
+    }
+
     func testJSONLSummaryRejectsUnsupportedOptions() {
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "jsonl", "summary", "codex", "-", "--json",
