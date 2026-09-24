@@ -63,9 +63,22 @@ Thread.sleep(forTimeInterval: 1)
 facts.append(("smappservice.agent.status.after-unregister", statusName(fresh().status)))
 facts.append(("smappservice.agent.unregister.after-unregister", unregister(fresh())))
 
-// Leave nothing registered even if a step above behaved unexpectedly.
-if fresh().status != .notRegistered { _ = unregister(fresh()) }
+// Leave nothing registered even if a step above behaved unexpectedly, and
+// fail loudly when teardown cannot be proven: the caller keeps the bundle so
+// a leftover registration never points at a deleted executable.
+var teardownFailed = facts.contains { $0.1 == "timeout" }
+if fresh().status == .enabled || fresh().status == .requiresApproval {
+    if unregister(fresh()) != "success" { teardownFailed = true }
+    Thread.sleep(forTimeInterval: 1)
+}
+let finalStatus = statusName(fresh().status)
+if finalStatus != "notRegistered" && finalStatus != "notFound" { teardownFailed = true }
 
 for (identifier, value) in facts {
     print("\(identifier)\t\(value)")
+}
+if teardownFailed {
+    FileHandle.standardError.write(Data(
+        "platform-probe: teardown not proven; final status \(finalStatus)\n".utf8))
+    exit(3)
 }

@@ -219,9 +219,12 @@ final class WatchdogService {
                 let currentBoot = try currentBootSession()
                 if let recordedBoot = transaction.bootSessionIdentifier,
                    recordedBoot != currentBoot,
-                   status == .notRegistered || backend.recordIsAbsent {
+                   status == .notRegistered || backend.recordIsAbsent,
+                   try lifetimeBarrierStatus() != .busy,
+                   try !legacyWatchdogIsRunning() {
                     // A per-user agent from the recorded boot cannot still
-                    // be alive. Exact job absence completes the lost callback.
+                    // be alive, and nothing holds the lifetime lock now.
+                    // Exact job absence completes the lost callback.
                     transaction.phase = .removed
                     transaction.bootSessionIdentifier = currentBoot
                     try handoffStore.save(transaction)

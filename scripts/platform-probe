@@ -45,7 +45,6 @@ observe() {
   # registration, so only a never-used label shows the absent-record facts.
   bundle_id="$BUNDLE_ID.$(/usr/bin/uuidgen | /usr/bin/tr 'A-Z' 'a-z' | /usr/bin/tr -d '-' | /usr/bin/cut -c1-12)"
   work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/detach-platform-probe.XXXXXX")"
-  trap '/bin/rm -rf "$work"' RETURN
   app="$work/DetachPlatformProbe.app"
   /bin/mkdir -p "$app/Contents/MacOS" "$app/Contents/Library/LaunchAgents"
   /usr/bin/xcrun swiftc -O -target arm64-apple-macosx26.0 \
@@ -72,7 +71,13 @@ observe() {
   /usr/bin/codesign --force --options runtime --sign "$identity" "$app" >&2
   /usr/bin/codesign --verify --strict "$app" >&2
   printf 'macos.build\t%s\n' "$(/usr/bin/sw_vers -buildVersion)"
-  "$app/Contents/MacOS/DetachPlatformProbe" --plist "$bundle_id.agent.plist"
+  if ! "$app/Contents/MacOS/DetachPlatformProbe" --plist "$bundle_id.agent.plist"; then
+    # Keep the signed bundle: a registration may still point at it.
+    printf 'platform-probe: probe failed; kept %s (label %s.agent) for recovery\n' \
+      "$app" "$bundle_id" >&2
+    return 1
+  fi
+  /bin/rm -rf "$work"
 }
 
 expected_facts() {
@@ -82,7 +87,7 @@ expected_facts() {
 verify() {
   local observed expected failed=0 identifier value want
   [ -f "$FACTS" ] || die "missing $FACTS"
-  observed="$(observe)"
+  observed="$(observe)" || die 'observation failed'
   expected="$(expected_facts)"
   while IFS=$'\t' read -r identifier want; do
     value="$(printf '%s\n' "$observed" | /usr/bin/awk -F '\t' -v id="$identifier" '$1 == id {print $2}')"
@@ -103,7 +108,7 @@ verify() {
 
 record() {
   local observed build today temporary
-  observed="$(observe)"
+  observed="$(observe)" || die 'observation failed; nothing recorded'
   build="$(printf '%s\n' "$observed" | /usr/bin/awk -F '\t' '$1 == "macos.build" {print $2}')"
   today="$(/bin/date -u +%Y-%m-%d)"
   temporary="$(/usr/bin/mktemp "$FACTS.XXXXXX")"
