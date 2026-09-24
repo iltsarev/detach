@@ -1573,8 +1573,12 @@ final class SessionAttachTerminalTests: XCTestCase {
         String(data: terminal.terminal.getBufferAsData(), encoding: .utf8) ?? ""
     }
 
+    // Default waits observe events from real child processes (shell, PTY,
+    // stty). The deadline only guards against a hang; under a loaded gate a
+    // process start can exceed a few seconds. Waits that prove something
+    // does NOT happen pass their own short timeout.
     private func waitUntil(
-        timeout: TimeInterval = 3,
+        timeout: TimeInterval = 20,
         _ predicate: () -> Bool
     ) throws {
         let deadline = Date().addingTimeInterval(timeout)
