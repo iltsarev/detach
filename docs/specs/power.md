@@ -87,7 +87,8 @@ app accepts either reply only with exact `notRegistered` status, or no
 record (`notFound`), plus the lifetime-barrier wait; an `EPERM` reply for a
 live record stays fail-closed.
 The watchdog journal records the boot UUID before each unregister replay.
-After a restart, `notRegistered` or no record completes that replay.
+After a restart, `notRegistered` or no record completes it unless a live
+process holds the lifetime lock.
 Lifetime and system handoff probes reject special files without waiting for
 a FIFO writer. File validation precedes lock acquisition. Activity and source
 handoff readers also reject special files without blocking and keep the
@@ -119,7 +120,8 @@ The helper takes a root-owned lifetime `flock` before its listener answers and
 holds it until exit. An enabled job without this boot's lock is dead. The app
 writes `unregisterSubmitted` only after it observes that lock. Registration
 needs the fresh unregister callback, or exact `notRegistered` status plus the
-released lock or a changed boot UUID; `unavailable` is insufficient. Errors
+released lock or a changed boot UUID with no live lock holder; `unavailable`
+with a record is insufficient. Errors
 keep the journal and root gate closed. After an app crash, another console user
 uses the root-created files to resume at `unregisterSubmitted`, never as a
 pristine install.
