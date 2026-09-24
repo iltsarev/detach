@@ -111,7 +111,9 @@ change real power state, upload assets, or claim publication.
 - Before any stage, including a resume, `scripts/release-toolchain check`
   requires the local Xcode to match the hosted CI pin, or a qualification
   record for the exact Xcode, SDK, and macOS build. `scripts/quality-qualify`
-  writes that record after a complete local repository gate. A release never
+  writes that record after a complete local repository gate and
+  `scripts/platform-probe verify`, which checks real SMAppService behavior
+  against `quality/platform-facts.tsv`. A release never
   rebuilds for a toolchain change.
 - The release orchestrator gives the lower-level publisher the exact manifest
   commit. The publisher requires the tag to match it and the current `HEAD` to

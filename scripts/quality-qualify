@@ -17,6 +17,9 @@ commit="$(git -C "$ROOT" rev-parse HEAD)"
 printf 'quality-qualify: qualifying %s at %s\n' \
   "$("$ROOT/scripts/release-toolchain" identity)" "$commit"
 "$ROOT/scripts/quality-gate" --mode repository
+# Real SMAppService behavior must still match the facts the power handoff
+# fakes and classifiers use (quality/platform-facts.tsv).
+"$ROOT/scripts/platform-probe" verify
 [ "$(git -C "$ROOT" rev-parse HEAD)" = "$commit" ] || {
   printf 'quality-qualify: HEAD changed during qualification\n' >&2
   exit 1

@@ -267,6 +267,7 @@ It lists current specification ownership and verification links.
 - `app/scripts/publish-release.sh`
 - `app/scripts/release.sh`
 - `app/scripts/verify-appcast.sh`
+- `scripts/platform-probe`
 - `scripts/quality-qualify`
 - `scripts/release-impact`
 - `scripts/release-lid-probe`
@@ -282,6 +283,7 @@ It lists current specification ownership and verification links.
 - `tests/release-workflow.sh`
 - `tests/release_pr*`
 - `tests/release_sbom*`
+- `tools/platform_probe.swift`
 - `tools/release_pr.py`
 - `tools/release_sbom.py`
 

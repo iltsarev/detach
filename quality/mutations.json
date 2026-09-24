@@ -32,8 +32,8 @@
       "id": "helper-absent-reply-requires-not-registered",
       "requirement": "QC-POWER-HANDOFF",
       "source": "app/Sources/DetachApp/PowerHelperService.swift",
-      "before": "                    guard status == .notRegistered else {\n                        throw unregisterError\n                    }\n",
-      "after": "                    // mutant: absent-record reply accepted without notRegistered\n",
+      "before": "                    guard status == .notRegistered\n                            || backend.recordIsAbsent else {\n                        throw unregisterError\n                    }\n",
+      "after": "                    // mutant: absent-record reply accepted without an absent record\n",
       "test_suite": "DetachAppTests.PowerHelperServiceTests",
       "failure_regex": "Test Suite 'Selected tests' failed"
     },
@@ -41,8 +41,8 @@
       "id": "watchdog-absent-reply-requires-not-registered",
       "requirement": "QC-POWER-HANDOFF",
       "source": "app/Sources/DetachApp/WatchdogService.swift",
-      "before": "guard status == .notRegistered else { throw error }",
-      "after": "_ = status // mutant: absent-record reply accepted without notRegistered",
+      "before": "guard status == .notRegistered || backend.recordIsAbsent\n                    else { throw error }",
+      "after": "_ = status // mutant: absent-record reply accepted without an absent record",
       "test_suite": "DetachAppTests.WatchdogServiceTests",
       "failure_regex": "Test Suite 'Selected tests' failed"
     },
