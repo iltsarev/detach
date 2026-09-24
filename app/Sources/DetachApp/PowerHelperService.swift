@@ -425,6 +425,10 @@ final class PowerHelperService {
             case .unregisterSubmitted:
                 let currentBoot = try currentBootSession()
                 if currentBoot != transaction.bootSessionIdentifier {
+                    // A reboot proves the recorded boot's helper died, not
+                    // that nothing holds the lifetime lock now. A current
+                    // holder vetoes completion; the replay path waits for it.
+                    let currentHolder = try lifetimeBarrierStatus() == .busy
                     switch status {
                     case .enabled:
                         transaction.phase = .preparing
@@ -432,8 +436,8 @@ final class PowerHelperService {
                         transaction.lifetimeBarrierExpected = false
                         try handoffStore.save(transaction)
                         continue
-                    case .notRegistered,
-                         .unavailable where backend.recordIsAbsent:
+                    case .notRegistered where !currentHolder,
+                         .unavailable where backend.recordIsAbsent && !currentHolder:
                         // A process from the recorded boot cannot still be
                         // alive. Exact job absence completes the lost callback.
                         transaction.phase = .removed
@@ -441,7 +445,7 @@ final class PowerHelperService {
                         transaction.lifetimeBarrierExpected = false
                         try handoffStore.save(transaction)
                         continue
-                    case .requiresApproval, .unavailable:
+                    case .requiresApproval, .unavailable, .notRegistered:
                         transaction.bootSessionIdentifier = currentBoot
                         transaction.lifetimeBarrierExpected = false
                         try handoffStore.save(transaction)

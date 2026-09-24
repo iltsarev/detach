@@ -753,7 +753,7 @@ final class PowerHelperServiceTests: XCTestCase {
         XCTAssertNil(fixture.handoffStore.transaction)
     }
 
-    func testRebootCompletesAbsentOldGenerationWithoutLifetimeProbe() async throws {
+    func testRebootCompletesAbsentOldGenerationWithoutCurrentHolder() async throws {
         let backend = FakePowerHelperBackend(
             status: .notRegistered,
             registrations: [.success(.enabled)])
@@ -778,8 +778,42 @@ final class PowerHelperServiceTests: XCTestCase {
 
         XCTAssertEqual(backend.unregisterCalls, 0)
         XCTAssertEqual(backend.registerCalls, 1)
-        XCTAssertEqual(lifetimeProbeCalls, 0)
+        // One probe proves nothing holds the lifetime lock in this boot.
+        XCTAssertEqual(lifetimeProbeCalls, 1)
         XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testRebootWithCurrentLifetimeHolderDoesNotCompleteHandoff() async throws {
+        // A reboot proves the recorded boot's helper died, not that nothing
+        // holds the lifetime lock now. Neither exact absence nor a missing
+        // BTM record may complete the handoff while a holder is alive.
+        for absentRecord in [false, true] {
+            let backend = FakePowerHelperBackend(
+                status: absentRecord ? .unavailable : .notRegistered,
+                registrations: [.success(.enabled)],
+                unregisterError: Self.absentRecordRejection)
+            backend.recordIsAbsent = absentRecord
+            let fixture = makeFixture(
+                backend: backend,
+                bootSessionProvider: {
+                    "00000000-0000-0000-0000-000000000002"
+                },
+                lifetimeBarrierStatus: { .busy })
+            defer { fixture.cleanup() }
+            fixture.handoffStore.transaction = makeTransaction(
+                phase: .unregisterSubmitted,
+                goal: .install,
+                digest: "digest-current",
+                lifetimeBarrierExpected: true)
+
+            await XCTAssertThrowsErrorAsync {
+                try await fixture.service.reconcileAfterAppUpdate()
+            }
+
+            XCTAssertEqual(backend.registerCalls, 0)
+            XCTAssertEqual(
+                fixture.handoffStore.transaction?.phase, .unregisterSubmitted)
+        }
     }
 
     func testReleasedLifetimeBarrierSkipsUnreachableHelperPreparation() async throws {
@@ -1181,6 +1215,8 @@ final class PowerHelperServiceTests: XCTestCase {
         // reports `.notFound` and rejects unregister with EPERM. The #260 fix
         // assumed `.notRegistered` and left this journal stuck.
         let notFound = try PlatformFacts.absentRecordReportsNotFound()
+        XCTAssertEqual(
+            try PlatformFacts.value("smappservice.agent.register"), "success")
         let backend = FakePowerHelperBackend(
             status: notFound ? .unavailable : .notRegistered,
             registrations: [.success(.enabled)],

@@ -14,13 +14,16 @@ enum PlatformFacts {
 
     static func value(_ fact: String) throws -> String {
         let text = try String(contentsOf: url, encoding: .utf8)
+        var matches: [String] = []
         for line in text.split(separator: "\n") where !line.hasPrefix("#") {
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
             if fields.count >= 2, fields[0] == Substring(fact) {
-                return String(fields[1])
+                matches.append(String(fields[1]))
             }
         }
-        throw CocoaError(.fileReadCorruptFile)
+        // A missing or duplicate fact is a corrupt table, never a default.
+        guard matches.count == 1 else { throw CocoaError(.fileReadCorruptFile) }
+        return matches[0]
     }
 
     /// `Domain/code` → NSError, or nil for `success`.
@@ -37,6 +40,12 @@ enum PlatformFacts {
     /// True when a label without a Background Task Management record reports
     /// `.notFound` (folded into the app's `unavailable` status).
     static func absentRecordReportsNotFound() throws -> Bool {
-        try value("smappservice.agent.status.absent") == "notFound"
+        // Only the two shapes the handoff can treat as absence are accepted.
+        // Any other recorded status must fail the tests, not model absence.
+        switch try value("smappservice.agent.status.absent") {
+        case "notFound": return true
+        case "notRegistered": return false
+        default: throw CocoaError(.fileReadCorruptFile)
+        }
     }
 }

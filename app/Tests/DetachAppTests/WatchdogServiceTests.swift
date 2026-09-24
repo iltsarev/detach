@@ -727,6 +727,8 @@ final class WatchdogServiceTests: XCTestCase {
         // Background Task Management record reports `.notFound` (folded into
         // `.unavailable`) and rejects unregister with EPERM.
         let notFound = try PlatformFacts.absentRecordReportsNotFound()
+        XCTAssertEqual(
+            try PlatformFacts.value("smappservice.agent.register"), "success")
         let store = MemoryWatchdogHandoffStore(
             transaction: WatchdogHandoffTransaction(
                 phase: .unregisterSubmitted,
@@ -769,6 +771,35 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(backend.unregisterCalls, 0)
         XCTAssertEqual(backend.registerCalls, 1)
         XCTAssertNil(store.transaction)
+    }
+
+    func testChangedBootWithCurrentLifetimeHolderDoesNotComplete() async {
+        for absentRecord in [false, true] {
+            let store = MemoryWatchdogHandoffStore(
+                transaction: WatchdogHandoffTransaction(
+                    phase: .unregisterSubmitted,
+                    targetDigest: "digest-current",
+                    bootSessionIdentifier: Self.currentBoot))
+            let backend = FakeWatchdogBackend(
+                status: absentRecord ? .unavailable : .notRegistered,
+                registrations: [.success(.enabled)],
+                unregistrations: [.failure(Self.absentRecordRejection)])
+            backend.recordIsAbsent = absentRecord
+            let fixture = makeFixture(
+                backend: backend,
+                handoffStore: store,
+                lifetimeBarrierStatus: { .busy },
+                bootSessionProvider: { Self.nextBoot })
+            defer { fixture.cleanup() }
+
+            do {
+                try await fixture.service.reconcileAfterAppUpdate()
+                XCTFail("A live lifetime holder must block completion")
+            } catch {}
+
+            XCTAssertEqual(backend.registerCalls, 0)
+            XCTAssertEqual(store.transaction?.phase, .unregisterSubmitted)
+        }
     }
 
     func testLegacyJournalRecordsBootBeforeReplayAndCompletesAfterRestart() async throws {
