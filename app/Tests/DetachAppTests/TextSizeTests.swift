@@ -225,6 +225,58 @@ final class TextSizeTests: XCTestCase {
     }
 
     @MainActor
+    func testLogPopulatedBeforePresentationShowsItsTailOnceSized() throws {
+        // Switching to a finished session applies cached text in makeNSView,
+        // before the scroll view has a size. The first real layout must still
+        // show the end of the log, not wait for the next poll.
+        let lines = (1...400).map { "line \($0)" }.joined(separator: "\n")
+        let source = NSAttributedString(
+            string: lines,
+            attributes: [.font: NSFont.monospacedSystemFont(
+                ofSize: 11, weight: .regular)])
+        let scrollView = LogTextView.makeScrollView()
+        LogTextView.apply(
+            text: source,
+            pointSize: 13,
+            to: scrollView,
+            coordinator: LogTextView.Coordinator())
+
+        scrollView.frame = NSRect(x: 0, y: 0, width: 600, height: 300)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let document = try XCTUnwrap(scrollView.documentView)
+        let visible = scrollView.contentView.bounds
+        XCTAssertGreaterThan(document.frame.height, visible.height)
+        XCTAssertEqual(visible.maxY, document.frame.height, accuracy: 1)
+    }
+
+    func testLogScrolledUpByTheUserStaysPutAcrossLayout() throws {
+        let lines = (1...400).map { "line \($0)" }.joined(separator: "\n")
+        let source = NSAttributedString(
+            string: lines,
+            attributes: [.font: NSFont.monospacedSystemFont(
+                ofSize: 11, weight: .regular)])
+        let scrollView = LogTextView.makeScrollView()
+        scrollView.frame = NSRect(x: 0, y: 0, width: 600, height: 300)
+        LogTextView.apply(
+            text: source,
+            pointSize: 13,
+            to: scrollView,
+            coordinator: LogTextView.Coordinator())
+        scrollView.layoutSubtreeIfNeeded()
+
+        // A user scroll (wheel, trackpad, scroller) ends with this
+        // notification; a programmatic scroll alone must not change intent.
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        NotificationCenter.default.post(
+            name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 640, height: 320)
+        scrollView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(scrollView.contentView.bounds.minY, 0, accuracy: 1)
+    }
+
     func testLogCanvasCanBePopulatedBeforeItsFirstPresentation() throws {
         let source = NSAttributedString(
             string: "cached output",

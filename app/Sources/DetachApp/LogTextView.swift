@@ -19,9 +19,15 @@ struct LogTextView: NSViewRepresentable {
     }
 
     static func makeScrollView() -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
+        let scrollView = LogScrollView()
         scrollView.setAccessibilityIdentifier("session-preview-log")
-        let textView = scrollView.documentView as! NSTextView
+        let textView = NSTextView(frame: .zero)
+        textView.minSize = .zero
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        scrollView.documentView = textView
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = true
@@ -72,11 +78,15 @@ struct LogTextView: NSViewRepresentable {
         coordinator.lastFontPointSize = pointSize
 
         // Terminal semantics: pinned to the bottom → follow the tail;
-        // scrolled up → keep the current offset (both axes).
+        // scrolled up → keep the current offset (both axes). The tail intent
+        // comes from the user's last scroll, not from geometry: text applied
+        // before the first layout sees a zero-height viewport.
         let clipView = scrollView.contentView
         let visible = clipView.bounds
         let oldHeight = textView.frame.height
-        let wasAtBottom = oldHeight <= visible.height + 1 || visible.maxY >= oldHeight - 5
+        let logScrollView = scrollView as? LogScrollView
+        let wasAtBottom = logScrollView?.followsTail
+            ?? (oldHeight <= visible.height + 1 || visible.maxY >= oldHeight - 5)
 
         storage.setAttributedString(Self.resizedText(text, to: pointSize))
         // Force layout so the new document height is real before we scroll.
@@ -108,5 +118,60 @@ struct LogTextView: NSViewRepresentable {
             scaled.addAttribute(.font, value: resized, range: range)
         }
         return scaled
+    }
+}
+
+/// Scroll view that keeps showing the end of the log across layout passes
+/// until the user scrolls away, like a terminal. SwiftUI can apply cached text
+/// before the view has a size; `tile()` then restores the tail once it does.
+final class LogScrollView: NSScrollView {
+    private(set) var followsTail = true
+    private var observers: [NSObjectProtocol] = []
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // Only user scrolling (wheel, trackpad, scroller) changes the intent;
+        // window resizes and text updates do not.
+        for name in [NSScrollView.didLiveScrollNotification,
+                     NSScrollView.didEndLiveScrollNotification] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: name, object: self, queue: nil
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateTailIntent() }
+            })
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    override func tile() {
+        super.tile()
+        if followsTail { scrollToTail() }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        updateTailIntent()
+    }
+
+    func scrollToTail() {
+        guard let document = documentView else { return }
+        let clip = contentView
+        let maxY = max(0, document.frame.height - clip.bounds.height)
+        guard abs(clip.bounds.origin.y - maxY) > 0.5 else { return }
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: maxY))
+        reflectScrolledClipView(clip)
+    }
+
+    private func updateTailIntent() {
+        guard let document = documentView else { return }
+        let visible = contentView.bounds
+        followsTail = document.frame.height <= visible.height + 1
+            || visible.maxY >= document.frame.height - 5
     }
 }

@@ -94,6 +94,7 @@ Detached live logs reread every 2 s. Cold attach uses one passive SwiftTerm
 overlay; cached bytes never enter the live buffer. Live switching keeps its PTY.
 The visible log view owns its read task. A terminal handoff cannot clear the
 reader of a returned log view. The returned view shows and refreshes its log.
+A log view opens at its end and follows new output until the user scrolls up.
 A failed read shows the error. The next successful read replaces it.
 tmux holds the frame until a synchronized redraw.
 Metadata stays in one scrolling row. Selection keeps header, terminal, and
