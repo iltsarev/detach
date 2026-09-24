@@ -304,7 +304,9 @@ A weekly and manual workflow runs each deterministic safety mutant in a
 separate bounded macOS job. The required mutation score is 100 percent. A
 survivor, timeout, or infrastructure-like failure is not a kill and fails the
 workflow. On a pull request the workflow runs only the mutants whose source or
-test suite file changed. A mutant source outside the critical coverage set
+test suite file changed; the stable `mutation-gate` job is a required
+pull-request check and passes only when every selected mutant is killed or
+none is selected. A mutant source outside the critical coverage set
 names a declared requirement; this does not add the file to the coverage
 ratchet. Each mutant reproduces an escaped or fixed defect, for example the
 #259 absent-record reply accepted without `notRegistered` status.
