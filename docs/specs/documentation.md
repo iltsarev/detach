@@ -142,7 +142,8 @@ Hosted CI is the merge-readiness authority.
   their record order can differ. Promotion does not rewrite the manifest.
   Promotion keeps identities and digests. Ambiguity runs a full `ci-main` gate.
 - The active GitHub ruleset for `main` has no bypass actors. It requires a pull
-  request, a current strict GitHub Actions `quality-gates` job, merge commits,
+  request, current strict GitHub Actions `quality-gates` and `mutation-gate`
+  jobs, merge commits,
   and no approving review. It rejects deletion and non-fast-forward updates.
   An administrator cannot use an unchecked push as a substitute for CI. A
   release head gets the same check through its release pull request.

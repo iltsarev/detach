@@ -23,7 +23,7 @@ the providers separately.
 6. Unless the owner asks to keep work local, use a topic branch. Stage only
    task-scoped files, inspect the staged public diff, and summarize the safe
    contract delta, durable decisions, and evidence in the PR. Merge only after
-   its authoritative `quality-gates` job passes. Verify final `main` upstream parity.
+   its `quality-gates` and `mutation-gate` checks pass. Verify final `main` upstream parity.
    Release metadata uses a PR. `scripts/release-version` is the sole entry.
 
 `README.md` is the user-facing contract. `docs/specs/` contains durable

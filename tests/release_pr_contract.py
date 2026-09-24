@@ -50,7 +50,7 @@ rules = [
     }}}},
     {{"type": "required_status_checks", "parameters": {{
         "do_not_enforce_on_create": False, "strict_required_status_checks_policy": True,
-        "required_status_checks": [{{"context": "quality-gates", "integration_id": 15368}}],
+        "required_status_checks": [{{"context": "quality-gates", "integration_id": 15368}}, {{"context": "mutation-gate", "integration_id": 15368}}],
     }}}},
 ]
 
@@ -82,6 +82,19 @@ if args[:1] == ["api"] and "--method" not in args:
         }}]}}))
     elif endpoint.endswith("/actions/runs/123/jobs?filter=latest&per_page=100"):
         print(json.dumps({{"jobs": [{{"name": "quality-gates", "conclusion": "success"}}]}}))
+    elif "workflows/quality-mutations.yml/runs" in endpoint:
+        print(json.dumps({{"workflow_runs": [{{
+            "id": 124, "run_attempt": 1, "event": "pull_request", "head_sha": "{HEAD}",
+            "status": "completed",
+            "conclusion": "failure" if mode == "failed-mutation" else "success",
+            "html_url": "https://github.example/actions/runs/124",
+            "head_branch": "detach-release/v9.8.7",
+            "head_repository": {{"full_name": "owner/repository"}},
+            "path": ".github/workflows/quality-mutations.yml",
+            "pull_requests": [],
+        }}]}}))
+    elif endpoint.endswith("/actions/runs/124/jobs?filter=latest&per_page=100"):
+        print(json.dumps({{"jobs": [{{"name": "mutation-gate", "conclusion": "success"}}]}}))
     else:
         raise SystemExit(f"unexpected API endpoint: {{endpoint}}")
 elif args[:3] == ["api", "--method", "POST"]:
