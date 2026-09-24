@@ -451,6 +451,38 @@ class QualityGateContract(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, expected, result.stderr)
 
+    def test_source_rules_reject_unparseable_workflows(self) -> None:
+        # A plain `if:` value containing `": "` made GitHub drop the whole
+        # mutation workflow without a visible error.
+        cases = {
+            "if: needs.corpus.outputs.matrix != '{\"include\": []}'\n": 1,
+            "if: needs.corpus.outputs.has_mutants == 'true'\n": 0,
+        }
+        for condition, expected in cases.items():
+            with self.subTest(expected=expected), \
+                    tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                workflow = root / ".github/workflows/example.yml"
+                workflow.parent.mkdir(parents=True)
+                workflow.write_text(
+                    "jobs:\n  build:\n    " + condition
+                    + "    runs-on: ubuntu-latest\n",
+                    encoding="utf-8",
+                )
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+                result = subprocess.run(
+                    [str(ROOT / "tests/source-rules.sh")],
+                    env={
+                        **os.environ,
+                        "DETACH_SOURCE_RULES_TEST_MODE": "1",
+                        "DETACH_SOURCE_RULES_ROOT": str(root),
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_source_rules_reject_literal_swiftpm_layout_paths(self) -> None:
         # The pre-#267 UI coverage resolver hardcoded the Xcode 26 layout.
         cases = {

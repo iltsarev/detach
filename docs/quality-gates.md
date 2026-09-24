@@ -147,7 +147,8 @@ The policy defines these stages:
   `scripts/install.sh`, a `mv`, `ln`, `rm`, `lockf`, or typed-state mutation
   must not end in `|| true` or `|| :` unless the statement carries
   `quality: allow-ignored-failure <reason>`; Swift sources must not contain
-  an empty `catch`;
+  an empty `catch`; every workflow file must parse as YAML, because GitHub
+  silently stops scheduling a workflow that does not;
 - gate self-contracts;
 - coverage-enabled Swift tests and automatic quality metrics;
 - development app build and verification;

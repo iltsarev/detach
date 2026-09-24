@@ -89,6 +89,39 @@ while IFS= read -r -d '' file; do
   fi
 done < <(git -C "$ROOT" ls-files -z)
 
+# Rule workflow-yaml: GitHub silently stops scheduling a workflow whose file
+# does not parse (a plain `if:` value containing `": "` once disabled the
+# mutation workflow). Every tracked workflow must be valid YAML.
+workflow_parser=""
+if python3 -c 'import yaml' >/dev/null 2>&1; then
+  workflow_parser=python
+elif command -v ruby >/dev/null 2>&1 && ruby -ryaml -e '' >/dev/null 2>&1; then
+  workflow_parser=ruby
+fi
+while IFS= read -r -d '' file; do
+  case "$file" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) continue ;; esac
+  [ -f "$ROOT/$file" ] || continue
+  case "$workflow_parser" in
+    python)
+      python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1], encoding="utf-8"))' \
+        "$ROOT/$file" 2>"${TMPDIR:-/tmp}/source-rules-yaml.$$" || {
+        printf 'source rules: %s: workflow is not valid YAML: %s\n' "$file" \
+          "$(tail -1 "${TMPDIR:-/tmp}/source-rules-yaml.$$")" >&2
+        failures=$((failures + 1))
+      } ;;
+    ruby)
+      ruby -ryaml -e 'YAML.safe_load(File.read(ARGV[0]), aliases: true)' "$ROOT/$file" \
+        2>/dev/null || {
+        printf 'source rules: %s: workflow is not valid YAML\n' "$file" >&2
+        failures=$((failures + 1))
+      } ;;
+    *)
+      printf 'source rules: no YAML parser (python3 PyYAML or ruby) to check %s\n' "$file" >&2
+      failures=$((failures + 1)) ;;
+  esac
+done < <(git -C "$ROOT" ls-files -z)
+rm -f "${TMPDIR:-/tmp}/source-rules-yaml.$$"
+
 if [ "$failures" -ne 0 ]; then
   exit 1
 fi

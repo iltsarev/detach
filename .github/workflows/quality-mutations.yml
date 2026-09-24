@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 2
     outputs:
       matrix: ${{ steps.mutation-corpus.outputs.matrix }}
+      has_mutants: ${{ steps.mutation-corpus.outputs.has_mutants }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,10 +41,15 @@ jobs:
             matrix="$(scripts/quality-mutation matrix)"
           fi
           printf 'matrix=%s\n' "$matrix" >>"$GITHUB_OUTPUT"
+          if [ "$matrix" = '{"include": []}' ]; then
+            printf 'has_mutants=false\n' >>"$GITHUB_OUTPUT"
+          else
+            printf 'has_mutants=true\n' >>"$GITHUB_OUTPUT"
+          fi
 
   mutation:
     needs: corpus
-    if: needs.corpus.outputs.matrix != '{"include": []}'
+    if: needs.corpus.outputs.has_mutants == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.corpus.outputs.matrix) }}

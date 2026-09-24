@@ -106,7 +106,7 @@ def main() -> int:
         "pull_request:",
         "git diff --name-only HEAD^1 HEAD",
         "scripts/quality-mutation matrix --changed-files",
-        "if: needs.corpus.outputs.matrix != '{\"include\": []}'",
+        "if: needs.corpus.outputs.has_mutants == 'true'",
         "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
         "scripts/quality-care latest --optional",
         "care_args+=(--care-summary",
