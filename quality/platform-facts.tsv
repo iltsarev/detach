@@ -1,0 +1,9 @@
+# Observed SMAppService behavior. Written by scripts/platform-probe record.
+# fact	observed	macos_build	observed_on
+smappservice.agent.status.absent	notFound	25G83	2026-09-24
+smappservice.agent.unregister.absent	SMAppServiceErrorDomain/1	25G83	2026-09-24
+smappservice.agent.register	success	25G83	2026-09-24
+smappservice.agent.status.registered	enabled	25G83	2026-09-24
+smappservice.agent.unregister.registered	success	25G83	2026-09-24
+smappservice.agent.status.after-unregister	notRegistered	25G83	2026-09-24
+smappservice.agent.unregister.after-unregister	success	25G83	2026-09-24

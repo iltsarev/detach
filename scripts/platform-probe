@@ -1,0 +1,125 @@
+#!/bin/bash
+
+# Observe the real macOS SMAppService behavior that the power handoff fakes
+# encode, with a signed probe bundle and a dedicated label.
+#
+#   observe   build, sign, and run the probe; print observed facts
+#   verify    fail when an observation differs from quality/platform-facts.tsv
+#   record    rewrite quality/platform-facts.tsv from a fresh observation
+#
+# The probe registers and unregisters one LaunchAgent that never runs. It
+# never touches the real helper or watchdog labels. It needs the Developer ID
+# identity from .env.release (DETACH_CODESIGN_IDENTITY) and a GUI login
+# session. scripts/quality-qualify runs `verify`; releases never run it.
+
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+FACTS="$ROOT/quality/platform-facts.tsv"
+SOURCE="$ROOT/tools/platform_probe.swift"
+BUNDLE_ID=dev.tsarev.detach.platform-probe
+
+die() {
+  printf 'platform-probe: %s\n' "$*" >&2
+  exit 1
+}
+
+signing_identity() {
+  local line value
+  if [ -n "${DETACH_CODESIGN_IDENTITY:-}" ]; then
+    printf '%s\n' "$DETACH_CODESIGN_IDENTITY"
+    return
+  fi
+  [ -f "$ROOT/.env.release" ] || die 'DETACH_CODESIGN_IDENTITY is not set and .env.release is missing'
+  line="$(/usr/bin/grep -E '^export DETACH_CODESIGN_IDENTITY=' "$ROOT/.env.release" | /usr/bin/tail -1)"
+  value="${line#export DETACH_CODESIGN_IDENTITY=}"
+  value="${value#\"}"; value="${value%\"}"; value="${value#\'}"; value="${value%\'}"
+  [ -n "$value" ] || die 'DETACH_CODESIGN_IDENTITY is empty'
+  printf '%s\n' "$value"
+}
+
+observe() {
+  local identity work app bundle_id
+  identity="$(signing_identity)"
+  # A fresh identity per run: BTM keeps a record for a label after its first
+  # registration, so only a never-used label shows the absent-record facts.
+  bundle_id="$BUNDLE_ID.$(/usr/bin/uuidgen | /usr/bin/tr 'A-Z' 'a-z' | /usr/bin/tr -d '-' | /usr/bin/cut -c1-12)"
+  work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/detach-platform-probe.XXXXXX")"
+  trap '/bin/rm -rf "$work"' RETURN
+  app="$work/DetachPlatformProbe.app"
+  /bin/mkdir -p "$app/Contents/MacOS" "$app/Contents/Library/LaunchAgents"
+  /usr/bin/xcrun swiftc -O -target arm64-apple-macosx26.0 \
+    -o "$app/Contents/MacOS/DetachPlatformProbe" "$SOURCE" >&2
+  /usr/bin/plutil -create xml1 "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert CFBundleIdentifier -string "$bundle_id" "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert CFBundleExecutable -string DetachPlatformProbe "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert CFBundleName -string 'Detach Platform Probe' "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert CFBundlePackageType -string APPL "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert CFBundleShortVersionString -string 1 "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert CFBundleVersion -string 1 "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert LSMinimumSystemVersion -string 26.0 "$app/Contents/Info.plist"
+  /usr/bin/plutil -insert LSUIElement -bool true "$app/Contents/Info.plist"
+  local agent="$app/Contents/Library/LaunchAgents/$bundle_id.agent.plist"
+  /usr/bin/plutil -create xml1 "$agent"
+  /usr/bin/plutil -insert Label -string "$bundle_id.agent" "$agent"
+  /usr/bin/plutil -insert BundleProgram -string Contents/MacOS/DetachPlatformProbe "$agent"
+  /usr/bin/plutil -insert ProgramArguments -array "$agent"
+  /usr/bin/plutil -insert ProgramArguments.0 -string DetachPlatformProbe "$agent"
+  /usr/bin/plutil -insert ProgramArguments.1 -string --agent-idle "$agent"
+  /usr/bin/plutil -insert RunAtLoad -bool false "$agent"
+  /usr/bin/codesign --force --options runtime --sign "$identity" \
+    "$app/Contents/MacOS/DetachPlatformProbe" >&2
+  /usr/bin/codesign --force --options runtime --sign "$identity" "$app" >&2
+  /usr/bin/codesign --verify --strict "$app" >&2
+  printf 'macos.build\t%s\n' "$(/usr/bin/sw_vers -buildVersion)"
+  "$app/Contents/MacOS/DetachPlatformProbe" --plist "$bundle_id.agent.plist"
+}
+
+expected_facts() {
+  /usr/bin/awk -F '\t' '!/^#/ && NF >= 2 {print $1 "\t" $2}' "$FACTS"
+}
+
+verify() {
+  local observed expected failed=0 identifier value want
+  [ -f "$FACTS" ] || die "missing $FACTS"
+  observed="$(observe)"
+  expected="$(expected_facts)"
+  while IFS=$'\t' read -r identifier want; do
+    value="$(printf '%s\n' "$observed" | /usr/bin/awk -F '\t' -v id="$identifier" '$1 == id {print $2}')"
+    if [ "$value" != "$want" ]; then
+      printf 'platform-probe: %s observed %s, table expects %s\n' \
+        "$identifier" "${value:-nothing}" "$want" >&2
+      failed=1
+    fi
+  done <<<"$expected"
+  if [ "$failed" -ne 0 ]; then
+    printf 'platform-probe: macOS %s differs from the recorded platform facts. Update the product classifiers and fakes, then run scripts/platform-probe record.\n' \
+      "$(printf '%s\n' "$observed" | /usr/bin/awk -F '\t' '$1 == "macos.build" {print $2}')" >&2
+    exit 1
+  fi
+  printf 'platform-probe: every recorded platform fact holds on macOS %s\n' \
+    "$(/usr/bin/sw_vers -buildVersion)"
+}
+
+record() {
+  local observed build today temporary
+  observed="$(observe)"
+  build="$(printf '%s\n' "$observed" | /usr/bin/awk -F '\t' '$1 == "macos.build" {print $2}')"
+  today="$(/bin/date -u +%Y-%m-%d)"
+  temporary="$(/usr/bin/mktemp "$FACTS.XXXXXX")"
+  {
+    printf '# Observed SMAppService behavior. Written by scripts/platform-probe record.\n'
+    printf '# fact\tobserved\tmacos_build\tobserved_on\n'
+    printf '%s\n' "$observed" | /usr/bin/awk -F '\t' -v build="$build" -v day="$today" \
+      '$1 != "macos.build" {print $1 "\t" $2 "\t" build "\t" day}'
+  } >"$temporary"
+  /bin/mv -f "$temporary" "$FACTS"
+  printf 'platform-probe: recorded %s\n' "$FACTS"
+}
+
+case "${1:-}" in
+  observe) observe ;;
+  verify) verify ;;
+  record) record ;;
+  *) die 'usage: scripts/platform-probe observe|verify|record' ;;
+esac

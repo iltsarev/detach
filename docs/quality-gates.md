@@ -55,7 +55,11 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
   layout.
 - `scripts/quality-qualify` qualifies the release Mac's Xcode, SDK, and
   macOS build after a toolchain change: it runs `--mode repository` and
-  records the identity only when every stage passes. Releases check this
+  `scripts/platform-probe verify`, and records the identity only when both
+  pass. The probe signs a throwaway bundle with a never-used label, observes
+  SMAppService status and unregister replies, and compares them with
+  `quality/platform-facts.tsv`; the power handoff tests build their fakes from
+  that table. Releases check this
   record in seconds and never rebuild for a toolchain change.
 - `scripts/quality-care validate` checks the versioned workflow eval corpus.
   `scripts/quality-care evaluate` grades diff impact and private-scope cases.

@@ -82,8 +82,16 @@ final class SystemPowerHelperLifecycleRunner:
 @MainActor
 protocol PowerHelperRegistrationBackend: AnyObject {
     var status: PowerHelperRegistrationStatus { get }
+    /// Background Task Management has no record for this label. SMAppService
+    /// reports that as `.notFound`, which `status` folds into `.unavailable`.
+    /// See quality/platform-facts.tsv.
+    var recordIsAbsent: Bool { get }
     func register() throws
     func unregister() async throws
+}
+
+extension PowerHelperRegistrationBackend {
+    var recordIsAbsent: Bool { false }
 }
 
 @MainActor
@@ -111,6 +119,8 @@ private final class SystemPowerHelperRegistrationBackend:
         @unknown default: .unavailable
         }
     }
+
+    var recordIsAbsent: Bool { service.status == .notFound }
 
     func register() throws {
         try service.register()
@@ -422,7 +432,8 @@ final class PowerHelperService {
                         transaction.lifetimeBarrierExpected = false
                         try handoffStore.save(transaction)
                         continue
-                    case .notRegistered:
+                    case .notRegistered,
+                         .unavailable where backend.recordIsAbsent:
                         // A process from the recorded boot cannot still be
                         // alive. Exact job absence completes the lost callback.
                         transaction.phase = .removed
@@ -448,7 +459,10 @@ final class PowerHelperService {
                         unregisterError) else {
                         throw unregisterError
                     }
-                    guard status == .notRegistered else {
+                    // macOS reports a label with no Background Task
+                    // Management record as `.notFound`, not `.notRegistered`.
+                    guard status == .notRegistered
+                            || backend.recordIsAbsent else {
                         throw unregisterError
                     }
                     do {

@@ -231,6 +231,8 @@ route	900	scripts/release-version	release-tool	safe	docs/specs/release.md
 route	900	scripts/release-impact	release-tool	safe	docs/specs/release.md
 route	900	scripts/release-toolchain	release-tool	safe	docs/specs/release.md
 route	900	scripts/quality-qualify	release-tool	safe	docs/specs/release.md
+route	900	scripts/platform-probe	release-tool	safe	docs/specs/release.md
+route	900	tools/platform_probe.swift	release-tool	safe	docs/specs/release.md
 route	800	scripts/*	unknown	unknown	docs/specs/documentation.md
 route	900	tests/run.sh	codex-test	safe	docs/specs/runtime.md
 route	900	tests/fake-codex	codex-test	safe	docs/specs/runtime.md

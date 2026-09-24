@@ -722,6 +722,55 @@ final class WatchdogServiceTests: XCTestCase {
         XCTAssertEqual(store.transaction?.phase, .unregisterSubmitted)
     }
 
+    func testObservedAbsentRecordShapeCompletesReplay() async throws {
+        // Shapes come from quality/platform-facts.tsv: a label without a
+        // Background Task Management record reports `.notFound` (folded into
+        // `.unavailable`) and rejects unregister with EPERM.
+        let notFound = try PlatformFacts.absentRecordReportsNotFound()
+        let store = MemoryWatchdogHandoffStore(
+            transaction: WatchdogHandoffTransaction(
+                phase: .unregisterSubmitted,
+                targetDigest: "digest-current",
+                bootSessionIdentifier: Self.currentBoot))
+        let backend = FakeWatchdogBackend(
+            status: notFound ? .unavailable : .notRegistered,
+            registrations: [.success(.enabled)],
+            unregistrations: [.failure(try XCTUnwrap(PlatformFacts.error(
+                "smappservice.agent.unregister.absent")))])
+        backend.recordIsAbsent = notFound
+        let fixture = makeFixture(backend: backend, handoffStore: store)
+        defer { fixture.cleanup() }
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertNil(store.transaction)
+    }
+
+    func testChangedBootWithAbsentRecordCompletesWithoutReplay() async throws {
+        let store = MemoryWatchdogHandoffStore(
+            transaction: WatchdogHandoffTransaction(
+                phase: .unregisterSubmitted,
+                targetDigest: "digest-current",
+                bootSessionIdentifier: Self.currentBoot))
+        let backend = FakeWatchdogBackend(
+            status: .unavailable,
+            registrations: [.success(.enabled)])
+        backend.recordIsAbsent = true
+        let fixture = makeFixture(
+            backend: backend,
+            handoffStore: store,
+            bootSessionProvider: { Self.nextBoot })
+        defer { fixture.cleanup() }
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 0)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertNil(store.transaction)
+    }
+
     func testLegacyJournalRecordsBootBeforeReplayAndCompletesAfterRestart() async throws {
         // A journal written before the boot field can stay stuck when
         // unregister fails with an unclassified error. The replay records the
@@ -925,6 +974,7 @@ private final class FakeWatchdogBackend: WatchdogRegistrationBackend {
     }
 
     var status: WatchdogStatus
+    var recordIsAbsent = false
     var registrations: [Registration]
     var unregistrations: [Unregistration]
     private(set) var registerCalls = 0
@@ -950,6 +1000,7 @@ private final class FakeWatchdogBackend: WatchdogRegistrationBackend {
         switch registrations.removeFirst() {
         case .success(let newStatus):
             status = newStatus
+            recordIsAbsent = false
         case .approvalRequired(let error):
             status = .requiresApproval
             throw error

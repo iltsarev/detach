@@ -1175,6 +1175,48 @@ final class PowerHelperServiceTests: XCTestCase {
             forKey: "powerHelperDefinitionReconcilePending"))
     }
 
+    func testObservedAbsentRecordShapeRecoversStaleReplay() async throws {
+        // Shapes come from quality/platform-facts.tsv (scripts/platform-probe
+        // on a real Mac): a label with no Background Task Management record
+        // reports `.notFound` and rejects unregister with EPERM. The #260 fix
+        // assumed `.notRegistered` and left this journal stuck.
+        let notFound = try PlatformFacts.absentRecordReportsNotFound()
+        let backend = FakePowerHelperBackend(
+            status: notFound ? .unavailable : .notRegistered,
+            registrations: [.success(.enabled)],
+            unregisterError: try XCTUnwrap(PlatformFacts.error(
+                "smappservice.agent.unregister.absent")))
+        backend.recordIsAbsent = notFound
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .released })
+        defer { fixture.cleanup() }
+
+        try await fixture.service.reconcileAfterAppUpdate()
+
+        XCTAssertEqual(backend.unregisterCalls, 1)
+        XCTAssertEqual(backend.registerCalls, 1)
+        XCTAssertEqual(fixture.service.status, .enabled)
+        XCTAssertNil(fixture.handoffStore.transaction)
+    }
+
+    func testUnavailableStatusWithARecordStaysFailClosedOnAbsentReply() async {
+        let backend = FakePowerHelperBackend(
+            status: .unavailable,
+            registrations: [.success(.enabled)],
+            unregisterError: Self.absentRecordRejection)
+        let fixture = makeFixture(
+            backend: backend,
+            lifetimeBarrierStatus: { .released })
+        defer { fixture.cleanup() }
+
+        do {
+            try await fixture.service.reconcileAfterAppUpdate()
+            XCTFail("Expected an unavailable record to remain fail-closed")
+        } catch {}
+        XCTAssertEqual(backend.registerCalls, 0)
+    }
+
     func testAbsentRecordRejectionStillWaitsForReleasedLifetimeBarrier() async throws {
         let backend = FakePowerHelperBackend(
             status: .notRegistered,
@@ -1616,6 +1658,7 @@ private final class FakePowerHelperBackend: PowerHelperRegistrationBackend {
     private(set) var unregisterCalls = 0
     var unregisterError: Error?
     var suspendUnregister = false
+    var recordIsAbsent = false
     var onUnregister: (() -> Void)?
     private var unregisterContinuation: CheckedContinuation<Void, Never>?
 
@@ -1637,8 +1680,10 @@ private final class FakePowerHelperBackend: PowerHelperRegistrationBackend {
         switch registrations.removeFirst() {
         case .success(let newStatus):
             status = newStatus
+            recordIsAbsent = false
         case .approvalRequired(let error):
             status = .requiresApproval
+            recordIsAbsent = false
             throw error
         case .failure(let error):
             throw error

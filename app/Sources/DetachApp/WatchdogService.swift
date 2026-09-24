@@ -14,8 +14,15 @@ enum WatchdogStatus: Equatable {
 @MainActor
 protocol WatchdogRegistrationBackend: AnyObject {
     var status: WatchdogStatus { get }
+    /// Background Task Management has no record for this label (SMAppService
+    /// `.notFound`, folded into `.unavailable`). See quality/platform-facts.tsv.
+    var recordIsAbsent: Bool { get }
     func register() throws
     func unregister() async throws
+}
+
+extension WatchdogRegistrationBackend {
+    var recordIsAbsent: Bool { false }
 }
 
 @MainActor
@@ -41,6 +48,8 @@ private final class SystemWatchdogRegistrationBackend: WatchdogRegistrationBacke
         @unknown default: .unavailable
         }
     }
+
+    var recordIsAbsent: Bool { service.status == .notFound }
 
     func register() throws {
         try service.register()
@@ -210,7 +219,7 @@ final class WatchdogService {
                 let currentBoot = try currentBootSession()
                 if let recordedBoot = transaction.bootSessionIdentifier,
                    recordedBoot != currentBoot,
-                   status == .notRegistered {
+                   status == .notRegistered || backend.recordIsAbsent {
                     // A per-user agent from the recorded boot cannot still
                     // be alive. Exact job absence completes the lost callback.
                     transaction.phase = .removed
@@ -236,7 +245,10 @@ final class WatchdogService {
                     // The EPERM shape of that reply is ambiguous on its own:
                     // BTM also rejects mutations it forbids by policy. Only a
                     // record that BTM itself reports absent may continue.
-                    guard status == .notRegistered else { throw error }
+                    // A label with no Background Task Management record
+                    // reports `.notFound` rather than `.notRegistered`.
+                    guard status == .notRegistered || backend.recordIsAbsent
+                    else { throw error }
                     // An error callback may be immediate. For replay after a
                     // lost callback, require the new watchdog's lifetime lock
                     // to be released, or conservatively observe that a legacy

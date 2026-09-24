@@ -1918,6 +1918,20 @@
       "test_domain": "release-tool"
     },
     {
+      "pattern": "scripts/platform-probe",
+      "priority": 900,
+      "release_domain": "safe",
+      "spec": "docs/specs/release.md",
+      "test_domain": "release-tool"
+    },
+    {
+      "pattern": "tools/platform_probe.swift",
+      "priority": 900,
+      "release_domain": "safe",
+      "spec": "docs/specs/release.md",
+      "test_domain": "release-tool"
+    },
+    {
       "pattern": "scripts/*",
       "priority": 800,
       "release_domain": "unknown",
@@ -3179,6 +3193,7 @@
         "app/scripts/publish-release.sh",
         "app/scripts/release.sh",
         "app/scripts/verify-appcast.sh",
+        "scripts/platform-probe",
         "scripts/quality-qualify",
         "scripts/release-impact",
         "scripts/release-lid-probe",
@@ -3194,6 +3209,7 @@
         "tests/release-workflow.sh",
         "tests/release_pr*",
         "tests/release_sbom*",
+        "tools/platform_probe.swift",
         "tools/release_pr.py",
         "tools/release_sbom.py"
       ],

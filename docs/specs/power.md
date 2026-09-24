@@ -83,10 +83,11 @@ registered until the old lifetime lock is released or an exact absent-job
 callback provides the required completion barrier. An absent-job callback is
 `kSMErrorJobNotFound` or the `SMAppServiceErrorDomain` `EPERM` reply that
 macOS 26 returns for a label without a Background Task Management record. The
-app accepts either reply only with exact `notRegistered` status and the
-lifetime-barrier wait; an `EPERM` reply for a live record stays fail-closed.
+app accepts either reply only with exact `notRegistered` status, or no
+record (`notFound`), plus the lifetime-barrier wait; an `EPERM` reply for a
+live record stays fail-closed.
 The watchdog journal records the boot UUID before each unregister replay.
-After a restart, exact `notRegistered` status completes that replay.
+After a restart, `notRegistered` or no record completes that replay.
 Lifetime and system handoff probes reject special files without waiting for
 a FIFO writer. File validation precedes lock acquisition. Activity and source
 handoff readers also reject special files without blocking and keep the
