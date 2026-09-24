@@ -82,6 +82,28 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # One stable check for branch protection: the mutant matrix has dynamic job
+  # names and is skipped when a pull request touches no mutant.
+  mutation-gate:
+    if: always() && github.event_name == 'pull_request'
+    needs: [corpus, mutation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every selected mutant to be killed
+        env:
+          CORPUS_RESULT: ${{ needs.corpus.result }}
+          MUTATION_RESULT: ${{ needs.mutation.result }}
+        run: |
+          [ "$CORPUS_RESULT" = success ] || {
+            printf 'mutation corpus job: %s\n' "$CORPUS_RESULT" >&2
+            exit 1
+          }
+          case "$MUTATION_RESULT" in
+            success|skipped) printf 'mutation result: %s\n' "$MUTATION_RESULT" ;;
+            *) printf 'mutation result: %s\n' "$MUTATION_RESULT" >&2; exit 1 ;;
+          esac
+
   score:
     if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: mutation
