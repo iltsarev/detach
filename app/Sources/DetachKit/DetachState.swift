@@ -100,16 +100,17 @@ public enum SessionMetadataDocument {
         }
 
         try validateLifecycleMutation(from: original, to: object, changes: changes)
+        return try encodedMetadata(object)
+    }
 
+    private static func encodedMetadata(_ object: [String: Any]) throws -> Data {
         guard operationalFieldsAreTyped(object),
-              JSONSerialization.isValidJSONObject(object) else {
+              JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(
+                withJSONObject: object, options: [.sortedKeys]) else {
             throw DetachStateError.invalidMetadata
         }
-        do {
-            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        } catch {
-            throw DetachStateError.invalidMetadata
-        }
+        return data
     }
 
     /// Creates a new top-level metadata object from typed scalar changes.
@@ -128,16 +129,7 @@ public enum SessionMetadataDocument {
                 throw DetachStateError.invalidLifecyclePhase
             }
         }
-
-        guard operationalFieldsAreTyped(object),
-              JSONSerialization.isValidJSONObject(object) else {
-            throw DetachStateError.invalidMetadata
-        }
-        do {
-            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        } catch {
-            throw DetachStateError.invalidMetadata
-        }
+        return try encodedMetadata(object)
     }
 
     /// Applies the provider/session identity predicate used when discovering
@@ -360,6 +352,13 @@ public enum SessionMetadataDocument {
     }
 }
 
+struct PendingBackgroundTask: Codable, Equatable, Sendable {
+    /// Bounded so an unobserved completion cannot grow state without limit.
+    static let limit = 32
+    var toolUseID: String
+    var taskID: String?
+}
+
 public struct TranscriptSummary: Equatable, Sendable {
     public var model: String?
     public var contextUsed: Int?
@@ -367,6 +366,10 @@ public struct TranscriptSummary: Equatable, Sendable {
     public var agentTurnState: AgentTurnState?
     public var agentTurnID: String?
     var pendingToolUseID: String?
+    /// Background work the agent started and still waits for (Claude:
+    /// `run_in_background` shells and workflows without a completion
+    /// notification yet). A finished turn with pending work is not waiting.
+    var pendingBackground: [PendingBackgroundTask] = []
 
     public init(
         model: String? = nil,
@@ -381,6 +384,7 @@ public struct TranscriptSummary: Equatable, Sendable {
         self.agentTurnState = agentTurnState
         self.agentTurnID = agentTurnID
         self.pendingToolUseID = nil
+        self.pendingBackground = []
     }
 
     public static func == (lhs: TranscriptSummary, rhs: TranscriptSummary) -> Bool {
@@ -711,6 +715,16 @@ public enum TranscriptDocument {
         let type = record["type"] as? String
         let message = record["message"] as? [String: Any]
 
+        // Completion notifications for background work arrive as queued
+        // commands, not as user messages, and carry the launching tool use.
+        if type == "queue-operation" || type == "attachment" {
+            completeBackgroundTasks(in: record, into: &result)
+            return
+        }
+        if !isJSONTrue(record["isSidechain"]) {
+            trackBackgroundTasks(type: type, message: message, into: &result)
+        }
+
         if type == "assistant" {
             result.model = message?["model"] as? String ?? ""
             let usage = message?["usage"] as? [String: Any]
@@ -739,8 +753,7 @@ public enum TranscriptDocument {
 
         if type == "system", record["subtype"] as? String == "turn_duration" {
             if result.pendingToolUseID == nil, result.agentTurnState != .waiting {
-                result.agentTurnState = .waiting
-                result.agentTurnID = turnID
+                finishTurn(turnID, into: &result)
             }
             return
         }
@@ -754,8 +767,7 @@ public enum TranscriptDocument {
                 // Claude can omit turn_duration. Keep one notification identity
                 // across final text fragments and a later duration record.
                 if result.agentTurnState != .waiting {
-                    result.agentTurnState = .waiting
-                    result.agentTurnID = turnID
+                    finishTurn(turnID, into: &result)
                 }
             } else if message?["stop_reason"] as? String == "tool_use" {
                 // A tool continuation can follow a completed answer without a
@@ -786,6 +798,138 @@ public enum TranscriptDocument {
         result.agentTurnState = .working
         result.agentTurnID = turnID
         result.pendingToolUseID = nil
+    }
+
+    /// Bytes searched for background launches when a cold tail ends in a
+    /// finished turn. Launch records can sit far above the summary tail.
+    public static let backgroundSearchByteCount: UInt64 = 4 * 1_024 * 1_024
+
+    /// A cold Claude tail can end in a finished turn while background work
+    /// launched earlier is still running. Replay only background launch and
+    /// completion records from a deeper tail; if any work is pending, the
+    /// agent is still working.
+    public static func resolvingBackgroundWork(
+        _ summary: TranscriptSummary,
+        provider: Provider,
+        deepTail: () -> Data?
+    ) -> TranscriptSummary {
+        guard provider == .claude,
+              summary.agentTurnState == .waiting,
+              summary.pendingToolUseID == nil,
+              summary.pendingBackground.isEmpty,
+              let data = deepTail() else { return summary }
+        var scan = TranscriptSummary()
+        let markers = [
+            "run_in_background", "\"Workflow\"", "<tool-use-id>",
+            "TaskStop", "KillShell", "running in background with ID",
+        ].map { Data($0.utf8) }
+        for line in data.split(separator: 0x0A) {
+            guard markers.contains(where: { line.range(of: $0) != nil }),
+                  let record = try? JSONSerialization.jsonObject(with: line)
+                    as? [String: Any] else { continue }
+            let type = record["type"] as? String
+            if type == "queue-operation" || type == "attachment" {
+                completeBackgroundTasks(in: record, into: &scan)
+            } else if !isJSONTrue(record["isSidechain"]) {
+                trackBackgroundTasks(
+                    type: type,
+                    message: record["message"] as? [String: Any],
+                    into: &scan)
+            }
+        }
+        guard !scan.pendingBackground.isEmpty else { return summary }
+        var result = summary
+        result.pendingBackground = scan.pendingBackground
+        result.agentTurnState = .working
+        return result
+    }
+
+    /// A finished turn waits for the user only when no background work it
+    /// started is still running; otherwise the agent is still working.
+    private static func finishTurn(_ turnID: String, into result: inout TranscriptSummary) {
+        if result.pendingBackground.isEmpty {
+            result.agentTurnState = .waiting
+        } else {
+            guard result.agentTurnState != .working else { return }
+            result.agentTurnState = .working
+        }
+        result.agentTurnID = turnID
+    }
+
+    private static let backgroundTaskID = try! NSRegularExpression(
+        pattern: "running in background with ID: ([A-Za-z0-9_-]+)")
+    private static let notifiedToolUseID = try! NSRegularExpression(
+        pattern: "<tool-use-id>([A-Za-z0-9_-]+)</tool-use-id>")
+
+    private static func trackBackgroundTasks(
+        type: String?,
+        message: [String: Any]?,
+        into result: inout TranscriptSummary
+    ) {
+        guard let content = message?["content"] as? [Any] else { return }
+        for case let block as [String: Any] in content {
+            switch (type, block["type"] as? String) {
+            case ("assistant", "tool_use"):
+                guard let id = block["id"] as? String, !id.isEmpty else { continue }
+                let name = block["name"] as? String
+                let input = block["input"] as? [String: Any]
+                if name == "TaskStop" || name == "KillShell" {
+                    let stopped = (input?["task_id"] ?? input?["shell_id"]) as? String
+                    result.pendingBackground.removeAll {
+                        $0.taskID != nil && $0.taskID == stopped
+                    }
+                    continue
+                }
+                // Background agents record no completion notification, so
+                // only shells and workflows can hold a finished turn open.
+                let background = (input?["run_in_background"] as? Bool == true
+                    && name != "Agent" && name != "Task")
+                    || name == "Workflow"
+                guard background,
+                      !result.pendingBackground.contains(where: { $0.toolUseID == id })
+                else { continue }
+                result.pendingBackground.append(PendingBackgroundTask(toolUseID: id))
+                if result.pendingBackground.count > PendingBackgroundTask.limit {
+                    result.pendingBackground.removeFirst(
+                        result.pendingBackground.count - PendingBackgroundTask.limit)
+                }
+            case ("user", "tool_result"):
+                guard let id = block["tool_use_id"] as? String,
+                      let index = result.pendingBackground.firstIndex(
+                        where: { $0.toolUseID == id }) else { continue }
+                if isJSONTrue(block["is_error"]) {
+                    result.pendingBackground.remove(at: index)
+                    continue
+                }
+                let text = (block["content"] as? String)
+                    ?? (block["content"] as? [Any])?.compactMap {
+                        ($0 as? [String: Any])?["text"] as? String
+                    }.joined(separator: "\n") ?? ""
+                let range = NSRange(text.startIndex..., in: text)
+                if let match = backgroundTaskID.firstMatch(in: text, range: range),
+                   let taskRange = Range(match.range(at: 1), in: text) {
+                    result.pendingBackground[index].taskID = String(text[taskRange])
+                }
+            default:
+                continue
+            }
+        }
+    }
+
+    private static func completeBackgroundTasks(
+        in record: [String: Any],
+        into result: inout TranscriptSummary
+    ) {
+        guard !result.pendingBackground.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: record),
+              let text = String(data: data, encoding: .utf8)?
+                .replacingOccurrences(of: "\\/", with: "/") else { return }
+        let range = NSRange(text.startIndex..., in: text)
+        for match in notifiedToolUseID.matches(in: text, range: range) {
+            guard let idRange = Range(match.range(at: 1), in: text) else { continue }
+            let id = String(text[idRange])
+            result.pendingBackground.removeAll { $0.toolUseID == id }
+        }
     }
 
     private static func toolUseID(_ value: Any?, named name: String) -> String? {
