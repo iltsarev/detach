@@ -2254,7 +2254,7 @@ enum UIE2ETestDriver {
 /// A drop through AppKit's real destination methods. The hermetic driver has
 /// no window-server input, so it cannot start a real drag session.
 @MainActor
-private final class UIE2EDraggingInfo: NSObject, NSDraggingInfo {
+private final class UIE2EDraggingInfo: NSObject, @preconcurrency NSDraggingInfo {
     let draggingDestinationWindow: NSWindow?
     let draggingLocation: NSPoint
     let draggingPasteboard: NSPasteboard

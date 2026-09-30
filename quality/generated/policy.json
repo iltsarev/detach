@@ -315,15 +315,6 @@
         "SC-UI-FAILURE"
       ],
       "summary": "Packaged journeys cover sidebar control geometry, bulk Delete, and failure status."
-    },
-    {
-      "group": "ui",
-      "path": "app/Sources/DetachApp/SidebarGroupViews.swift",
-      "region": "ui-e2e-instrumentation",
-      "scenarios": [
-        "SC-UI-DASHBOARD"
-      ],
-      "summary": "The packaged sidebar journey covers the group name sheet geometry."
     }
   ],
   "critical_sources": [

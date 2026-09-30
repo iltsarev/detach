@@ -87,19 +87,11 @@ struct SidebarGroupNameSheet: View {
                     .appFont(.caption)
                     .foregroundStyle(.red)
                     .accessibilityIdentifier("sidebar-group-name-error")
-// quality-coverage:begin ui-e2e-instrumentation
-#if !DEBUG
-                    .background {
-                        if AppSettings.uiE2E != nil {
-                            UIE2EGeometryProbe(
-                                identifier: "sidebar-group-name-error",
-                                semanticLabel: error.message,
-                                semanticRole: .staticText,
-                                semanticEnabled: false)
-                        }
-                    }
-#endif
-// quality-coverage:end ui-e2e-instrumentation
+                    .uiE2EGeometryProbe(
+                        "sidebar-group-name-error",
+                        label: error.message,
+                        role: .staticText,
+                        enabled: false)
             }
             HStack {
                 Spacer()
@@ -111,21 +103,11 @@ struct SidebarGroupNameSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(SidebarGroupsDocument.normalizedName(name) == nil)
                     .accessibilityIdentifier("sidebar-group-name-confirm")
-// quality-coverage:begin ui-e2e-instrumentation
-#if !DEBUG
-                    .background {
-                        if AppSettings.uiE2E != nil {
-                            UIE2EGeometryProbe(
-                                identifier: "sidebar-group-name-confirm",
-                                semanticLabel: isRename
-                                    ? L10n.string("Rename") : L10n.string("Create"),
-                                semanticRole: .button,
-                                semanticEnabled:
-                                    SidebarGroupsDocument.normalizedName(name) != nil)
-                        }
-                    }
-#endif
-// quality-coverage:end ui-e2e-instrumentation
+                    .uiE2EGeometryProbe(
+                        "sidebar-group-name-confirm",
+                        label: isRename ? L10n.string("Rename") : L10n.string("Create"),
+                        role: .button,
+                        enabled: SidebarGroupsDocument.normalizedName(name) != nil)
             }
         }
         .padding(20)

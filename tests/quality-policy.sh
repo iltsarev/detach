@@ -60,7 +60,7 @@ policy_version="$("$ROOT/scripts/quality-policy" version)"
   fail 'scenario inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" coverage-exclusions | wc -l | tr -d ' ')" = 4 ] || \
   fail 'coverage exclusion inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" coverage-regions | wc -l | tr -d ' ')" = 13 ] || \
+[ "$("$ROOT/scripts/quality-policy" coverage-regions | wc -l | tr -d ' ')" = 12 ] || \
   fail 'coverage region inventory is incomplete'
 first_json="$("$ROOT/scripts/quality-policy" render-json | shasum -a 256 | awk '{print $1}')"
 second_json="$("$ROOT/scripts/quality-policy" render-json | shasum -a 256 | awk '{print $1}')"

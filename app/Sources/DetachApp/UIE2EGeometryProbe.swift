@@ -52,6 +52,32 @@ struct UIE2EGeometryProbe: NSViewRepresentable {
     }
 }
 
+extension View {
+    /// Test-only geometry and semantics for a control that the hermetic
+    /// driver must find. Debug builds and ordinary launches add nothing.
+    @ViewBuilder
+    func uiE2EGeometryProbe(
+        _ identifier: String,
+        label: String?,
+        role: NSAccessibility.Role?,
+        enabled: Bool = true
+    ) -> some View {
+#if DEBUG
+        self
+#else
+        background {
+            if AppSettings.uiE2E != nil {
+                UIE2EGeometryProbe(
+                    identifier: identifier,
+                    semanticLabel: label,
+                    semanticRole: role,
+                    semanticEnabled: enabled)
+            }
+        }
+#endif
+    }
+}
+
 @MainActor
 final class UIE2EGeometryView: NSView {
     var identifierValue: String
