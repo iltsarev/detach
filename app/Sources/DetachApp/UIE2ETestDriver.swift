@@ -163,7 +163,8 @@ enum UIE2ETestDriver {
         installation: InstallationStore,
         store: SessionStore,
         sessionLogSnapshots: SessionLogSnapshotCache,
-        shortcuts: SessionShortcutRegistry
+        shortcuts: SessionShortcutRegistry,
+        sidebarGroups: SidebarGroupStore
     ) async {
         guard let configuration = AppSettings.uiE2E, !started else { return }
         started = true
@@ -195,7 +196,8 @@ enum UIE2ETestDriver {
                     installation: installation,
                     store: store,
                     sessionLogSnapshots: sessionLogSnapshots,
-                    shortcuts: shortcuts)
+                    shortcuts: shortcuts,
+                    sidebarGroups: sidebarGroups)
             } else {
                 report = Report(
                     schema: 1,
@@ -221,7 +223,8 @@ enum UIE2ETestDriver {
         installation: InstallationStore,
         store: SessionStore,
         sessionLogSnapshots: SessionLogSnapshotCache,
-        shortcuts: SessionShortcutRegistry
+        shortcuts: SessionShortcutRegistry,
+        sidebarGroups: SidebarGroupStore
     ) async -> Report {
         cursorRestorePoint = CGEvent(source: nil)?.location
         defer {
@@ -250,7 +253,8 @@ enum UIE2ETestDriver {
                 configuration: configuration,
                 store: store,
                 sessionLogSnapshots: sessionLogSnapshots,
-                shortcuts: shortcuts)
+                shortcuts: shortcuts,
+                sidebarGroups: sidebarGroups)
         }
     }
 
@@ -258,7 +262,8 @@ enum UIE2ETestDriver {
         configuration: UIE2EConfiguration,
         store: SessionStore,
         sessionLogSnapshots: SessionLogSnapshotCache,
-        shortcuts: SessionShortcutRegistry
+        shortcuts: SessionShortcutRegistry,
+        sidebarGroups: SidebarGroupStore
     ) async -> Report {
         var checks: [String] = []
         let previousFrontmost = NSWorkspace.shared.frontmostApplication
@@ -414,6 +419,10 @@ enum UIE2ETestDriver {
             let deleteButton = try await element(identifier: "session-action-delete")
             try requireSemanticControl(deleteButton, name: "delete action")
             checks.append("sidebar-selects-completed-session")
+
+            try await verifySidebarGroupCollapse(
+                store: store, sidebarGroups: sidebarGroups)
+            checks.append("sidebar-group-collapses-and-persists")
             trace("completed session selected")
 
             let copiedUUID = "a9f58f1d-1234-5678-9abc-def012342ed9"
@@ -947,6 +956,87 @@ enum UIE2ETestDriver {
         return "actionable-failure-presentation"
     }
 
+    /// Menus and drag sessions need real window-server input, so the model
+    /// creates the group. The real header control proves nesting, collapse,
+    /// persistence, and expansion.
+    private static func verifySidebarGroupCollapse(
+        store: SessionStore,
+        sidebarGroups: SidebarGroupStore
+    ) async throws {
+        let groupedID = "detach-codex-ui-running"
+        guard let grouped = store.sessions.first(where: { $0.id == groupedID }) else {
+            throw Failure(message: "grouped session is missing")
+        }
+        guard case .success(let groupID) = sidebarGroups.createGroup(
+            named: "UI group") else {
+            throw Failure(message: "cannot create the sidebar group")
+        }
+        sidebarGroups.assign(groupedID, to: groupID)
+        let section = grouped.section
+        let headerIdentifier = "sidebar-group-\(section.rawValue)-\(groupID.uuidString)"
+        let rowIdentifier = "session-row-\(groupedID)"
+        let header = try await element(identifier: headerIdentifier)
+        try requireSemanticControl(header, name: "sidebar group header")
+        let headerFrame = try await measuredFrame(
+            identifier: headerIdentifier, name: "sidebar group header")
+        let rowFrame = try await measuredFrame(
+            identifier: rowIdentifier, name: "grouped session row")
+        // Screen coordinates grow upward: the member row is below its header.
+        guard rowFrame.maxY <= headerFrame.minY + 1 else {
+            throw Failure(message: "grouped row is not below its group header")
+        }
+        guard hasVisibleProbe(rowIdentifier) else {
+            throw Failure(message: "grouped session row is not visible")
+        }
+        try await clickUntil(
+            header,
+            name: "sidebar group header",
+            outcome: "sidebar group collapses") {
+                sidebarGroups.isCollapsed(section: section, groupID: groupID)
+                    && !hasVisibleProbe(rowIdentifier)
+            }
+        let persisted = SidebarGroupsDocument.decode(
+            AppSettings.defaults.data(forKey: SidebarGroupStore.storageKey))
+        guard persisted.assignments[groupedID] == groupID,
+              persisted.collapsed.contains(SidebarGroupsDocument.collapseKey(
+                  section: section, groupID: groupID))
+        else {
+            throw Failure(message: "collapsed sidebar group did not persist")
+        }
+        let collapsedHeader = try await element(identifier: headerIdentifier)
+        try await clickUntil(
+            collapsedHeader,
+            name: "collapsed sidebar group header",
+            outcome: "sidebar group expands") {
+                !sidebarGroups.isCollapsed(section: section, groupID: groupID)
+                    && hasVisibleProbe(rowIdentifier)
+            }
+        sidebarGroups.deleteGroup(groupID)
+        try await waitUntil("deleted sidebar group keeps its session") {
+            !hasVisibleProbe(headerIdentifier)
+                && hasVisibleProbe(rowIdentifier)
+                && sidebarGroups.groupID(for: groupedID) == nil
+        }
+    }
+
+    /// SwiftUI can keep a removed List row in its accessibility tree. A row
+    /// is on screen only while its geometry probe is attached and unhidden.
+    private static func hasVisibleProbe(_ identifier: String) -> Bool {
+        func visit(_ view: NSView) -> Bool {
+            if let probe = view as? UIE2EGeometryView,
+               probe.identifierValue == identifier,
+               !probe.isHiddenOrHasHiddenAncestor,
+               !probe.visibleRect.isEmpty {
+                return true
+            }
+            return view.subviews.contains(where: visit)
+        }
+        return NSApp.windows
+            .filter(\.isVisible)
+            .compactMap(\.contentView)
+            .contains(where: visit)
+    }
+
     private static func verifySettings(
         in mainWindow: NSWindow
     ) async throws -> [String] {
@@ -1436,6 +1526,7 @@ enum UIE2ETestDriver {
         identifier == "new-session-button"
             || identifier == "settings-show-tips"
             || identifier == "settings-appearance"
+            || identifier.hasPrefix("sidebar-group-")
             || identifier.hasPrefix("settings-default-project-")
             || identifier.hasPrefix("settings-quick-chat-")
             || identifier.hasPrefix("new-session-")

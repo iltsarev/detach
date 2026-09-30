@@ -161,6 +161,7 @@ enum AppSettings {
         defaults.set(false, forKey: tipsEnabledKey)
         defaults.set(false, forKey: menuBarIconEnabledKey)
         defaults.removeObject(forKey: AppAppearance.storageKey)
+        defaults.removeObject(forKey: SidebarGroupStore.storageKey)
         return defaults
     }
     static let terminalBundleIdentifierKey = "terminalBundleIdentifier"

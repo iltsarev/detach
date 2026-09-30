@@ -46,6 +46,21 @@ and semantic color. Clicking the UUID chip copies the full UUID and shows
 **Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
 tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
 
+The sidebar keeps its status sections. User groups arrange rows inside each
+section: groups first, in user order, then the rows outside every group. A
+section shows a group only when it holds a row of that section. Groups are
+app-only presentation preferences stored in `sidebarGroupsV1`. The CLI and
+typed state never read them. The session name keys each assignment because it
+survives Resume and Recover. An unreadable, oversized, or unknown-schema
+document means no groups. Only a fresh list removes the assignment of a
+missing session; cached rows cannot. Group names are trimmed, printable,
+unique without case, and at most 60 characters. Deleting a group never deletes
+a session. Collapse state is per section and group, and persists. A selection
+from outside the sidebar opens the group that holds the row. Bulk selection
+shows every Finished row. A dropped row joins the target group; a drop on a
+section header removes it from its group. Drops accept only current session
+names. Groups never change status, actions, shortcuts, or Delete eligibility.
+
 A first-run setup card stays mounted during retry. App Start uses `--detach`,
 keeps sheet errors, and selects the new session. Start, Resume, and Recover open
 `detach <provider> attach --terminal-features sync <session>` in one visible

@@ -39,6 +39,7 @@ struct RootView: View {
     @State private var selectedID: String?
     @State private var shortcutAssignments: [SessionShortcutAssignment] = []
     @State private var initialSetupComplete = false
+    @State private var sidebarGroups = SidebarGroupStore(defaults: AppSettings.defaults)
 
     private var selectedSession: Session? {
         store.sessions.first { $0.id == selectedID }
@@ -64,7 +65,8 @@ struct RootView: View {
                             store: store,
                             selectedID: $selectedID,
                             navigation: navigation,
-                            shortcutAssignments: shortcutAssignments)
+                            shortcutAssignments: shortcutAssignments,
+                            groups: sidebarGroups)
                     } detail: {
                         if store.sessions.isEmpty && store.state == .ok {
                             EmptySessionsView()
@@ -153,7 +155,8 @@ struct RootView: View {
                 installation: installation,
                 store: store,
                 sessionLogSnapshots: sessionLogSnapshots,
-                shortcuts: shortcuts)
+                shortcuts: shortcuts,
+                sidebarGroups: sidebarGroups)
         }
 // quality-coverage:end ui-e2e-instrumentation
         .onChange(of: scenePhase) { _, phase in
