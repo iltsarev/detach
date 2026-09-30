@@ -52,6 +52,7 @@ struct SidebarView: View {
     @Binding var selectedID: String?
     @ObservedObject var navigation: MainNavigation
     let shortcutAssignments: [SessionShortcutAssignment]
+    let groups: SidebarGroupStore
     @AppStorage(AppSettings.defaultProjectsDirectoryKey, store: AppSettings.defaults)
     private var defaultProjectsDirectoryPath =
         AppSettings.defaultProjectsDirectoryPath
@@ -66,9 +67,24 @@ struct SidebarView: View {
     @State private var selectedFinishedIDs: Set<String> = []
     @State private var confirmFinishedDelete = false
     @State private var isDeletingFinished = false
+    @State private var groupNamePrompt: SidebarGroupNamePrompt?
+    @State private var dropTargetKey: String?
 
     private func sessions(in section: SessionSection) -> [Session] {
         store.sessions.filter { $0.section == section }
+    }
+
+    private var sectionLayouts: [SidebarSectionLayout] {
+        SidebarSectionLayout.build(
+            sessions: store.sessions,
+            document: groups.document)
+    }
+
+    /// Bulk selection shows every Finished row, so Select all never reaches a
+    /// hidden session. The stored collapse state does not change.
+    private func isGroupCollapsed(_ groupID: UUID, in section: SessionSection) -> Bool {
+        guard !(isSelectingFinished && section == .finished) else { return false }
+        return groups.isCollapsed(section: section, groupID: groupID)
     }
 
     private var deletableFinishedSessions: [Session] {
@@ -98,16 +114,21 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $selectedID) {
-                ForEach(SessionSection.allCases, id: \.self) { section in
-                    let items = sessions(in: section)
-                    if !items.isEmpty {
-                        Section {
-                            ForEach(items) { session in
-                                sessionRow(session)
+                ForEach(sectionLayouts, id: \.section) { layout in
+                    Section {
+                        ForEach(layout.groupBlocks) { block in
+                            groupHeader(block, in: layout.section)
+                            if !isGroupCollapsed(block.group.id, in: layout.section) {
+                                ForEach(block.sessions) { session in
+                                    sessionRow(session, isGrouped: true)
+                                }
                             }
-                        } header: {
-                            sectionHeader(section, count: items.count)
                         }
+                        ForEach(layout.ungrouped) { session in
+                            sessionRow(session)
+                        }
+                    } header: {
+                        sectionHeader(layout.section, count: layout.count)
                     }
                 }
             }
@@ -137,6 +158,24 @@ struct SidebarView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button(L10n.string("New Group…")) {
+                        groupNamePrompt = .create(assigningSessionID: nil)
+                    }
+                    if !groups.groups.isEmpty {
+                        Divider()
+                        ForEach(groups.groups) { group in
+                            Menu(group.name) {
+                                groupCommands(group)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(L10n.string("Groups"), systemImage: "folder")
+                }
+                .accessibilityIdentifier("sidebar-groups-menu")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     showNewSession = true
                 } label: {
@@ -164,6 +203,9 @@ struct SidebarView: View {
                     path: defaultProjectsDirectoryPath,
                     fallback: FileManager.default.homeDirectoryForCurrentUser)
             )
+        }
+        .sheet(item: $groupNamePrompt) { prompt in
+            SidebarGroupNameSheet(prompt: prompt, groups: groups)
         }
         .confirmationDialog(
             L10n.format(
@@ -196,6 +238,21 @@ struct SidebarView: View {
             guard requestID != nil else { return }
             navigation.quickChatRequestID = nil
             startQuickChat()
+        }
+        // A selection from a shortcut, a notification, or a new session
+        // opens the group that holds its row.
+        .onChange(of: selectedID) { _, sessionID in
+            guard let session = store.sessions.first(where: { $0.id == sessionID })
+            else { return }
+            groups.reveal(session)
+        }
+        // Only an authoritative list can remove a group assignment.
+        .onChange(
+            of: store.hasFreshSnapshot ? store.sessions.map(\.id) : nil,
+            initial: true
+        ) { _, sessionIDs in
+            guard let sessionIDs else { return }
+            groups.pruneAssignments(keeping: Set(sessionIDs))
         }
         .onChange(of: deletableFinishedSessions.map(\.id)) { _, currentIDs in
             let state = FinishedSelectionReconciliation.resolve(
@@ -252,6 +309,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func sectionHeader(_ section: SessionSection, count: Int) -> some View {
+        let dropKey = "section/\(section.rawValue)"
         HStack(spacing: 8) {
             Text(L10n.format("%@ · %d", section.displayName, count))
                 .foregroundStyle(
@@ -284,6 +342,16 @@ struct SidebarView: View {
                 .padding(.trailing, 12)
             }
         }
+        // Dropping a grouped row on its section header removes it from the group.
+        .contentShape(Rectangle())
+        .dropDestination(for: String.self) { sessionIDs, _ in
+            moveSessions(sessionIDs, to: nil)
+        } isTargeted: { targeted in
+            updateDropTarget(dropKey, isTargeted: targeted)
+        }
+        .background(
+            dropTargetKey == dropKey ? Brand.indigo.opacity(0.14) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6))
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
         .background {
@@ -296,7 +364,108 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func sessionRow(_ session: Session) -> some View {
+    private func groupHeader(
+        _ block: SidebarSectionLayout.GroupBlock,
+        in section: SessionSection
+    ) -> some View {
+        let groupID = block.group.id
+        let isCollapsed = isGroupCollapsed(groupID, in: section)
+        let identifier = "sidebar-group-\(section.rawValue)-\(groupID.uuidString)"
+        SidebarGroupHeader(
+            group: block.group,
+            count: block.sessions.count,
+            isCollapsed: isCollapsed
+        ) {
+            withAnimation(.snappy(duration: 0.2)) {
+                groups.setCollapsed(!isCollapsed, section: section, groupID: groupID)
+            }
+        }
+        .disabled(isSelectingFinished && section == .finished)
+        .dropDestination(for: String.self) { sessionIDs, _ in
+            moveSessions(sessionIDs, to: groupID)
+        } isTargeted: { targeted in
+            updateDropTarget(identifier, isTargeted: targeted)
+        }
+        .contextMenu { groupCommands(block.group) }
+        .listRowBackground(
+            dropTargetKey == identifier ? Brand.indigo.opacity(0.14) : nil)
+        .accessibilityIdentifier(identifier)
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+        .background {
+            if AppSettings.uiE2E != nil {
+                UIE2EGeometryProbe(
+                    identifier: identifier,
+                    semanticLabel: L10n.format(
+                        "%@ · %d", block.group.name, block.sessions.count),
+                    semanticRole: .button)
+            }
+        }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
+    }
+
+    @ViewBuilder
+    private func groupCommands(_ group: SidebarGroup) -> some View {
+        Button(L10n.string("Rename Group…")) {
+            groupNamePrompt = .rename(group)
+        }
+        Button(L10n.string("Delete Group"), role: .destructive) {
+            withAnimation(.snappy(duration: 0.2)) {
+                groups.deleteGroup(group.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sessionGroupCommands(_ session: Session) -> some View {
+        let currentGroupID = groups.groupID(for: session.id)
+        Menu(L10n.string("Move to Group")) {
+            ForEach(groups.groups) { group in
+                Button(group.name) {
+                    moveSessions([session.id], to: group.id)
+                }
+                .disabled(group.id == currentGroupID)
+            }
+            if !groups.groups.isEmpty {
+                Divider()
+            }
+            Button(L10n.string("New Group…")) {
+                groupNamePrompt = .create(assigningSessionID: session.id)
+            }
+        }
+        if currentGroupID != nil {
+            Button(L10n.string("Remove from Group")) {
+                moveSessions([session.id], to: nil)
+            }
+        }
+    }
+
+    /// Drops accept only rows of the current list; other dragged text is
+    /// ignored.
+    @discardableResult
+    private func moveSessions(_ sessionIDs: [String], to groupID: UUID?) -> Bool {
+        let knownIDs = Set(store.sessions.map(\.id))
+        let accepted = sessionIDs.filter(knownIDs.contains)
+        guard !accepted.isEmpty else { return false }
+        withAnimation(.snappy(duration: 0.2)) {
+            for sessionID in accepted {
+                groups.assign(sessionID, to: groupID)
+            }
+        }
+        return true
+    }
+
+    private func updateDropTarget(_ key: String, isTargeted: Bool) {
+        if isTargeted {
+            dropTargetKey = key
+        } else if dropTargetKey == key {
+            dropTargetKey = nil
+        }
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ session: Session, isGrouped: Bool = false) -> some View {
         let shortcutSlot = shortcutAssignments.first {
             $0.sessionID == session.id
         }?.slot
@@ -339,6 +508,7 @@ struct SidebarView: View {
 // quality-coverage:end ui-e2e-instrumentation
                 SessionRow(session: session, shortcutSlot: shortcutSlot)
             }
+            .padding(.leading, isGrouped ? SidebarGroupLayout.rowIndent : 0)
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
             .background { uiE2EGeometryProbe(for: session) }
@@ -357,10 +527,13 @@ struct SidebarView: View {
                 selectedID = session.id
             } label: {
                 SessionRow(session: session, shortcutSlot: shortcutSlot)
+                    .padding(.leading, isGrouped ? SidebarGroupLayout.rowIndent : 0)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .draggable(session.id)
+            .contextMenu { sessionGroupCommands(session) }
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
             .background { uiE2EGeometryProbe(for: session) }

@@ -276,6 +276,10 @@
 
 /* Settings & session detail redesign */
 "Interface" = "Интерфейс";
+"Appearance" = "Оформление";
+"Match System" = "Как в системе";
+"Light" = "Светлое";
+"Dark" = "Тёмное";
 "Text size" = "Размер текста";
 "Text size preview" = "Предпросмотр размера текста";
 "Apply" = "Применить";
@@ -456,3 +460,22 @@
 "Only a signed Detach release can update the power helper." = "Только подписанный релиз Detach может обновить помощник питания.";
 
 "A session operation is in progress." = "Выполняется операция с сессией.";
+
+/* Sidebar groups */
+"Groups" = "Группы";
+"New Group…" = "Новая группа…";
+"New Group" = "Новая группа";
+"Rename Group…" = "Переименовать группу…";
+"Rename Group" = "Переименовать группу";
+"Delete Group" = "Удалить группу";
+"Move to Group" = "Переместить в группу";
+"Remove from Group" = "Убрать из группы";
+"Group name" = "Название группы";
+"Create" = "Создать";
+"Rename" = "Переименовать";
+"Collapsed" = "Свёрнута";
+"Expanded" = "Развёрнута";
+"Enter a group name." = "Введите название группы.";
+"A group with this name already exists." = "Группа с таким названием уже есть.";
+"You can create up to %d groups." = "Можно создать не больше %d групп.";
+"This group no longer exists." = "Этой группы больше нет.";

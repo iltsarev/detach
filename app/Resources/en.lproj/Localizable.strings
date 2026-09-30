@@ -276,6 +276,10 @@
 
 /* Settings & session detail redesign */
 "Interface" = "Interface";
+"Appearance" = "Appearance";
+"Match System" = "Match System";
+"Light" = "Light";
+"Dark" = "Dark";
 "Text size" = "Text size";
 "Text size preview" = "Text size preview";
 "Apply" = "Apply";
@@ -456,3 +460,22 @@
 "Only a signed Detach release can update the power helper." = "Only a signed Detach release can update the power helper.";
 
 "A session operation is in progress." = "A session operation is in progress.";
+
+/* Sidebar groups */
+"Groups" = "Groups";
+"New Group…" = "New Group…";
+"New Group" = "New Group";
+"Rename Group…" = "Rename Group…";
+"Rename Group" = "Rename Group";
+"Delete Group" = "Delete Group";
+"Move to Group" = "Move to Group";
+"Remove from Group" = "Remove from Group";
+"Group name" = "Group name";
+"Create" = "Create";
+"Rename" = "Rename";
+"Collapsed" = "Collapsed";
+"Expanded" = "Expanded";
+"Enter a group name." = "Enter a group name.";
+"A group with this name already exists." = "A group with this name already exists.";
+"You can create up to %d groups." = "You can create up to %d groups.";
+"This group no longer exists." = "This group no longer exists.";

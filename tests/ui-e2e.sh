@@ -523,6 +523,8 @@ run_app_scenario() {
       dashboard-accessible) pass=SC-UI-DASHBOARD ;;
       sidebar-shortcut-guide-visible) ;;
       sidebar-selects-completed-session) ;;
+      sidebar-group-collapses-and-persists) ;;
+      sidebar-group-commands-and-drop) ;;
       bulk-delete-reaches-fake-cli) pass=SC-UI-SESSION-DELETE ;;
       session-signals-stay-distinct) pass=SC-UI-SESSION-DETAIL ;;
       safe-action-reaches-fake-cli) pass=SC-UI-SESSION-STOP ;;
@@ -537,6 +539,7 @@ run_app_scenario() {
       settings-change-persists) pass=SC-UI-SETTINGS ;;
       settings-session-defaults-visible) ;;
       settings-quick-chat-provider-persists) ;;
+      settings-appearance-applies) ;;
       settings-quick-chat-folder-panel) ;;
       quick-chat-command-starts-session) ;;
       session-shortcut-reopens-closed-main-window) ;;
@@ -565,6 +568,8 @@ run_app_scenario main sessions 32 \
   session-title-survives-narrow-window-and-large-text \
   recover-and-reconnect-run-in-app-with-terminal-fallback \
   sidebar-selects-completed-session \
+  sidebar-group-collapses-and-persists \
+  sidebar-group-commands-and-drop \
   session-uuid-copies-from-text-side \
   resume-runs-in-app-with-terminal-fallback \
   session-shortcut-selects-assigned-session \
@@ -588,6 +593,7 @@ run_app_scenario main sessions 32 \
   settings-change-persists \
   settings-session-defaults-visible \
   settings-quick-chat-provider-persists \
+  settings-appearance-applies \
   settings-quick-chat-folder-panel \
   settings-window-stays-on-screen \
   settings-system-reveals-storage-and-installation \

@@ -19,7 +19,9 @@ final class SidebarViewTests: XCTestCase {
             store: SessionStore(cli: SidebarNoopCLI()),
             selectedID: .constant(nil),
             navigation: MainNavigation(),
-            shortcutAssignments: [])
+            shortcutAssignments: [],
+            groups: SidebarGroupStore(defaults: UserDefaults(
+                suiteName: "SidebarViewTests.\(UUID().uuidString)")!))
 
         _ = view.body
     }

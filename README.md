@@ -233,6 +233,18 @@ Codex and Claude Code share one dashboard. Each managed session includes:
 A compact guide below the session list keeps `Cmd-N`, `Cmd-T`, `Cmd-,`, and
 `Cmd-F` visible without opening a help screen.
 
+Groups such as Personal or Work arrange sessions inside each sidebar section.
+Use **Groups** in the sidebar toolbar to create, rename, or delete a group.
+Drag a session onto a group, or use **Move to Group** from its context menu.
+Drop a session on a section header or use **Remove from Group** to take it out.
+Click a group to collapse or expand it. Detach remembers this state for each
+section. Deleting a group keeps its sessions.
+
+Settings → General → **Appearance** selects **Match System**, **Light**, or
+**Dark** for the app. The default is **Match System**. The change applies at
+once. The embedded terminal and session logs keep a dark background in each
+appearance.
+
 Sessions that wait for your reply move into **Answer ready**, before agents
 that are still working. Detach reads structured provider lifecycle records for
 this signal. A completed Claude text answer enters **Answer ready** even when
