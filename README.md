@@ -233,6 +233,11 @@ Codex and Claude Code share one dashboard. Each managed session includes:
 A compact guide below the session list keeps `Cmd-N`, `Cmd-T`, `Cmd-,`, and
 `Cmd-F` visible without opening a help screen.
 
+Settings → General → **Appearance** selects **Match System**, **Light**, or
+**Dark** for the app. The default is **Match System**. The change applies at
+once. The embedded terminal and session logs keep a dark background in each
+appearance.
+
 Sessions that wait for your reply move into **Answer ready**, before agents
 that are still working. Detach reads structured provider lifecycle records for
 this signal. A completed Claude text answer enters **Answer ready** even when

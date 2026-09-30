@@ -32,7 +32,13 @@ Bootstrap runs only from `/Applications`, not a DMG or App Translocation path.
 
 ## Settings and monitoring
 
-Settings → General owns both menu bar toggles. Settings → System keeps the only
+Settings → General owns both menu bar toggles. Settings → General → Interface
+owns **Appearance**: Match System, Light, or Dark. The default is Match System.
+An unknown stored value reads as Match System. The stored choice sets the
+application appearance before the first window opens. A change applies at once
+to every app window, sheet, panel, and menu. The menu bar icon follows the menu
+bar, not this choice. The terminal, log view, and terminal previews keep their
+dark palette in each appearance. Settings → System keeps the only
 Mac Power status and approval controls. Settings follows the hosting screen;
 System scrolls. A size or screen change moves the window inside the visible
 screen area. A window that already fits keeps its position.

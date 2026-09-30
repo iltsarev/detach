@@ -160,6 +160,7 @@ enum AppSettings {
         defaults.set(false, forKey: notificationsEnabledKey)
         defaults.set(false, forKey: tipsEnabledKey)
         defaults.set(false, forKey: menuBarIconEnabledKey)
+        defaults.removeObject(forKey: AppAppearance.storageKey)
         return defaults
     }
     static let terminalBundleIdentifierKey = "terminalBundleIdentifier"
@@ -239,6 +240,12 @@ struct SessionCommands: Commands {
 /// Closing the last window must not terminate the app while the menu bar item
 /// is the persistent surface. ⌘Q and Quit remain honest termination.
 final class DetachAppDelegate: NSObject, NSApplicationDelegate {
+    /// The stored appearance applies before the first window draws, so a
+    /// forced Light or Dark choice never flashes the system appearance.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        AppAppearance.applyStoredValue(from: AppSettings.defaults, to: NSApp)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
     ) -> Bool {

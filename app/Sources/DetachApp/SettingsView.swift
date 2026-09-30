@@ -173,7 +173,7 @@ private extension SettingsDestination {
     /// the selected tab like classic AppKit preference panes.
     var baseHeight: CGFloat {
         switch self {
-        case .general: 620
+        case .general: 652
         case .terminal: 460
         case .notifications: 350
         case .system: 780
@@ -197,6 +197,8 @@ struct SettingsView: View {
     private var detachPath = AppSettings.initialDetachPath
     @AppStorage(AppFontSize.storageKey, store: AppSettings.defaults)
     private var fontPointSize = AppFontSize.defaultValue
+    @AppStorage(AppAppearance.storageKey, store: AppSettings.defaults)
+    private var appearanceRawValue = AppAppearance.defaultValue.rawValue
     @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
     private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
@@ -246,6 +248,16 @@ struct SettingsView: View {
 
     private var activeDetachPath: String {
         installation.hasDistributionPayload ? AppSettings.defaultDetachPath : detachPath
+    }
+
+    /// The choice applies at once, like the system appearance chooser.
+    private var appearanceBinding: Binding<AppAppearance> {
+        Binding(
+            get: { AppAppearance(storedValue: appearanceRawValue) },
+            set: { appearance in
+                appearanceRawValue = appearance.rawValue
+                appearance.apply(to: NSApp)
+            })
     }
 
     private var previewFontPointSize: Double {
@@ -452,6 +464,25 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section(L10n.string("Interface")) {
+                Picker(L10n.string("Appearance"), selection: appearanceBinding) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings-appearance")
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                .overlay {
+                    if AppSettings.uiE2E != nil {
+                        UIE2EGeometryProbe(
+                            identifier: "settings-appearance",
+                            semanticLabel: L10n.string("Appearance"),
+                            semanticRole: .radioGroup)
+                    }
+                }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
                 fontSizePreview
                 HStack(spacing: 8) {
                     Text(L10n.string("Text size"))

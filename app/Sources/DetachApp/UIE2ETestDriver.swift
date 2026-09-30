@@ -988,6 +988,30 @@ enum UIE2ETestDriver {
                     == Provider.codex.rawValue
             }
         checks.append("settings-quick-chat-provider-persists")
+        let appearance = try await element(identifier: "settings-appearance")
+        try requireSemanticControl(appearance, name: "appearance")
+        let darkAppearance = try await buttonLabeled(
+            L10n.string("Dark"), attempts: 40)
+        try await clickUntil(
+            darkAppearance,
+            name: "Dark appearance",
+            outcome: "dark appearance applies") {
+                AppSettings.defaults.string(forKey: AppAppearance.storageKey)
+                    == AppAppearance.dark.rawValue
+                    && NSApp.effectiveAppearance.bestMatch(
+                        from: [.aqua, .darkAqua]) == .darkAqua
+            }
+        let systemAppearance = try await buttonLabeled(
+            L10n.string("Match System"), attempts: 40)
+        try await clickUntil(
+            systemAppearance,
+            name: "Match System appearance",
+            outcome: "system appearance returns") {
+                AppSettings.defaults.string(forKey: AppAppearance.storageKey)
+                    == AppAppearance.system.rawValue
+                    && NSApp.appearance == nil
+            }
+        checks.append("settings-appearance-applies")
         _ = try await clickUntilElement(
             quickChatFolder,
             name: "quick chat folder",
@@ -1411,6 +1435,7 @@ enum UIE2ETestDriver {
     private static func usesMeasuredGeometry(_ identifier: String) -> Bool {
         identifier == "new-session-button"
             || identifier == "settings-show-tips"
+            || identifier == "settings-appearance"
             || identifier.hasPrefix("settings-default-project-")
             || identifier.hasPrefix("settings-quick-chat-")
             || identifier.hasPrefix("new-session-")

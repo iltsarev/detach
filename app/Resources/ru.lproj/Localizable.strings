@@ -276,6 +276,10 @@
 
 /* Settings & session detail redesign */
 "Interface" = "Интерфейс";
+"Appearance" = "Оформление";
+"Match System" = "Как в системе";
+"Light" = "Светлое";
+"Dark" = "Тёмное";
 "Text size" = "Размер текста";
 "Text size preview" = "Предпросмотр размера текста";
 "Apply" = "Применить";

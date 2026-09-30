@@ -188,6 +188,7 @@ final class UIE2EConfigurationTests: XCTestCase {
             XCTAssertFalse(defaults.bool(forKey: AppSettings.notificationsEnabledKey))
             XCTAssertFalse(defaults.bool(forKey: AppSettings.tipsEnabledKey))
             XCTAssertFalse(defaults.bool(forKey: AppSettings.menuBarIconEnabledKey))
+            XCTAssertNil(defaults.object(forKey: AppAppearance.storageKey))
         }
     }
 

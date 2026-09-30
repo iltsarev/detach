@@ -276,6 +276,10 @@
 
 /* Settings & session detail redesign */
 "Interface" = "Interface";
+"Appearance" = "Appearance";
+"Match System" = "Match System";
+"Light" = "Light";
+"Dark" = "Dark";
 "Text size" = "Text size";
 "Text size preview" = "Text size preview";
 "Apply" = "Apply";

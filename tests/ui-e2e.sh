@@ -537,6 +537,7 @@ run_app_scenario() {
       settings-change-persists) pass=SC-UI-SETTINGS ;;
       settings-session-defaults-visible) ;;
       settings-quick-chat-provider-persists) ;;
+      settings-appearance-applies) ;;
       settings-quick-chat-folder-panel) ;;
       quick-chat-command-starts-session) ;;
       session-shortcut-reopens-closed-main-window) ;;
@@ -588,6 +589,7 @@ run_app_scenario main sessions 32 \
   settings-change-persists \
   settings-session-defaults-visible \
   settings-quick-chat-provider-persists \
+  settings-appearance-applies \
   settings-quick-chat-folder-panel \
   settings-window-stays-on-screen \
   settings-system-reveals-storage-and-installation \
