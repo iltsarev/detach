@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import Darwin
 import DetachKit
 import Foundation
@@ -423,6 +424,9 @@ enum UIE2ETestDriver {
             try await verifySidebarGroupCollapse(
                 store: store, sidebarGroups: sidebarGroups)
             checks.append("sidebar-group-collapses-and-persists")
+            try await verifySidebarGroupCommands(
+                mainWindow: mainWindow, sidebarGroups: sidebarGroups)
+            checks.append("sidebar-group-commands-and-drop")
             trace("completed session selected")
 
             let copiedUUID = "a9f58f1d-1234-5678-9abc-def012342ed9"
@@ -1017,6 +1021,247 @@ enum UIE2ETestDriver {
                 && hasVisibleProbe(rowIdentifier)
                 && sidebarGroups.groupID(for: groupedID) == nil
         }
+    }
+
+    /// Drives the real SwiftUI menus, name sheet, and drop destinations.
+    /// AppKit supplies each menu through `menu(for:)`, as for a right click,
+    /// and each drop goes through the registered destination view. Only menu
+    /// tracking and the drag session itself need window-server input.
+    private static func verifySidebarGroupCommands(
+        mainWindow: NSWindow,
+        sidebarGroups: SidebarGroupStore
+    ) async throws {
+        let runningID = "detach-codex-ui-running"
+        let completedID = "detach-claude-ui-completed"
+        let runningRow = "session-row-\(runningID)"
+        let completedRow = "session-row-\(completedID)"
+        func group(named name: String) -> SidebarGroup? {
+            sidebarGroups.groups.first { $0.name == name }
+        }
+        func header(_ section: SessionSection, _ name: String) throws -> String {
+            guard let group = group(named: name) else {
+                throw Failure(message: "sidebar group \(name) is missing")
+            }
+            return "sidebar-group-\(section.rawValue)-\(group.id.uuidString)"
+        }
+
+        try await performContextMenu(
+            of: runningRow, in: mainWindow,
+            path: [L10n.string("Move to Group"), L10n.string("New Group…")])
+        try await typeInSheetField("Work")
+        try await clickMeasuredControl(
+            identifier: "sidebar-group-name-confirm", name: "Create group")
+        try await waitUntil("row command creates and fills a group") {
+            group(named: "Work").map { sidebarGroups.groupID(for: runningID) == $0.id } == true
+                && NSApp.windows.allSatisfy(\.sheets.isEmpty)
+        }
+        guard hasVisibleProbe(try header(.active, "Work")) else {
+            throw Failure(message: "new group header is not visible")
+        }
+
+        try await performGroupsToolbarMenu(
+            in: mainWindow, path: [L10n.string("New Group…")])
+        try await typeInSheetField("Personal")
+        try await keyPress("\r", keyCode: 36, modifiers: [])
+        try await waitUntil("toolbar command creates a group") {
+            group(named: "Personal") != nil && NSApp.windows.allSatisfy(\.sheets.isEmpty)
+        }
+
+        try await performGroupsToolbarMenu(
+            in: mainWindow, path: [L10n.string("New Group…")])
+        try await typeInSheetField("work")
+        try await keyPress("\r", keyCode: 36, modifiers: [])
+        let duplicate = L10n.string("A group with this name already exists.")
+        try await waitUntil("duplicate group name is explained") {
+            find(identifier: "sidebar-group-name-error").flatMap(label) == duplicate
+                && !NSApp.windows.allSatisfy(\.sheets.isEmpty)
+        }
+        try await keyPress("\u{1b}", keyCode: 53, modifiers: [])
+        try await waitUntil("cancelled group sheet closes") {
+            NSApp.windows.allSatisfy(\.sheets.isEmpty) && sidebarGroups.groups.count == 2
+        }
+
+        try await performContextMenu(
+            of: runningRow, in: mainWindow,
+            path: [L10n.string("Move to Group"), "Personal"])
+        guard let personal = group(named: "Personal"),
+              sidebarGroups.groupID(for: runningID) == personal.id else {
+            throw Failure(message: "Move to Group did not move the session")
+        }
+
+        guard try await dropSession(
+            completedID, on: try header(.active, "Personal"), in: mainWindow),
+            sidebarGroups.groupID(for: completedID) == personal.id else {
+            throw Failure(message: "a session dropped on a group did not join it")
+        }
+
+        try await performContextMenu(
+            of: runningRow, in: mainWindow, path: [L10n.string("Remove from Group")])
+        guard sidebarGroups.groupID(for: runningID) == nil else {
+            throw Failure(message: "Remove from Group kept the session grouped")
+        }
+
+        try await performGroupsToolbarMenu(
+            in: mainWindow, path: ["Personal", L10n.string("Rename Group…")])
+        try await typeInSheetField("Home")
+        try await keyPress("\r", keyCode: 36, modifiers: [])
+        try await waitUntil("toolbar command renames a group") {
+            group(named: "Home")?.id == personal.id
+                && NSApp.windows.allSatisfy(\.sheets.isEmpty)
+        }
+
+        try await performContextMenu(
+            of: try header(.finished, "Home"), in: mainWindow,
+            path: [L10n.string("Delete Group")])
+        try await waitUntil("deleting a group keeps its sessions") {
+            group(named: "Home") == nil
+                && sidebarGroups.groupID(for: completedID) == nil
+                && hasVisibleProbe(completedRow)
+        }
+
+        try await performContextMenu(
+            of: completedRow, in: mainWindow,
+            path: [L10n.string("Move to Group"), "Work"])
+        guard let work = group(named: "Work"),
+              sidebarGroups.groupID(for: completedID) == work.id,
+              try await dropSession(
+                completedID, on: "finished-section-header", in: mainWindow),
+              sidebarGroups.groupID(for: completedID) == nil else {
+            throw Failure(message: "a drop on a section header kept the session grouped")
+        }
+
+        try await performGroupsToolbarMenu(
+            in: mainWindow, path: ["Work", L10n.string("Delete Group")])
+        try await waitUntil("sidebar groups are removed") {
+            sidebarGroups.groups.isEmpty && hasVisibleProbe(runningRow)
+        }
+    }
+
+    private static func performContextMenu(
+        of identifier: String,
+        in window: NSWindow,
+        path: [String]
+    ) async throws {
+        let frame = try await measuredFrame(identifier: identifier, name: identifier)
+        let point = window.convertPoint(fromScreen: CGPoint(x: frame.midX, y: frame.midY))
+        guard let frameView = window.contentView?.superview,
+              let event = NSEvent.mouseEvent(
+                with: .rightMouseDown, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1)
+        else { throw Failure(message: "cannot open the context menu of \(identifier)") }
+        var view = frameView.hitTest(point)
+        while let current = view {
+            if let menu = current.menu(for: event) {
+                defer { current.didCloseMenu(menu, with: event) }
+                try performMenuItem(menu, path: path, name: identifier)
+                try await Task.sleep(nanoseconds: 150_000_000)
+                return
+            }
+            view = current.superview
+        }
+        throw Failure(message: "\(identifier) has no context menu")
+    }
+
+    private static func performGroupsToolbarMenu(
+        in window: NSWindow,
+        path: [String]
+    ) async throws {
+        guard let menu = window.toolbar?.items.first(where: {
+            $0.label == L10n.string("Groups")
+        })?.menuFormRepresentation?.submenu else {
+            throw Failure(message: "Groups toolbar menu is missing")
+        }
+        try performMenuItem(menu, path: path, name: "Groups toolbar")
+        try await Task.sleep(nanoseconds: 150_000_000)
+    }
+
+    private static func performMenuItem(
+        _ menu: NSMenu,
+        path: [String],
+        name: String
+    ) throws {
+        menu.update()
+        guard let title = path.first,
+              let index = menu.items.firstIndex(where: { $0.title == title }) else {
+            throw Failure(message: "\(name) menu has no \(path.first ?? "item")")
+        }
+        let item = menu.items[index]
+        guard item.isEnabled else {
+            throw Failure(message: "\(name) menu item \(title) is disabled")
+        }
+        if path.count > 1 {
+            guard let submenu = item.submenu else {
+                throw Failure(message: "\(name) menu item \(title) has no submenu")
+            }
+            try performMenuItem(submenu, path: Array(path.dropFirst()), name: name)
+        } else {
+            menu.performActionForItem(at: index)
+        }
+    }
+
+    private static func typeInSheetField(_ text: String) async throws {
+        var field: NSTextField?
+        try await waitUntil("group name field") {
+            func search(_ view: NSView) -> NSTextField? {
+                if let textField = view as? NSTextField, textField.isEditable {
+                    return textField
+                }
+                return view.subviews.lazy.compactMap(search).first
+            }
+            field = NSApp.windows.flatMap(\.sheets)
+                .compactMap(\.contentView).lazy.compactMap(search).first
+            return field != nil
+        }
+        guard let field, let sheet = field.window, sheet.makeFirstResponder(field),
+              let editor = field.currentEditor() as? NSTextView else {
+            throw Failure(message: "group name field cannot take text")
+        }
+        editor.selectAll(nil)
+        editor.insertText(text, replacementRange: editor.selectedRange())
+        try await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    /// Returns whether the destination accepted the dropped session name.
+    private static func dropSession(
+        _ sessionID: String,
+        on identifier: String,
+        in window: NSWindow
+    ) async throws -> Bool {
+        let frame = try await measuredFrame(identifier: identifier, name: identifier)
+        let point = window.convertPoint(fromScreen: CGPoint(x: frame.midX, y: frame.midY))
+        let pasteboard = NSPasteboard(
+            name: .init("detach-ui-e2e-drag-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString(sessionID, forType: .string)
+        let offered = (pasteboard.types ?? []).compactMap { UTType($0.rawValue) }
+        // SwiftUI registers each drop destination on its own overlay view, so
+        // search registered views instead of the click hit-test chain.
+        var destinations: [NSView] = []
+        func collect(_ view: NSView) {
+            if view.convert(view.bounds, to: nil).contains(point),
+               view.registeredDraggedTypes.contains(where: { registered in
+                   guard let accepted = UTType(registered.rawValue) else { return false }
+                   return offered.contains { $0.conforms(to: accepted) }
+               }) {
+                destinations.append(view)
+            }
+            view.subviews.forEach(collect)
+        }
+        if let frameView = window.contentView?.superview { collect(frameView) }
+        guard let destination = destinations.last else {
+            throw Failure(message: "\(identifier) has no drop destination")
+        }
+        let info = UIE2EDraggingInfo(window: window, location: point, pasteboard: pasteboard)
+        guard destination.draggingEntered(info) != [],
+              destination.draggingUpdated(info) != [],
+              destination.prepareForDragOperation(info) else { return false }
+        let performed = destination.performDragOperation(info)
+        destination.concludeDragOperation(info)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        return performed
     }
 
     /// SwiftUI can keep a removed List row in its accessibility tree. A row
@@ -2004,4 +2249,40 @@ enum UIE2ETestDriver {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(report).write(to: url, options: .atomic)
     }
+}
+
+/// A drop through AppKit's real destination methods. The hermetic driver has
+/// no window-server input, so it cannot start a real drag session.
+@MainActor
+private final class UIE2EDraggingInfo: NSObject, NSDraggingInfo {
+    let draggingDestinationWindow: NSWindow?
+    let draggingLocation: NSPoint
+    let draggingPasteboard: NSPasteboard
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+
+    init(window: NSWindow, location: NSPoint, pasteboard: NSPasteboard) {
+        draggingDestinationWindow = window
+        draggingLocation = location
+        draggingPasteboard = pasteboard
+    }
+
+    var draggingSourceOperationMask: NSDragOperation { [.copy, .move, .generic] }
+    var draggedImageLocation: NSPoint { draggingLocation }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    func resetSpringLoading() {}
+
+    func enumerateDraggingItems(
+        options enumOpts: NSDraggingItemEnumerationOptions = [],
+        for view: NSView?,
+        classes classArray: [AnyClass],
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+        using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+    ) {}
 }

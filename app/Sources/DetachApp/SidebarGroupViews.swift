@@ -86,6 +86,20 @@ struct SidebarGroupNameSheet: View {
                 Text(error.message)
                     .appFont(.caption)
                     .foregroundStyle(.red)
+                    .accessibilityIdentifier("sidebar-group-name-error")
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                    .background {
+                        if AppSettings.uiE2E != nil {
+                            UIE2EGeometryProbe(
+                                identifier: "sidebar-group-name-error",
+                                semanticLabel: error.message,
+                                semanticRole: .staticText,
+                                semanticEnabled: false)
+                        }
+                    }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
             }
             HStack {
                 Spacer()
@@ -96,6 +110,22 @@ struct SidebarGroupNameSheet: View {
                 Button(isRename ? L10n.string("Rename") : L10n.string("Create"), action: commit)
                     .keyboardShortcut(.defaultAction)
                     .disabled(SidebarGroupsDocument.normalizedName(name) == nil)
+                    .accessibilityIdentifier("sidebar-group-name-confirm")
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                    .background {
+                        if AppSettings.uiE2E != nil {
+                            UIE2EGeometryProbe(
+                                identifier: "sidebar-group-name-confirm",
+                                semanticLabel: isRename
+                                    ? L10n.string("Rename") : L10n.string("Create"),
+                                semanticRole: .button,
+                                semanticEnabled:
+                                    SidebarGroupsDocument.normalizedName(name) != nil)
+                        }
+                    }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
             }
         }
         .padding(20)

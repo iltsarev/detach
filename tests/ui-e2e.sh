@@ -524,6 +524,7 @@ run_app_scenario() {
       sidebar-shortcut-guide-visible) ;;
       sidebar-selects-completed-session) ;;
       sidebar-group-collapses-and-persists) ;;
+      sidebar-group-commands-and-drop) ;;
       bulk-delete-reaches-fake-cli) pass=SC-UI-SESSION-DELETE ;;
       session-signals-stay-distinct) pass=SC-UI-SESSION-DETAIL ;;
       safe-action-reaches-fake-cli) pass=SC-UI-SESSION-STOP ;;
@@ -568,6 +569,7 @@ run_app_scenario main sessions 32 \
   recover-and-reconnect-run-in-app-with-terminal-fallback \
   sidebar-selects-completed-session \
   sidebar-group-collapses-and-persists \
+  sidebar-group-commands-and-drop \
   session-uuid-copies-from-text-side \
   resume-runs-in-app-with-terminal-fallback \
   session-shortcut-selects-assigned-session \
