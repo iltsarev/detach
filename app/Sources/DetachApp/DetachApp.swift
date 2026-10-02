@@ -138,7 +138,7 @@ enum AppSettings {
     static let defaultDetachPath = ("~/.local/bin/detach" as NSString).expandingTildeInPath
     static let defaultProjectsDirectoryPath =
         FileManager.default.homeDirectoryForCurrentUser.path
-    static let defaultQuickChatDirectoryPath = "/tmp"
+    static let defaultQuickChatDirectoryPath = QuickChatProjectDirectory.defaultParent.path
     static let defaultQuickChatProvider = Provider.claude.rawValue
     static let uiE2E = UIE2EConfiguration.fromEnvironment()
     static let initialDetachPath = uiE2E?.cli.path ?? defaultDetachPath
@@ -154,6 +154,7 @@ enum AppSettings {
               let bundleIdentifier,
               let defaults = UserDefaults(
                 suiteName: bundleIdentifier + ".preferences") else {
+            migrateQuickChatDirectory(in: .standard)
             return .standard
         }
         defaults.set(uiE2E.cli.path, forKey: "detachPath")
@@ -163,6 +164,14 @@ enum AppSettings {
         defaults.removeObject(forKey: AppAppearance.storageKey)
         defaults.removeObject(forKey: SidebarGroupStore.storageKey)
         return defaults
+    }
+
+    static func migrateQuickChatDirectory(in defaults: UserDefaults) {
+        guard let path = defaults.string(forKey: quickChatDirectoryKey) else { return }
+        let persistentPath = QuickChatProjectDirectory.persistentPath(for: path)
+        if persistentPath != path {
+            defaults.set(persistentPath, forKey: quickChatDirectoryKey)
+        }
     }
     static let terminalBundleIdentifierKey = "terminalBundleIdentifier"
     static let notificationsEnabledKey = "sessionNotificationsEnabled"

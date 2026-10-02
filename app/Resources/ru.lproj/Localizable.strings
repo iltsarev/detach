@@ -484,3 +484,5 @@
 "Work is already in progress here. Create a new worktree?" = "Здесь уже идёт работа. Создать новый worktree?";
 "The new branch starts from the current commit. Uncommitted changes stay in the original folder." = "Новая ветка начнётся с текущего коммита. Незакоммиченные изменения останутся в исходной папке.";
 "Create worktree" = "Создать worktree";
+
+"Quick chat files stay in this folder. Temporary folders use the default location." = "Файлы быстрых чатов сохраняются в этой папке. Вместо временных папок используется папка по умолчанию.";

@@ -128,8 +128,13 @@ typed session must match the worktree path before the app selects it. A failed
 creation or start stays in the sheet and does not create another worktree.
 Command-N opens New session. Its chooser starts at the default project or the
 selection's parent. Command-T starts the chosen provider in a private 0700
-`detach-chat-<UUID>` below its folder (`/tmp` default). An event
-selects an unambiguous `starting` session before readiness, without polling.
+`detach-chat-<UUID>` below its folder. The default is
+`~/Library/Application Support/Detach/Chats`, created on first use with 0700
+permissions. Temporary and cache paths resolve to this default, including
+symlink aliases and the old `/tmp` setting. Settings migrates a saved temporary
+path and applies the same rule to folder choices. Launch repeats this check.
+Custom persistent folders must exist. Stop and Delete retain project files.
+Existing session paths and files do not move. An event
 Invalid folders block launch.
 Command-1 through Command-9 open main and select numbered Working or Answer
 ready sessions. Numbers appear in rows and stay stable across both sections.
