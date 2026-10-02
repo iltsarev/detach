@@ -15,6 +15,9 @@ IDENTIFIER=""
 
 approved_invocation() {
   local invocation="$1"
+  if [[ "$invocation" =~ ^claude\ --detach\ --worktree\ /(private/)?tmp/detach-ui-e2e\.[A-Za-z0-9.-]+/project-detach-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    return 0
+  fi
   if [[ "$invocation" =~ ^--terminal-size\ [1-9][0-9]{0,2}x[1-9][0-9]{0,2}\ (.*)$ ]]; then
     invocation="${BASH_REMATCH[1]}"
     case "$invocation" in
@@ -519,6 +522,7 @@ run_app_scenario() {
       settings-text-growth-stays-on-screen|\
       new-session-advanced-keeps-top-edge|\
       new-session-starts-without-outer-terminal|\
+      new-session-worktree-consent|\
       new-session-start-opens-embedded-terminal) ;;
       dashboard-accessible) pass=SC-UI-DASHBOARD ;;
       sidebar-shortcut-guide-visible) ;;
@@ -587,6 +591,7 @@ run_app_scenario main sessions 32 \
   new-session-advanced-keeps-top-edge \
   new-session-sheet-semantics \
   new-session-command-opens-sheet \
+  new-session-worktree-consent \
   new-session-start-opens-embedded-terminal \
   empty-dashboard-state \
   actionable-failure-presentation \
@@ -628,6 +633,8 @@ switch_count="$(grep -Fc 'client switch --pid ' \
   "$TEST_ROOT/invocations-main.log" || true)"
 claude_start_count="$(grep -Fxc 'claude --detach' \
   "$TEST_ROOT/invocations-main.log" || true)"
+worktree_start_count="$(grep -Fc 'claude --detach --worktree ' \
+  "$TEST_ROOT/invocations-main.log" || true)"
 codex_start_count="$(grep -Fxc 'codex --detach' \
   "$TEST_ROOT/invocations-main.log" || true)"
 quick_attach_count="$(grep -Fxc \
@@ -646,7 +653,8 @@ failed_counts=""
 [ "$recover_count" -ge 1 ] || failed_counts="$failed_counts recover>=1"
 [ "$recover_attach_count" -ge 2 ] || failed_counts="$failed_counts recover_attach>=2"
 [ "$switch_count" -ge 3 ] || failed_counts="$failed_counts switch>=3"
-[ "$claude_start_count" -eq 1 ] || failed_counts="$failed_counts claude_start=1"
+[ "$claude_start_count" -eq 2 ] || failed_counts="$failed_counts claude_start=2"
+[ "$worktree_start_count" -eq 1 ] || failed_counts="$failed_counts worktree_start=1"
 [ "$codex_start_count" -eq 1 ] || failed_counts="$failed_counts codex_start=1"
 [ "$((quick_attach_count + quick_switch_count))" -ge 1 ] || \
   failed_counts="$failed_counts quick_attach+quick_switch>=1"

@@ -107,6 +107,21 @@ suffix. Older `session_name` values stay addressable; their metadata, logs,
 and checkpoints remain until Delete or typed storage cleanup. Explicit names
 stay deterministic and obey the same project lock and cleanup policy.
 
+Start checks project occupancy before it removes a retained pane. A live
+session in a Git worktree with a commit returns status 20 before startup
+mutations. This check includes both providers and holds the project lock.
+The caller releases all lifecycle locks before it offers a new worktree.
+An interactive CLI asks for consent; other callers receive status 20.
+
+Start accepts `--worktree PATH` as explicit creation consent. It uses
+`/usr/bin/git`, ignores inherited Git location variables, and creates a unique
+`detach/<UUID>` branch from a resolved HEAD commit. The target must be absent,
+outside the source project, with an existing parent. A supplied session name
+must be unused. Dirty and untracked source files stay in place. A new start
+uses the new canonical project path and the normal lifecycle locks. A linked
+worktree has its own project lock. No worktree is removed on startup failure,
+Stop, Delete, or storage cleanup. Resume and Recover use the saved path.
+
 The worker starts checkpoint and power-status loops, then runs the provider only
 through:
 

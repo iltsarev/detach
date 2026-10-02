@@ -851,6 +851,31 @@ enum UIE2ETestDriver {
             _ = try await measuredFrame(
                 identifier: "new-session-sheet", name: "new session sheet")
             checks.append("new-session-command-opens-sheet")
+            try Data().write(to: configuration.root.appendingPathComponent(
+                "fake/new-session-project-busy"), options: .atomic)
+            for acceptsWorktree in [false, true] {
+                if acceptsWorktree {
+                    try await keyPress("n", keyCode: 45, modifiers: [.command])
+                }
+                let start = try await element(identifier: "new-session-launch")
+                try await clickUntil(
+                    start, name: "start in occupied project",
+                    outcome: "worktree confirmation appears") {
+                    find(identifier: "new-session-launch").flatMap(label) == L10n.string("Create worktree")
+                }
+                guard !FileManager.default.fileExists(atPath: configuration.root
+                    .appendingPathComponent("fake/new-session-started").path) else {
+                    throw Failure(message: "worktree started before consent")
+                }
+                if !acceptsWorktree {
+                    try await clickMeasuredUntil(
+                        identifier: "new-session-cancel", name: "cancel worktree",
+                        outcome: "worktree offer closes") {
+                        NSApp.windows.allSatisfy(\.sheets.isEmpty)
+                    }
+                }
+            }
+            checks.append("new-session-worktree-consent")
             try await waitUntil("enabled new session launch") {
                 find(identifier: "new-session-launch").map(isEnabled) == true
             }

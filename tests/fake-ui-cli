@@ -66,7 +66,9 @@ if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
   fi
   started=''
   if [ -f "$ROOT/fake/new-session-started" ]; then
-    started="$(printf '{"schema":1,"provider":"claude","session_name":"detach-claude-ui-new","name":"UI New","effective_status":"running","created_at":"2026-08-29T10:00:00Z","project_dir":"%s/project","session_color":"#A855F7","power_protection_state":"protected","health_actions":["attach","stop"]}' "$ROOT")"
+    started_project="$ROOT/project"
+    [ ! -f "$ROOT/fake/new-session-project" ] || started_project="$(<"$ROOT/fake/new-session-project")"
+    started="$(printf '{"schema":1,"provider":"claude","session_name":"detach-claude-ui-new","name":"UI New","effective_status":"running","created_at":"2026-08-29T10:00:00Z","project_dir":"%s","session_color":"#A855F7","power_protection_state":"protected","health_actions":["attach","stop"]}' "$started_project")"
   fi
   quick=''
   if [ -f "$ROOT/fake/quick-chat-started" ]; then
@@ -290,11 +292,23 @@ if [ "$#" -eq 3 ] && [ "$1" = claude ] && [ "$2" = attach ] \
   exec /bin/cat
 fi
 
-if [ "$#" -eq 2 ] && [ "$1" = claude ] && [ "$2" = --detach ]; then
+if { [ "$#" -eq 2 ] || [ "$#" -eq 4 ]; } && [ "$1" = claude ] && [ "$2" = --detach ]; then
   [ "$(pwd -P)" = "$ROOT/project" ] || {
     printf 'new session started outside its selected project\n' >&2
     exit 65
   }
+  if [ "$#" -eq 4 ]; then
+    [ "$3" = --worktree ] || exit 65
+    [ "$(cd -P "$(dirname "$4")" && pwd)" = "$ROOT" ] || exit 65
+    worktree_suffix="$(basename "$4")"
+    worktree_suffix="${worktree_suffix#project-detach-}"
+    [[ "$worktree_suffix" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || exit 65
+    mkdir "$4"
+    printf '%s\n' "$4" >"$ROOT/fake/new-session-project"
+  elif [ -f "$ROOT/fake/new-session-project-busy" ]; then
+    printf 'project already has a running detached session\n' >&2
+    exit 20
+  fi
   : >"$ROOT/fake/new-session-started"
   printf '%s\n' "$*" >>"$ACTIONS"
   exit 0

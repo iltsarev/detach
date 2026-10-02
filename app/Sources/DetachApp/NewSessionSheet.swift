@@ -17,6 +17,7 @@ struct NewSessionSheet: View {
     @FocusState private var promptFocused: Bool
     @State private var launchFailure: String?
     @State private var isLaunching = false
+    @State private var worktreeDirectory: URL?
 
     init(
         store: SessionStore,
@@ -25,6 +26,7 @@ struct NewSessionSheet: View {
         showsAdvanced: Bool = false,
         initialProjectDir: URL? = nil,
         initialLaunchFailure: String? = nil,
+        initialWorktreeDirectory: URL? = nil,
         projectPickerRoot: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
         self.store = store
@@ -34,6 +36,7 @@ struct NewSessionSheet: View {
         _showAdvanced = State(initialValue: showsAdvanced)
         _projectDir = State(initialValue: initialProjectDir)
         _launchFailure = State(initialValue: initialLaunchFailure)
+        _worktreeDirectory = State(initialValue: initialWorktreeDirectory)
     }
 
     private var normalizedName: String? {
@@ -52,8 +55,12 @@ struct NewSessionSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             projectWell
+                .disabled(isLaunching || worktreeDirectory != nil)
             providerAndName
+                .disabled(isLaunching || worktreeDirectory != nil)
             advancedOptions
+                .disabled(isLaunching || worktreeDirectory != nil)
+            worktreeConfirmation
             launchFailureBanner
             footer
         }
@@ -223,6 +230,25 @@ struct NewSessionSheet: View {
     }
 
     @ViewBuilder
+    private var worktreeConfirmation: some View {
+        if let worktreeDirectory {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n.string("Work is already in progress here. Create a new worktree?"))
+                    .appFont(.body, weight: .semibold)
+                Text(L10n.string("The new branch starts from the current commit. Uncommitted changes stay in the original folder."))
+                    .appFont(.caption)
+                    .foregroundStyle(.secondary)
+                Text(worktreeDirectory.path)
+                    .appFont(.caption)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("new-session-worktree-confirmation")
+        }
+    }
+
+    @ViewBuilder
     private var launchFailureBanner: some View {
         if let launchFailure {
             Text(launchFailure).appFont(.caption).foregroundStyle(.red)
@@ -254,10 +280,11 @@ struct NewSessionSheet: View {
 #endif
 // quality-coverage:end ui-e2e-instrumentation
                 Button {
-                    Task { await launch() }
+                    Task { await launch(worktreeDirectory: worktreeDirectory) }
                 } label: {
                     NewSessionLaunch.label(
-                        isLaunching: isLaunching)
+                        isLaunching: isLaunching,
+                        createsWorktree: worktreeDirectory != nil)
                 }
                     .buttonStyle(.borderedProminent)
                     .tint(Brand.tint(for: provider))
@@ -268,7 +295,8 @@ struct NewSessionSheet: View {
                     .background {
                         uiE2EGeometryProbe(
                             identifier: "new-session-launch",
-                            semanticLabel: L10n.string("Start"),
+                            semanticLabel: worktreeDirectory == nil
+                                ? L10n.string("Start") : L10n.string("Create worktree"),
                             semanticRole: .button,
                             semanticEnabled: canLaunch)
                     }
@@ -319,7 +347,7 @@ struct NewSessionSheet: View {
 
     @MainActor
     @discardableResult
-    func launch() async -> SessionStartResult? {
+    func launch(worktreeDirectory requestedWorktree: URL? = nil) async -> SessionStartResult? {
         guard !isLaunching, isNameValid, let projectDir else { return nil }
         isLaunching = true
         defer { isLaunching = false }
@@ -327,9 +355,15 @@ struct NewSessionSheet: View {
             provider: provider,
             projectDirectory: projectDir,
             name: normalizedName,
-            prompt: NewSessionLaunch.trimmedPrompt(prompt))
+            prompt: NewSessionLaunch.trimmedPrompt(prompt),
+            worktreeDirectory: requestedWorktree)
         launchFailure = nil
-        if let message = result.message {
+        if let proposedDirectory = result.worktreeDirectory {
+            worktreeDirectory = proposedDirectory
+        } else if let message = result.message {
+            // A worktree can exist even if provider startup fails. Let the
+            // user choose it explicitly instead of creating another on retry.
+            worktreeDirectory = nil
             launchFailure = message
         } else {
             if let sessionID = result.sessionID { selectedID = sessionID }
@@ -347,7 +381,7 @@ enum NewSessionLaunch {
     }
 
     @ViewBuilder
-    static func label(isLaunching: Bool) -> some View {
+    static func label(isLaunching: Bool, createsWorktree: Bool = false) -> some View {
         HStack(spacing: 7) {
             if isLaunching {
                 ProgressView()
@@ -355,7 +389,7 @@ enum NewSessionLaunch {
                 Text(L10n.string("Starting…"))
             } else {
                 Image(systemName: "terminal")
-                Text(L10n.string("Start"))
+                Text(createsWorktree ? L10n.string("Create worktree") : L10n.string("Start"))
             }
         }
     }

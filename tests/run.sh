@@ -1114,6 +1114,122 @@ if codex_part_selected lifecycle; then
   codex_scenario_event begin SC-SESSION-RECOVER-CODEX
   codex_scenario_event begin SC-SESSION-STOP-CODEX
   codex_scenario_event begin SC-SESSION-DELETE-CODEX
+# Worktree creation uses a real isolated repository and the managed provider.
+# No production repository or provider state is changed.
+(
+  worktree_source="$TMP_ROOT/worktree source"
+  worktree_target="$TMP_ROOT/worktree target"
+  mkdir -p "$worktree_source/src"
+  /usr/bin/git -C "$worktree_source" init -q
+  printf 'committed\n' >"$worktree_source/tracked.txt"
+  /usr/bin/git -C "$worktree_source" add tracked.txt
+  /usr/bin/git -C "$worktree_source" -c user.name=Fixture -c user.email=fixture@example.invalid \
+    commit -qm initial
+  printf 'dirty\n' >"$worktree_source/tracked.txt"
+  printf 'private\n' >"$worktree_source/untracked.txt"
+  cd "$worktree_source/src"
+  run_codex --name worktree-source --detach >/dev/null
+  source_token="$(tmux -L "$SOCKET" show-options -qv -t '=detach-codex-worktree-source:' @detach_run_token)"
+  conflict_status=0
+  run_codex --name worktree-conflict --detach >"$TMP_ROOT/worktree-conflict.log" 2>&1 || conflict_status=$?
+  [ "$conflict_status" = 20 ]
+  [ "$(/usr/bin/git worktree list --porcelain | grep -c '^worktree ')" = 1 ]
+  [ ! -e "$DETACH_CODEX_STATE_ROOT/sessions/detach-codex-worktree-conflict/meta.json" ]
+  # The same occupied directory is rejected across providers.
+  conflict_status=0
+  DETACH_CLAUDE_BIN="$ROOT/tests/fake-claude" \
+    "$SCRIPT" claude --detach >"$TMP_ROOT/worktree-cross-provider.log" 2>&1 || conflict_status=$?
+  [ "$conflict_status" = 20 ]
+  # An existing destination, including an empty directory or symlink, is never reused.
+  mkdir "$TMP_ROOT/worktree-existing"
+  ln -s "$TMP_ROOT/worktree-existing" "$TMP_ROOT/worktree-link"
+  for bad_target in "$TMP_ROOT/worktree-existing" "$TMP_ROOT/worktree-link" \
+      "$worktree_source/nested" "$TMP_ROOT/missing-parent/worktree"; do
+    expect_cli_refusal worktree-destination run_codex --detach --worktree "$bad_target"
+  done
+  expect_cli_refusal worktree-name run_codex --name worktree-source --detach --worktree "$worktree_target"
+  [ ! -e "$worktree_target" ]
+  # A Git environment inherited from a hook cannot redirect the source.
+  GIT_DIR="$ROOT/.git" GIT_WORK_TREE="$ROOT" \
+    run_codex --name worktree-target --detach --worktree "$worktree_target" -- 'worktree prompt' >/dev/null
+  [ "$(cat "$worktree_target/tracked.txt")" = committed ]
+  [ ! -e "$worktree_target/untracked.txt" ]
+  [ "$(cat "$worktree_source/tracked.txt")" = dirty ]
+  [ "$(cat "$worktree_source/untracked.txt")" = private ]
+  [ "$(/usr/bin/git -C "$worktree_source" rev-parse HEAD)" = \
+    "$(/usr/bin/git -C "$worktree_target" rev-parse HEAD)" ]
+  /usr/bin/git -C "$worktree_target" branch --show-current | grep '^detach/' >/dev/null
+  [ "$(tmux -L "$SOCKET" show-options -qv -t '=detach-codex-worktree-source:' @detach_run_token)" = "$source_token" ]
+  [ "$(tmux -L "$SOCKET" show-options -qv -t '=detach-codex-worktree-target:' @detach_cwd)" = "$(cd -P "$worktree_target" && pwd)" ]
+  conflict_status=0
+  (cd "$worktree_target" && run_codex --detach) >"$TMP_ROOT/worktree-busy.log" 2>&1 || conflict_status=$?
+  [ "$conflict_status" = 20 ]
+  run_codex stop worktree-target >/dev/null
+  run_codex delete --force worktree-target >/dev/null
+  [ -f "$worktree_target/.git" ]
+  # A completed linked worktree can be selected and started again normally.
+  (cd "$worktree_target" && run_codex --name worktree-reuse --detach >/dev/null)
+  run_codex stop worktree-reuse >/dev/null
+  run_codex delete --force worktree-reuse >/dev/null
+  # Interactive cancellation and acceptance use real terminal descriptors.
+  python3 - "$SCRIPT" "$worktree_source" "$TMP_ROOT/worktree-pty-path" <<'PY_WORKTREE'
+import os, pty, re, select, subprocess, sys, time
+script, source, output = sys.argv[1:]
+for answer in (b'n\n', b'y\n'):
+    master, slave = pty.openpty()
+    process = subprocess.Popen([script, 'codex', '--name', 'worktree-pty', '--detach'],
+        cwd=source, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+    os.close(slave)
+    data = b''
+    replied = False
+    deadline = time.monotonic() + 45
+    try:
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                data += chunk
+                if b'[y/N]' in data and not replied:
+                    os.write(master, answer)
+                    replied = True
+            elif process.poll() is not None:
+                break
+        assert replied, data.decode(errors='replace')
+        assert process.wait(timeout=5) == (20 if answer == b'n\n' else 0), data.decode(errors='replace')
+        if answer == b'y\n':
+            match = re.search(rb'Started detach-codex-worktree-pty in ([^\r\n]+)', data)
+            assert match, data.decode(errors='replace')
+            with open(output, 'w') as result:
+                result.write(os.fsdecode(match[1]))
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
+PY_WORKTREE
+  run_codex stop worktree-pty >/dev/null
+  run_codex delete --force worktree-pty >/dev/null
+  [ -f "$(cat "$TMP_ROOT/worktree-pty-path")/.git" ]
+  [ "$(/usr/bin/git -C "$worktree_source" worktree list --porcelain | grep -c '^worktree ')" = 3 ]
+  expect_cli_refusal worktree-failed-provider run_codex --name worktree-failed --detach \
+    --worktree "$TMP_ROOT/worktree-failed" -- -C "$worktree_source"
+  [ -f "$TMP_ROOT/worktree-failed/.git" ]
+  grep -F 'created worktree is kept at:' "$TMP_ROOT/expected-refusal.stderr" >/dev/null
+  [ "$(cat "$worktree_source/tracked.txt")" = dirty ]
+  run_codex stop worktree-source >/dev/null
+  run_codex delete --force worktree-source >/dev/null
+  mkdir "$TMP_ROOT/not-git" "$TMP_ROOT/unborn-git"
+  /usr/bin/git -C "$TMP_ROOT/unborn-git" init -q
+  for source in "$TMP_ROOT/not-git" "$TMP_ROOT/unborn-git"; do
+    cd "$source"
+    expect_cli_refusal worktree-requires-commit run_codex --detach --worktree "$TMP_ROOT/invalid-worktree"
+    [ ! -e "$TMP_ROOT/invalid-worktree" ]
+  done
+)
   COLORTERM=ambient-is-not-a-capability \
     LC_ALL=C run_codex --name integration --detach -- "$literal_prompt"
 

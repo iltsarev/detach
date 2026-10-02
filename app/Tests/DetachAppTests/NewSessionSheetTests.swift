@@ -100,6 +100,26 @@ final class NewSessionSheetTests: XCTestCase {
     func testLaunchLabelCoversBothIdleAndBusyStates() {
         _ = NewSessionLaunch.label(isLaunching: false)
         _ = NewSessionLaunch.label(isLaunching: true)
+        _ = NewSessionLaunch.label(isLaunching: false, createsWorktree: true)
+        _ = NewSessionSheet(
+            store: store(), initialProjectDir: URL(fileURLWithPath: "/tmp/proj"),
+            initialWorktreeDirectory: URL(fileURLWithPath: "/tmp/proj-worktree")).body
+    }
+
+    func testOccupiedProjectOffersWorktreeWithoutSelectingASession() async {
+        let cli = NewSessionRecordingCLI()
+        cli.responses["claude --detach"] = .success(CLIResult(
+            exitCode: 20, stdout: "", stderr: "project occupied", timedOut: false))
+        var selectedID: String?
+        let sheet = NewSessionSheet(
+            store: SessionStore(cli: cli), selectedID: Binding(
+                get: { selectedID }, set: { selectedID = $0 }),
+            initialProjectDir: URL(fileURLWithPath: "/tmp/proj"))
+        let result = await sheet.launch()
+        XCTAssertNotNil(result?.worktreeDirectory)
+        XCTAssertNil(result?.message)
+        XCTAssertNil(selectedID)
+        XCTAssertEqual(cli.calls, [["claude", "--detach"]])
     }
 
     func testLaunchStartsInAppAndSelectsTheTypedSession() async {
