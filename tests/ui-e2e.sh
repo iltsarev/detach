@@ -564,7 +564,8 @@ run_app_scenario() {
     "$((SECONDS - scenario_started))" "$attempt"
 }
 
-run_app_scenario main sessions 32 \
+# Include the occupied-project cancellation and confirmed worktree launch.
+run_app_scenario main sessions 40 \
   background-app-starts-without-focus \
   dashboard-accessible \
   sidebar-shortcut-guide-visible \
