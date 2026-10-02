@@ -589,7 +589,11 @@ struct SettingsView: View {
                 directoryPreferenceRow(
                     title: L10n.string("Quick chat folder"),
                     path: $quickChatDirectoryPath,
-                    accessibilityIdentifier: "settings-quick-chat-folder")
+                    accessibilityIdentifier: "settings-quick-chat-folder",
+                    isQuickChat: true)
+                Text(L10n.string(
+                    "Quick chat files stay in this folder. Temporary folders use the default location."))
+                    .settingsMessage()
                 Text(L10n.string(
                     "⌘N opens New session. ⌘T starts Quick chat immediately."))
                     .settingsMessage()
@@ -635,7 +639,8 @@ struct SettingsView: View {
     private func directoryPreferenceRow(
         title: String,
         path: Binding<String>,
-        accessibilityIdentifier: String
+        accessibilityIdentifier: String,
+        isQuickChat: Bool = false
     ) -> some View {
         HStack(spacing: 12) {
             Text(title)
@@ -647,7 +652,7 @@ struct SettingsView: View {
                 .truncationMode(.middle)
                 .help(path.wrappedValue)
             Button(L10n.string("Choose…")) {
-                presentDirectoryChooser(path: path)
+                presentDirectoryChooser(path: path, isQuickChat: isQuickChat)
             }
             .accessibilityIdentifier(accessibilityIdentifier)
 // quality-coverage:begin ui-e2e-instrumentation
@@ -666,7 +671,7 @@ struct SettingsView: View {
     }
 
     @MainActor
-    private func presentDirectoryChooser(path: Binding<String>) {
+    private func presentDirectoryChooser(path: Binding<String>, isQuickChat: Bool) {
         let fallback = FileManager.default.homeDirectoryForCurrentUser
         let start = DirectoryPreference.configuredOrFallback(
             path: path.wrappedValue,
@@ -677,7 +682,10 @@ struct SettingsView: View {
             defaultDirectory: start
         ) { url in
             guard let url else { return }
-            path.wrappedValue = url.standardizedFileURL.path
+            let selectedPath = url.standardizedFileURL.path
+            path.wrappedValue = isQuickChat
+                ? QuickChatProjectDirectory.persistentPath(for: selectedPath)
+                : selectedPath
         }
     }
 

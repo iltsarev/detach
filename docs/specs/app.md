@@ -121,7 +121,13 @@ rejects invalid input. Launch runs in Detach. Advanced holds the prompt
 below a fixed top. Titles use `display_name`, then the project or internal name.
 Command-N opens New session. Its chooser starts at the default project or the
 selection's parent. Command-T starts the chosen provider in a private 0700
-`detach-chat-<UUID>` below its folder (`/tmp` default). An event
+`detach-chat-<UUID>` below its folder. The default is
+`~/Library/Application Support/Detach/Chats`, created on first use with 0700
+permissions. Temporary and cache paths resolve to this default, including
+symlink aliases and the old `/tmp` setting. Settings migrates a saved temporary
+path and applies the same rule to folder choices. Launch repeats this check.
+Custom persistent folders must exist. Stop and Delete retain project files.
+Existing session paths and files do not move. An event
 selects an unambiguous `starting` session before readiness, without polling.
 Invalid folders block launch.
 Command-1 through Command-9 open main and select numbered Working or Answer

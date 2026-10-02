@@ -479,3 +479,5 @@
 "A group with this name already exists." = "Группа с таким названием уже есть.";
 "You can create up to %d groups." = "Можно создать не больше %d групп.";
 "This group no longer exists." = "Этой группы больше нет.";
+
+"Quick chat files stay in this folder. Temporary folders use the default location." = "Файлы быстрых чатов сохраняются в этой папке. Вместо временных папок используется папка по умолчанию.";
