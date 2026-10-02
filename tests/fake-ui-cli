@@ -323,6 +323,7 @@ if [ "$#" -eq 2 ] && [ "$1" = codex ] && [ "$2" = --detach ]; then
   case "$(basename "$quick_cwd")" in
     detach-chat-*) ;;
     *) printf 'quick chat did not create a private project\n' >&2; exit 65 ;;
+  esac
   [ "$(stat -f '%Lp' "$quick_cwd")" = 700 ] || {
     printf 'quick chat project is not private\n' >&2
     exit 65
