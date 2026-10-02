@@ -158,6 +158,7 @@ and Delete. Temporary and cache folder settings, including the old `/tmp`
 default, use the new default location. This keeps new chats outside macOS
 temporary-file cleanup. Existing sessions keep their saved paths and files;
 this change does not move them or restore missing files.
+
 Detach shows each assigned session shortcut beside its name. The number stays
 with the session while it is in Working or Answer ready. Detach reuses the
 number after the session leaves both sections. If more than nine sessions are

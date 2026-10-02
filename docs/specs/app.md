@@ -135,6 +135,7 @@ symlink aliases and the old `/tmp` setting. Settings migrates a saved temporary
 path and applies the same rule to folder choices. Launch repeats this check.
 Custom persistent folders must exist. Stop and Delete retain project files.
 Existing session paths and files do not move. An event
+selects an unambiguous `starting` session before readiness, without polling.
 Invalid folders block launch.
 Command-1 through Command-9 open main and select numbered Working or Answer
 ready sessions. Numbers appear in rows and stay stable across both sections.

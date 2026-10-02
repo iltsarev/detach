@@ -119,6 +119,7 @@ fi
 quick_parent="$FAKE_ROOT/home/Library/Application Support/Detach/Chats"
 mkdir -p "$quick_parent"
 FAKE_QUICK_ROOT="$(mktemp -d "$quick_parent/detach-chat-contract.XXXXXX")"
+chmod 0700 "$FAKE_QUICK_ROOT"
 (
   cd "$FAKE_QUICK_ROOT"
   run_fake codex --detach
