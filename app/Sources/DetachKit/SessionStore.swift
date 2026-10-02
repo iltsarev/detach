@@ -17,10 +17,32 @@ public struct SessionDeletionFailure: Equatable, Sendable {
 public struct SessionStartResult: Equatable, Sendable {
     public var sessionID: String?
     public var message: String?
+    public var worktreeDirectory: URL?
 
-    public init(sessionID: String? = nil, message: String? = nil) {
+    public init(sessionID: String? = nil, message: String? = nil, worktreeDirectory: URL? = nil) {
         self.sessionID = sessionID
         self.message = message
+        self.worktreeDirectory = worktreeDirectory
+    }
+}
+
+public enum SessionWorktree {
+    public static func suggestedDirectory(for project: URL, identifier: UUID = UUID()) -> URL {
+        let selected = project.resolvingSymlinksInPath().standardizedFileURL
+        var root = selected
+        while root.path != "/" {
+            let marker = root.appendingPathComponent(".git")
+            if let values = try? marker.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]),
+               values.isSymbolicLink != true,
+               values.isRegularFile == true || values.isDirectory == true {
+                break
+            }
+            root.deleteLastPathComponent()
+        }
+        if root.path == "/" { root = selected }
+        return root.deletingLastPathComponent().appendingPathComponent(
+            "\(root.lastPathComponent)-detach-\(identifier.uuidString.lowercased())",
+            isDirectory: true)
     }
 }
 
@@ -595,7 +617,8 @@ public final class SessionStore {
         provider: Provider,
         projectDirectory: URL,
         name: String?,
-        prompt: String?
+        prompt: String?,
+        worktreeDirectory: URL? = nil
     ) async -> SessionStartResult {
         let existingIDs = Set(sessions.map(\.id))
         var arguments = [provider.rawValue]
@@ -603,6 +626,9 @@ public final class SessionStore {
             arguments += ["--name", name]
         }
         arguments.append("--detach")
+        if let worktreeDirectory {
+            arguments += ["--worktree", worktreeDirectory.path]
+        }
         if let prompt, !prompt.isEmpty {
             arguments += ["--", prompt]
         }
@@ -618,6 +644,12 @@ public final class SessionStore {
                     message: L10n.string("detach start timed out"))
             }
             guard result.exitCode == 0 else {
+                // Only the CLI's pre-mutation Git project conflict can offer
+                // creation. A failed or timed-out launch must never retry.
+                if result.exitCode == 20, worktreeDirectory == nil {
+                    return SessionStartResult(worktreeDirectory:
+                        SessionWorktree.suggestedDirectory(for: projectDirectory))
+                }
                 let stderr = result.stderr.trimmingCharacters(
                     in: .whitespacesAndNewlines)
                 return SessionStartResult(message: stderr.isEmpty
@@ -626,7 +658,7 @@ public final class SessionStore {
             }
 
             let refreshedSessions = await refresh()
-            let projectPath = Self.canonicalProjectPath(projectDirectory.path)
+            let projectPath = Self.canonicalProjectPath((worktreeDirectory ?? projectDirectory).path)
             let candidates = refreshedSessions.filter {
                 !existingIDs.contains($0.id)
                     && $0.provider == provider

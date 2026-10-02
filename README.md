@@ -285,6 +285,23 @@ never rolls repository files back. A shared project lock also prevents two
 Detach-managed agents, including agents from different providers, from writing
 the same worktree at the same time.
 
+When you start in an occupied Git worktree, Detach offers to create a new
+worktree. Select **Create worktree** in the app, or answer `y` in the CLI.
+Detach creates a sibling directory and a unique `detach/<UUID>` branch from
+the current commit. Uncommitted changes stay in the original directory.
+Codex and Claude can run at the same time in different worktrees.
+
+For scripts, specify the new directory: `detach codex --detach --worktree ../task`.
+The parent directory must exist. The target must not exist or be inside the
+source project. Git must be available at `/usr/bin/git`, and the project must
+have a commit. Without a terminal or `--worktree`, an occupied Git worktree
+returns exit status 20. An optional session name must be new.
+
+Worktrees remain after a session ends, fails to start, or is deleted. Select an
+existing worktree as the project to use it again. Use `git worktree remove`
+when you no longer need it. Detach detects its own active sessions; it cannot
+detect all other editors or agents that use the same files.
+
 ## Reliability that distinguishes slow from broken
 
 Detach owns a private Apple Silicon tmux runtime. Each agent runs on a private,

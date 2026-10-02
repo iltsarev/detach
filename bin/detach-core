@@ -170,7 +170,7 @@ fi
 usage() {
   printf '%s\n' \
     'Usage:' \
-    "  $PROGRAM [start] [--name NAME] [--detach] [--] [$PROVIDER_ARGS_LABEL...]" \
+    "  $PROGRAM [start] [--name NAME] [--detach] [--worktree PATH] [--] [$PROVIDER_ARGS_LABEL...]" \
     "  $PROGRAM resume [--name NAME] [--detach] SESSION_ID [$PROVIDER_ARGS_LABEL...]" \
     "  $PROGRAM attach [--terminal-features sync] [NAME]" \
     "  $PROGRAM list [--json]" \
@@ -185,7 +185,9 @@ usage() {
     '' \
     'With no NAME, the session is derived from the current Git repository (or cwd).' \
     'NAME may be up to 100 UTF-8 bytes of printable text.' \
-    "A default start creates a new $PROVIDER_LABEL session; use attach or resume explicitly."
+    "A default start creates a new $PROVIDER_LABEL session; use attach or resume explicitly." \
+    'An occupied Git worktree offers a new sibling worktree in an interactive terminal.' \
+    '--worktree PATH creates a new branch from HEAD; uncommitted files stay in the source.'
 
   if [ "$PROVIDER" = "codex" ]; then
     printf '%s\n' \
@@ -6205,6 +6207,53 @@ running_session_for_project() {
   return 1
 }
 
+project_git() (
+  # Git discovery must use the selected project, even inside a Git hook.
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+  /usr/bin/git -C "$@"
+)
+
+project_supports_worktrees() {
+  local cwd="$1" root
+  root="$(project_git "$cwd" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ "$(cd -P "$root" 2>/dev/null && pwd)" = "$cwd" ] || return 1
+  project_git "$cwd" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1
+}
+
+create_project_worktree() {
+  local cwd="$1" destination="$2" parent branch commit
+  project_supports_worktrees "$cwd" || die "worktree creation requires a Git project with a commit"
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || \
+    die "worktree destination already exists: $destination"
+  parent="$(cd -P "$(dirname "$destination")" 2>/dev/null && pwd)" || \
+    die "worktree parent directory does not exist: $destination"
+  destination="$parent/$(basename "$destination")"
+  case "$destination/" in
+    "$cwd/"*) die "create the worktree outside the source project" ;;
+  esac
+  commit="$(project_git "$cwd" rev-parse --verify 'HEAD^{commit}')" || \
+    die "could not resolve the worktree source commit"
+  branch="detach/$(new_run_token)"
+  project_git "$cwd" worktree add -b "$branch" -- "$destination" "$commit" >&2 || \
+    die "could not create worktree: $destination"
+  printf '%s\n' "$destination"
+}
+
+offer_project_worktree() {
+  local cwd="$1" destination reply
+  [ -t 0 ] && [ -t 2 ] || return 20
+  destination="$(dirname "$cwd")/$(basename "$cwd")-detach-$(new_run_token)"
+  printf 'Work is already in progress here. Create a new Git worktree?\n%s\n' \
+    "  $destination" >&2
+  printf 'It starts from HEAD; uncommitted files stay here. [y/N] ' >&2
+  IFS= read -r reply || return 20
+  case "$reply" in
+    y|Y|yes|YES) printf '%s\n' "$destination" ;;
+    *) return 20 ;;
+  esac
+}
+
 start_tmux_session_locked() {
   local session="$1"
   local cwd="$2"
@@ -6217,6 +6266,17 @@ start_tmux_session_locked() {
   local default_base
   local fresh_default=0
 
+  # This outcome is pre-mutation and survives lockf. The caller can offer a
+  # worktree only after releasing every lifecycle lock.
+  existing="$(running_session_for_project "$cwd" || true)"
+  if [ -n "$existing" ]; then
+    error "project already has a running detached session: $existing"
+    if project_supports_worktrees "$cwd"; then
+      error "use --worktree PATH to start in a new Git worktree"
+      return 20
+    fi
+    return 1
+  fi
   refuse_runtime_without_managed_tmux "$session"
   default_base="$(default_session_name "$cwd")"
   if [ -z "$display_name" ] && [ -z "$recovery_id" ] && \
@@ -6235,8 +6295,6 @@ start_tmux_session_locked() {
     require_dead_tmux_primary_run_match "$session"
     "${TMUX_CMD[@]}" kill-session -t "=$session" || die "could not remove completed tmux session '$session'"
   fi
-  existing="$(running_session_for_project "$cwd" "$session" || true)"
-  [ -z "$existing" ] || die "project already has a running detached session: $existing"
   start_tmux_session "$session" "$cwd" "$display_name" 1 \
     "$recovery_id" "$recovery_rollout" "$preserve_checkpoint" "$@"
 }
@@ -8088,6 +8146,7 @@ main() {
   local ansi=0
   local terminal_features=""
   local default_base
+  local worktree_path="" start_status
 
   validate_runtime_config
 
@@ -8133,6 +8192,18 @@ main() {
           ;;
         -d|--detach)
           detach=1
+          shift
+          ;;
+        --worktree)
+          [ "$action" = start ] || die "--worktree is only available for start"
+          [ "$#" -ge 2 ] && [ -n "$2" ] || die "--worktree requires a new directory path"
+          worktree_path="$2"
+          shift 2
+          ;;
+        --worktree=*)
+          [ "$action" = start ] || die "--worktree is only available for start"
+          worktree_path="${1#*=}"
+          [ -n "$worktree_path" ] || die "--worktree requires a new directory path"
           shift
           ;;
         --)
@@ -8215,6 +8286,16 @@ main() {
 
   cwd="$(canonical_project_dir)" || die "could not resolve the current project directory"
   session="$(normalize_session_name "$custom_name")" || exit 1
+  if [ -n "$worktree_path" ]; then
+    require_start_dependencies
+    # Do not create project files for an already occupied explicit name.
+    if [ -n "$custom_name" ] && session_name_is_occupied "$session"; then
+      die "session name already exists; choose a new --name for the worktree"
+    fi
+    cwd="$(create_project_worktree "$cwd" "$worktree_path")" || exit 1
+    cd -P "$cwd" || die "could not enter the new worktree: $cwd"
+    session="$(normalize_session_name "$custom_name")" || exit 1
+  fi
   if [ -z "$custom_name" ]; then
     default_base="$session"
     if [ "$action" = start ]; then
@@ -8229,8 +8310,20 @@ main() {
   case "$action" in
     start)
       require_start_dependencies
-      session_operation start "$session" "$cwd" "$display_name" "" "" 0 "$@" || \
+      start_status=0
+      session_operation start "$session" "$cwd" "$display_name" "" "" 0 "$@" || start_status=$?
+      if [ "$start_status" -eq 20 ] && [ -z "$worktree_path" ]; then
+        worktree_path="$(offer_project_worktree "$cwd")" || return 20
+        local retry_args=( start --worktree "$worktree_path" )
+        [ -z "$custom_name" ] || retry_args+=( --name "$custom_name" )
+        [ "$detach" -eq 0 ] || retry_args+=( --detach )
+        main "${retry_args[@]}" -- "$@"
+        return $?
+      fi
+      if [ "$start_status" -ne 0 ]; then
+        [ -z "$worktree_path" ] || error "created worktree is kept at: $cwd"
         die "could not start a new detached $PROVIDER_LABEL session"
+      fi
       [ "$detach" -eq 1 ] || attach_session "$session"
       ;;
     resume)
