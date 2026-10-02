@@ -6,7 +6,6 @@ ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/app/build/Detach.app"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-ui-e2e-contract.XXXXXX")"
 FAKE_ROOT=""
-FAKE_QUICK_ROOT=""
 
 cleanup() {
   case "$TMP_ROOT" in
@@ -14,9 +13,6 @@ cleanup() {
   esac
   case "$FAKE_ROOT" in
     /private/tmp/detach-ui-e2e.contract.*) rm -rf "$FAKE_ROOT" ;;
-  esac
-  case "$FAKE_QUICK_ROOT" in
-    /private/tmp/detach-chat-contract.*) rm -rf "$FAKE_QUICK_ROOT" ;;
   esac
 }
 trap cleanup EXIT
@@ -113,7 +109,13 @@ if run_fake config tmux-style detach >/dev/null 2>&1; then
   exit 1
 fi
 
-FAKE_QUICK_ROOT="$(mktemp -d /private/tmp/detach-chat-contract.XXXXXX)"
+if (cd "$FAKE_ROOT" && run_fake codex --detach) >/dev/null 2>&1; then
+  printf 'Fake UI CLI accepted a quick chat outside its persistent folder\n' >&2
+  exit 1
+fi
+quick_parent="$FAKE_ROOT/home/Library/Application Support/Detach/Chats"
+mkdir -p "$quick_parent"
+FAKE_QUICK_ROOT="$(mktemp -d "$quick_parent/detach-chat-contract.XXXXXX")"
 chmod 0700 "$FAKE_QUICK_ROOT"
 (
   cd "$FAKE_QUICK_ROOT"

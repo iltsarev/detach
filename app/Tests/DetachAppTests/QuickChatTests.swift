@@ -5,9 +5,18 @@ import XCTest
 
 @MainActor
 final class QuickChatTests: XCTestCase {
-    func testDefaultsMatchTheExistingSessionProviderAndTemporaryFolder() {
+    private var testWorkspaceRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    func testDefaultsUsePersistentQuickChatStorage() {
         XCTAssertEqual(AppSettings.defaultQuickChatProvider, Provider.claude.rawValue)
-        XCTAssertEqual(AppSettings.defaultQuickChatDirectoryPath, "/tmp")
+        XCTAssertEqual(
+            AppSettings.defaultQuickChatDirectoryPath,
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+                "Library/Application Support/Detach/Chats", isDirectory: true).path)
         XCTAssertEqual(
             AppSettings.defaultProjectsDirectoryPath,
             FileManager.default.homeDirectoryForCurrentUser.path)
@@ -21,6 +30,101 @@ final class QuickChatTests: XCTestCase {
         XCTAssertNil(DirectoryPreference.existingDirectoryURL(path: "/etc/hosts"))
     }
 
+    func testTemporaryAndCacheSettingsUsePersistentStorage() {
+        let fallback = AppSettings.defaultQuickChatDirectoryPath
+        for path in [
+            "/tmp", "/private/tmp", "/tmp/chat-parent", "/var/tmp/chats",
+            "/private/var/folders/example/T/chats", "/Library/Caches/chats",
+            FileManager.default.temporaryDirectory.appendingPathComponent("chats").path,
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+                "Library/Caches/chats").path,
+        ] {
+            XCTAssertEqual(QuickChatProjectDirectory.persistentPath(for: path), fallback, path)
+        }
+        for path in ["/Users/Shared/Chats", "/tmp-projects", "/var/tmp-projects", "relative"] {
+            XCTAssertEqual(QuickChatProjectDirectory.persistentPath(for: path), path)
+        }
+    }
+
+    func testTemporarySymlinkAliasUsesPersistentStorage() throws {
+        let alias = testWorkspaceRoot.appendingPathComponent(".build/chat-link-\(UUID())")
+        try FileManager.default.createSymbolicLink(
+            at: alias, withDestinationURL: FileManager.default.temporaryDirectory)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        XCTAssertEqual(
+            QuickChatProjectDirectory.persistentPath(for: alias.path),
+            AppSettings.defaultQuickChatDirectoryPath)
+    }
+
+    func testSavedTemporaryPreferenceMigratesWithoutChangingCustomFolders() throws {
+        let suite = "dev.tsarev.detach.quick-chat-test.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        AppSettings.migrateQuickChatDirectory(in: defaults)
+        XCTAssertNil(defaults.object(forKey: AppSettings.quickChatDirectoryKey))
+        for path in ["/tmp", "/private/tmp", "/tmp/old-custom-folder"] {
+            defaults.set(path, forKey: AppSettings.quickChatDirectoryKey)
+            AppSettings.migrateQuickChatDirectory(in: defaults)
+            XCTAssertEqual(
+                defaults.string(forKey: AppSettings.quickChatDirectoryKey),
+                AppSettings.defaultQuickChatDirectoryPath)
+        }
+        defaults.set("/Users/Shared/Chats", forKey: AppSettings.quickChatDirectoryKey)
+        AppSettings.migrateQuickChatDirectory(in: defaults)
+        XCTAssertEqual(
+            defaults.string(forKey: AppSettings.quickChatDirectoryKey), "/Users/Shared/Chats")
+    }
+
+    func testDefaultStorageCannotPointBackIntoTemporaryStorage() async throws {
+        let alias = testWorkspaceRoot.appendingPathComponent(".build/chat-default-link-\(UUID())")
+        try FileManager.default.createSymbolicLink(
+            at: alias, withDestinationURL: FileManager.default.temporaryDirectory)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        let cli = QuickChatRecordingCLI()
+        let result = await QuickChatLaunch.start(
+            store: SessionStore(cli: cli), providerRawValue: Provider.codex.rawValue,
+            directoryPath: "/tmp", defaultDirectory: alias)
+        XCTAssertNotNil(result.message)
+        XCTAssertTrue(cli.calls.isEmpty)
+    }
+
+    func testLegacyQuickChatLaunchCreatesPersistentParentAndRetainsFiles() async throws {
+        let root = testWorkspaceRoot.appendingPathComponent(".build/chat-storage-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Chats", isDirectory: true)
+        let cli = QuickChatRecordingCLI()
+        let store = SessionStore(cli: cli)
+        _ = await QuickChatLaunch.start(
+            store: store, providerRawValue: Provider.codex.rawValue,
+            directoryPath: "/private/tmp", defaultDirectory: parent)
+        let first = try XCTUnwrap(cli.calls.first?.currentDirectory)
+        XCTAssertEqual(first.deletingLastPathComponent(), parent)
+        let saved = first.appendingPathComponent("notes.txt")
+        try "keep this work".write(to: saved, atomically: true, encoding: .utf8)
+        _ = await QuickChatLaunch.start(
+            store: store, providerRawValue: Provider.codex.rawValue,
+            directoryPath: parent.path, defaultDirectory: parent)
+        let projects = cli.calls.filter { $0.arguments == ["codex", "--detach"] }
+            .compactMap(\.currentDirectory)
+        XCTAssertEqual(Set(projects).count, 2)
+        XCTAssertEqual(try String(contentsOf: saved, encoding: .utf8), "keep this work")
+        let attributes = try FileManager.default.attributesOfItem(atPath: parent.path)
+        XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o700))
+    }
+
+    func testUnavailableDefaultStorageDoesNotLaunchOrReplaceAFile() async throws {
+        let parent = testWorkspaceRoot.appendingPathComponent(".build/chat-file-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try "keep".write(to: parent, atomically: true, encoding: .utf8)
+        let cli = QuickChatRecordingCLI()
+        let result = await QuickChatLaunch.start(
+            store: SessionStore(cli: cli), providerRawValue: Provider.codex.rawValue,
+            directoryPath: parent.path, defaultDirectory: parent)
+        XCTAssertNotNil(result.message)
+        XCTAssertTrue(cli.calls.isEmpty)
+        XCTAssertEqual(try String(contentsOf: parent, encoding: .utf8), "keep")
+    }
+
     func testDirectoryPreferenceFallsBackWhenTheSettingIsStale() {
         let fallback = URL(fileURLWithPath: "/tmp", isDirectory: true)
         XCTAssertEqual(
@@ -31,12 +135,12 @@ final class QuickChatTests: XCTestCase {
     }
 
     func testQuickChatCreatesDistinctPrivateProjectDirectories() throws {
-        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let parent = testWorkspaceRoot.appendingPathComponent(".build").appendingPathComponent(
             "detach-quick-chat-test-\(UUID().uuidString)",
             isDirectory: true)
         try FileManager.default.createDirectory(
             at: parent,
-            withIntermediateDirectories: false)
+            withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
 
         let first = try QuickChatProjectDirectory.create(inside: parent)
@@ -51,19 +155,19 @@ final class QuickChatTests: XCTestCase {
     }
 
     func testQuickChatLaunchUsesTheDefaultPrivateProjectDirectory() async throws {
-        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let parent = testWorkspaceRoot.appendingPathComponent(".build").appendingPathComponent(
             "detach-quick-chat-launch-test-\(UUID().uuidString)",
             isDirectory: true)
         try FileManager.default.createDirectory(
             at: parent,
-            withIntermediateDirectories: false)
+            withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
         let cli = QuickChatRecordingCLI()
 
         _ = await QuickChatLaunch.start(
             store: SessionStore(cli: cli),
             providerRawValue: Provider.codex.rawValue,
-            directoryPath: parent.path)
+            directoryPath: parent.path, defaultDirectory: parent)
 
         let project = try XCTUnwrap(cli.calls.first?.currentDirectory)
         XCTAssertEqual(project.deletingLastPathComponent(), parent.standardizedFileURL)
@@ -72,7 +176,7 @@ final class QuickChatTests: XCTestCase {
 
     func testQuickChatUsesConfiguredProviderAndWorkingDirectory() async {
         let directory = try! XCTUnwrap(
-            DirectoryPreference.existingDirectoryURL(path: "/tmp"))
+            DirectoryPreference.existingDirectoryURL(path: testWorkspaceRoot.path))
         let cli = QuickChatRecordingCLI()
         cli.responses["list --json"] = CLIResult(
             exitCode: 0,
@@ -84,7 +188,7 @@ final class QuickChatTests: XCTestCase {
         let result = await QuickChatLaunch.start(
             store: store,
             providerRawValue: Provider.codex.rawValue,
-            directoryPath: "/tmp",
+            directoryPath: testWorkspaceRoot.path, defaultDirectory: testWorkspaceRoot,
             createProjectDirectory: { directory, _ in directory })
 
         XCTAssertEqual(result.sessionID, "detach-codex-tmp-1")
@@ -97,12 +201,12 @@ final class QuickChatTests: XCTestCase {
     }
 
     func testRepeatedQuickChatsUseDistinctProjectDirectories() async throws {
-        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let parent = testWorkspaceRoot.appendingPathComponent(".build").appendingPathComponent(
             "detach-repeated-chat-test-\(UUID().uuidString)",
             isDirectory: true)
         try FileManager.default.createDirectory(
             at: parent,
-            withIntermediateDirectories: false)
+            withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
         let firstProject = try QuickChatProjectDirectory.create(inside: parent)
         let secondProject = try QuickChatProjectDirectory.create(inside: parent)
@@ -120,7 +224,7 @@ final class QuickChatTests: XCTestCase {
         let first = await QuickChatLaunch.start(
             store: store,
             providerRawValue: Provider.codex.rawValue,
-            directoryPath: parent.path,
+            directoryPath: parent.path, defaultDirectory: parent,
             createProjectDirectory: { _, _ in firstProject })
 
         cli.responses["list --json"] = CLIResult(
@@ -131,7 +235,7 @@ final class QuickChatTests: XCTestCase {
         let second = await QuickChatLaunch.start(
             store: store,
             providerRawValue: Provider.codex.rawValue,
-            directoryPath: parent.path,
+            directoryPath: parent.path, defaultDirectory: parent,
             createProjectDirectory: { _, _ in secondProject })
 
         XCTAssertEqual(first.sessionID, "detach-codex-quick-1")
@@ -144,7 +248,7 @@ final class QuickChatTests: XCTestCase {
 
     func testQuickChatSelectsTheTypedStartingSessionBeforeLaunchFinishes() async {
         let directory = try! XCTUnwrap(
-            DirectoryPreference.existingDirectoryURL(path: "/tmp"))
+            DirectoryPreference.existingDirectoryURL(path: testWorkspaceRoot.path))
         let line = #"{"schema":1,"provider":"codex","session_name":"detach-codex-tmp-1","name":"tmp-1","effective_status":"starting","meta_status":"starting","agent_session_id":null,"project_dir":"\#(directory.path)","created_at":"2026-08-31T00:00:00Z","last_checkpoint_at":null,"finished_at":null}"#
         let cli = SlowQuickChatCLI(listOutput: line)
         let store = SessionStore(cli: cli)
@@ -155,7 +259,7 @@ final class QuickChatTests: XCTestCase {
             await QuickChatLaunch.start(
                 store: store,
                 providerRawValue: Provider.codex.rawValue,
-                directoryPath: "/tmp",
+                directoryPath: testWorkspaceRoot.path, defaultDirectory: testWorkspaceRoot,
                 onSessionAvailable: { sessionID in
                     selectedID = sessionID
                     selected.fulfill()
@@ -179,7 +283,7 @@ final class QuickChatTests: XCTestCase {
 
     func testQuickChatReconcilesAnEarlySelectionAfterLaunchFailure() async {
         let directory = try! XCTUnwrap(
-            DirectoryPreference.existingDirectoryURL(path: "/tmp"))
+            DirectoryPreference.existingDirectoryURL(path: testWorkspaceRoot.path))
         let line = #"{"schema":1,"provider":"codex","session_name":"detach-codex-tmp-1","name":"tmp-1","effective_status":"starting","meta_status":"starting","agent_session_id":null,"project_dir":"\#(directory.path)","created_at":"2026-08-31T00:00:00Z","last_checkpoint_at":null,"finished_at":null}"#
         let cli = SlowQuickChatCLI(listOutput: line)
         let store = SessionStore(cli: cli)
@@ -189,7 +293,7 @@ final class QuickChatTests: XCTestCase {
             await QuickChatLaunch.start(
                 store: store,
                 providerRawValue: Provider.codex.rawValue,
-                directoryPath: "/tmp",
+                directoryPath: testWorkspaceRoot.path, defaultDirectory: testWorkspaceRoot,
                 onSessionAvailable: { _ in selected.fulfill() },
                 createProjectDirectory: { directory, _ in directory })
         }
@@ -207,7 +311,7 @@ final class QuickChatTests: XCTestCase {
 
     func testQuickChatSelectsCompletedLaunchWhenObservationEndsWithoutASession() async throws {
         let directory = try XCTUnwrap(
-            DirectoryPreference.existingDirectoryURL(path: "/tmp"))
+            DirectoryPreference.existingDirectoryURL(path: testWorkspaceRoot.path))
         let sessionID = "detach-codex-tmp-1"
         let cli = QuickChatRecordingCLI()
         cli.responses["list --json"] = CLIResult(
@@ -220,7 +324,7 @@ final class QuickChatTests: XCTestCase {
         let result = await QuickChatLaunch.start(
             store: SessionStore(cli: cli),
             providerRawValue: Provider.codex.rawValue,
-            directoryPath: directory.path,
+            directoryPath: directory.path, defaultDirectory: directory,
             onSessionAvailable: { selectedIDs.append($0) },
             createProjectDirectory: { directory, _ in directory },
             waitForSession: { _, _, _, _ in nil })
@@ -236,7 +340,7 @@ final class QuickChatTests: XCTestCase {
 
     func testQuickChatRejectsAnUnavailableFolderWithoutCallingTheCLI() async {
         let cli = QuickChatRecordingCLI()
-        let missing = "/tmp/detach-missing-\(UUID().uuidString)"
+        let missing = "/Users/Shared/detach-missing-\(UUID())"
 
         let result = await QuickChatLaunch.start(
             store: SessionStore(cli: cli),
@@ -256,7 +360,7 @@ final class QuickChatTests: XCTestCase {
         let result = await QuickChatLaunch.start(
             store: SessionStore(cli: cli),
             providerRawValue: Provider.codex.rawValue,
-            directoryPath: "/tmp",
+            directoryPath: testWorkspaceRoot.path, defaultDirectory: testWorkspaceRoot,
             createProjectDirectory: { _, _ in throw Failure.denied })
 
         XCTAssertNotNil(result.message)

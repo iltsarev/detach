@@ -44,7 +44,7 @@ not be the weak link.
 - **Leave without ending the run.** Close Terminal, close the Detach window,
   or detach from tmux. The managed agent continues in the background.
 - **Start in the app.** Use New session for a project run or Quick chat for a
-  private temporary workspace. Both Codex and Claude Code use the same managed
+  private saved workspace. Both Codex and Claude Code use the same managed
   lifecycle.
 - **Work in one native terminal.** Type, paste text or images, find output, and
   switch between live sessions with `Cmd-1` through `Cmd-9`. Detach keeps the
@@ -147,12 +147,17 @@ Copies preserve Unicode text. `Cmd-V` leaves managed copy mode and inserts
 the text at the live prompt, including line breaks.
 
 Settings → General selects the provider and parent folder for Quick chat. The
-default is `/tmp`. Each `Cmd-T` creates a private
+default is `~/Library/Application Support/Detach/Chats`. Detach creates this
+folder on first use. Each `Cmd-T` creates a private
 `detach-chat-<uuid>` project inside that folder, so another Quick chat can
 start while earlier chats are still running. The same settings page selects
 the default folder for the standard project chooser. Quick chat uses the
 normal managed session lifecycle. Detach does not automatically delete its
-project files, state, or provider transcripts.
+project files, state, or provider transcripts. The workspace stays after Stop
+and Delete. Temporary and cache folder settings, including the old `/tmp`
+default, use the new default location. This keeps new chats outside macOS
+temporary-file cleanup. Existing sessions keep their saved paths and files;
+this change does not move them or restore missing files.
 
 Detach shows each assigned session shortcut beside its name. The number stays
 with the session while it is in Working or Answer ready. Detach reuses the

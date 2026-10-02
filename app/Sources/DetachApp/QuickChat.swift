@@ -28,6 +28,64 @@ enum DirectoryPreference {
 }
 
 enum QuickChatProjectDirectory {
+    static var defaultParent: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+            "Library/Application Support/Detach/Chats", isDirectory: true)
+    }
+
+    static func persistentPath(
+        for path: String,
+        defaultDirectory: URL = defaultParent,
+        fileManager: FileManager = .default
+    ) -> String {
+        guard path.hasPrefix("/") else { return path }
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        let paths = [path, url.standardizedFileURL.path,
+                     url.resolvingSymlinksInPath().standardizedFileURL.path]
+        let temporaryRoots = [
+            "/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp",
+            "/var/folders", "/private/var/folders", "/Library/Caches",
+        ]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) } + [
+                fileManager.temporaryDirectory,
+                fileManager.homeDirectoryForCurrentUser.appendingPathComponent(
+                    "Library/Caches", isDirectory: true),
+            ]
+        for root in temporaryRoots {
+            let rootPaths = [root.path, root.standardizedFileURL.path,
+                             root.resolvingSymlinksInPath().standardizedFileURL.path]
+            if paths.contains(where: { path in
+                rootPaths.contains { path == $0 || path.hasPrefix($0 + "/") }
+            }) {
+                return defaultDirectory.path
+            }
+        }
+        return path
+    }
+
+    static func prepareParent(
+        path: String,
+        defaultDirectory: URL = defaultParent,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let path = persistentPath(
+            for: path, defaultDirectory: defaultDirectory, fileManager: fileManager)
+        if path == defaultDirectory.path {
+            try fileManager.createDirectory(
+                at: defaultDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        }
+        guard let directory = DirectoryPreference.existingDirectoryURL(
+            path: path, fileManager: fileManager),
+              persistentPath(
+                for: directory.path, defaultDirectory: defaultDirectory,
+                fileManager: fileManager) == directory.path else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return directory
+    }
+
     static func create(
         inside parent: URL,
         fileManager: FileManager = .default,
@@ -67,6 +125,7 @@ enum QuickChatLaunch {
         providerRawValue: String,
         directoryPath: String,
         fileManager: FileManager = .default,
+        defaultDirectory: URL = QuickChatProjectDirectory.defaultParent,
         onSessionAvailable: (@MainActor (String) -> Void)? = nil,
         createProjectDirectory: (URL, FileManager) throws -> URL = {
             try QuickChatProjectDirectory.create(inside: $0, fileManager: $1)
@@ -80,15 +139,12 @@ enum QuickChatLaunch {
                 excluding: existingIDs)
         }
     ) async -> SessionStartResult {
-        guard let directory = DirectoryPreference.existingDirectoryURL(
-            path: directoryPath,
-            fileManager: fileManager) else {
-            return SessionStartResult(message: L10n.format(
-                "Quick chat folder is unavailable: %@",
-                directoryPath))
-        }
         let projectDirectory: URL
         do {
+            let directory = try QuickChatProjectDirectory.prepareParent(
+                path: directoryPath,
+                defaultDirectory: defaultDirectory,
+                fileManager: fileManager)
             projectDirectory = try createProjectDirectory(directory, fileManager)
         } catch {
             return SessionStartResult(message: L10n.format(
