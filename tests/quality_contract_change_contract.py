@@ -33,6 +33,17 @@ def change(identity="QC-RUNTIME-STORAGE", **overrides):
 
 
 class ContractChangeTests(unittest.TestCase):
+    def test_method_in_another_class_in_the_same_file_is_rejected(self):
+        source = POLICY_FILE.read_text().replace(
+            "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding",
+            "DetachAppTests.SetupGuidanceTests/testMissingProviderBlocksOnlyFirstOnboarding",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.tsv"
+            path.write_text(source)
+            with self.assertRaisesRegex(PolicyError, "mapped test is missing"):
+                Policy(path).validate_tracked_paths()
+
     def test_missing_or_duplicate_owning_anchor_is_rejected(self):
         target = ROOT / "docs/specs/state.md"
         original_read = Path.read_text

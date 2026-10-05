@@ -2492,7 +2492,7 @@
       "status": "test-cases",
       "tests": [
         "DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick",
-        "DetachAppTests.SetupGuidanceTests/testMissingProviderBlocksOnlyFirstOnboarding"
+        "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding"
       ]
     },
     {
@@ -4071,8 +4071,8 @@
   ],
   "test_sources": {
     "DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick": "app/Tests/DetachAppTests/OnboardingLivePollerTests.swift",
+    "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding": "app/Tests/DetachAppTests/SetupGuidanceTests.swift",
     "DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
-    "DetachAppTests.SetupGuidanceTests/testMissingProviderBlocksOnlyFirstOnboarding": "app/Tests/DetachAppTests/SetupGuidanceTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed": "app/Tests/DetachAppTests/WatchdogServiceTests.swift",

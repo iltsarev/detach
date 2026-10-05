@@ -835,9 +835,17 @@ class Policy:
                 suite, method = test.split("/")
                 module, name = suite.split(".")
                 source = ROOT / self.test_sources[test]
-                if not source.is_file() or source.is_symlink() or not re.search(
-                    rf"\bfunc\s+{re.escape(method)}\s*\(", source.read_text(encoding="utf-8")
-                ) or not re.search(rf"\bclass\s+{re.escape(name)}\b", source.read_text(encoding="utf-8")):
+                if not source.is_file() or source.is_symlink() or source.parent.name != module:
+                    raise PolicyError(f"mapped test is missing: {test}")
+                text = source.read_text(encoding="utf-8")
+                classes = list(re.finditer(
+                    r"(?m)^(?:[A-Za-z_]+\s+)*class\s+([A-Za-z0-9_]+)\b", text
+                ))
+                blocks = [text[match.end():classes[index + 1].start() if index + 1 < len(classes) else len(text)]
+                          for index, match in enumerate(classes) if match[1] == name]
+                if len(blocks) != 1 or not re.search(
+                    rf"\bfunc\s+{re.escape(method)}\s*\(", blocks[0]
+                ):
                     raise PolicyError(f"mapped test is missing: {test}")
         for path in paths:
             classification = self.classify(path)

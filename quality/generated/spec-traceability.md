@@ -333,7 +333,7 @@ Direct acceptance evidence for `QC-APP-DOCTOR`: `SC-DOCTOR-REPORT`.
 Direct acceptance evidence for `QC-APP-ONBOARDING`: `SC-APP-ONBOARDING-UNIT`, `SC-UI-ONBOARD-FIRST-RUN`, `SC-UI-ONBOARD-PROVIDER`, `SC-UI-ONBOARD-APPROVAL`.
 
 - `DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick`
-- `DetachAppTests.SetupGuidanceTests/testMissingProviderBlocksOnlyFirstOnboarding`
+- `DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding`
 
 
 Direct acceptance evidence for `QC-APP-SETTINGS`: `SC-APP-SETTINGS-UNIT`, `SC-UI-SETTINGS`.
