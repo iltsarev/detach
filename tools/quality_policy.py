@@ -127,6 +127,10 @@ class Policy:
         self.critical: list[tuple[str, str]] = []
         self.required_suites: list[str] = []
         self.requirements: dict[str, tuple[str, str]] = {}
+        self.verifications: dict[str, tuple[str, ...]] = {}
+        self.scenario_tests: dict[str, list[str]] = {}
+        self.test_sources: dict[str, str] = {}
+        self.enforcement: dict[str, str] = {}
         self._parse()
         self._validate_references()
 
@@ -204,6 +208,31 @@ class Policy:
                     raise PolicyError(f"line {line_number}: invalid limit")
                 self._unique(self.limits, name, "limit", line_number)
                 self.limits[name] = int(raw_value)
+            elif kind == "enforcement":
+                self._expect_count(kind, values, 2, line_number)
+                name, mode = values
+                if not LIMIT_NAME.fullmatch(name) or mode not in ("blocking", "advisory"):
+                    raise PolicyError(f"line {line_number}: invalid enforcement")
+                self._unique(self.enforcement, name, "enforcement", line_number)
+                self.enforcement[name] = mode
+            elif kind == "verification":
+                self._expect_count(kind, values, 2, line_number)
+                requirement, scenarios = values
+                if not REQUIREMENT_ID.fullmatch(requirement) or not self._references(scenarios, SCENARIO_ID):
+                    raise PolicyError(f"line {line_number}: invalid verification")
+                self._unique(self.verifications, requirement, "verification", line_number)
+                self.verifications[requirement] = tuple(scenarios.split(","))
+            elif kind == "scenario-test":
+                self._expect_count(kind, values, 3, line_number)
+                scenario, test, source = values
+                if not SCENARIO_ID.fullmatch(scenario) or not re.fullmatch(
+                    r"Detach(?:App|Kit)Tests\.[A-Za-z0-9_]+/test[A-Za-z0-9_]+", test
+                ) or not re.fullmatch(r"app/Tests/Detach(?:App|Kit)Tests/[A-Za-z0-9_]+\.swift", source) or test in self.scenario_tests.get(scenario, []):
+                    raise PolicyError(f"line {line_number}: invalid or duplicate scenario test")
+                self.scenario_tests.setdefault(scenario, []).append(test)
+                if test in self.test_sources and self.test_sources[test] != source:
+                    raise PolicyError(f"conflicting test source: {test}")
+                self.test_sources[test] = source
             elif kind == "stage":
                 self._expect_count(kind, values, 4, line_number)
                 raw_order, name, raw_timeout, raw_release = values
@@ -356,6 +385,7 @@ class Policy:
                         "instrumented",
                         "automated",
                         "legacy-stage",
+                        "test-cases",
                         "planned",
                         "manual-release",
                     )
@@ -574,8 +604,46 @@ class Policy:
                 raise PolicyError(f"spec has no capability: {identifier}")
             if not any(spec == path for spec, _ in self.requirements.values()):
                 raise PolicyError(f"spec has no requirement: {identifier}")
+        if set(self.verifications) != set(self.requirements):
+            raise PolicyError("every requirement must have one direct verification record")
+        for requirement, scenarios in self.verifications.items():
+            linked = {
+                scenario for journey in requirement_journeys[requirement]
+                for scenario in self.journeys[journey][2].split(",")
+            }
+            if not set(scenarios) <= linked:
+                raise PolicyError(f"verification is outside requirement journeys: {requirement}")
+            if not any(self.scenarios[item][1] not in ("planned", "manual-release") for item in scenarios):
+                raise PolicyError(f"verification has no automated scenario: {requirement}")
+        for scenario, tests in self.scenario_tests.items():
+            if scenario not in self.scenarios or self.scenarios[scenario][:2] != ("swift", "test-cases"):
+                raise PolicyError(f"test mapping requires a Swift test-cases scenario: {scenario}")
+        for scenario, (_, status, _) in self.scenarios.items():
+            if status == "test-cases" and not self.scenario_tests.get(scenario):
+                raise PolicyError(f"scenario has no exact tests: {scenario}")
+        if self.enforcement != {
+            "critical_coverage": "blocking", "aggregate_coverage": "advisory",
+            "test_identity": "advisory", "changed_line_coverage": "advisory",
+            "contract_evidence": "blocking",
+        }:
+            raise PolicyError("unsupported quality enforcement contract")
 
     def classify(self, path: str) -> Classification:
+        # A spec edit selects its own verification stages, not generic prose checks.
+        if path in {spec for spec, _ in self.specs.values()}:
+            capabilities = [key for key, (spec, _, _) in self.capabilities.items() if spec == path]
+            journeys = [journey for key in capabilities for journey in self.capabilities[key][2].split(",")]
+            requirements = [key for key, (spec, _) in self.requirements.items() if spec == path]
+            stages = {"static"} | {
+                self.scenarios[scenario][0] for requirement in requirements
+                for scenario in self.verifications[requirement]
+                if self.scenarios[scenario][1] != "manual-release"
+            }
+            if "ui-e2e" in stages:
+                stages.add("app")
+            return Classification("known", "spec", "safe", path,
+                ",".join(stage.name for stage in self.stages if stage.name in stages),
+                "-", False, path, 1200, ",".join(capabilities), ",".join(journeys))
         matches = [route for route in self.routes if fnmatch.fnmatchcase(path, route.pattern)]
         if not matches:
             gates, unknown = self.release_domains["unknown"]
@@ -758,6 +826,19 @@ class Policy:
             raise PolicyError(f"unregistered durable spec: {sorted(missing_specs)[0]}")
         if orphan_specs:
             raise PolicyError(f"registered spec is missing: {sorted(orphan_specs)[0]}")
+        for requirement, (spec, _) in self.requirements.items():
+            anchor = f'<a id="{requirement.lower()}"></a>'
+            if (ROOT / spec).read_text(encoding="utf-8").count(anchor) != 1:
+                raise PolicyError(f"requirement needs one owning spec anchor: {requirement}")
+        for tests in self.scenario_tests.values():
+            for test in tests:
+                suite, method = test.split("/")
+                module, name = suite.split(".")
+                source = ROOT / self.test_sources[test]
+                if not source.is_file() or source.is_symlink() or not re.search(
+                    rf"\bfunc\s+{re.escape(method)}\s*\(", source.read_text(encoding="utf-8")
+                ) or not re.search(rf"\bclass\s+{re.escape(name)}\b", source.read_text(encoding="utf-8")):
+                    raise PolicyError(f"mapped test is missing: {test}")
         for path in paths:
             classification = self.classify(path)
             if classification.status != "known":
@@ -802,6 +883,8 @@ class Policy:
                     {
                         "id": requirement,
                         "summary": requirement_summary,
+                        "anchor": requirement.lower(),
+                        "verification": list(self.verifications[requirement]),
                         "journeys": requirement_journeys,
                         "scenarios": [
                             {
@@ -835,6 +918,12 @@ class Policy:
             "",
             "This file is generated from `quality/policy.tsv`. Do not edit it.",
             "It lists current specification ownership and verification links.",
+            "Links identify evidence. Review must check the meaning of each assertion.",
+            "",
+            "## Enforcement",
+            "",
+            *[f"- `{name}`: **{mode}**." for name, mode in self.enforcement.items()],
+            f"- Changed-line coverage target: {self.limits['changed_line_coverage_percent']} percent.",
         ]
         for spec in self.specification_document():
             lines.extend(
@@ -871,10 +960,18 @@ class Policy:
                 )
                 summary = str(requirement["summary"]).replace("|", "\\|")
                 lines.append(
-                    f"| `{requirement['id']}` | {journey_text} | "
+                    f"| [`{requirement['id']}`](../../{spec['path']}#{requirement['anchor']}) | {journey_text} | "
                     f"{scenario_text} | {summary} |"
                 )
-        return "\n".join(lines) + "\n"
+            for requirement in spec["requirements"]:
+                lines.append("")
+                lines.append(f"Direct acceptance evidence for `{requirement['id']}`: " + ", ".join(
+                    f"`{item}`" for item in requirement["verification"]) + ".")
+                lines.append("")
+                for item in requirement["verification"]:
+                    lines.extend(f"- `{test}`" for test in self.scenario_tests.get(item, []))
+                lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
 
     def document(self) -> dict[str, object]:
         return {
@@ -882,6 +979,8 @@ class Policy:
             "policy": self.version,
             "specifications": self.specification_document(),
             "limits": self.limits,
+            "enforcement": self.enforcement,
+            "test_sources": self.test_sources,
             "stages": [
                 {
                     "order": stage.order,
@@ -961,6 +1060,7 @@ class Policy:
                     "stage": stage,
                     "status": status,
                     "command": command,
+                    "tests": self.scenario_tests.get(identifier, []),
                 }
                 for identifier, (stage, status, command) in self.scenarios.items()
             ],
@@ -970,7 +1070,8 @@ class Policy:
             ],
             "required_suites": self.required_suites,
             "requirements": [
-                {"id": identifier, "spec": spec, "summary": summary}
+                {"id": identifier, "spec": spec, "summary": summary,
+                 "anchor": identifier.lower(), "verification": list(self.verifications[identifier])}
                 for identifier, (spec, summary) in self.requirements.items()
             ],
         }

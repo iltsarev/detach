@@ -63,6 +63,24 @@
       "after": "let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)\n        guard descriptor >= 0 else {\n            throw CocoaError(.fileReadNoSuchFile)",
       "test_suite": "DetachKitTests.DetachStateCommandTests",
       "failure_regex": "Test Suite 'Selected tests' failed"
+    },
+    {
+      "id": "low-battery-requires-released-assertion",
+      "requirement": "QC-POWER-PROTECTION",
+      "source": "app/Sources/DetachKit/PowerProtection.swift",
+      "before": "state = !assertionActive && !closedLidProtectionActive\n                ? .lowBattery : .unavailable",
+      "after": "state = !closedLidProtectionActive\n                ? .lowBattery : .unavailable",
+      "test_suite": "DetachKitTests.PowerProtectionTests",
+      "failure_regex": "Test Suite 'Selected tests' failed"
+    },
+    {
+      "id": "root-client-must-be-rejected",
+      "requirement": "QC-POWER-AUTH",
+      "source": "app/Sources/DetachKit/PowerHelperClientAuthorization.swift",
+      "before": "guard clientEffectiveUserIdentifier != 0 else {",
+      "after": "guard clientEffectiveUserIdentifier == 0 else {",
+      "test_suite": "DetachKitTests.PowerHelperClientAuthorizationPolicyTests",
+      "failure_regex": "Test Suite 'Selected tests' failed"
     }
   ]
 }

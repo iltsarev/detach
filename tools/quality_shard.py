@@ -23,6 +23,7 @@ from quality_gate import (
     untracked_paths,
     write_private,
 )
+from quality_contract_change import ContractError, event_body, review as review_contract
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -490,9 +491,29 @@ def aggregate(base: str, input_root: Path, result_root: Path) -> int:
                 )
         gate.assemble_summary()
         gate.write_scenario_outputs()
+        contract_error = ""
+        if os.environ.get("DETACH_QUALITY_GATE_TEST_MODE") != "1":
+            try:
+                body = event_body(Path(os.environ.get("GITHUB_EVENT_PATH", "")), ROOT)
+                contract = review_contract(ROOT, base, gate.policy, body, gate.scenario_records)
+                write_private(gate.run_dir / "contract-change.json", json.dumps(contract, sort_keys=True) + "\n")
+            except (ContractError, OSError, ValueError, subprocess.CalledProcessError) as error:
+                contract_error = str(error)
+                write_private(gate.run_dir / "contract-change.json", json.dumps({
+                    "schema": 1, "status": "failed", "reason": contract_error,
+                    "source_commit": gate.source_commit,
+                }) + "\n")
+                previous_static = gate.results["static"]
+                log = previous_static.log if previous_static.log != "-" else "static.log"
+                with (gate.run_dir / log).open("a", encoding="utf-8") as output:
+                    output.write(f"contract evidence: {contract_error}\n")
+                gate.results["static"] = StageResult("failed", previous_static.duration, log, 1)
+                gate.assemble_summary()
         gate.write_junit()
         gate.write_markdown()
         failed = [stage for stage in gate.selected if gate.results[stage].status != "passed"]
+        if contract_error:
+            print(f"quality-shard: {contract_error}", file=sys.stderr)
         gate.write_manifest("failed" if failed else "passed")
         if failed:
             print(

@@ -50,6 +50,9 @@ required=(
   docs/specs/app-setup.md
   docs/specs/release.md
   docs/specs/documentation.md
+  docs/specs/quality.md
+  docs/specs/recovery.md
+  docs/specs/power-handoff.md
   docs/testing.md
   docs/quality-gates.md
   docs/exec-plan-template.md
@@ -77,7 +80,7 @@ for spec in "$ROOT"/docs/specs/*.md; do
   fi
 done
 
-for spec in runtime state power app app-setup release documentation; do
+for spec in runtime state power app app-setup release documentation quality recovery power-handoff; do
   [ "$(grep -Fc "docs/specs/$spec.md" "$ROOT/AGENTS.md")" -eq 1 ] ||
     fail "context map must reference $spec.md exactly once"
 done
@@ -201,8 +204,8 @@ done
 grep -F 'Hosted pull-request CI is readiness authority.' "$ROOT/AGENTS.md" >/dev/null ||
   fail 'agent instructions must identify hosted CI as readiness authority'
 grep -F 'They never claim merge readiness.' \
-  "$ROOT/docs/specs/documentation.md" >/dev/null ||
-  fail 'documentation spec must keep local gates diagnostic'
+  "$ROOT/docs/specs/quality.md" >/dev/null ||
+  fail 'quality spec must keep local gates diagnostic'
 ! grep -F 'Only full is readiness evidence.' "$ROOT/scripts/test" >/dev/null ||
   fail 'local full suite must not claim readiness authority'
 

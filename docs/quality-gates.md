@@ -86,6 +86,12 @@ For a normal local change, `gate-contract` runs direct self-contracts only.
 
 ## Authority and evidence
 
+All changed requirements need a reviewed `detach-contract` block in the PR.
+Generate a draft with `python3 tools/quality_contract_change.py --base BASE --draft`.
+CI binds it to the tested PR head and requires direct passed acceptance scenarios
+from the final aggregate. See [the review contract](specs/documentation.md#verification).
+
+
 Every manifest records one authority:
 
 - `local-diagnostic` for ordinary local work;
@@ -118,8 +124,9 @@ dependency, unsafe file, malformed record, or digest mismatch cannot produce
 PASS. Failure output gives the exact diagnostic rerun.
 
 An instrumented scenario writes one begin event and one pass event. Missing,
-duplicate, reordered, unknown, or cross-stage events fail closed. Legacy stage
-records remain explicit until the owning suite gets markers. Planned scenario
+duplicate, reordered, unknown, or cross-stage events fail closed. Swift scenarios require the mapped XCTest start and passed records. Missing,
+skipped, or duplicate tests fail the stage. Stage-only records are indirect
+evidence and are not counted as verified scenarios. Planned scenario
 records remain visible gaps. Only the supervised closed-lid release gate is
 manual because it needs physical evidence.
 

@@ -112,7 +112,10 @@ cat >"$RUN_DIR/spec-sizes.json" <<JSON
     {"bytes": 16384, "headroom_bytes": 0, "id": "power", "path": "docs/specs/power.md", "status": "warning"},
     {"bytes": 256, "headroom_bytes": 16128, "id": "app", "path": "docs/specs/app.md", "status": "healthy"},
     {"bytes": 512, "headroom_bytes": 15872, "id": "app-setup", "path": "docs/specs/app-setup.md", "status": "healthy"},
-    {"bytes": 1024, "headroom_bytes": 15360, "id": "release", "path": "docs/specs/release.md", "status": "healthy"}
+    {"bytes": 1024, "headroom_bytes": 15360, "id": "release", "path": "docs/specs/release.md", "status": "healthy"},
+    {"bytes": 1, "headroom_bytes": 16383, "id": "quality", "path": "docs/specs/quality.md", "status": "healthy"},
+    {"bytes": 1, "headroom_bytes": 16383, "id": "recovery", "path": "docs/specs/recovery.md", "status": "healthy"},
+    {"bytes": 1, "headroom_bytes": 16383, "id": "power-handoff", "path": "docs/specs/power-handoff.md", "status": "healthy"}
   ],
   "status": "warning",
   "warning_bytes": 12288
@@ -312,6 +315,8 @@ assert data["run"]["authority"] == "ci-merge"
 assert data["run"]["result"] == "passed"
 assert [spec["id"] for spec in data["specifications"]] == ["app"]
 assert data["quality"]["planned_scenarios"] == 0
+assert data["quality"]["passed_scenarios"] == 0
+assert all(journey["status"] == "incomplete" for journey in data["journeys"])
 assert data["quality"]["coverage"]["comparison"]["mode"] == "green-main-artifact"
 assert data["quality"]["coverage_opportunities"]["next_milestone_percent"] == 35
 assert data["quality"]["coverage_opportunities"]["opportunities"][0]["path"].endswith(
@@ -326,7 +331,7 @@ size_by_id = {
     record["id"]: record for record in specification_sizes["specifications"]
 }
 assert set(size_by_id) == {
-    "documentation", "runtime", "state", "power", "app", "app-setup", "release"
+    "documentation", "runtime", "state", "power", "app", "app-setup", "release", "quality", "recovery", "power-handoff"
 }
 assert size_by_id["documentation"] == {
     "bytes": 1,

@@ -57,12 +57,15 @@ claim verified compliance without review against the official standard.
 | Change | Read | Fast feedback |
 | --- | --- | --- |
 | Runtime CLI, lifecycle, install, tmux | `docs/specs/runtime.md` | `tests/{run,run-claude,distribution}.sh` |
+| Provider identity and checkpoints | `docs/specs/recovery.md` | one provider recovery part |
 | State, storage, events | `docs/specs/state.md` | one Swift state filter |
 | Power, helper, watchdog | `docs/specs/power.md` | one Swift Power filter |
+| Helper and watchdog replacement | `docs/specs/power-handoff.md` | one service Swift filter |
 | App UI, terminal, UI smoke | `docs/specs/app.md` | one Swift app filter |
 | Setup, settings, diagnostics, updates | `docs/specs/app-setup.md` | one Swift app filter |
 | Package, release, publication | `docs/specs/release.md` | `tests/{release,publish}-*.sh` |
 | Docs, specs, test workflow | `docs/specs/documentation.md` | `tests/docs-contract.sh` |
+| Quality policy, evidence, CI | `docs/specs/quality.md` | one quality contract |
 
 For unfamiliar or cross-cutting work, start at `docs/specs/README.md`. Do not
 read every spec.
@@ -73,15 +76,13 @@ read every spec.
   selected from the actual diff.
 - `scripts/quality-gate`: impact-aware local diagnostic.
 - `scripts/quality-gate --mode repository`: every automated repository check
-  as a local diagnostic. Hosted pull-request CI runs this mode as authority.
+  as a local diagnostic. Hosted PR CI runs the impact plan as authority.
 - `--stage <name>` and direct test commands are diagnostic only, not readiness
   evidence.
 - Prefer one focused test while iterating. Do not repeatedly pay for the full
   suite when a narrower deterministic check can close the feedback loop.
-- Stage timing is telemetry, not a verdict. Treat a slow stage as performance
-  work. Never rerun merely for warmer caches, timing variance, or a lucky
-  result; rerun unchanged only after evidence identifies an unrelated external
-  transient, and record its cause.
+- Timing is telemetry. Investigate slow stages. Rerun unchanged only after a
+  recorded unrelated external transient; cache warmth or variance is no reason.
 - Never run real power tests, signing, notarization, tagging, upload, or
   publication during ordinary implementation.
 
@@ -133,10 +134,9 @@ The repository, history, CI logs, releases, and artifacts are public.
 
 ## Definition of done
 
-A change is ready only when its observable behavior has regression evidence,
-the hosted pull-request repository gate prints authoritative PASS, affected
-user docs and durable specs agree with the code, and `git diff --check` is clean. Report manual
-release gates that were not run. Do not substitute a plausible implementation,
-a narrow test, or a green stale manifest for requirement-by-requirement
-evidence. Unless the owner requests a local-only handoff, deliver ready work as
-a reviewed commit pushed to the current branch and verify upstream parity.
+A ready change has regression evidence, authoritative hosted PASS, consistent
+docs and specs, and a clean `git diff --check`. The PR must describe each changed
+requirement and name its acceptance scenarios. CI requires their direct passed
+evidence. Follow the contract-review format in the documentation spec. Report
+manual release gates not run. Unless the owner requests local-only work, push
+the reviewed commit, merge after the gates pass, and verify upstream parity.

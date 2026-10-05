@@ -26,7 +26,7 @@
           "release-workflow"
         ],
         "specs": [
-          "documentation"
+          "quality"
         ],
         "capabilities": [
           "quality-system",
@@ -40,7 +40,9 @@
           "update",
           "diagnostics",
           "installation",
-          "publication"
+          "publication",
+          "session-recovery",
+          "power-handoff"
         ],
         "journeys": [
           "J-QUALITY-CHANGE",
@@ -72,7 +74,8 @@
           "J-INSTALL-CLEAN",
           "J-INSTALL-REPAIR",
           "J-INSTALL-UNINSTALL",
-          "J-PUBLISH-ARTIFACTS"
+          "J-PUBLISH-ARTIFACTS",
+          "J-POWER-HANDOFF"
         ],
         "release_gates": [],
         "unknown": false
@@ -96,7 +99,8 @@
         ],
         "capabilities": [
           "session-lifecycle",
-          "session-state"
+          "session-state",
+          "session-recovery"
         ],
         "journeys": [
           "J-SESSION-CREATE",
@@ -132,7 +136,8 @@
         ],
         "capabilities": [
           "session-lifecycle",
-          "session-state"
+          "session-state",
+          "session-recovery"
         ],
         "journeys": [
           "J-SESSION-CREATE",
@@ -171,7 +176,8 @@
         "capabilities": [
           "session-lifecycle",
           "session-state",
-          "app-experience"
+          "app-experience",
+          "session-recovery"
         ],
         "journeys": [
           "J-SESSION-CREATE",
@@ -212,13 +218,15 @@
           "power"
         ],
         "capabilities": [
-          "power-protection"
+          "power-protection",
+          "power-handoff"
         ],
         "journeys": [
           "J-POWER-ENABLE",
           "J-POWER-LOW-BATTERY",
           "J-POWER-HELPER-LEASE",
-          "J-POWER-CLOSED-LID"
+          "J-POWER-CLOSED-LID",
+          "J-POWER-HANDOFF"
         ],
         "release_gates": [
           "lid"
@@ -249,14 +257,16 @@
         ],
         "capabilities": [
           "documentation",
-          "power-protection"
+          "power-protection",
+          "power-handoff"
         ],
         "journeys": [
           "J-DOCS-CONSISTENCY",
           "J-POWER-ENABLE",
           "J-POWER-LOW-BATTERY",
           "J-POWER-HELPER-LEASE",
-          "J-POWER-CLOSED-LID"
+          "J-POWER-CLOSED-LID",
+          "J-POWER-HANDOFF"
         ],
         "release_gates": [
           "lid"
@@ -295,7 +305,10 @@
           "power",
           "app",
           "app-setup",
-          "release"
+          "release",
+          "quality",
+          "recovery",
+          "power-handoff"
         ],
         "capabilities": [
           "quality-system",
@@ -309,7 +322,9 @@
           "update",
           "diagnostics",
           "installation",
-          "publication"
+          "publication",
+          "session-recovery",
+          "power-handoff"
         ],
         "journeys": [
           "J-QUALITY-CHANGE",
@@ -341,7 +356,8 @@
           "J-INSTALL-CLEAN",
           "J-INSTALL-REPAIR",
           "J-INSTALL-UNINSTALL",
-          "J-PUBLISH-ARTIFACTS"
+          "J-PUBLISH-ARTIFACTS",
+          "J-POWER-HANDOFF"
         ],
         "release_gates": [
           "lid"
@@ -372,6 +388,93 @@
       ],
       "expected": {
         "ignored": true
+      }
+    },
+    {
+      "id": "escaped-state-spec-owner",
+      "category": "escaped-defect",
+      "grader": "impact",
+      "paths": [
+        "docs/specs/state.md"
+      ],
+      "expected": {
+        "status": "known",
+        "stages": [
+          "static",
+          "swift",
+          "app",
+          "ui-e2e",
+          "codex",
+          "claude"
+        ],
+        "specs": [
+          "state"
+        ],
+        "capabilities": [
+          "session-state"
+        ],
+        "journeys": [
+          "J-SESSION-PERSIST",
+          "J-STATE-CLEANUP",
+          "J-STATE-RECOVER"
+        ],
+        "release_gates": [],
+        "unknown": false
+      }
+    },
+    {
+      "id": "escaped-power-spec-evidence",
+      "category": "escaped-defect",
+      "grader": "impact",
+      "paths": [
+        "docs/specs/power.md"
+      ],
+      "expected": {
+        "status": "known",
+        "stages": [
+          "static",
+          "swift"
+        ],
+        "specs": [
+          "power"
+        ],
+        "capabilities": [
+          "power-protection"
+        ],
+        "journeys": [
+          "J-POWER-ENABLE",
+          "J-POWER-LOW-BATTERY",
+          "J-POWER-HELPER-LEASE",
+          "J-POWER-CLOSED-LID"
+        ],
+        "release_gates": [],
+        "unknown": false
+      }
+    },
+    {
+      "id": "escaped-quality-spec-enforcement",
+      "category": "escaped-defect",
+      "grader": "impact",
+      "paths": [
+        "docs/specs/quality.md"
+      ],
+      "expected": {
+        "status": "known",
+        "stages": [
+          "static",
+          "gate-contract"
+        ],
+        "specs": [
+          "quality"
+        ],
+        "capabilities": [
+          "quality-system"
+        ],
+        "journeys": [
+          "J-QUALITY-CHANGE"
+        ],
+        "release_gates": [],
+        "unknown": false
       }
     }
   ]

@@ -1,5 +1,5 @@
 schema	1
-policy	59
+policy	60
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -32,33 +32,33 @@ stage	130	release-workflow	900	false
 test-domain	policy	static,gate-contract	quality-system
 test-domain	quality-core	*	*
 test-domain	docs	static	documentation
-test-domain	state-runtime	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state
+test-domain	state-runtime	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state,session-recovery
 test-domain	state-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-state
-test-domain	session-health-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state,app-experience
-test-domain	power	static,swift,quality-contracts,app,ui-e2e	power-protection
-test-domain	bounded-process-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state,power-protection
+test-domain	session-health-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state,app-experience,session-recovery
+test-domain	power	static,swift,quality-contracts,app,ui-e2e	power-protection,power-handoff
+test-domain	bounded-process-source	static,swift,quality-contracts,app,ui-e2e,codex,claude	session-lifecycle,session-state,power-protection,session-recovery,power-handoff
 test-domain	swift-source	static,swift,quality-contracts,app,ui-e2e	app-experience
 test-domain	root-view-source	static,swift,quality-contracts,app,ui-e2e	app-experience,onboarding
-test-domain	installation-store-source	static,swift,quality-contracts,app,ui-e2e	power-protection,onboarding,settings,update,diagnostics,installation
+test-domain	installation-store-source	static,swift,quality-contracts,app,ui-e2e	power-protection,onboarding,settings,update,diagnostics,installation,power-handoff
 test-domain	app-shell-source	static,swift,quality-contracts,app,ui-e2e	app-experience,onboarding,settings,update
 test-domain	ui-e2e-source	static,swift,quality-contracts,app,ui-e2e	app-experience,onboarding,settings
 test-domain	onboarding-source	static,swift,quality-contracts,app,ui-e2e	onboarding
 test-domain	settings-source	static,swift,quality-contracts,app,ui-e2e	settings
 test-domain	update-source	static,swift,quality-contracts,app,ui-e2e	update
 test-domain	diagnostics-source	static,swift,quality-contracts,app,ui-e2e	diagnostics
-test-domain	runtime-source	static,swift,quality-contracts,app,ui-e2e	session-lifecycle,session-state
-test-domain	session-ui-source	static,swift,quality-contracts,app,ui-e2e	session-lifecycle,session-state,app-experience
+test-domain	runtime-source	static,swift,quality-contracts,app,ui-e2e	session-lifecycle,session-state,session-recovery
+test-domain	session-ui-source	static,swift,quality-contracts,app,ui-e2e	session-lifecycle,session-state,app-experience,session-recovery
 test-domain	swift-test	static,swift,quality-contracts	quality-system
 test-domain	package	static,swift,quality-contracts,app,ui-e2e,tmux-runtime	installation,update
-test-domain	cli	static,app,codex,claude,distribution	session-lifecycle,session-state
+test-domain	cli	static,app,codex,claude,distribution	session-lifecycle,session-state,session-recovery
 test-domain	install	static,app,distribution	installation
-test-domain	tmux-build	static,app,codex,claude,tmux-runtime	session-lifecycle
+test-domain	tmux-build	static,app,codex,claude,tmux-runtime	session-lifecycle,session-recovery
 test-domain	release-tool	static,app,release-preflight,publish-preflight,release-workflow	update,publication
 test-domain	app-script	static,app,tmux-runtime,release-preflight	installation
-test-domain	codex-test	static,codex	session-lifecycle,session-state
-test-domain	claude-test	static,claude	session-lifecycle,session-state
+test-domain	codex-test	static,codex	session-lifecycle,session-state,session-recovery
+test-domain	claude-test	static,claude	session-lifecycle,session-state,session-recovery
 test-domain	distribution-test	static,app,distribution	installation
-test-domain	runtime-test	static,app,tmux-runtime	session-lifecycle,power-protection
+test-domain	runtime-test	static,app,tmux-runtime	session-lifecycle,power-protection,session-recovery,power-handoff
 test-domain	ui-test	static,app,ui-e2e	app-experience
 test-domain	release-preflight-test	static,release-preflight	update
 test-domain	publish-preflight-test	static,publish-preflight	publication
@@ -88,60 +88,60 @@ coverage-region	ui	app/Sources/DetachApp/SessionAttachTerminalView.swift	swiftte
 coverage-region	ui	app/Sources/DetachApp/SettingsView.swift	ui-e2e-instrumentation	SC-UI-SETTINGS	The packaged Settings journey covers its semantic control.
 coverage-region	ui	app/Sources/DetachApp/SettingsView.swift	system-heartbeat	SC-UI-SETTINGS	XCTest cannot map SwiftUI task modifiers. Unit tests cover the extracted System heartbeat loop.
 coverage-region	ui	app/Sources/DetachApp/SidebarView.swift	ui-e2e-instrumentation	SC-UI-DASHBOARD,SC-UI-SESSION-DETAIL,SC-UI-SESSION-DELETE,SC-UI-FAILURE	Packaged journeys cover sidebar control geometry, bulk Delete, and failure status.
-route	1100	quality/policy.tsv	quality-core	safe	docs/specs/documentation.md
-route	1000	quality/*	policy	safe	docs/specs/documentation.md
-route	1100	.github/workflows/quality-gates.yml	quality-core	safe	docs/specs/documentation.md
-route	1000	.github/workflows/security.yml	policy	safe	docs/specs/documentation.md
-route	1000	.github/dependabot.yml	policy	safe	docs/specs/documentation.md
-route	1000	docs/quality-gates.md	policy	safe	docs/specs/documentation.md
-route	1000	docs/testing.md	policy	safe	docs/specs/documentation.md
-route	1100	scripts/quality-gate	quality-core	safe	docs/specs/documentation.md
-route	1100	tools/quality_gate.py	quality-core	safe	docs/specs/documentation.md
-route	1100	scripts/quality-shard	quality-core	safe	docs/specs/documentation.md
-route	1100	tools/quality_shard.py	quality-core	safe	docs/specs/documentation.md
-route	1100	scripts/quality-cache-warm	quality-core	safe	docs/specs/documentation.md
-route	1100	tools/quality_cache_warm.py	quality-core	safe	docs/specs/documentation.md
-route	1100	tools/quality_products.py	quality-core	safe	docs/specs/documentation.md
-route	1000	scripts/quality-scenarios	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_scenarios.py	policy	safe	docs/specs/documentation.md
-route	1100	scripts/quality-policy	quality-core	safe	docs/specs/documentation.md
-route	1100	tools/quality_policy.py	quality-core	safe	docs/specs/documentation.md
-route	1000	scripts/quality-metrics	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_metrics.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-baseline	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_baseline.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-evidence	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_evidence.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-promote	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_promote.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-merge	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_merge.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-mutation	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_mutation.py	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_test_changes.py	policy	safe	docs/specs/documentation.md
-route	1000	.github/workflows/quality-mutations.yml	policy	safe	docs/specs/documentation.md
-route	1000	.github/workflows/quality-care.yml	policy	safe	docs/specs/documentation.md
-route	1000	.github/workflows/documentation-care.yml	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-dashboard	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_dashboard.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-security	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_security.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-history	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_history.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/quality-care	policy	safe	docs/specs/documentation.md
-route	1000	tools/quality_care.py	policy	safe	docs/specs/documentation.md
-route	1000	scripts/test	policy	safe	docs/specs/documentation.md
-route	1000	tests/quality-*	policy	safe	docs/specs/documentation.md
-route	1000	tests/quality_*	policy	safe	docs/specs/documentation.md
-route	1000	tests/security-*	policy	safe	docs/specs/documentation.md
-route	1000	tests/security_*	policy	safe	docs/specs/documentation.md
+route	1100	quality/policy.tsv	quality-core	safe	docs/specs/quality.md
+route	1000	quality/*	policy	safe	docs/specs/quality.md
+route	1100	.github/workflows/quality-gates.yml	quality-core	safe	docs/specs/quality.md
+route	1000	.github/workflows/security.yml	policy	safe	docs/specs/quality.md
+route	1000	.github/dependabot.yml	policy	safe	docs/specs/quality.md
+route	1000	docs/quality-gates.md	policy	safe	docs/specs/quality.md
+route	1000	docs/testing.md	policy	safe	docs/specs/quality.md
+route	1100	scripts/quality-gate	quality-core	safe	docs/specs/quality.md
+route	1100	tools/quality_gate.py	quality-core	safe	docs/specs/quality.md
+route	1100	scripts/quality-shard	quality-core	safe	docs/specs/quality.md
+route	1100	tools/quality_shard.py	quality-core	safe	docs/specs/quality.md
+route	1100	scripts/quality-cache-warm	quality-core	safe	docs/specs/quality.md
+route	1100	tools/quality_cache_warm.py	quality-core	safe	docs/specs/quality.md
+route	1100	tools/quality_products.py	quality-core	safe	docs/specs/quality.md
+route	1000	scripts/quality-scenarios	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_scenarios.py	policy	safe	docs/specs/quality.md
+route	1100	scripts/quality-policy	quality-core	safe	docs/specs/quality.md
+route	1100	tools/quality_policy.py	quality-core	safe	docs/specs/quality.md
+route	1000	scripts/quality-metrics	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_metrics.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-baseline	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_baseline.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-evidence	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_evidence.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-promote	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_promote.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-merge	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_merge.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-mutation	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_mutation.py	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_test_changes.py	policy	safe	docs/specs/quality.md
+route	1000	.github/workflows/quality-mutations.yml	policy	safe	docs/specs/quality.md
+route	1000	.github/workflows/quality-care.yml	policy	safe	docs/specs/quality.md
+route	1000	.github/workflows/documentation-care.yml	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-dashboard	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_dashboard.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-security	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_security.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-history	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_history.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/quality-care	policy	safe	docs/specs/quality.md
+route	1000	tools/quality_care.py	policy	safe	docs/specs/quality.md
+route	1000	scripts/test	policy	safe	docs/specs/quality.md
+route	1000	tests/quality-*	policy	safe	docs/specs/quality.md
+route	1000	tests/quality_*	policy	safe	docs/specs/quality.md
+route	1000	tests/security-*	policy	safe	docs/specs/quality.md
+route	1000	tests/security_*	policy	safe	docs/specs/quality.md
 route	1000	tests/release-pr*	release-contract	safe	docs/specs/release.md
 route	1000	tests/release_pr*	release-contract	safe	docs/specs/release.md
 route	1000	tests/release-sbom*	release-contract	safe	docs/specs/release.md
 route	1000	tests/release_sbom*	release-contract	safe	docs/specs/release.md
-route	1000	tests/shell-safety*	policy	safe	docs/specs/documentation.md
-route	1000	tests/test-suite-contract.sh	policy	safe	docs/specs/documentation.md
-route	1000	tests/source-rules*	policy	safe	docs/specs/documentation.md
+route	1000	tests/shell-safety*	policy	safe	docs/specs/quality.md
+route	1000	tests/test-suite-contract.sh	policy	safe	docs/specs/quality.md
+route	1000	tests/source-rules*	policy	safe	docs/specs/quality.md
 route	990	tests/docs-contract.sh	docs	safe	docs/specs/documentation.md
 route	950	*.md	docs	safe	docs/specs/documentation.md
 route	950	docs/assets/*	docs	safe	docs/specs/documentation.md
@@ -257,11 +257,11 @@ route	900	.gitattributes	metadata	safe	docs/specs/documentation.md
 route	800	.github/*	unknown	safe	docs/specs/documentation.md
 route	700	app/.gitignore	metadata	safe	docs/specs/documentation.md
 route	100	*.sh	unknown	unknown	docs/specs/documentation.md
-capability	quality-system	docs/specs/documentation.md	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	J-QUALITY-CHANGE
+capability	quality-system	docs/specs/quality.md	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	J-QUALITY-CHANGE
 capability	documentation	docs/specs/documentation.md	QC-DOC-CONSISTENCY	J-DOCS-CONSISTENCY
-capability	session-lifecycle	docs/specs/runtime.md	QC-RUNTIME-OWNERSHIP,QC-RUNTIME-TRANSITION	J-SESSION-CREATE,J-SESSION-RECOVER,J-SESSION-STOP,J-SESSION-DELETE
+capability	session-lifecycle	docs/specs/runtime.md	QC-RUNTIME-OWNERSHIP	J-SESSION-CREATE,J-SESSION-STOP,J-SESSION-DELETE
 capability	session-state	docs/specs/state.md	QC-RUNTIME-STATE,QC-RUNTIME-STORAGE	J-SESSION-PERSIST,J-STATE-CLEANUP,J-STATE-RECOVER
-capability	power-protection	docs/specs/power.md	QC-POWER-ASSERTION,QC-POWER-AUTH,QC-POWER-LEASE,QC-POWER-XPC,QC-POWER-PROTECTION,QC-POWER-CLI,QC-POWER-PLATFORM,QC-POWER-HANDOFF	J-POWER-ENABLE,J-POWER-LOW-BATTERY,J-POWER-HELPER-LEASE,J-POWER-CLOSED-LID
+capability	power-protection	docs/specs/power.md	QC-POWER-ASSERTION,QC-POWER-AUTH,QC-POWER-LEASE,QC-POWER-XPC,QC-POWER-PROTECTION,QC-POWER-CLI,QC-POWER-PLATFORM	J-POWER-ENABLE,J-POWER-LOW-BATTERY,J-POWER-HELPER-LEASE,J-POWER-CLOSED-LID
 capability	app-experience	docs/specs/app.md	QC-HEALTH-FRESHNESS,QC-HEALTH-PRESENTATION,QC-APP-TIPS	J-APP-DASHBOARD,J-APP-DETAIL,J-APP-EMPTY,J-APP-FAILURE,J-APP-FOCUS,J-APP-NEW-SESSION
 capability	onboarding	docs/specs/app-setup.md	QC-APP-ONBOARDING	J-ONBOARD-FIRST-RUN,J-ONBOARD-PROVIDER,J-ONBOARD-APPROVAL
 capability	settings	docs/specs/app-setup.md	QC-APP-SETTINGS	J-SETTINGS-CHANGE
@@ -269,16 +269,16 @@ capability	update	docs/specs/app-setup.md	QC-APP-UPDATE	J-UPDATE-CHECK,J-UPDATE-
 capability	diagnostics	docs/specs/app-setup.md	QC-APP-DOCTOR	J-DOCTOR-REPORT
 capability	installation	docs/specs/release.md	QC-RELEASE-INSTALL	J-INSTALL-CLEAN,J-INSTALL-REPAIR,J-INSTALL-UNINSTALL
 capability	publication	docs/specs/release.md	QC-RELEASE-PUBLISH	J-PUBLISH-ARTIFACTS
-journey	J-QUALITY-CHANGE	quality-system	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT	A policy change keeps local feedback focused and hosted evidence complete.
+journey	J-QUALITY-CHANGE	quality-system	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT,SC-CONTRACT-CHANGE	A policy change keeps local feedback focused and hosted evidence complete.
 journey	J-DOCS-CONSISTENCY	documentation	QC-DOC-CONSISTENCY	SC-DOCS-CONTRACT	Documentation and executable contracts stay synchronized.
 journey	J-SESSION-CREATE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE	A user creates a managed provider session.
 journey	J-SESSION-PERSIST	session-state	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE	A live session remains available after the app exits.
 journey	J-STATE-CLEANUP	session-state	QC-RUNTIME-STATE	SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE	A user removes only typed state that a complete scan marks eligible.
-journey	J-STATE-RECOVER	session-state	QC-RUNTIME-STORAGE	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE	A user restores recovery state only after complete validation.
-journey	J-SESSION-RECOVER	session-lifecycle	QC-RUNTIME-OWNERSHIP,QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE	A user recovers the exact owned session after interruption.
-journey	J-SESSION-STOP	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP	A user stops only the selected owned session.
+journey	J-STATE-RECOVER	session-state	QC-RUNTIME-STORAGE	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-STATE-RESTORE-UNIT	A user restores recovery state only after complete validation.
+journey	J-SESSION-RECOVER	session-recovery	QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE	A user recovers the exact owned session after interruption.
+journey	J-SESSION-STOP	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-OWNERSHIP-UNIT	A user stops only the selected owned session.
 journey	J-SESSION-DELETE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE	A user deletes selected eligible sessions without affecting current work.
-journey	J-POWER-ENABLE	power-protection	QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM,QC-POWER-HANDOFF	SC-POWER-UNIT	A protected session acquires both required power protections.
+journey	J-POWER-ENABLE	power-protection	QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM	SC-POWER-UNIT	A protected session acquires both required power protections.
 journey	J-POWER-LOW-BATTERY	power-protection	QC-POWER-PROTECTION	SC-POWER-LOW-BATTERY	Low battery removes unsafe protection and reports the reason.
 journey	J-POWER-HELPER-LEASE	power-protection	QC-POWER-AUTH,QC-POWER-LEASE,QC-POWER-XPC	SC-POWER-HELPER	The helper accepts only an authorized bounded lease.
 journey	J-POWER-CLOSED-LID	power-protection	QC-POWER-PROTECTION	SC-POWER-CLOSED-LID	A protected session continues on supervised supported hardware with the lid closed.
@@ -299,13 +299,13 @@ journey	J-INSTALL-CLEAN	installation	QC-RELEASE-INSTALL	SC-INSTALL-CLEAN,SC-RUNT
 journey	J-INSTALL-REPAIR	installation	QC-RELEASE-INSTALL	SC-INSTALL-REPAIR	Repair restores the exact immutable payload.
 journey	J-INSTALL-UNINSTALL	installation	QC-RELEASE-INSTALL	SC-INSTALL-UNINSTALL	Uninstall removes only Detach-owned data selected by the user.
 journey	J-PUBLISH-ARTIFACTS	publication	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR	Publication exposes only verified allowlisted artifacts.
-scenario	SC-POLICY-CONTRACT	gate-contract	automated	tests/quality-policy.sh
-scenario	SC-PROMOTION-CONTRACT	gate-contract	automated	tests/quality-promote.sh
-scenario	SC-MERGE-CONTRACT	gate-contract	automated	tests/quality-merge.sh
-scenario	SC-SECURITY-CONTRACT	gate-contract	automated	tests/security-contract.sh
-scenario	SC-RELEASE-SBOM	gate-contract	automated	tests/release-sbom.sh
-scenario	SC-RELEASE-PR	gate-contract	automated	tests/release-pr.sh
-scenario	SC-DOCS-CONTRACT	static	automated	tests/docs-contract.sh
+scenario	SC-POLICY-CONTRACT	gate-contract	instrumented	tests/quality-policy.sh
+scenario	SC-PROMOTION-CONTRACT	gate-contract	instrumented	tests/quality-promote.sh
+scenario	SC-MERGE-CONTRACT	gate-contract	instrumented	tests/quality-merge.sh
+scenario	SC-SECURITY-CONTRACT	gate-contract	instrumented	tests/security-contract.sh
+scenario	SC-RELEASE-SBOM	gate-contract	instrumented	tests/release-sbom.sh
+scenario	SC-RELEASE-PR	gate-contract	instrumented	tests/release-pr.sh
+scenario	SC-DOCS-CONTRACT	static	instrumented	tests/docs-contract.sh
 scenario	SC-SESSION-CREATE-CODEX	codex	instrumented	tests/run.sh
 scenario	SC-SESSION-CREATE-CLAUDE	claude	instrumented	tests/run-claude.sh
 scenario	SC-SESSION-PERSIST-CODEX	codex	instrumented	tests/run.sh
@@ -316,12 +316,12 @@ scenario	SC-SESSION-STOP-CODEX	codex	instrumented	tests/run.sh
 scenario	SC-SESSION-STOP-CLAUDE	claude	instrumented	tests/run-claude.sh
 scenario	SC-SESSION-DELETE-CODEX	codex	instrumented	tests/run.sh
 scenario	SC-SESSION-DELETE-CLAUDE	claude	instrumented	tests/run-claude.sh
-scenario	SC-POWER-UNIT	swift	legacy-stage	cd app && swift test --filter Power
-scenario	SC-POWER-LOW-BATTERY	swift	legacy-stage	cd app && swift test --filter PowerProtection
-scenario	SC-POWER-HELPER	swift	legacy-stage	cd app && swift test --filter PowerHelper
+scenario	SC-POWER-UNIT	swift	test-cases	cd app && swift test --filter Power
+scenario	SC-POWER-LOW-BATTERY	swift	test-cases	cd app && swift test --filter PowerProtection
+scenario	SC-POWER-HELPER	swift	test-cases	cd app && swift test --filter PowerHelper
 scenario	SC-POWER-CLOSED-LID	publish-preflight	manual-release	scripts/release-lid-probe
-scenario	SC-APP-ONBOARDING-UNIT	swift	legacy-stage	cd app && swift test --filter Onboarding
-scenario	SC-APP-SETTINGS-UNIT	swift	legacy-stage	cd app && swift test --filter Settings
+scenario	SC-APP-ONBOARDING-UNIT	swift	test-cases	cd app && swift test --filter Onboarding
+scenario	SC-APP-SETTINGS-UNIT	swift	test-cases	cd app && swift test --filter Settings
 scenario	SC-UI-DASHBOARD	ui-e2e	instrumented	tests/ui-e2e.sh
 scenario	SC-UI-SESSION-DETAIL	ui-e2e	instrumented	tests/ui-e2e.sh
 scenario	SC-UI-SESSION-DELETE	ui-e2e	instrumented	tests/ui-e2e.sh
@@ -379,10 +379,10 @@ requirement	QC-POWER-XPC	docs/specs/power.md	The helper accepts only the typed p
 requirement	QC-POWER-PROTECTION	docs/specs/power.md	Low battery fails safe.
 requirement	QC-POWER-CLI	docs/specs/power.md	The power command reports and enforces typed protection state.
 requirement	QC-POWER-PLATFORM	docs/specs/power.md	Platform power operations preserve the helper safety boundary.
-requirement	QC-POWER-HANDOFF	docs/specs/power.md	Service registration handoff completes only after a proven lifetime barrier.
+requirement	QC-POWER-HANDOFF	docs/specs/power-handoff.md	Service registration handoff completes only after a proven lifetime barrier.
 requirement	QC-HEALTH-FRESHNESS	docs/specs/app.md	Health claims use typed fresh state.
 requirement	QC-HEALTH-PRESENTATION	docs/specs/app.md	The app presents typed health state without parsing terminal text.
-requirement	QC-RUNTIME-TRANSITION	docs/specs/runtime.md	Session transitions preserve exact process identity.
+requirement	QC-RUNTIME-TRANSITION	docs/specs/recovery.md	Session transitions preserve exact process identity.
 requirement	QC-APP-TIPS	docs/specs/app.md	Session tips remain deterministic and user visible.
 requirement	QC-APP-DOCTOR	docs/specs/app-setup.md	Doctor output derives from typed runtime state.
 requirement	QC-APP-ONBOARDING	docs/specs/app-setup.md	Onboarding leads a new user through supported provider and approval setup.
@@ -390,6 +390,83 @@ requirement	QC-APP-SETTINGS	docs/specs/app-setup.md	Settings changes persist and
 requirement	QC-APP-UPDATE	docs/specs/app-setup.md	Update state and application preserve the signed arm64 contract.
 requirement	QC-RELEASE-INSTALL	docs/specs/release.md	Install, repair, and uninstall mutate only Detach-owned payloads and selected state.
 requirement	QC-RELEASE-PUBLISH	docs/specs/release.md	Publication exposes only independently verified allowlisted artifacts.
-requirement	QC-QUALITY-POLICY	docs/specs/documentation.md	One current policy owns quality selection and traceability.
-requirement	QC-QUALITY-SUPPLY-CHAIN	docs/specs/documentation.md	Bounded automation scans code and keeps dependency pins current.
+requirement	QC-QUALITY-POLICY	docs/specs/quality.md	One current policy owns quality selection and traceability.
+requirement	QC-QUALITY-SUPPLY-CHAIN	docs/specs/quality.md	Bounded automation scans code and keeps dependency pins current.
 requirement	QC-DOC-CONSISTENCY	docs/specs/documentation.md	Durable documentation and generated quality views stay synchronized.
+enforcement	critical_coverage	blocking
+enforcement	aggregate_coverage	advisory
+enforcement	test_identity	advisory
+enforcement	changed_line_coverage	advisory
+enforcement	contract_evidence	blocking
+verification	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
+verification	QC-RUNTIME-OWNERSHIP	SC-SESSION-OWNERSHIP-UNIT,SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
+verification	QC-RUNTIME-STORAGE	SC-STATE-RESTORE-UNIT,SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE
+verification	QC-POWER-ASSERTION	SC-POWER-UNIT
+verification	QC-POWER-AUTH	SC-POWER-HELPER
+verification	QC-POWER-LEASE	SC-POWER-UNIT,SC-POWER-HELPER
+verification	QC-POWER-XPC	SC-POWER-HELPER
+verification	QC-POWER-PROTECTION	SC-POWER-LOW-BATTERY,SC-POWER-CLOSED-LID
+verification	QC-POWER-CLI	SC-POWER-UNIT
+verification	QC-POWER-PLATFORM	SC-POWER-UNIT
+verification	QC-POWER-HANDOFF	SC-POWER-HANDOFF
+verification	QC-HEALTH-FRESHNESS	SC-UI-DASHBOARD
+verification	QC-HEALTH-PRESENTATION	SC-UI-DASHBOARD,SC-UI-SESSION-DETAIL,SC-UI-EMPTY,SC-UI-FAILURE,SC-UI-FOCUS,SC-UI-NEW-SESSION
+verification	QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE
+verification	QC-APP-TIPS	SC-UI-EMPTY
+verification	QC-APP-DOCTOR	SC-DOCTOR-REPORT
+verification	QC-APP-ONBOARDING	SC-APP-ONBOARDING-UNIT,SC-UI-ONBOARD-FIRST-RUN,SC-UI-ONBOARD-PROVIDER,SC-UI-ONBOARD-APPROVAL
+verification	QC-APP-SETTINGS	SC-APP-SETTINGS-UNIT,SC-UI-SETTINGS
+verification	QC-APP-UPDATE	SC-UPDATE-CHECK,SC-UPDATE-APPLY,SC-RELEASE-WORKFLOW
+verification	QC-RELEASE-INSTALL	SC-INSTALL-CLEAN,SC-RUNTIME-PACKAGE,SC-INSTALL-REPAIR,SC-INSTALL-UNINSTALL
+verification	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR
+verification	QC-QUALITY-POLICY	SC-CONTRACT-CHANGE,SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT
+verification	QC-QUALITY-SUPPLY-CHAIN	SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT
+verification	QC-DOC-CONSISTENCY	SC-DOCS-CONTRACT
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerProtectionTests/testProtectedRequiresBothAssertionAndClosedLidProtection	app/Tests/DetachKitTests/PowerProtectionTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerHelperLeaseServiceTests/testAcquireVerifiesBothProtectionsAndPersistsOwnershipBeforeMutation	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-POWER-LOW-BATTERY	DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased	app/Tests/DetachKitTests/PowerProtectionTests.swift
+scenario-test	SC-POWER-LOW-BATTERY	DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsRootEvenWhileARegularConsoleUserIsActive	app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift
+scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsAnotherLocalUserAfterFastUserSwitching	app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift
+scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsLoginWindowAndLogoutWithoutAnActiveConsoleUser	app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift
+scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperLeaseServiceTests/testAcquireRejectsAnExpiredRequestBeforePersisting	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-APP-ONBOARDING-UNIT	DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick	app/Tests/DetachAppTests/OnboardingLivePollerTests.swift
+scenario-test	SC-APP-ONBOARDING-UNIT	DetachAppTests.SetupGuidanceTests/testMissingProviderBlocksOnlyFirstOnboarding	app/Tests/DetachAppTests/SetupGuidanceTests.swift
+scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue	app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift
+scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue	app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift
+spec	quality	docs/specs/quality.md	Quality checks bind direct evidence to reviewed contract changes.
+spec	recovery	docs/specs/recovery.md	Provider identity and checkpoint replacement preserve recoverable state.
+spec	power-handoff	docs/specs/power-handoff.md	Service replacement requires a proven lifetime barrier.
+capability	session-recovery	docs/specs/recovery.md	QC-RUNTIME-TRANSITION	J-SESSION-RECOVER
+capability	power-handoff	docs/specs/power-handoff.md	QC-POWER-HANDOFF	J-POWER-HANDOFF
+journey	J-POWER-HANDOFF	power-handoff	QC-POWER-HANDOFF	SC-POWER-HANDOFF	A service replacement waits for the old lifetime barrier.
+scenario	SC-POWER-HANDOFF	swift	test-cases	cd app && swift test --filter PowerHelperServiceTests
+scenario-test	SC-POWER-HANDOFF	DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase	app/Tests/DetachAppTests/PowerHelperServiceTests.swift
+scenario-test	SC-POWER-HANDOFF	DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed	app/Tests/DetachAppTests/WatchdogServiceTests.swift
+route	920	app/Sources/DetachApp/PowerHelperService.swift	power	both	docs/specs/power-handoff.md
+route	920	app/Sources/DetachApp/WatchdogService.swift	power	both	docs/specs/power-handoff.md
+route	1100	tools/quality_contract_change.py	quality-core	safe	docs/specs/quality.md
+route	1200	docs/specs/quality.md	docs	safe	docs/specs/quality.md
+route	1200	docs/specs/recovery.md	docs	safe	docs/specs/recovery.md
+route	1200	docs/specs/power-handoff.md	docs	safe	docs/specs/power-handoff.md
+scenario	SC-SESSION-OWNERSHIP-UNIT	swift	test-cases	cd app && swift test --filter SessionHealthTests
+scenario-test	SC-SESSION-OWNERSHIP-UNIT	DetachKitTests.SessionHealthTests/testForeignTmuxCollisionNeverOffersAnAction	app/Tests/DetachKitTests/SessionHealthTests.swift
+scenario-test	SC-SESSION-OWNERSHIP-UNIT	DetachKitTests.SessionHealthTests/testForeignProviderPIDIsNeverTreatedAsOwned	app/Tests/DetachKitTests/SessionHealthTests.swift
+scenario-test	SC-SESSION-OWNERSHIP-UNIT	DetachKitTests.SessionHealthTests/testProcessInspectorRejectsWrongPaneAndForeignOwnership	app/Tests/DetachKitTests/SessionHealthTests.swift
+scenario	SC-STATE-RESTORE-UNIT	swift	test-cases	cd app && swift test --filter DetachStateCommandTests
+scenario-test	SC-STATE-RESTORE-UNIT	DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories	app/Tests/DetachKitTests/DetachStateCommandTests.swift
+scenario-test	SC-STATE-RESTORE-UNIT	DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments	app/Tests/DetachKitTests/DetachStateCommandTests.swift
+scenario-test	SC-STATE-RESTORE-UNIT	DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink	app/Tests/DetachKitTests/DetachStateCommandTests.swift
+suite	DetachKitTests.PowerProtectionTests
+suite	DetachKitTests.PowerHelperClientAuthorizationPolicyTests
+scenario	SC-CONTRACT-CHANGE	gate-contract	instrumented	python3 tests/quality_contract_change_contract.py
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerAssertionControllerTests/testAcquireCreatesOneAssertionAndBecomesActive	app/Tests/DetachKitTests/PowerAssertionControllerTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerAssertionControllerTests/testFailedReleaseStaysActiveAndCanRetry	app/Tests/DetachKitTests/PowerAssertionControllerTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerHelperLeaseServiceTests/testReleaseRestoresNormalSleepOnlyWhenDetachOwnedTheMutation	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerHelperLeaseServiceTests/testStartupReconcileExpiresStaleLeaseAndRestoresOwnedState	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract	app/Tests/DetachKitTests/DetachPowerCommandTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup	app/Tests/DetachKitTests/DetachPowerCommandTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting	app/Tests/DetachKitTests/PowerHelperPlatformTests.swift
+scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot	app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift
+scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation	app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift
+scenario-test	SC-POWER-HELPER	DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly	app/Tests/DetachKitTests/DetachPowerCommandTests.swift

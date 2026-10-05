@@ -2,6 +2,8 @@
 
 ## Typed state boundary
 
+<a id="qc-runtime-state"></a>
+
 `detach-state` is the JSON boundary. Never edit JSON in shell. It owns typed
 metadata, JSONL, health, reconcile, storage, emit, and event operations.
 `meta snapshots` enumerates one owned sessions root through anchored directory
@@ -57,6 +59,8 @@ A retained dead pane is mutable only when its nonempty tmux token matches usable
 primary metadata. A checkpoint cannot authorize removal. Start, Resume,
 Recover, and Delete repeat this check under the operation lock. A tmux-only
 remnant remains removable without state.
+
+<a id="qc-runtime-storage"></a>
 
 Typed state caches Codex checkpoint assessment by provider, session ID, and
 file identity. A change forces a full scan. Restore ignores this receipt,
