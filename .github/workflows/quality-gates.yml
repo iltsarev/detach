@@ -3,6 +3,7 @@ name: Quality gates
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches:
       - main
@@ -54,6 +55,10 @@ jobs:
               output.write(f"matrix={matrix}\n")
               output.write(f"has_shards={str(bool(later)).lower()}\n")
           PY
+      - name: Validate reviewed requirement changes
+        run: |
+          BASE_SHA="$(git rev-parse HEAD^1)"
+          python3 tools/quality_contract_change.py --base "$BASE_SHA" --event-json "$GITHUB_EVENT_PATH"
       - name: Report changed assertions in existing tests (advisory)
         run: |
           BASE_SHA="$(git rev-parse HEAD^1)"

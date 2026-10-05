@@ -11,6 +11,8 @@ underline, strikethrough, and reverse video. Reverse swaps colors against
 `ANSIParser.terminalBackground`, also the `LogTextView` background. Font
 scaling changes only the font.
 
+<a id="qc-health-presentation"></a>
+
 The menu bar is display-only. Its prompt mark is filled for protected, dim for
 sleep allowed, badged for attention, and outlined for unknown. Starting,
 running, and recovering sessions are active; hung sessions are not. Green means
@@ -20,6 +22,8 @@ return to working. Waiting outranks working. A badge hides both tints so power
 warnings stay visible. Monochrome states remain template; tints resolve from
 label or system colors. VoiceOver names the session state. The first menu line
 is `state · reason · freshness`.
+<a id="qc-health-freshness"></a>
+
 Protected counts working sessions. Allowed names all-waiting or an unprotected
 working session and never claims no sessions. Typed heartbeat and
 `detach watch --json` sources supply them. A schema-1 hint, activation, or
@@ -137,6 +141,8 @@ Custom persistent folders must exist. Stop and Delete retain project files.
 Existing session paths and files do not move. An event
 selects an unambiguous `starting` session before readiness, without polling.
 Invalid folders block launch.
+<a id="qc-app-tips"></a>
+
 Command-1 through Command-9 open main and select numbered Working or Answer
 ready sessions. Numbers appear in rows and stay stable across both sections.
 When a session leaves them, the earliest waiting session gets its number;

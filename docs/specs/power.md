@@ -2,6 +2,8 @@
 
 ## Contract
 
+<a id="qc-power-assertion"></a>
+
 Power protection has two required layers and one observable combined state:
 
 1. `detach-power` is an unprivileged, signed wrapper. It holds the public IOKit
@@ -48,6 +50,8 @@ record that no wrapper or provider exists after it removes the placeholder tmux
 session. A `respawn-pane` attempt ends this local proof. A signal exit does not
 provide shutdown proof.
 
+<a id="qc-power-lease"></a>
+
 Each working session owns a separate helper lease. Outside the low-battery and
 thermal fail-safe states, the helper keeps the machine-wide closed-lid setting
 active while at least one working lease exists. Detach can permit normal sleep
@@ -57,6 +61,8 @@ confirmation are scoped to the requesting lease. A staged assertion-inactive
 lease from another session must not fail an unrelated acquire or renewal. The
 low-battery and thermal fail-safe refusals still fail closed for every
 request.
+
+<a id="qc-power-auth"></a>
 
 The root helper installs a listener-level Foundation code-signing requirement
 before accepting XPC or reconciling power state. It accepts only valid code
@@ -68,70 +74,8 @@ surface is limited to status, acquire, renew, release, and the typed
 prepare/cancel unregistration lifecycle; it must never execute arbitrary paths,
 shell strings, or provider commands as root.
 
-App updates replace the helper through a durable `SMAppService` handoff. Only
-the complete Developer ID release bundle may register or unregister the helper
-or watchdog. The app, helper, and watchdog must have their exact code
-identifiers and the same valid Team ID. An ad-hoc build or preview stays
-read-only at this boundary.
-
-An enabled registration needs a held root lifetime lock before the app calls
-the helper's prepare method. A missing or released lifetime lock proves that no
-helper process can answer. The app then skips XPC preparation and replays the
-submitted unregister phase under the system and per-user transaction locks.
-Only a busy lifetime lock permits the prepare call. A replacement is not
-registered until the old lifetime lock is released or an exact absent-job
-callback provides the required completion barrier. An absent-job callback is
-`kSMErrorJobNotFound` or the `SMAppServiceErrorDomain` `EPERM` reply that
-macOS 26 returns for a label without a Background Task Management record. The
-app accepts either reply only with exact `notRegistered` status, or no
-record (`notFound`), plus the lifetime-barrier wait; an `EPERM` reply for a
-live record stays fail-closed.
-The watchdog journal records the boot UUID before each unregister replay.
-After a restart, `notRegistered` or no record completes it unless a live
-process holds the lifetime lock.
-Lifetime and system handoff probes reject special files without waiting for
-a FIFO writer. File validation precedes lock acquisition. Activity and source
-handoff readers also reject special files without blocking and keep the
-session working.
-
-An enabled registration with a matching bundled-definition digest is not
-enough to prove liveness. At startup, a missing or released lifetime lock that
-stays unheld after a three-second grace also forces the durable replacement
-flow. The grace covers login, when the app and the service start together.
-This repairs a stale Background Task Management parent UUID after an app
-bundle is replaced with the same version. For a legacy watchdog without a
-lifetime lock, the exact bundled executable may prove that the old
-registration is still live.
-
-Helper replacement is a durable fail-closed transaction. One versioned journal
-records the phase, goal, target digest, boot UUID, and lifetime-barrier contract.
-Each transition uses atomic rename and file/directory fsync before its side
-effect. A per-user `flock` protects the journal. The root helper also creates a
-stable root-owned `0644` inode under `/var/run`; every app user opens it read-only and holds one exclusive
-kernel `flock` across the complete asynchronous SMAppService transaction. This
-is the machine-wide single-writer barrier across Fast User Switching, and the
-kernel releases it if the app crashes. Only the current non-root console user's
-app may perform register or unregister mutations, checked again immediately
-before each mutation. Root persists `unregistration_pending`, blocks
-acquire/renew without a wall-clock expiry, and restores and reads back only the
-setting Detach owns.
-
-The helper takes a root-owned lifetime `flock` before its listener answers and
-holds it until exit. An enabled job without this boot's lock is dead. The app
-writes `unregisterSubmitted` only after it observes that lock. Registration
-needs the fresh unregister callback, or exact `notRegistered` status plus the
-released lock or a changed boot UUID with no live lock holder; `unavailable`
-with a record is insufficient. Errors
-keep the journal and root gate closed. After an app crash, another console user
-uses the root-created files to resume at `unregisterSubmitted`, never as a
-pristine install.
-
-Before registering a replacement the app fsyncs `registering` with the target
-digest. After macOS reports the new helper enabled, a successful cancel XPC
-reply proves launch readiness and reopens the gate; only then is the definition
-recorded and the journal cleared. Approval and retry failures remain pending for
-the next launch. An ordinary helper SIGTERM/SIGINT uses only the process-local
-termination gate and must not create persistent update state.
+Service replacement follows the [handoff specification](power-handoff.md).
+Read it for helper or watchdog registration changes.
 
 Before it creates the listener or changes power state, the helper must pass a
 strict check of its own signature with Security network access enabled. This
@@ -139,6 +83,8 @@ check lets macOS refresh the system trust result that the listener needs for
 the same Developer ID chain. If trust cannot be proved, the helper exits and
 launchd retries it. The listener requirement stays Apple-anchored and is not
 weakened for an unavailable trust service.
+
+<a id="qc-power-xpc"></a>
 
 The client opens a short-lived XPC connection for every request. After Fast
 User Switching, the previous background user's next heartbeat, status, or
@@ -187,6 +133,8 @@ deadline publishes `unknown` if the watchdog stops. Menu bar, Settings, and
 temperature notifications share this state and run no repeating heartbeat
 reader.
 
+<a id="qc-power-cli"></a>
+
 The watchdog heartbeat carries the effective power state and typed raw
 thermal state/latch. With notifications enabled, the app emits one
 localized temperature-safety warning on each inactive-to-active latch
@@ -212,6 +160,8 @@ refreshes every ten seconds
 while working and every 30 seconds while waiting, rather than spawning one root
 status request every two seconds per session.
 
+<a id="qc-power-protection"></a>
+
 The low-battery threshold is 10% while on battery power. The helper releases
 closed-lid protection it owns, the wrapper releases its IOKit assertion, and the
 provider is allowed to finish only while the Mac remains awake. Initial
@@ -236,6 +186,8 @@ guards are active, while the thermal fields remain visible. Borrowed external
 `disablesleep` is never disabled, so neither safety state may falsely claim the
 Mac can sleep while it remains active.
 
+<a id="qc-power-platform"></a>
+
 While the wrapper holds a confirmed protected run, it observes the documented
 IOPMrootDomain clamshell notification. Each physical open-to-closed transition
 requests `/usr/bin/pmset displaysleepnow` as the unprivileged console user so
@@ -250,8 +202,5 @@ This does not rewrite the user's password-delay setting. A MacBook run must
 fail before provider launch if the clamshell notification cannot be installed;
 a desktop Mac with no clamshell property continues without that monitor.
 
-`pmset -a disablesleep 0|1` and its `SleepDisabled` output are undocumented
-macOS interfaces. Parser/unit tests do not establish real closed-lid behavior.
-Every release candidate must pass the explicitly opted-in signed smoke test and
-a supervised test on real supported Apple Silicon hardware before publication.
-Exact arm64 slice and launch verification remains required.
+Physical power verification follows the
+[release hardware contract](release.md#physical-power-verification).

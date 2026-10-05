@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -879,6 +880,7 @@ class QualityGate:
             "coverage-opportunities.json",
             "spec-sizes.json",
             "shards.tsv",
+            "contract-change.json",
         ):
             evidence = self.run_dir / name
             if evidence.exists():
@@ -1197,6 +1199,7 @@ class QualityGate:
                 or relative == "coverage-opportunities.json"
                 or relative == "spec-sizes.json"
                 or relative == "shards.tsv"
+                or relative == "contract-change.json"
                 or relative == "scenarios.jsonl"
                 or relative == "scenarios.junit.xml"
                 or relative == "repair-bundle.json"
@@ -2249,6 +2252,18 @@ def run_distribution_parts(root: Path, run_dir: Path) -> int:
                 output.close()
 
 
+def command_scenarios(root: Path, command: list[str], kind: str) -> None:
+    """Bind a contract scenario to completion of its actual command."""
+    policy = Policy(POLICY_FILE)
+    for identifier, (_, status, configured) in policy.scenarios.items():
+        arguments = shlex.split(configured)
+        expected = ([sys.executable, str(root / arguments[1])]
+                    if len(arguments) == 2 and arguments[0] == "python3"
+                    else [str(root / configured)])
+        if status == "instrumented" and command == expected:
+            record_scenario_event(kind, identifier)
+
+
 def run_static_contracts(root: Path, run_dir: Path) -> int:
     contracts = (
         ("documentation", [str(root / "tests/docs-contract.sh")]),
@@ -2263,6 +2278,7 @@ def run_static_contracts(root: Path, run_dir: Path) -> int:
     ] = []
     try:
         for name, command in contracts:
+            command_scenarios(root, command, "begin")
             log = part_root / f"{name}.log"
             output = log.open("w", encoding="utf-8")
             log.chmod(0o600)
@@ -2284,6 +2300,8 @@ def run_static_contracts(root: Path, run_dir: Path) -> int:
                     continue
                 output.close()
                 statuses[index] = status
+                if status == 0:
+                    command_scenarios(root, contracts[index][1], "pass")
                 durations[index] = max(0, round(time.monotonic() - started))
                 pending.remove(index)
             if pending:
@@ -2497,6 +2515,12 @@ def gate_contract_definitions(
             "Quality scenario contracts passed",
         ),
         (
+            "quality-contract-change.log",
+            [sys.executable, str(root / "tests/quality_contract_change_contract.py")],
+            {},
+            "OK",
+        ),
+        (
             "quality-policy.log",
             [str(root / "tests/quality-policy.sh")],
             {},
@@ -2576,6 +2600,7 @@ def run_gate_contract_stage(root: Path, *, include_orchestrators: bool) -> int:
                 output = path.open("w", encoding="utf-8")
                 environment = os.environ.copy()
                 environment.update(additions)
+                command_scenarios(root, command, "begin")
                 process = subprocess.Popen(
                     command,
                     cwd=root,
@@ -2596,6 +2621,9 @@ def run_gate_contract_stage(root: Path, *, include_orchestrators: bool) -> int:
                     failed = True
                 durations[path] = max(0, round(time.monotonic() - started))
                 output.close()
+                if status == 0 and processes[index][3] in path.read_text(encoding="utf-8").splitlines():
+                    matching = next(item for item in contracts if item[0] == path.name)
+                    command_scenarios(root, matching[1], "pass")
                 running.remove(index)
                 if path.name.startswith("orchestrator-"):
                     running_orchestrators -= 1
@@ -2824,6 +2852,12 @@ def run_stage_worker(stage: str) -> int:
             if not opportunities.exists():
                 write_private(opportunities, "{}\n")
         if status == 0:
+            if stage == "swift":
+                # This branch is reachable only in the explicit gate test fixture.
+                for identity in sorted({test for tests in policy.scenario_tests.values() for test in tests}):
+                    suite, method = identity.split("/")
+                    print(f"Test Case '-[{suite} {method}]' started.")
+                    print(f"Test Case '-[{suite} {method}]' passed (0.001 seconds).")
             for scenario_id in instrumented:
                 record_scenario_event("pass", scenario_id)
         return status

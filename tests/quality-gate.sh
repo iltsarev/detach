@@ -42,7 +42,7 @@ if grep -F 'github.event.pull_request.base.sha' \
   exit 1
 fi
 if [ "$(grep -Fc 'BASE_SHA="$(git rev-parse HEAD^1)"' \
-    "$ROOT/.github/workflows/quality-gates.yml")" -ne 5 ]; then
+    "$ROOT/.github/workflows/quality-gates.yml")" -ne 6 ]; then
   printf 'quality workflow did not derive every pull-request base from the tested merge\n' >&2
   exit 1
 fi
@@ -225,6 +225,7 @@ prepare_template() {
   install -m 0755 "$ROOT/scripts/quality-dashboard" "$TEMPLATE_REPO/scripts/quality-dashboard"
   install -m 0755 "$ROOT/scripts/release-impact" "$TEMPLATE_REPO/scripts/release-impact"
   install -m 0644 "$ROOT/tools/quality_gate.py" "$TEMPLATE_REPO/tools/quality_gate.py"
+  install -m 0644 "$ROOT/tools/quality_contract_change.py" "$TEMPLATE_REPO/tools/quality_contract_change.py"
   install -m 0644 "$ROOT/tools/quality_shard.py" "$TEMPLATE_REPO/tools/quality_shard.py"
   install -m 0644 "$ROOT/tools/quality_scenarios.py" "$TEMPLATE_REPO/tools/quality_scenarios.py"
   install -m 0644 "$ROOT/tools/quality_policy.py" "$TEMPLATE_REPO/tools/quality_policy.py"
@@ -1256,6 +1257,7 @@ assert document["input_fingerprint"] == manifest["input_fingerprint"]
 assert document["warning_bytes"] < document["limit_bytes"]
 assert [record["id"] for record in document["specifications"]] == [
     "documentation", "runtime", "state", "power", "app", "app-setup", "release",
+    "quality", "recovery", "power-handoff",
 ]
 for record in document["specifications"]:
     size = record["bytes"]

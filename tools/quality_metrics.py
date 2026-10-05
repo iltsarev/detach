@@ -865,12 +865,15 @@ def build_metrics(
     # are reported but never turn functional evidence into a failure.
     regressions: list[str] = []
     advisories: list[str] = []
+    def report(rule: str, message: str) -> None:
+        target = regressions if policy.enforcement[rule] == "blocking" else advisories
+        target.append(message)
     if baseline is not None:
         for name in ("ui", "business"):
             current_suite = suites[name]
             baseline_suite = baseline["suites"][name]
             if current_suite["test_count"] < baseline_suite["test_count"]:
-                advisories.append(
+                report("test_identity",
                     f"{name} test count regressed: {current_suite['test_count']} < "
                     f"{baseline_suite['test_count']}"
                 )
@@ -878,10 +881,10 @@ def build_metrics(
             if isinstance(baseline_tests, list):
                 removed = sorted(set(baseline_tests) - set(current_suite["tests"]))
                 if removed:
-                    advisories.append(f"{name} test was removed: {removed[0]}")
+                    report("test_identity", f"{name} test was removed: {removed[0]}")
             baseline_coverage = baseline_suite["line_coverage"]
             if ratio_regressed(current_suite["line_coverage"], baseline_coverage):
-                advisories.append(
+                report("aggregate_coverage",
                     f"{name} line coverage regressed: "
                     f"{current_suite['line_coverage']['percent']:.2f} < "
                     f"{baseline_coverage['percent']:.2f}"
@@ -891,23 +894,23 @@ def build_metrics(
         current_critical = {item["path"]: item for item in critical_files}
         removed_critical = sorted(set(baseline_critical) - set(current_critical))
         if removed_critical:
-            regressions.append(f"critical source left the inventory: {removed_critical[0]}")
+            report("critical_coverage", f"critical source left the inventory: {removed_critical[0]}")
         for path, current in current_critical.items():
             prior = baseline_critical.get(path)
             if prior is None:
                 if current["line_coverage"]["covered"] != current["line_coverage"]["total"]:
-                    regressions.append(f"new critical source is not fully covered: {path}")
+                    report("critical_coverage", f"new critical source is not fully covered: {path}")
                 continue
             prior_coverage = prior["line_coverage"]
             if ratio_regressed(current["line_coverage"], prior_coverage):
-                regressions.append(
+                report("critical_coverage",
                     f"critical line coverage regressed for {path}: "
                     f"{current['line_coverage']['percent']:.2f} < "
                     f"{prior_coverage['percent']:.2f}"
                 )
 
     if changed_status == "failed":
-        advisories.append(
+        report("changed_line_coverage",
             f"changed-line coverage regressed: {changed_percent:.2f} < {minimum:.2f}"
         )
     comparison_status = "not-available" if baseline is None else ("failed" if regressions else "passed")

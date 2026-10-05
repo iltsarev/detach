@@ -55,6 +55,8 @@ SQLite text values support paths with apostrophes on the system Bash.
 and managed target must match. Framing must survive `LC_ALL=C`. Failed proof
 causes no mutation. Attach can hold a frame until the target redraws.
 
+<a id="qc-runtime-ownership"></a>
+
 Core self-reinvokes critical mutations under `lockf`. Start, Resume, Stop,
 Recover, and Delete hold a session lock before install, project, and checkpoint
 locks. Each lock covers the child; the install lock covers readiness and the
@@ -186,81 +188,8 @@ the original copy tables immediately.
 `M-Enter`; off restores the original binding or plain Enter. It adds
 `*:extkeys` and `*:hyperlinks` once; OSC 8 links stay independent.
 
-### Provider identity and checkpoints
+## Recovery boundary
 
-Claude gets a wrapper-owned UUID via `--session-id`. Resume uses `--resume` with
-a valid transcript or matching checkpoint. It uses `--session-id` only if both
-are absent. A present invalid transcript fails closed. Startup companions such
-as `session-env/<uuid>` or `tasks/session-<short>` are not transcript evidence
-and do not block that path. Codex binds identity
-after launch by matching the run-token originator in rollout files and SQLite;
-an ambiguous first binding fails. If the provider switches to another run-owned
-user thread (for example `/clear`), discovery rebinds identity, transcript, and
-checkpoints to the newest originator-matched thread within one heartbeat or
-checkpoint tick, records superseded thread IDs so the next switch stays
-unambiguous, and keeps the current binding on a creation-time tie. Subagent
-threads never rebind a session. Wrapper-owned provider flags are rejected;
-policy defaults apply only without an allowed override.
-
-By default, a per-session lock protects a checkpoint every 300 s. It has
-metadata, validated provider JSONL, pane capture, and a repository root from a
-real `.git` ancestor. Codex removes temporary sidecars after its checked SQLite
-backup. Claude archives its matching project session and companions. A writer
-validates a private sibling, rechecks the exact worker, recovery binding, and
-saved options, then atomically exchanges it with `checkpoint`. Readers cannot
-see a partial generation. Safe prior diagnostics survive a failed refresh.
-Checkpoint, discovery, and heartbeat writers recheck the primary run token,
-worker PID, live managed pane, and pane PID while they hold the session lock.
-An old writer cannot rebind or publish state. Recover holds this lock through
-source validation, retained-pane removal, reselection, and restore. Resume and
-Recover hold the install and project locks from occupancy check through start.
-Provider-created hard links become independent regular files in staging;
-archives and restore destinations still reject hard links and non-plain
-entries. Before any write, List and Recover validate the selected Claude source,
-companion trees, destinations, and `.detach.old` or `.detach.tmp` siblings.
-Unsafe optional data blocks recovery without changing its source. Task names
-match the UUID. Archived and existing team configs name that UUID as lead, so a
-checkpoint cannot replace another session's team. A valid selected live
-generation replaces an older checkpoint only after complete staging. Tests can
-disable durability syncs.
-
-Resume and Recover keep the last valid checkpoint and saved provider options
-until replacement B passes power and provider readiness. A failed handshake
-keeps that data. A fresh Start clears it. List and Recover share provider-source
-and saved-options checks. A selected live primary generation includes its
-provider ID, transcript, and options; Detach materializes the complete bundle
-before another replacement. An older checkpoint is not equivalent, even with
-the same run token. Every writer reads readiness from primary metadata and
-requires an explicit run token.
-
-The runtime syncs preserved recovery before primary metadata identifies B. It
-syncs new options before readiness names them, and syncs an exchanged checkpoint
-before it prunes prior options.
-
-Codex recovery binds a UUID to one exact rollout path. Every existing path
-component is a plain directory. A damaged rollout needs a matching database row
-or embedded UUID. Recovery never overwrites another thread's rollout and uses a
-private file plus atomic rename.
-
-Primary metadata identifies replacement B while it may live. List and Recover
-require durable shutdown observation. A dead worker and missing launch files do not
-prove that its power wrapper stopped. Normal wrapper return does. Before
-`respawn-pane`, removing the placeholder can prove shutdown; after that call,
-missing launch files prove nothing. A signal exit without provider identity is
-unknown and blocks mutation.
-
-If sync after a checkpoint exchange fails, Detach exchanges the prior
-generation back and removes the other only after rollback sync. An uncertain
-rollback or post-exchange signal keeps both names. A later writer removes an
-abandoned stage only after strict validation and canonical sync. Reset uses a
-typed marker that names its exact prior generation; an empty directory is not
-reset evidence.
-
-Primary metadata, saved options, checkpoint logs, known thread IDs, and exit
-status are plain files in the private session directory. Initialization checks
-their types before it changes a checkpoint. Writers publish replacement files
-with an atomic rename and never append through an untrusted path.
-
-Only allowlisted provider flags are serialized to a run-token-bound options
-file selected by typed metadata. Recover accepts the legacy `resume-args.bin`
-file. A flag that should survive Resume or Recover must be added deliberately.
+Provider identity and checkpoint replacement follow
+[the recovery specification](recovery.md). Read it for Resume, Recover, or
+checkpoint changes.

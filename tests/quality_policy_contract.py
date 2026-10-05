@@ -38,12 +38,12 @@ def main() -> None:
     policy = Policy(POLICY)
     specs = policy.specification_document()
 
-    require(len(specs) == 7, "expected seven current specifications")
+    require(len(specs) == 10, "expected ten current specifications")
     require(
         {spec["id"] for spec in specs}
         == {
             "documentation", "runtime", "state", "power", "app",
-            "app-setup", "release",
+            "app-setup", "release", "quality", "recovery", "power-handoff",
         },
         "specification identities changed unexpectedly",
     )
@@ -75,7 +75,7 @@ def main() -> None:
             "app/Sources/DetachKit/SessionHealth.swift",
             "session-health-source", "safe", "docs/specs/app.md",
             "app/Sources/DetachKit/SessionHealth.swift",
-            "session-lifecycle,session-state,app-experience",
+            "session-lifecycle,session-state,app-experience,session-recovery",
         ),
         (
             "app/Sources/DetachKit/SessionMaintenance.swift",
@@ -87,13 +87,13 @@ def main() -> None:
             "app/Sources/DetachKit/SessionStore.swift",
             "state-runtime", "safe", "docs/specs/runtime.md",
             "app/Sources/DetachKit/Session*.swift",
-            "session-lifecycle,session-state",
+            "session-lifecycle,session-state,session-recovery",
         ),
         (
             "app/Sources/DetachKit/BoundedProcessRunner.swift",
             "bounded-process-source", "both", "docs/specs/runtime.md",
             "app/Sources/DetachKit/BoundedProcessRunner.swift",
-            "session-lifecycle,session-state,power-protection",
+            "session-lifecycle,session-state,power-protection,session-recovery,power-handoff",
         ),
         (
             "app/Sources/DetachApp/DetachApp.swift",
@@ -105,13 +105,13 @@ def main() -> None:
             "app/Sources/DetachApp/InstallationStore.swift",
             "installation-store-source", "both", "docs/specs/power.md",
             "app/Sources/DetachApp/InstallationStore.swift",
-            "power-protection,onboarding,settings,update,diagnostics,installation",
+            "power-protection,onboarding,settings,update,diagnostics,installation,power-handoff",
         ),
         (
             "app/Sources/DetachApp/PowerHelperService.swift",
-            "power", "both", "docs/specs/power.md",
-            "app/Sources/DetachApp/PowerHelper*.swift",
-            "power-protection",
+            "power", "both", "docs/specs/power-handoff.md",
+            "app/Sources/DetachApp/PowerHelperService.swift",
+            "power-protection,power-handoff",
         ),
         (
             "app/Sources/DetachApp/OnboardingView.swift",
@@ -129,7 +129,7 @@ def main() -> None:
             "app/Sources/DetachKit/DetachCLI.swift",
             "runtime-source", "safe", "docs/specs/runtime.md",
             "app/Sources/DetachKit/DetachCLI.swift",
-            "session-lifecycle,session-state",
+            "session-lifecycle,session-state,session-recovery",
         ),
         (
             "app/Sources/DetachApp/UIE2ETestDriver.swift",
@@ -229,9 +229,9 @@ def main() -> None:
     expect_error(
         source.replace(
             "journey\tJ-POWER-ENABLE\tpower-protection\t"
-            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM,QC-POWER-HANDOFF\t",
+            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM\t",
             "journey\tJ-POWER-ENABLE\tpower-protection\t"
-            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-PLATFORM,QC-POWER-HANDOFF\t",
+            "QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-PLATFORM\t",
             1,
         ),
         "capability requirement has no journey: power-protection#QC-POWER-CLI",
@@ -246,7 +246,7 @@ def main() -> None:
     )
     expect_error(
         source.replace(
-            "scenario\tSC-APP-SETTINGS-UNIT\tswift\tlegacy-stage\t",
+            "scenario\tSC-APP-SETTINGS-UNIT\tswift\ttest-cases\t",
             "scenario\tSC-APP-SETTINGS-UNIT\tswift\tplanned\t",
             1,
         ).replace(

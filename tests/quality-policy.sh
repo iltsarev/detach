@@ -33,7 +33,7 @@ git -C "$ROOT" check-ignore --no-index -q -- docs/assets/internal.html || \
 python3 "$ROOT/tests/quality_policy_contract.py"
 policy_version="$("$ROOT/scripts/quality-policy" version)"
 [[ "$policy_version" =~ ^[1-9][0-9]*$ ]] || fail 'invalid policy version'
-[ "$("$ROOT/scripts/quality-policy" specs | wc -l | tr -d ' ')" = 7 ] || \
+[ "$("$ROOT/scripts/quality-policy" specs | wc -l | tr -d ' ')" = 10 ] || \
   fail 'current specification inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" stages all | wc -l | tr -d ' ')" = 13 ] || \
   fail 'unexpected stage count'
@@ -48,15 +48,15 @@ policy_version="$("$ROOT/scripts/quality-policy" version)"
   fail 'README.md must not have a release scan pattern'
 [ "$("$ROOT/scripts/quality-policy" critical | wc -l | tr -d ' ')" = 13 ] || \
   fail 'critical source inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" suites | wc -l | tr -d ' ')" = 13 ] || \
+[ "$("$ROOT/scripts/quality-policy" suites | wc -l | tr -d ' ')" = 15 ] || \
   fail 'required Swift suite inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" requirements | wc -l | tr -d ' ')" = 24 ] || \
   fail 'critical requirement inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" capabilities | wc -l | tr -d ' ')" = 12 ] || \
+[ "$("$ROOT/scripts/quality-policy" capabilities | wc -l | tr -d ' ')" = 14 ] || \
   fail 'capability inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" journeys | wc -l | tr -d ' ')" = 30 ] || \
+[ "$("$ROOT/scripts/quality-policy" journeys | wc -l | tr -d ' ')" = 31 ] || \
   fail 'journey inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" scenarios | wc -l | tr -d ' ')" = 44 ] || \
+[ "$("$ROOT/scripts/quality-policy" scenarios | wc -l | tr -d ' ')" = 48 ] || \
   fail 'scenario inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" coverage-exclusions | wc -l | tr -d ' ')" = 4 ] || \
   fail 'coverage exclusion inventory is incomplete'
@@ -91,7 +91,7 @@ onboarding="$("$ROOT/scripts/quality-policy" classify app/Sources/DetachApp/Onbo
 [[ "$(field "$onboarding" 11)" = *J-ONBOARD-FIRST-RUN* ]] || \
   fail 'onboarding journey impact is missing'
 session="$("$ROOT/scripts/quality-policy" classify app/Sources/DetachKit/SessionStore.swift)"
-[ "$(field "$session" 10)" = session-lifecycle,session-state ] || \
+[ "$(field "$session" 10)" = session-lifecycle,session-state,session-recovery ] || \
   fail 'session capability impact is missing'
 [[ "$(field "$session" 11)" = *J-SESSION-RECOVER* ]] || \
   fail 'session recovery journey impact is missing'

@@ -146,7 +146,8 @@ def scenario_context(policy: Policy) -> dict[str, dict[str, list[str]]]:
             if journey_id not in context["journeys"]:
                 context["journeys"].append(journey_id)
             for requirement in journey_requirements:
-                if requirement not in context["requirements"]:
+                if (scenario_id in policy.verifications[requirement]
+                        and requirement not in context["requirements"]):
                     context["requirements"].append(requirement)
     return result
 
@@ -230,6 +231,38 @@ def stage_outcome(status: str) -> str:
     return "not-run"
 
 
+def executed_tests(path: Path, expected: list[str]) -> list[dict[str, Any]]:
+    """Only paired XCTest execution records prove a test; discovery lists do not."""
+    records: dict[str, list[tuple[str, str | None]]] = {test: [] for test in expected}
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise ScenarioError("Swift execution log is unsafe")
+        pattern = re.compile(
+            r"^Test Case '-\[(Detach(?:App|Kit)Tests\.[A-Za-z0-9_]+) "
+            r"(test[A-Za-z0-9_]+)\]' (started\.|(?:passed|failed|skipped) "
+            r"\(([0-9.]+) seconds\)\.)$"
+        )
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = pattern.fullmatch(line.strip())
+            if match:
+                identity = f"{match[1]}/{match[2]}"
+                if identity in records:
+                    records[identity].append((match[3].split()[0].rstrip("."), match[4]))
+    result = []
+    for identity, events in records.items():
+        status, duration = "missing", 0
+        if len(events) == 2 and events[0][0] == "started" and events[1][0] in ("passed", "failed", "skipped"):
+            status = events[1][0]
+            try:
+                duration = round(float(events[1][1]) * 1000)
+            except (ValueError, OverflowError, TypeError):
+                raise ScenarioError("Swift test duration is invalid") from None
+        elif events:
+            status = "invalid"
+        result.append({"id": identity, "status": status, "duration_ms": duration})
+    return result
+
+
 def finalize_stage(
     *,
     policy: Policy,
@@ -270,6 +303,17 @@ def finalize_stage(
                 message = "scenario emitted no markers"
                 if outcome == "missing":
                     errors.append(f"{scenario_id} emitted no markers")
+        elif policy_status == "test-cases":
+            granularity = "test-cases"
+            tests = executed_tests(output_path.parent.parent / stage_log, policy.scenario_tests[scenario_id])
+            duration_ms = sum(test["duration_ms"] for test in tests)
+            outcome = "passed" if all(test["status"] == "passed" for test in tests) else "missing"
+            if outcome != "passed":
+                message = "; ".join(f"{test['id']}: {test['status']}" for test in tests if test["status"] != "passed")
+                if stage_status in ("passed", "reused"):
+                    errors.append(f"{scenario_id} lacks executed test evidence: {message}")
+                else:
+                    outcome = stage_outcome(stage_status)
         elif policy_status in ("automated", "legacy-stage"):
             outcome = stage_outcome(stage_status)
             duration_ms = max(0, stage_duration_seconds * 1000)
@@ -299,6 +343,8 @@ def finalize_stage(
                 "message": message,
             }
         )
+        if policy_status == "test-cases":
+            records[-1]["tests"] = tests
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.parent.is_symlink():
         raise ScenarioError("stage scenario output directory is unsafe")
@@ -326,6 +372,8 @@ def validate_result(
         "log",
         "message",
     }
+    if record.get("policy_status") == "test-cases":
+        required.add("tests")
     if set(record) != required or record.get("schema") != RESULT_SCHEMA:
         raise ScenarioError("scenario result schema is invalid")
     if not isinstance(record["id"], str) or not SAFE_ID.fullmatch(record["id"]):
@@ -363,11 +411,23 @@ def validate_result(
         "instrumented": "scenario",
         "automated": "command",
         "legacy-stage": "legacy-stage",
+        "test-cases": "test-cases",
         "planned": "planned",
         "manual-release": "manual-release",
     }[expected_policy_status]
     if record["granularity"] != expected_granularity:
         raise ScenarioError(f"scenario result granularity is invalid: {record['id']}")
+    if expected_policy_status == "test-cases":
+        tests = record["tests"]
+        if not isinstance(tests, list) or len(tests) != len(policy.scenario_tests[record["id"]]):
+            raise ScenarioError("scenario test evidence is incomplete")
+        for test, identity in zip(tests, policy.scenario_tests[record["id"]]):
+            if (not isinstance(test, dict) or set(test) != {"id", "status", "duration_ms"}
+                    or test["id"] != identity or test["status"] not in {"passed", "failed", "skipped", "missing", "invalid"}
+                    or type(test["duration_ms"]) is not int or test["duration_ms"] < 0):
+                raise ScenarioError("scenario test evidence is invalid")
+        if record["status"] == "passed" and any(test["status"] != "passed" for test in tests):
+            raise ScenarioError("passed scenario contains an unproved test")
     if expected_policy_status == "planned" and record["status"] != "planned":
         raise ScenarioError(f"planned scenario result has an invalid status: {record['id']}")
     if expected_policy_status == "manual-release" and record["status"] != "manual-release":
@@ -546,11 +606,11 @@ def rerun(scenario_id: str) -> int:
     if scenario is None:
         raise ScenarioError(f"unknown scenario: {scenario_id}")
     stage, policy_status, command = scenario
-    if policy_status not in ("instrumented", "automated", "legacy-stage"):
+    if policy_status not in ("instrumented", "automated", "legacy-stage", "test-cases"):
         raise ScenarioError(f"scenario is not automated: {scenario_id}")
     environment = os.environ.copy()
     timeout = policy.stages_by_name[stage].timeout
-    if policy_status in ("instrumented", "legacy-stage"):
+    if policy_status in ("instrumented", "legacy-stage", "test-cases"):
         arguments = [str(ROOT / "scripts/quality-gate"), "--stage", stage]
         environment.pop("DETACH_QUALITY_AUTHORITY", None)
         environment.pop("GITHUB_ACTIONS", None)

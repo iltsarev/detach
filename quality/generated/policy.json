@@ -9,7 +9,7 @@
         "QC-QUALITY-POLICY",
         "QC-QUALITY-SUPPLY-CHAIN"
       ],
-      "spec": "docs/specs/documentation.md"
+      "spec": "docs/specs/quality.md"
     },
     {
       "id": "documentation",
@@ -25,13 +25,11 @@
       "id": "session-lifecycle",
       "journeys": [
         "J-SESSION-CREATE",
-        "J-SESSION-RECOVER",
         "J-SESSION-STOP",
         "J-SESSION-DELETE"
       ],
       "requirements": [
-        "QC-RUNTIME-OWNERSHIP",
-        "QC-RUNTIME-TRANSITION"
+        "QC-RUNTIME-OWNERSHIP"
       ],
       "spec": "docs/specs/runtime.md"
     },
@@ -63,8 +61,7 @@
         "QC-POWER-XPC",
         "QC-POWER-PROTECTION",
         "QC-POWER-CLI",
-        "QC-POWER-PLATFORM",
-        "QC-POWER-HANDOFF"
+        "QC-POWER-PLATFORM"
       ],
       "spec": "docs/specs/power.md"
     },
@@ -149,6 +146,26 @@
         "QC-RELEASE-PUBLISH"
       ],
       "spec": "docs/specs/release.md"
+    },
+    {
+      "id": "session-recovery",
+      "journeys": [
+        "J-SESSION-RECOVER"
+      ],
+      "requirements": [
+        "QC-RUNTIME-TRANSITION"
+      ],
+      "spec": "docs/specs/recovery.md"
+    },
+    {
+      "id": "power-handoff",
+      "journeys": [
+        "J-POWER-HANDOFF"
+      ],
+      "requirements": [
+        "QC-POWER-HANDOFF"
+      ],
+      "spec": "docs/specs/power-handoff.md"
     }
   ],
   "coverage_exclusions": [
@@ -372,6 +389,13 @@
     }
   ],
   "dependencies": [],
+  "enforcement": {
+    "aggregate_coverage": "advisory",
+    "changed_line_coverage": "advisory",
+    "contract_evidence": "blocking",
+    "critical_coverage": "blocking",
+    "test_identity": "advisory"
+  },
   "journeys": [
     {
       "capability": "quality-system",
@@ -384,7 +408,8 @@
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
         "SC-MERGE-CONTRACT",
-        "SC-SECURITY-CONTRACT"
+        "SC-SECURITY-CONTRACT",
+        "SC-CONTRACT-CHANGE"
       ],
       "summary": "A policy change keeps local feedback focused and hosted evidence complete."
     },
@@ -444,15 +469,15 @@
       ],
       "scenarios": [
         "SC-SESSION-RECOVER-CODEX",
-        "SC-SESSION-RECOVER-CLAUDE"
+        "SC-SESSION-RECOVER-CLAUDE",
+        "SC-STATE-RESTORE-UNIT"
       ],
       "summary": "A user restores recovery state only after complete validation."
     },
     {
-      "capability": "session-lifecycle",
+      "capability": "session-recovery",
       "id": "J-SESSION-RECOVER",
       "requirements": [
-        "QC-RUNTIME-OWNERSHIP",
         "QC-RUNTIME-TRANSITION"
       ],
       "scenarios": [
@@ -470,7 +495,8 @@
       "scenarios": [
         "SC-SESSION-STOP-CODEX",
         "SC-SESSION-STOP-CLAUDE",
-        "SC-UI-SESSION-STOP"
+        "SC-UI-SESSION-STOP",
+        "SC-SESSION-OWNERSHIP-UNIT"
       ],
       "summary": "A user stops only the selected owned session."
     },
@@ -494,8 +520,7 @@
         "QC-POWER-ASSERTION",
         "QC-POWER-LEASE",
         "QC-POWER-CLI",
-        "QC-POWER-PLATFORM",
-        "QC-POWER-HANDOFF"
+        "QC-POWER-PLATFORM"
       ],
       "scenarios": [
         "SC-POWER-UNIT"
@@ -731,6 +756,17 @@
         "SC-RELEASE-PR"
       ],
       "summary": "Publication exposes only verified allowlisted artifacts."
+    },
+    {
+      "capability": "power-handoff",
+      "id": "J-POWER-HANDOFF",
+      "requirements": [
+        "QC-POWER-HANDOFF"
+      ],
+      "scenarios": [
+        "SC-POWER-HANDOFF"
+      ],
+      "summary": "A service replacement waits for the old lifetime barrier."
     }
   ],
   "limits": {
@@ -744,7 +780,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 59,
+  "policy": 60,
   "release_domains": [
     {
       "gates": "-",
@@ -791,128 +827,266 @@
     "DetachKitTests.DetachStateTests",
     "DetachKitTests.PowerHelperLeaseServiceTests",
     "DetachKitTests.SessionHealthTests",
-    "DetachKitTests.StorageStoreTests"
+    "DetachKitTests.StorageStoreTests",
+    "DetachKitTests.PowerProtectionTests",
+    "DetachKitTests.PowerHelperClientAuthorizationPolicyTests"
   ],
   "requirements": [
     {
+      "anchor": "qc-runtime-state",
       "id": "QC-RUNTIME-STATE",
       "spec": "docs/specs/state.md",
-      "summary": "Typed state is the only shared state mutation boundary."
+      "summary": "Typed state is the only shared state mutation boundary.",
+      "verification": [
+        "SC-SESSION-PERSIST-CODEX",
+        "SC-SESSION-PERSIST-CLAUDE",
+        "SC-SESSION-DELETE-CODEX",
+        "SC-SESSION-DELETE-CLAUDE",
+        "SC-UI-SESSION-DELETE"
+      ]
     },
     {
+      "anchor": "qc-runtime-ownership",
       "id": "QC-RUNTIME-OWNERSHIP",
       "spec": "docs/specs/runtime.md",
-      "summary": "Session operations prove the exact run token and process ownership."
+      "summary": "Session operations prove the exact run token and process ownership.",
+      "verification": [
+        "SC-SESSION-OWNERSHIP-UNIT",
+        "SC-SESSION-CREATE-CODEX",
+        "SC-SESSION-CREATE-CLAUDE",
+        "SC-SESSION-STOP-CODEX",
+        "SC-SESSION-STOP-CLAUDE",
+        "SC-UI-SESSION-STOP",
+        "SC-SESSION-DELETE-CODEX",
+        "SC-SESSION-DELETE-CLAUDE",
+        "SC-UI-SESSION-DELETE"
+      ]
     },
     {
+      "anchor": "qc-runtime-storage",
       "id": "QC-RUNTIME-STORAGE",
       "spec": "docs/specs/state.md",
-      "summary": "Restores validate path, symlink, identity, and JSONL data before replacement."
+      "summary": "Restores validate path, symlink, identity, and JSONL data before replacement.",
+      "verification": [
+        "SC-STATE-RESTORE-UNIT",
+        "SC-SESSION-RECOVER-CODEX",
+        "SC-SESSION-RECOVER-CLAUDE"
+      ]
     },
     {
+      "anchor": "qc-power-assertion",
       "id": "QC-POWER-ASSERTION",
       "spec": "docs/specs/power.md",
-      "summary": "Power protection owns a user IOKit assertion."
+      "summary": "Power protection owns a user IOKit assertion.",
+      "verification": [
+        "SC-POWER-UNIT"
+      ]
     },
     {
+      "anchor": "qc-power-auth",
       "id": "QC-POWER-AUTH",
       "spec": "docs/specs/power.md",
-      "summary": "Helper authorization binds audit token, console user, signing, and deadline."
+      "summary": "Helper authorization binds audit token, console user, signing, and deadline.",
+      "verification": [
+        "SC-POWER-HELPER"
+      ]
     },
     {
+      "anchor": "qc-power-lease",
       "id": "QC-POWER-LEASE",
       "spec": "docs/specs/power.md",
-      "summary": "The root helper lease is bounded and ownership safe."
+      "summary": "The root helper lease is bounded and ownership safe.",
+      "verification": [
+        "SC-POWER-UNIT",
+        "SC-POWER-HELPER"
+      ]
     },
     {
+      "anchor": "qc-power-xpc",
       "id": "QC-POWER-XPC",
       "spec": "docs/specs/power.md",
-      "summary": "The helper accepts only the typed power protocol."
+      "summary": "The helper accepts only the typed power protocol.",
+      "verification": [
+        "SC-POWER-HELPER"
+      ]
     },
     {
+      "anchor": "qc-power-protection",
       "id": "QC-POWER-PROTECTION",
       "spec": "docs/specs/power.md",
-      "summary": "Low battery fails safe."
+      "summary": "Low battery fails safe.",
+      "verification": [
+        "SC-POWER-LOW-BATTERY",
+        "SC-POWER-CLOSED-LID"
+      ]
     },
     {
+      "anchor": "qc-power-cli",
       "id": "QC-POWER-CLI",
       "spec": "docs/specs/power.md",
-      "summary": "The power command reports and enforces typed protection state."
+      "summary": "The power command reports and enforces typed protection state.",
+      "verification": [
+        "SC-POWER-UNIT"
+      ]
     },
     {
+      "anchor": "qc-power-platform",
       "id": "QC-POWER-PLATFORM",
       "spec": "docs/specs/power.md",
-      "summary": "Platform power operations preserve the helper safety boundary."
+      "summary": "Platform power operations preserve the helper safety boundary.",
+      "verification": [
+        "SC-POWER-UNIT"
+      ]
     },
     {
+      "anchor": "qc-power-handoff",
       "id": "QC-POWER-HANDOFF",
-      "spec": "docs/specs/power.md",
-      "summary": "Service registration handoff completes only after a proven lifetime barrier."
+      "spec": "docs/specs/power-handoff.md",
+      "summary": "Service registration handoff completes only after a proven lifetime barrier.",
+      "verification": [
+        "SC-POWER-HANDOFF"
+      ]
     },
     {
+      "anchor": "qc-health-freshness",
       "id": "QC-HEALTH-FRESHNESS",
       "spec": "docs/specs/app.md",
-      "summary": "Health claims use typed fresh state."
+      "summary": "Health claims use typed fresh state.",
+      "verification": [
+        "SC-UI-DASHBOARD"
+      ]
     },
     {
+      "anchor": "qc-health-presentation",
       "id": "QC-HEALTH-PRESENTATION",
       "spec": "docs/specs/app.md",
-      "summary": "The app presents typed health state without parsing terminal text."
+      "summary": "The app presents typed health state without parsing terminal text.",
+      "verification": [
+        "SC-UI-DASHBOARD",
+        "SC-UI-SESSION-DETAIL",
+        "SC-UI-EMPTY",
+        "SC-UI-FAILURE",
+        "SC-UI-FOCUS",
+        "SC-UI-NEW-SESSION"
+      ]
     },
     {
+      "anchor": "qc-runtime-transition",
       "id": "QC-RUNTIME-TRANSITION",
-      "spec": "docs/specs/runtime.md",
-      "summary": "Session transitions preserve exact process identity."
+      "spec": "docs/specs/recovery.md",
+      "summary": "Session transitions preserve exact process identity.",
+      "verification": [
+        "SC-SESSION-RECOVER-CODEX",
+        "SC-SESSION-RECOVER-CLAUDE"
+      ]
     },
     {
+      "anchor": "qc-app-tips",
       "id": "QC-APP-TIPS",
       "spec": "docs/specs/app.md",
-      "summary": "Session tips remain deterministic and user visible."
+      "summary": "Session tips remain deterministic and user visible.",
+      "verification": [
+        "SC-UI-EMPTY"
+      ]
     },
     {
+      "anchor": "qc-app-doctor",
       "id": "QC-APP-DOCTOR",
       "spec": "docs/specs/app-setup.md",
-      "summary": "Doctor output derives from typed runtime state."
+      "summary": "Doctor output derives from typed runtime state.",
+      "verification": [
+        "SC-DOCTOR-REPORT"
+      ]
     },
     {
+      "anchor": "qc-app-onboarding",
       "id": "QC-APP-ONBOARDING",
       "spec": "docs/specs/app-setup.md",
-      "summary": "Onboarding leads a new user through supported provider and approval setup."
+      "summary": "Onboarding leads a new user through supported provider and approval setup.",
+      "verification": [
+        "SC-APP-ONBOARDING-UNIT",
+        "SC-UI-ONBOARD-FIRST-RUN",
+        "SC-UI-ONBOARD-PROVIDER",
+        "SC-UI-ONBOARD-APPROVAL"
+      ]
     },
     {
+      "anchor": "qc-app-settings",
       "id": "QC-APP-SETTINGS",
       "spec": "docs/specs/app-setup.md",
-      "summary": "Settings changes persist and affect only their declared behavior."
+      "summary": "Settings changes persist and affect only their declared behavior.",
+      "verification": [
+        "SC-APP-SETTINGS-UNIT",
+        "SC-UI-SETTINGS"
+      ]
     },
     {
+      "anchor": "qc-app-update",
       "id": "QC-APP-UPDATE",
       "spec": "docs/specs/app-setup.md",
-      "summary": "Update state and application preserve the signed arm64 contract."
+      "summary": "Update state and application preserve the signed arm64 contract.",
+      "verification": [
+        "SC-UPDATE-CHECK",
+        "SC-UPDATE-APPLY",
+        "SC-RELEASE-WORKFLOW"
+      ]
     },
     {
+      "anchor": "qc-release-install",
       "id": "QC-RELEASE-INSTALL",
       "spec": "docs/specs/release.md",
-      "summary": "Install, repair, and uninstall mutate only Detach-owned payloads and selected state."
+      "summary": "Install, repair, and uninstall mutate only Detach-owned payloads and selected state.",
+      "verification": [
+        "SC-INSTALL-CLEAN",
+        "SC-RUNTIME-PACKAGE",
+        "SC-INSTALL-REPAIR",
+        "SC-INSTALL-UNINSTALL"
+      ]
     },
     {
+      "anchor": "qc-release-publish",
       "id": "QC-RELEASE-PUBLISH",
       "spec": "docs/specs/release.md",
-      "summary": "Publication exposes only independently verified allowlisted artifacts."
+      "summary": "Publication exposes only independently verified allowlisted artifacts.",
+      "verification": [
+        "SC-PUBLISH-CONTRACT",
+        "SC-RELEASE-SBOM",
+        "SC-RELEASE-PR"
+      ]
     },
     {
+      "anchor": "qc-quality-policy",
       "id": "QC-QUALITY-POLICY",
-      "spec": "docs/specs/documentation.md",
-      "summary": "One current policy owns quality selection and traceability."
+      "spec": "docs/specs/quality.md",
+      "summary": "One current policy owns quality selection and traceability.",
+      "verification": [
+        "SC-CONTRACT-CHANGE",
+        "SC-POLICY-CONTRACT",
+        "SC-PROMOTION-CONTRACT",
+        "SC-MERGE-CONTRACT",
+        "SC-SECURITY-CONTRACT"
+      ]
     },
     {
+      "anchor": "qc-quality-supply-chain",
       "id": "QC-QUALITY-SUPPLY-CHAIN",
-      "spec": "docs/specs/documentation.md",
-      "summary": "Bounded automation scans code and keeps dependency pins current."
+      "spec": "docs/specs/quality.md",
+      "summary": "Bounded automation scans code and keeps dependency pins current.",
+      "verification": [
+        "SC-POLICY-CONTRACT",
+        "SC-PROMOTION-CONTRACT",
+        "SC-MERGE-CONTRACT",
+        "SC-SECURITY-CONTRACT"
+      ]
     },
     {
+      "anchor": "qc-doc-consistency",
       "id": "QC-DOC-CONSISTENCY",
       "spec": "docs/specs/documentation.md",
-      "summary": "Durable documentation and generated quality views stay synchronized."
+      "summary": "Durable documentation and generated quality views stay synchronized.",
+      "verification": [
+        "SC-DOCS-CONTRACT"
+      ]
     }
   ],
   "routes": [
@@ -920,329 +1094,329 @@
       "pattern": "quality/policy.tsv",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "quality/*",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": ".github/workflows/quality-gates.yml",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": ".github/workflows/security.yml",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": ".github/dependabot.yml",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "docs/quality-gates.md",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "docs/testing.md",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-gate",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "tools/quality_gate.py",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "scripts/quality-shard",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "tools/quality_shard.py",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "scripts/quality-cache-warm",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "tools/quality_cache_warm.py",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "tools/quality_products.py",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "scripts/quality-scenarios",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_scenarios.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-policy",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "tools/quality_policy.py",
       "priority": 1100,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "quality-core"
     },
     {
       "pattern": "scripts/quality-metrics",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_metrics.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-baseline",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_baseline.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-evidence",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_evidence.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-promote",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_promote.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-merge",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_merge.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-mutation",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_mutation.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_test_changes.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": ".github/workflows/quality-mutations.yml",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": ".github/workflows/quality-care.yml",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": ".github/workflows/documentation-care.yml",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-dashboard",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_dashboard.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-security",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_security.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-history",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_history.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/quality-care",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tools/quality_care.py",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "scripts/test",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tests/quality-*",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tests/quality_*",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tests/security-*",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tests/security_*",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
@@ -1277,21 +1451,21 @@
       "pattern": "tests/shell-safety*",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tests/test-suite-contract.sh",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
       "pattern": "tests/source-rules*",
       "priority": 1000,
       "release_domain": "safe",
-      "spec": "docs/specs/documentation.md",
+      "spec": "docs/specs/quality.md",
       "test_domain": "policy"
     },
     {
@@ -2098,6 +2272,48 @@
       "release_domain": "unknown",
       "spec": "docs/specs/documentation.md",
       "test_domain": "unknown"
+    },
+    {
+      "pattern": "app/Sources/DetachApp/PowerHelperService.swift",
+      "priority": 920,
+      "release_domain": "both",
+      "spec": "docs/specs/power-handoff.md",
+      "test_domain": "power"
+    },
+    {
+      "pattern": "app/Sources/DetachApp/WatchdogService.swift",
+      "priority": 920,
+      "release_domain": "both",
+      "spec": "docs/specs/power-handoff.md",
+      "test_domain": "power"
+    },
+    {
+      "pattern": "tools/quality_contract_change.py",
+      "priority": 1100,
+      "release_domain": "safe",
+      "spec": "docs/specs/quality.md",
+      "test_domain": "quality-core"
+    },
+    {
+      "pattern": "docs/specs/quality.md",
+      "priority": 1200,
+      "release_domain": "safe",
+      "spec": "docs/specs/quality.md",
+      "test_domain": "docs"
+    },
+    {
+      "pattern": "docs/specs/recovery.md",
+      "priority": 1200,
+      "release_domain": "safe",
+      "spec": "docs/specs/recovery.md",
+      "test_domain": "docs"
+    },
+    {
+      "pattern": "docs/specs/power-handoff.md",
+      "priority": 1200,
+      "release_domain": "safe",
+      "spec": "docs/specs/power-handoff.md",
+      "test_domain": "docs"
     }
   ],
   "scenarios": [
@@ -2105,277 +2321,385 @@
       "command": "tests/quality-policy.sh",
       "id": "SC-POLICY-CONTRACT",
       "stage": "gate-contract",
-      "status": "automated"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/quality-promote.sh",
       "id": "SC-PROMOTION-CONTRACT",
       "stage": "gate-contract",
-      "status": "automated"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/quality-merge.sh",
       "id": "SC-MERGE-CONTRACT",
       "stage": "gate-contract",
-      "status": "automated"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/security-contract.sh",
       "id": "SC-SECURITY-CONTRACT",
       "stage": "gate-contract",
-      "status": "automated"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/release-sbom.sh",
       "id": "SC-RELEASE-SBOM",
       "stage": "gate-contract",
-      "status": "automated"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/release-pr.sh",
       "id": "SC-RELEASE-PR",
       "stage": "gate-contract",
-      "status": "automated"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/docs-contract.sh",
       "id": "SC-DOCS-CONTRACT",
       "stage": "static",
-      "status": "automated"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run.sh",
       "id": "SC-SESSION-CREATE-CODEX",
       "stage": "codex",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run-claude.sh",
       "id": "SC-SESSION-CREATE-CLAUDE",
       "stage": "claude",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run.sh",
       "id": "SC-SESSION-PERSIST-CODEX",
       "stage": "codex",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run-claude.sh",
       "id": "SC-SESSION-PERSIST-CLAUDE",
       "stage": "claude",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run.sh",
       "id": "SC-SESSION-RECOVER-CODEX",
       "stage": "codex",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run-claude.sh",
       "id": "SC-SESSION-RECOVER-CLAUDE",
       "stage": "claude",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run.sh",
       "id": "SC-SESSION-STOP-CODEX",
       "stage": "codex",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run-claude.sh",
       "id": "SC-SESSION-STOP-CLAUDE",
       "stage": "claude",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run.sh",
       "id": "SC-SESSION-DELETE-CODEX",
       "stage": "codex",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/run-claude.sh",
       "id": "SC-SESSION-DELETE-CLAUDE",
       "stage": "claude",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "cd app && swift test --filter Power",
       "id": "SC-POWER-UNIT",
       "stage": "swift",
-      "status": "legacy-stage"
+      "status": "test-cases",
+      "tests": [
+        "DetachKitTests.PowerProtectionTests/testProtectedRequiresBothAssertionAndClosedLidProtection",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireVerifiesBothProtectionsAndPersistsOwnershipBeforeMutation",
+        "DetachKitTests.PowerAssertionControllerTests/testAcquireCreatesOneAssertionAndBecomesActive",
+        "DetachKitTests.PowerAssertionControllerTests/testFailedReleaseStaysActiveAndCanRetry",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testReleaseRestoresNormalSleepOnlyWhenDetachOwnedTheMutation",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testStartupReconcileExpiresStaleLeaseAndRestoresOwnedState",
+        "DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract",
+        "DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup",
+        "DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting"
+      ]
     },
     {
       "command": "cd app && swift test --filter PowerProtection",
       "id": "SC-POWER-LOW-BATTERY",
       "stage": "swift",
-      "status": "legacy-stage"
+      "status": "test-cases",
+      "tests": [
+        "DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation"
+      ]
     },
     {
       "command": "cd app && swift test --filter PowerHelper",
       "id": "SC-POWER-HELPER",
       "stage": "swift",
-      "status": "legacy-stage"
+      "status": "test-cases",
+      "tests": [
+        "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsRootEvenWhileARegularConsoleUserIsActive",
+        "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsAnotherLocalUserAfterFastUserSwitching",
+        "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsLoginWindowAndLogoutWithoutAnActiveConsoleUser",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireRejectsAnExpiredRequestBeforePersisting",
+        "DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot",
+        "DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation",
+        "DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly"
+      ]
     },
     {
       "command": "scripts/release-lid-probe",
       "id": "SC-POWER-CLOSED-LID",
       "stage": "publish-preflight",
-      "status": "manual-release"
+      "status": "manual-release",
+      "tests": []
     },
     {
       "command": "cd app && swift test --filter Onboarding",
       "id": "SC-APP-ONBOARDING-UNIT",
       "stage": "swift",
-      "status": "legacy-stage"
+      "status": "test-cases",
+      "tests": [
+        "DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick",
+        "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding"
+      ]
     },
     {
       "command": "cd app && swift test --filter Settings",
       "id": "SC-APP-SETTINGS-UNIT",
       "stage": "swift",
-      "status": "legacy-stage"
+      "status": "test-cases",
+      "tests": [
+        "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue",
+        "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue"
+      ]
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-DASHBOARD",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-SESSION-DETAIL",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-SESSION-DELETE",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-SESSION-STOP",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-NEW-SESSION",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-EMPTY",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-FAILURE",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-FOCUS",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-ONBOARD-FIRST-RUN",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-ONBOARD-PROVIDER",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-ONBOARD-APPROVAL",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/ui-e2e.sh",
       "id": "SC-UI-SETTINGS",
       "stage": "ui-e2e",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/release-preflight.sh",
       "id": "SC-UPDATE-CHECK",
       "stage": "release-preflight",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/publish-preflight.sh",
       "id": "SC-UPDATE-APPLY",
       "stage": "publish-preflight",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/release-workflow.sh",
       "id": "SC-RELEASE-WORKFLOW",
       "stage": "release-workflow",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/distribution.sh",
       "id": "SC-DOCTOR-REPORT",
       "stage": "distribution",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/distribution.sh",
       "id": "SC-INSTALL-CLEAN",
       "stage": "distribution",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/distribution.sh",
       "id": "SC-INSTALL-REPAIR",
       "stage": "distribution",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/distribution.sh",
       "id": "SC-INSTALL-UNINSTALL",
       "stage": "distribution",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/tmux-runtime.sh",
       "id": "SC-RUNTIME-PACKAGE",
       "stage": "tmux-runtime",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
     },
     {
       "command": "tests/publish-preflight.sh",
       "id": "SC-PUBLISH-CONTRACT",
       "stage": "publish-preflight",
-      "status": "instrumented"
+      "status": "instrumented",
+      "tests": []
+    },
+    {
+      "command": "cd app && swift test --filter PowerHelperServiceTests",
+      "id": "SC-POWER-HANDOFF",
+      "stage": "swift",
+      "status": "test-cases",
+      "tests": [
+        "DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase",
+        "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed"
+      ]
+    },
+    {
+      "command": "cd app && swift test --filter SessionHealthTests",
+      "id": "SC-SESSION-OWNERSHIP-UNIT",
+      "stage": "swift",
+      "status": "test-cases",
+      "tests": [
+        "DetachKitTests.SessionHealthTests/testForeignTmuxCollisionNeverOffersAnAction",
+        "DetachKitTests.SessionHealthTests/testForeignProviderPIDIsNeverTreatedAsOwned",
+        "DetachKitTests.SessionHealthTests/testProcessInspectorRejectsWrongPaneAndForeignOwnership"
+      ]
+    },
+    {
+      "command": "cd app && swift test --filter DetachStateCommandTests",
+      "id": "SC-STATE-RESTORE-UNIT",
+      "stage": "swift",
+      "status": "test-cases",
+      "tests": [
+        "DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories",
+        "DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments",
+        "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink"
+      ]
+    },
+    {
+      "command": "python3 tests/quality_contract_change_contract.py",
+      "id": "SC-CONTRACT-CHANGE",
+      "stage": "gate-contract",
+      "status": "instrumented",
+      "tests": []
     }
   ],
   "schema": 1,
   "specifications": [
     {
       "capabilities": [
-        "quality-system",
         "documentation"
       ],
       "id": "documentation",
       "journeys": [
-        "J-QUALITY-CHANGE",
         "J-DOCS-CONSISTENCY"
       ],
       "owned_patterns": [
@@ -2383,135 +2707,20 @@
         "*.sh",
         ".gitattributes",
         ".github/*",
-        ".github/dependabot.yml",
-        ".github/workflows/documentation-care.yml",
-        ".github/workflows/quality-care.yml",
-        ".github/workflows/quality-gates.yml",
-        ".github/workflows/quality-mutations.yml",
-        ".github/workflows/security.yml",
         ".gitignore",
         "AGENTS.md",
         "CLAUDE.md",
         "README.md",
         "app/.gitignore",
         "docs/assets/*",
-        "docs/quality-gates.md",
-        "docs/testing.md",
-        "quality/*",
-        "quality/policy.tsv",
         "scripts/*",
-        "scripts/quality-baseline",
-        "scripts/quality-cache-warm",
-        "scripts/quality-care",
-        "scripts/quality-dashboard",
-        "scripts/quality-evidence",
-        "scripts/quality-gate",
-        "scripts/quality-history",
-        "scripts/quality-merge",
-        "scripts/quality-metrics",
-        "scripts/quality-mutation",
-        "scripts/quality-policy",
-        "scripts/quality-promote",
-        "scripts/quality-scenarios",
-        "scripts/quality-security",
-        "scripts/quality-shard",
-        "scripts/test",
         "tests/*",
-        "tests/docs-contract.sh",
-        "tests/quality-*",
-        "tests/quality_*",
-        "tests/security-*",
-        "tests/security_*",
-        "tests/shell-safety*",
-        "tests/source-rules*",
-        "tests/test-suite-contract.sh",
-        "tools/quality_baseline.py",
-        "tools/quality_cache_warm.py",
-        "tools/quality_care.py",
-        "tools/quality_dashboard.py",
-        "tools/quality_evidence.py",
-        "tools/quality_gate.py",
-        "tools/quality_history.py",
-        "tools/quality_merge.py",
-        "tools/quality_metrics.py",
-        "tools/quality_mutation.py",
-        "tools/quality_policy.py",
-        "tools/quality_products.py",
-        "tools/quality_promote.py",
-        "tools/quality_scenarios.py",
-        "tools/quality_security.py",
-        "tools/quality_shard.py",
-        "tools/quality_test_changes.py"
+        "tests/docs-contract.sh"
       ],
       "path": "docs/specs/documentation.md",
       "requirements": [
         {
-          "id": "QC-QUALITY-POLICY",
-          "journeys": [
-            "J-QUALITY-CHANGE"
-          ],
-          "scenarios": [
-            {
-              "command": "tests/quality-policy.sh",
-              "id": "SC-POLICY-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            },
-            {
-              "command": "tests/quality-promote.sh",
-              "id": "SC-PROMOTION-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            },
-            {
-              "command": "tests/quality-merge.sh",
-              "id": "SC-MERGE-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            },
-            {
-              "command": "tests/security-contract.sh",
-              "id": "SC-SECURITY-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            }
-          ],
-          "summary": "One current policy owns quality selection and traceability."
-        },
-        {
-          "id": "QC-QUALITY-SUPPLY-CHAIN",
-          "journeys": [
-            "J-QUALITY-CHANGE"
-          ],
-          "scenarios": [
-            {
-              "command": "tests/quality-policy.sh",
-              "id": "SC-POLICY-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            },
-            {
-              "command": "tests/quality-promote.sh",
-              "id": "SC-PROMOTION-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            },
-            {
-              "command": "tests/quality-merge.sh",
-              "id": "SC-MERGE-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            },
-            {
-              "command": "tests/security-contract.sh",
-              "id": "SC-SECURITY-CONTRACT",
-              "stage": "gate-contract",
-              "status": "automated"
-            }
-          ],
-          "summary": "Bounded automation scans code and keeps dependency pins current."
-        },
-        {
+          "anchor": "qc-doc-consistency",
           "id": "QC-DOC-CONSISTENCY",
           "journeys": [
             "J-DOCS-CONSISTENCY"
@@ -2521,10 +2730,13 @@
               "command": "tests/docs-contract.sh",
               "id": "SC-DOCS-CONTRACT",
               "stage": "static",
-              "status": "automated"
+              "status": "instrumented"
             }
           ],
-          "summary": "Durable documentation and generated quality views stay synchronized."
+          "summary": "Durable documentation and generated quality views stay synchronized.",
+          "verification": [
+            "SC-DOCS-CONTRACT"
+          ]
         }
       ],
       "summary": "Agent context, specifications, and quality automation stay synchronized."
@@ -2536,7 +2748,6 @@
       "id": "runtime",
       "journeys": [
         "J-SESSION-CREATE",
-        "J-SESSION-RECOVER",
         "J-SESSION-STOP",
         "J-SESSION-DELETE"
       ],
@@ -2566,10 +2777,10 @@
       "path": "docs/specs/runtime.md",
       "requirements": [
         {
+          "anchor": "qc-runtime-ownership",
           "id": "QC-RUNTIME-OWNERSHIP",
           "journeys": [
             "J-SESSION-CREATE",
-            "J-SESSION-RECOVER",
             "J-SESSION-STOP",
             "J-SESSION-DELETE"
           ],
@@ -2583,18 +2794,6 @@
             {
               "command": "tests/run-claude.sh",
               "id": "SC-SESSION-CREATE-CLAUDE",
-              "stage": "claude",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run.sh",
-              "id": "SC-SESSION-RECOVER-CODEX",
-              "stage": "codex",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run-claude.sh",
-              "id": "SC-SESSION-RECOVER-CLAUDE",
               "stage": "claude",
               "status": "instrumented"
             },
@@ -2617,6 +2816,12 @@
               "status": "instrumented"
             },
             {
+              "command": "cd app && swift test --filter SessionHealthTests",
+              "id": "SC-SESSION-OWNERSHIP-UNIT",
+              "stage": "swift",
+              "status": "test-cases"
+            },
+            {
               "command": "tests/run.sh",
               "id": "SC-SESSION-DELETE-CODEX",
               "stage": "codex",
@@ -2635,28 +2840,18 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Session operations prove the exact run token and process ownership."
-        },
-        {
-          "id": "QC-RUNTIME-TRANSITION",
-          "journeys": [
-            "J-SESSION-RECOVER"
-          ],
-          "scenarios": [
-            {
-              "command": "tests/run.sh",
-              "id": "SC-SESSION-RECOVER-CODEX",
-              "stage": "codex",
-              "status": "instrumented"
-            },
-            {
-              "command": "tests/run-claude.sh",
-              "id": "SC-SESSION-RECOVER-CLAUDE",
-              "stage": "claude",
-              "status": "instrumented"
-            }
-          ],
-          "summary": "Session transitions preserve exact process identity."
+          "summary": "Session operations prove the exact run token and process ownership.",
+          "verification": [
+            "SC-SESSION-OWNERSHIP-UNIT",
+            "SC-SESSION-CREATE-CODEX",
+            "SC-SESSION-CREATE-CLAUDE",
+            "SC-SESSION-STOP-CODEX",
+            "SC-SESSION-STOP-CLAUDE",
+            "SC-UI-SESSION-STOP",
+            "SC-SESSION-DELETE-CODEX",
+            "SC-SESSION-DELETE-CLAUDE",
+            "SC-UI-SESSION-DELETE"
+          ]
         }
       ],
       "summary": "Runtime and session operations preserve exact ownership."
@@ -2682,6 +2877,7 @@
       "path": "docs/specs/state.md",
       "requirements": [
         {
+          "anchor": "qc-runtime-state",
           "id": "QC-RUNTIME-STATE",
           "journeys": [
             "J-SESSION-PERSIST",
@@ -2719,9 +2915,17 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Typed state is the only shared state mutation boundary."
+          "summary": "Typed state is the only shared state mutation boundary.",
+          "verification": [
+            "SC-SESSION-PERSIST-CODEX",
+            "SC-SESSION-PERSIST-CLAUDE",
+            "SC-SESSION-DELETE-CODEX",
+            "SC-SESSION-DELETE-CLAUDE",
+            "SC-UI-SESSION-DELETE"
+          ]
         },
         {
+          "anchor": "qc-runtime-storage",
           "id": "QC-RUNTIME-STORAGE",
           "journeys": [
             "J-STATE-RECOVER"
@@ -2738,9 +2942,20 @@
               "id": "SC-SESSION-RECOVER-CLAUDE",
               "stage": "claude",
               "status": "instrumented"
+            },
+            {
+              "command": "cd app && swift test --filter DetachStateCommandTests",
+              "id": "SC-STATE-RESTORE-UNIT",
+              "stage": "swift",
+              "status": "test-cases"
             }
           ],
-          "summary": "Restores validate path, symlink, identity, and JSONL data before replacement."
+          "summary": "Restores validate path, symlink, identity, and JSONL data before replacement.",
+          "verification": [
+            "SC-STATE-RESTORE-UNIT",
+            "SC-SESSION-RECOVER-CODEX",
+            "SC-SESSION-RECOVER-CLAUDE"
+          ]
         }
       ],
       "summary": "Typed state, storage, and change events remain safe and coherent."
@@ -2773,6 +2988,7 @@
       "path": "docs/specs/power.md",
       "requirements": [
         {
+          "anchor": "qc-power-assertion",
           "id": "QC-POWER-ASSERTION",
           "journeys": [
             "J-POWER-ENABLE"
@@ -2782,12 +2998,16 @@
               "command": "cd app && swift test --filter Power",
               "id": "SC-POWER-UNIT",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             }
           ],
-          "summary": "Power protection owns a user IOKit assertion."
+          "summary": "Power protection owns a user IOKit assertion.",
+          "verification": [
+            "SC-POWER-UNIT"
+          ]
         },
         {
+          "anchor": "qc-power-auth",
           "id": "QC-POWER-AUTH",
           "journeys": [
             "J-POWER-HELPER-LEASE"
@@ -2797,12 +3017,16 @@
               "command": "cd app && swift test --filter PowerHelper",
               "id": "SC-POWER-HELPER",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             }
           ],
-          "summary": "Helper authorization binds audit token, console user, signing, and deadline."
+          "summary": "Helper authorization binds audit token, console user, signing, and deadline.",
+          "verification": [
+            "SC-POWER-HELPER"
+          ]
         },
         {
+          "anchor": "qc-power-lease",
           "id": "QC-POWER-LEASE",
           "journeys": [
             "J-POWER-ENABLE",
@@ -2813,18 +3037,23 @@
               "command": "cd app && swift test --filter Power",
               "id": "SC-POWER-UNIT",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             },
             {
               "command": "cd app && swift test --filter PowerHelper",
               "id": "SC-POWER-HELPER",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             }
           ],
-          "summary": "The root helper lease is bounded and ownership safe."
+          "summary": "The root helper lease is bounded and ownership safe.",
+          "verification": [
+            "SC-POWER-UNIT",
+            "SC-POWER-HELPER"
+          ]
         },
         {
+          "anchor": "qc-power-xpc",
           "id": "QC-POWER-XPC",
           "journeys": [
             "J-POWER-HELPER-LEASE"
@@ -2834,12 +3063,16 @@
               "command": "cd app && swift test --filter PowerHelper",
               "id": "SC-POWER-HELPER",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             }
           ],
-          "summary": "The helper accepts only the typed power protocol."
+          "summary": "The helper accepts only the typed power protocol.",
+          "verification": [
+            "SC-POWER-HELPER"
+          ]
         },
         {
+          "anchor": "qc-power-protection",
           "id": "QC-POWER-PROTECTION",
           "journeys": [
             "J-POWER-LOW-BATTERY",
@@ -2850,7 +3083,7 @@
               "command": "cd app && swift test --filter PowerProtection",
               "id": "SC-POWER-LOW-BATTERY",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             },
             {
               "command": "scripts/release-lid-probe",
@@ -2859,9 +3092,14 @@
               "status": "manual-release"
             }
           ],
-          "summary": "Low battery fails safe."
+          "summary": "Low battery fails safe.",
+          "verification": [
+            "SC-POWER-LOW-BATTERY",
+            "SC-POWER-CLOSED-LID"
+          ]
         },
         {
+          "anchor": "qc-power-cli",
           "id": "QC-POWER-CLI",
           "journeys": [
             "J-POWER-ENABLE"
@@ -2871,12 +3109,16 @@
               "command": "cd app && swift test --filter Power",
               "id": "SC-POWER-UNIT",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             }
           ],
-          "summary": "The power command reports and enforces typed protection state."
+          "summary": "The power command reports and enforces typed protection state.",
+          "verification": [
+            "SC-POWER-UNIT"
+          ]
         },
         {
+          "anchor": "qc-power-platform",
           "id": "QC-POWER-PLATFORM",
           "journeys": [
             "J-POWER-ENABLE"
@@ -2886,25 +3128,13 @@
               "command": "cd app && swift test --filter Power",
               "id": "SC-POWER-UNIT",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             }
           ],
-          "summary": "Platform power operations preserve the helper safety boundary."
-        },
-        {
-          "id": "QC-POWER-HANDOFF",
-          "journeys": [
-            "J-POWER-ENABLE"
-          ],
-          "scenarios": [
-            {
-              "command": "cd app && swift test --filter Power",
-              "id": "SC-POWER-UNIT",
-              "stage": "swift",
-              "status": "legacy-stage"
-            }
-          ],
-          "summary": "Service registration handoff completes only after a proven lifetime barrier."
+          "summary": "Platform power operations preserve the helper safety boundary.",
+          "verification": [
+            "SC-POWER-UNIT"
+          ]
         }
       ],
       "summary": "Power protection fails safe across both required layers."
@@ -2958,6 +3188,7 @@
       "path": "docs/specs/app.md",
       "requirements": [
         {
+          "anchor": "qc-health-freshness",
           "id": "QC-HEALTH-FRESHNESS",
           "journeys": [
             "J-APP-DASHBOARD"
@@ -2970,9 +3201,13 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Health claims use typed fresh state."
+          "summary": "Health claims use typed fresh state.",
+          "verification": [
+            "SC-UI-DASHBOARD"
+          ]
         },
         {
+          "anchor": "qc-health-presentation",
           "id": "QC-HEALTH-PRESENTATION",
           "journeys": [
             "J-APP-DASHBOARD",
@@ -3020,9 +3255,18 @@
               "status": "instrumented"
             }
           ],
-          "summary": "The app presents typed health state without parsing terminal text."
+          "summary": "The app presents typed health state without parsing terminal text.",
+          "verification": [
+            "SC-UI-DASHBOARD",
+            "SC-UI-SESSION-DETAIL",
+            "SC-UI-EMPTY",
+            "SC-UI-FAILURE",
+            "SC-UI-FOCUS",
+            "SC-UI-NEW-SESSION"
+          ]
         },
         {
+          "anchor": "qc-app-tips",
           "id": "QC-APP-TIPS",
           "journeys": [
             "J-APP-EMPTY"
@@ -3035,7 +3279,10 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Session tips remain deterministic and user visible."
+          "summary": "Session tips remain deterministic and user visible.",
+          "verification": [
+            "SC-UI-EMPTY"
+          ]
         }
       ],
       "summary": "The app presents and changes only typed product state."
@@ -3069,6 +3316,7 @@
       "path": "docs/specs/app-setup.md",
       "requirements": [
         {
+          "anchor": "qc-app-doctor",
           "id": "QC-APP-DOCTOR",
           "journeys": [
             "J-DOCTOR-REPORT"
@@ -3081,9 +3329,13 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Doctor output derives from typed runtime state."
+          "summary": "Doctor output derives from typed runtime state.",
+          "verification": [
+            "SC-DOCTOR-REPORT"
+          ]
         },
         {
+          "anchor": "qc-app-onboarding",
           "id": "QC-APP-ONBOARDING",
           "journeys": [
             "J-ONBOARD-FIRST-RUN",
@@ -3095,7 +3347,7 @@
               "command": "cd app && swift test --filter Onboarding",
               "id": "SC-APP-ONBOARDING-UNIT",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             },
             {
               "command": "tests/ui-e2e.sh",
@@ -3116,9 +3368,16 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Onboarding leads a new user through supported provider and approval setup."
+          "summary": "Onboarding leads a new user through supported provider and approval setup.",
+          "verification": [
+            "SC-APP-ONBOARDING-UNIT",
+            "SC-UI-ONBOARD-FIRST-RUN",
+            "SC-UI-ONBOARD-PROVIDER",
+            "SC-UI-ONBOARD-APPROVAL"
+          ]
         },
         {
+          "anchor": "qc-app-settings",
           "id": "QC-APP-SETTINGS",
           "journeys": [
             "J-SETTINGS-CHANGE"
@@ -3128,7 +3387,7 @@
               "command": "cd app && swift test --filter Settings",
               "id": "SC-APP-SETTINGS-UNIT",
               "stage": "swift",
-              "status": "legacy-stage"
+              "status": "test-cases"
             },
             {
               "command": "tests/ui-e2e.sh",
@@ -3137,9 +3396,14 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Settings changes persist and affect only their declared behavior."
+          "summary": "Settings changes persist and affect only their declared behavior.",
+          "verification": [
+            "SC-APP-SETTINGS-UNIT",
+            "SC-UI-SETTINGS"
+          ]
         },
         {
+          "anchor": "qc-app-update",
           "id": "QC-APP-UPDATE",
           "journeys": [
             "J-UPDATE-CHECK",
@@ -3165,7 +3429,12 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Update state and application preserve the signed arm64 contract."
+          "summary": "Update state and application preserve the signed arm64 contract.",
+          "verification": [
+            "SC-UPDATE-CHECK",
+            "SC-UPDATE-APPLY",
+            "SC-RELEASE-WORKFLOW"
+          ]
         }
       ],
       "summary": "App setup, settings, diagnostics, and updates fail closed."
@@ -3216,6 +3485,7 @@
       "path": "docs/specs/release.md",
       "requirements": [
         {
+          "anchor": "qc-release-install",
           "id": "QC-RELEASE-INSTALL",
           "journeys": [
             "J-INSTALL-CLEAN",
@@ -3248,9 +3518,16 @@
               "status": "instrumented"
             }
           ],
-          "summary": "Install, repair, and uninstall mutate only Detach-owned payloads and selected state."
+          "summary": "Install, repair, and uninstall mutate only Detach-owned payloads and selected state.",
+          "verification": [
+            "SC-INSTALL-CLEAN",
+            "SC-RUNTIME-PACKAGE",
+            "SC-INSTALL-REPAIR",
+            "SC-INSTALL-UNINSTALL"
+          ]
         },
         {
+          "anchor": "qc-release-publish",
           "id": "QC-RELEASE-PUBLISH",
           "journeys": [
             "J-PUBLISH-ARTIFACTS"
@@ -3266,19 +3543,263 @@
               "command": "tests/release-sbom.sh",
               "id": "SC-RELEASE-SBOM",
               "stage": "gate-contract",
-              "status": "automated"
+              "status": "instrumented"
             },
             {
               "command": "tests/release-pr.sh",
               "id": "SC-RELEASE-PR",
               "stage": "gate-contract",
-              "status": "automated"
+              "status": "instrumented"
             }
           ],
-          "summary": "Publication exposes only independently verified allowlisted artifacts."
+          "summary": "Publication exposes only independently verified allowlisted artifacts.",
+          "verification": [
+            "SC-PUBLISH-CONTRACT",
+            "SC-RELEASE-SBOM",
+            "SC-RELEASE-PR"
+          ]
         }
       ],
       "summary": "Distribution and publication preserve verified immutable artifacts."
+    },
+    {
+      "capabilities": [
+        "quality-system"
+      ],
+      "id": "quality",
+      "journeys": [
+        "J-QUALITY-CHANGE"
+      ],
+      "owned_patterns": [
+        ".github/dependabot.yml",
+        ".github/workflows/documentation-care.yml",
+        ".github/workflows/quality-care.yml",
+        ".github/workflows/quality-gates.yml",
+        ".github/workflows/quality-mutations.yml",
+        ".github/workflows/security.yml",
+        "docs/quality-gates.md",
+        "docs/specs/quality.md",
+        "docs/testing.md",
+        "quality/*",
+        "quality/policy.tsv",
+        "scripts/quality-baseline",
+        "scripts/quality-cache-warm",
+        "scripts/quality-care",
+        "scripts/quality-dashboard",
+        "scripts/quality-evidence",
+        "scripts/quality-gate",
+        "scripts/quality-history",
+        "scripts/quality-merge",
+        "scripts/quality-metrics",
+        "scripts/quality-mutation",
+        "scripts/quality-policy",
+        "scripts/quality-promote",
+        "scripts/quality-scenarios",
+        "scripts/quality-security",
+        "scripts/quality-shard",
+        "scripts/test",
+        "tests/quality-*",
+        "tests/quality_*",
+        "tests/security-*",
+        "tests/security_*",
+        "tests/shell-safety*",
+        "tests/source-rules*",
+        "tests/test-suite-contract.sh",
+        "tools/quality_baseline.py",
+        "tools/quality_cache_warm.py",
+        "tools/quality_care.py",
+        "tools/quality_contract_change.py",
+        "tools/quality_dashboard.py",
+        "tools/quality_evidence.py",
+        "tools/quality_gate.py",
+        "tools/quality_history.py",
+        "tools/quality_merge.py",
+        "tools/quality_metrics.py",
+        "tools/quality_mutation.py",
+        "tools/quality_policy.py",
+        "tools/quality_products.py",
+        "tools/quality_promote.py",
+        "tools/quality_scenarios.py",
+        "tools/quality_security.py",
+        "tools/quality_shard.py",
+        "tools/quality_test_changes.py"
+      ],
+      "path": "docs/specs/quality.md",
+      "requirements": [
+        {
+          "anchor": "qc-quality-policy",
+          "id": "QC-QUALITY-POLICY",
+          "journeys": [
+            "J-QUALITY-CHANGE"
+          ],
+          "scenarios": [
+            {
+              "command": "tests/quality-policy.sh",
+              "id": "SC-POLICY-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-promote.sh",
+              "id": "SC-PROMOTION-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-merge.sh",
+              "id": "SC-MERGE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/security-contract.sh",
+              "id": "SC-SECURITY-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "python3 tests/quality_contract_change_contract.py",
+              "id": "SC-CONTRACT-CHANGE",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            }
+          ],
+          "summary": "One current policy owns quality selection and traceability.",
+          "verification": [
+            "SC-CONTRACT-CHANGE",
+            "SC-POLICY-CONTRACT",
+            "SC-PROMOTION-CONTRACT",
+            "SC-MERGE-CONTRACT",
+            "SC-SECURITY-CONTRACT"
+          ]
+        },
+        {
+          "anchor": "qc-quality-supply-chain",
+          "id": "QC-QUALITY-SUPPLY-CHAIN",
+          "journeys": [
+            "J-QUALITY-CHANGE"
+          ],
+          "scenarios": [
+            {
+              "command": "tests/quality-policy.sh",
+              "id": "SC-POLICY-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-promote.sh",
+              "id": "SC-PROMOTION-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-merge.sh",
+              "id": "SC-MERGE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/security-contract.sh",
+              "id": "SC-SECURITY-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "python3 tests/quality_contract_change_contract.py",
+              "id": "SC-CONTRACT-CHANGE",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            }
+          ],
+          "summary": "Bounded automation scans code and keeps dependency pins current.",
+          "verification": [
+            "SC-POLICY-CONTRACT",
+            "SC-PROMOTION-CONTRACT",
+            "SC-MERGE-CONTRACT",
+            "SC-SECURITY-CONTRACT"
+          ]
+        }
+      ],
+      "summary": "Quality checks bind direct evidence to reviewed contract changes."
+    },
+    {
+      "capabilities": [
+        "session-recovery"
+      ],
+      "id": "recovery",
+      "journeys": [
+        "J-SESSION-RECOVER"
+      ],
+      "owned_patterns": [
+        "docs/specs/recovery.md"
+      ],
+      "path": "docs/specs/recovery.md",
+      "requirements": [
+        {
+          "anchor": "qc-runtime-transition",
+          "id": "QC-RUNTIME-TRANSITION",
+          "journeys": [
+            "J-SESSION-RECOVER"
+          ],
+          "scenarios": [
+            {
+              "command": "tests/run.sh",
+              "id": "SC-SESSION-RECOVER-CODEX",
+              "stage": "codex",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/run-claude.sh",
+              "id": "SC-SESSION-RECOVER-CLAUDE",
+              "stage": "claude",
+              "status": "instrumented"
+            }
+          ],
+          "summary": "Session transitions preserve exact process identity.",
+          "verification": [
+            "SC-SESSION-RECOVER-CODEX",
+            "SC-SESSION-RECOVER-CLAUDE"
+          ]
+        }
+      ],
+      "summary": "Provider identity and checkpoint replacement preserve recoverable state."
+    },
+    {
+      "capabilities": [
+        "power-handoff"
+      ],
+      "id": "power-handoff",
+      "journeys": [
+        "J-POWER-HANDOFF"
+      ],
+      "owned_patterns": [
+        "app/Sources/DetachApp/PowerHelperService.swift",
+        "app/Sources/DetachApp/WatchdogService.swift",
+        "docs/specs/power-handoff.md"
+      ],
+      "path": "docs/specs/power-handoff.md",
+      "requirements": [
+        {
+          "anchor": "qc-power-handoff",
+          "id": "QC-POWER-HANDOFF",
+          "journeys": [
+            "J-POWER-HANDOFF"
+          ],
+          "scenarios": [
+            {
+              "command": "cd app && swift test --filter PowerHelperServiceTests",
+              "id": "SC-POWER-HANDOFF",
+              "stage": "swift",
+              "status": "test-cases"
+            }
+          ],
+          "summary": "Service registration handoff completes only after a proven lifetime barrier.",
+          "verification": [
+            "SC-POWER-HANDOFF"
+          ]
+        }
+      ],
+      "summary": "Service replacement requires a proven lifetime barrier."
     }
   ],
   "stages": [
@@ -3378,7 +3899,7 @@
       "stages": "static"
     },
     {
-      "capabilities": "session-lifecycle,session-state",
+      "capabilities": "session-lifecycle,session-state,session-recovery",
       "id": "state-runtime",
       "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
@@ -3388,17 +3909,17 @@
       "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
     {
-      "capabilities": "session-lifecycle,session-state,app-experience",
+      "capabilities": "session-lifecycle,session-state,app-experience,session-recovery",
       "id": "session-health-source",
       "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
     {
-      "capabilities": "power-protection",
+      "capabilities": "power-protection,power-handoff",
       "id": "power",
       "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
-      "capabilities": "session-lifecycle,session-state,power-protection",
+      "capabilities": "session-lifecycle,session-state,power-protection,session-recovery,power-handoff",
       "id": "bounded-process-source",
       "stages": "static,swift,quality-contracts,app,ui-e2e,codex,claude"
     },
@@ -3413,7 +3934,7 @@
       "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
-      "capabilities": "power-protection,onboarding,settings,update,diagnostics,installation",
+      "capabilities": "power-protection,onboarding,settings,update,diagnostics,installation,power-handoff",
       "id": "installation-store-source",
       "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
@@ -3448,12 +3969,12 @@
       "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
-      "capabilities": "session-lifecycle,session-state",
+      "capabilities": "session-lifecycle,session-state,session-recovery",
       "id": "runtime-source",
       "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
     {
-      "capabilities": "session-lifecycle,session-state,app-experience",
+      "capabilities": "session-lifecycle,session-state,app-experience,session-recovery",
       "id": "session-ui-source",
       "stages": "static,swift,quality-contracts,app,ui-e2e"
     },
@@ -3468,7 +3989,7 @@
       "stages": "static,swift,quality-contracts,app,ui-e2e,tmux-runtime"
     },
     {
-      "capabilities": "session-lifecycle,session-state",
+      "capabilities": "session-lifecycle,session-state,session-recovery",
       "id": "cli",
       "stages": "static,app,codex,claude,distribution"
     },
@@ -3478,7 +3999,7 @@
       "stages": "static,app,distribution"
     },
     {
-      "capabilities": "session-lifecycle",
+      "capabilities": "session-lifecycle,session-recovery",
       "id": "tmux-build",
       "stages": "static,app,codex,claude,tmux-runtime"
     },
@@ -3493,12 +4014,12 @@
       "stages": "static,app,tmux-runtime,release-preflight"
     },
     {
-      "capabilities": "session-lifecycle,session-state",
+      "capabilities": "session-lifecycle,session-state,session-recovery",
       "id": "codex-test",
       "stages": "static,codex"
     },
     {
-      "capabilities": "session-lifecycle,session-state",
+      "capabilities": "session-lifecycle,session-state,session-recovery",
       "id": "claude-test",
       "stages": "static,claude"
     },
@@ -3508,7 +4029,7 @@
       "stages": "static,app,distribution"
     },
     {
-      "capabilities": "session-lifecycle,power-protection",
+      "capabilities": "session-lifecycle,power-protection,session-recovery,power-handoff",
       "id": "runtime-test",
       "stages": "static,app,tmux-runtime"
     },
@@ -3547,5 +4068,37 @@
       "id": "unknown",
       "stages": "*"
     }
-  ]
+  ],
+  "test_sources": {
+    "DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick": "app/Tests/DetachAppTests/OnboardingLivePollerTests.swift",
+    "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding": "app/Tests/DetachAppTests/SetupGuidanceTests.swift",
+    "DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
+    "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
+    "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
+    "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed": "app/Tests/DetachAppTests/WatchdogServiceTests.swift",
+    "DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
+    "DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
+    "DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.PowerAssertionControllerTests/testAcquireCreatesOneAssertionAndBecomesActive": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
+    "DetachKitTests.PowerAssertionControllerTests/testFailedReleaseStaysActiveAndCanRetry": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
+    "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsAnotherLocalUserAfterFastUserSwitching": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",
+    "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsLoginWindowAndLogoutWithoutAnActiveConsoleUser": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",
+    "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsRootEvenWhileARegularConsoleUserIsActive": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireRejectsAnExpiredRequestBeforePersisting": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireVerifiesBothProtectionsAndPersistsOwnershipBeforeMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testReleaseRestoresNormalSleepOnlyWhenDetachOwnedTheMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testStartupReconcileExpiresStaleLeaseAndRestoresOwnedState": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting": "app/Tests/DetachKitTests/PowerHelperPlatformTests.swift",
+    "DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation": "app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift",
+    "DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot": "app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift",
+    "DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased": "app/Tests/DetachKitTests/PowerProtectionTests.swift",
+    "DetachKitTests.PowerProtectionTests/testProtectedRequiresBothAssertionAndClosedLidProtection": "app/Tests/DetachKitTests/PowerProtectionTests.swift",
+    "DetachKitTests.SessionHealthTests/testForeignProviderPIDIsNeverTreatedAsOwned": "app/Tests/DetachKitTests/SessionHealthTests.swift",
+    "DetachKitTests.SessionHealthTests/testForeignTmuxCollisionNeverOffersAnAction": "app/Tests/DetachKitTests/SessionHealthTests.swift",
+    "DetachKitTests.SessionHealthTests/testProcessInspectorRejectsWrongPaneAndForeignOwnership": "app/Tests/DetachKitTests/SessionHealthTests.swift"
+  }
 }

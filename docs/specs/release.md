@@ -32,7 +32,8 @@ change real power state, upload assets, or claim publication.
 - Builds with Xcode 26 and Xcode 27 are valid. The bundled SwiftTerm resource
   holds either the pinned `Shaders.metal` source or a `default.metallib` that
   exports every renderer shader function.
-- The immutable payload order is `detach`, `detach-core`,
+- <a id="qc-release-install"></a>
+  The immutable payload order is `detach`, `detach-core`,
   `detach-install`, `detach-state`, `detach-power`, `tmux`.
   Installation activates a content-addressed version atomically.
 - The locally installed release candidate is copied from the validated signed
@@ -67,7 +68,8 @@ change real power state, upload assets, or claim publication.
 - End-to-end release fixtures use separate repositories and external-state
   roots. They run with bounded admission, report each case duration, and always
   run the complete case set. A scheduler change cannot omit a release case.
-- The release entry point supplies the low-level publication confirmation after
+- <a id="qc-release-publish"></a>
+  The release entry point supplies the low-level publication confirmation after
   all selected gates pass. After upload, verification lists every remote asset
   name. A name outside the expected set fails closed. Every expected remote
   asset is downloaded and its digest is independently matched. Missing, extra,
@@ -150,3 +152,11 @@ Run the narrow hermetic script matching the edit:
 `tests/release-preflight.sh`, `tests/publish-preflight.sh`, or
 `tests/release-workflow.sh`. These never replace the impact-selected
 quality gate or the manual release-only gates listed in `docs/testing.md`.
+
+## Physical power verification
+
+`pmset -a disablesleep 0|1` and its `SleepDisabled` output are undocumented
+macOS interfaces. Parser/unit tests do not establish real closed-lid behavior.
+Every release candidate must pass the explicitly opted-in signed smoke test and
+a supervised test on real supported Apple Silicon hardware before publication.
+Exact arm64 slice and launch verification remains required.

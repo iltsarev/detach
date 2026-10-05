@@ -155,7 +155,8 @@ def main() -> int:
         assert failed["results"][0]["id"] == "historical-quality-tool"
 
         scope_escape = json.loads(json.dumps(corpus))
-        scope_escape["cases"][-1]["paths"] = ["public/not-ignored.txt"]
+        scope_index = next(i for i, case in enumerate(scope_escape["cases"]) if case["id"] == "scope-private-work")
+        scope_escape["cases"][scope_index]["paths"] = ["public/not-ignored.txt"]
         scope_escape_path = root / "scope-escape.json"
         write_json(scope_escape_path, scope_escape)
         escaped = json.loads(
@@ -164,7 +165,7 @@ def main() -> int:
                 expected=1,
             ).stdout
         )
-        assert escaped["results"][-1]["actual"] == {"ignored": False}
+        assert escaped["results"][scope_index]["actual"] == {"ignored": False}
 
         missing_category = json.loads(json.dumps(corpus))
         missing_category["cases"] = [

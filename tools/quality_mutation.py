@@ -156,6 +156,11 @@ ALL_MUTANT_INPUTS = {"quality/mutations.json", "tools/quality_mutation.py"}
 
 
 def suite_file(test_suite: str) -> str:
+    policy = Policy(ROOT / "quality/policy.tsv")
+    mapped = {source for test, source in policy.test_sources.items()
+              if test.startswith(test_suite + "/")}
+    if len(mapped) == 1:
+        return next(iter(mapped))
     target, suite = test_suite.split(".", 1)
     return f"app/Tests/{target}/{suite}.swift"
 

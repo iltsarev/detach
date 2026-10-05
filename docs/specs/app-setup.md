@@ -1,5 +1,7 @@
 # App setup, settings, and update specification
 
+<a id="qc-app-onboarding"></a>
+
 ## Onboarding and readiness
 
 Onboarding uses `SetupGuidance.step(for:)`; failure outranks provider discovery.
@@ -30,6 +32,8 @@ replace it for a temporarily stale heartbeat.
 
 Bootstrap runs only from `/Applications`, not a DMG or App Translocation path.
 
+<a id="qc-app-settings"></a>
+
 ## Settings and monitoring
 
 Settings → General owns both menu bar toggles. Settings → General → Interface
@@ -45,6 +49,8 @@ screen area. A window that already fits keeps its position.
 Temperature safety has its own warning shape and the
 text **Mac can sleep: temperature**.
 
+<a id="qc-app-doctor"></a>
+
 Settings → System owns the only **Mac Power** status and approval block. Helper
 Ready requires a doctor live XPC check. Registration alone is Needs attention.
 During doctor or reconciliation, show Checking, not failure. Power
@@ -54,6 +60,8 @@ deadline marks silence stale. A timestamp-only write moves it and redraws the
 age silently. Settings open and activation resync. No app-level
 heartbeat timer runs. The first monitor read and explicit refreshes share one
 sequence. A stale constructor snapshot cannot arrive after a newer document.
+
+<a id="qc-app-update"></a>
 
 ## Update contract
 

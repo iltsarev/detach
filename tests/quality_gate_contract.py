@@ -443,7 +443,16 @@ class QualityGateContract(unittest.TestCase):
                 script.chmod(0o755)
             run_dir = root / "evidence"
             run_dir.mkdir()
-            self.assertEqual(run_static_contracts(root, run_dir), 0)
+            events = run_dir / "static-events.jsonl"
+            with patch.dict("os.environ", {
+                "DETACH_QUALITY_SCENARIO_STAGE": "static",
+                "DETACH_QUALITY_SCENARIO_EVENTS": str(events),
+            }):
+                self.assertEqual(run_static_contracts(root, run_dir), 0)
+            records = [json.loads(line) for line in events.read_text().splitlines()]
+            self.assertEqual([(row["id"], row["kind"]) for row in records], [
+                ("SC-DOCS-CONTRACT", "begin"), ("SC-DOCS-CONTRACT", "pass"),
+            ])
             logs = run_dir / "static-parts"
             self.assertEqual(
                 (logs / "documentation.log").read_text(encoding="utf-8"),

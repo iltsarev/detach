@@ -34,6 +34,8 @@ from quality_promote import (
     validate_specification_sizes,
 )
 from quality_security import SecurityError, validate_summary as validate_security_summary
+from quality_policy import Policy, POLICY_FILE
+from quality_scenarios import ScenarioError, read_jsonl, scenario_context, validate_result
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -461,6 +463,19 @@ def build_data(
     if int(manifest["policy"]) != policy["policy"]:
         raise DashboardError("run policy does not match the generated policy view")
     stage_by_id = {stage["stage"]: stage for stage in stages}
+    scenario_results = {}
+    if "scenarios.jsonl" in read_artifact_inventory(run_dir, manifest):
+        scenario_path = read_bound_artifact(run_dir, manifest, "scenarios.jsonl", "scenario results")
+        current_policy = Policy(POLICY_FILE)
+        context = scenario_context(current_policy)
+        try:
+            for record in read_jsonl(scenario_path, "scenario results"):
+                validate_result(record, current_policy, context)
+                if record["id"] in scenario_results:
+                    raise ScenarioError("duplicate dashboard scenario")
+                scenario_results[record["id"]] = record
+        except ScenarioError as error:
+            raise DashboardError(str(error)) from error
     journeys_by_id = {journey["id"]: journey for journey in policy["journeys"]}
     scenarios_by_id = {scenario["id"]: scenario for scenario in policy["scenarios"]}
     specs_by_id = {spec["id"]: spec for spec in policy["specifications"]}
@@ -495,8 +510,11 @@ def build_data(
                 status = "not-selected"
                 automatable_scenarios += 1
             elif stage["status"] in PASS_STATUSES:
-                status = "passed"
-                passed_scenarios += 1
+                record = scenario_results.get(scenario_id)
+                status = record["status"] if record else "stage-only"
+                if record and record["granularity"] in ("command", "legacy-stage"):
+                    status = "stage-only"
+                passed_scenarios += int(status == "passed")
                 automatable_scenarios += 1
             elif stage["status"] in FAILURE_STATUSES:
                 status = "failed"
@@ -504,11 +522,14 @@ def build_data(
             else:
                 status = stage["status"]
                 automatable_scenarios += 1
-            scenario_evidence.append({**scenario, "evidence_status": status})
+            record = scenario_results.get(scenario_id)
+            scenario_evidence.append({**scenario, "evidence_status": status,
+                "evidence_kind": record["granularity"] if record else "stage-only",
+                "executed_tests": record.get("tests", []) if record else []})
         statuses = {scenario["evidence_status"] for scenario in scenario_evidence}
         if "failed" in statuses:
             journey_status = "failed"
-        elif "planned" in statuses or "not-selected" in statuses:
+        elif statuses & {"planned", "not-selected", "stage-only", "missing"}:
             journey_status = "incomplete"
         elif statuses == {"manual-release"}:
             journey_status = "manual-release"
@@ -634,7 +655,8 @@ def render_html(data: dict[str, Any]) -> str:
         '<ul>'
         + "".join(
             f'<li><code>{html.escape(scenario["id"])}</code>'
-            f'<span>{html.escape(scenario["evidence_status"])}</span></li>'
+            f'<span>{html.escape(scenario["evidence_status"])} / '
+            f'{html.escape(scenario["evidence_kind"])}</span></li>'
             for scenario in journey["scenario_evidence"]
         )
         + '</ul></article>'

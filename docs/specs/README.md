@@ -39,6 +39,11 @@ scenarios. `quality/generated/spec-traceability.md` is the generated readable
 view. Do not copy this metadata into individual specs or edit the generated
 view.
 
+Each requirement has one HTML anchor in its owning spec. Policy owns its direct
+verification links and exact test identities. Anchors locate the prose; they do
+not copy the registry. Spec edits select that spec's acceptance stages. The PR
+must explain each changed requirement and provide direct execution evidence.
+
 Change the narrowest owning spec whenever behavior or an invariant changes.
 Keep task progress and rejected experiments in the local ExecPlan, not here.
 A finished spec describes the system as it is, not the sequence used to build it.
