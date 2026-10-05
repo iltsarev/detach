@@ -446,6 +446,74 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(result, SessionStartResult(sessionID: "detach-codex-p-1"))
     }
 
+    func testStartOffersWorktreeOnlyForPreStartConflict() async {
+        for (code, timedOut, offers) in [(Int32(20), false, true), (20, true, false), (1, false, false)] {
+            let cli = FakeCLI()
+            cli.responses["codex --detach"] = .success(CLIResult(
+                exitCode: code, stdout: "", stderr: "occupied", timedOut: timedOut))
+            let result = await SessionStore(cli: cli).startDetached(
+                provider: .codex, projectDirectory: URL(fileURLWithPath: "/tmp/p"),
+                name: nil, prompt: nil)
+            XCTAssertEqual(result.worktreeDirectory != nil, offers)
+            XCTAssertNil(result.sessionID)
+            XCTAssertEqual(result.message == nil, offers)
+            XCTAssertFalse(cli.calls.contains { $0.contains("--worktree") })
+        }
+    }
+
+    func testWorktreeStartPreservesInputAndSelectsOnlyTheNewWorktree() async {
+        let cli = FakeCLI()
+        let source = URL(fileURLWithPath: "/tmp/source")
+        let worktree = URL(fileURLWithPath: "/tmp/p")
+        cli.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: cli)
+        let result = await store.startDetached(
+            provider: .codex, projectDirectory: source, name: "parallel",
+            prompt: "change this", worktreeDirectory: worktree)
+        XCTAssertEqual(cli.calls.first, ["codex", "--name", "parallel", "--detach",
+            "--worktree", "/tmp/p", "--", "change this"])
+        XCTAssertEqual(cli.currentDirectories, [source])
+        XCTAssertEqual(result.sessionID, "detach-codex-p-1")
+        XCTAssertNil(result.worktreeDirectory)
+
+        cli.responses["codex --detach --worktree /tmp/p"] = .success(CLIResult(
+            exitCode: 20, stdout: "", stderr: "destination busy", timedOut: false))
+        let failure = await store.startDetached(
+            provider: .codex, projectDirectory: source, name: nil,
+            prompt: nil, worktreeDirectory: worktree)
+        XCTAssertNil(failure.worktreeDirectory)
+        XCTAssertEqual(failure.message, "destination busy")
+    }
+
+    func testWorktreeSuggestionUsesGitRootAndResolvesSelectedSymlinks() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = base.appendingPathComponent("project")
+        let nested = root.appendingPathComponent("src/deep")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let marker = root.appendingPathComponent(".git")
+        let id = UUID()
+        let expected = base.resolvingSymlinksInPath().appendingPathComponent(
+            "project-detach-\(id.uuidString.lowercased())").path
+        for isDirectory in [true, false] {
+            if isDirectory {
+                try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+            } else {
+                try Data("gitdir: elsewhere".utf8).write(to: marker)
+            }
+            XCTAssertEqual(SessionWorktree.suggestedDirectory(for: nested, identifier: id).path, expected)
+            try FileManager.default.removeItem(at: marker)
+        }
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        let alias = base.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: nested)
+        XCTAssertEqual(SessionWorktree.suggestedDirectory(for: alias, identifier: id).path, expected)
+        try FileManager.default.removeItem(at: marker)
+        try FileManager.default.createSymbolicLink(at: marker, withDestinationURL: base)
+        XCTAssertEqual(SessionWorktree.suggestedDirectory(for: nested, identifier: id)
+            .deletingLastPathComponent().path, nested.deletingLastPathComponent().resolvingSymlinksInPath().path)
+    }
+
     func testStartDetachedKeepsItsSelectionWhenAnOverlappingRefreshQueuesATrailingRead() async {
         let cli = OverlappingStartCLI(listOutput: line)
         let store = SessionStore(cli: cli)

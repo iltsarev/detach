@@ -119,6 +119,13 @@ A cold passive screen leaves within one second.
 New session accepts an optional printable UTF-8 name up to 100 bytes and
 rejects invalid input. Launch runs in Detach. Advanced holds the prompt
 below a fixed top. Titles use `display_name`, then the project or internal name.
+When Start returns the occupied Git project status, the sheet offers
+**Create worktree** and **Cancel**. It shows the proposed sibling path and
+states that uncommitted changes stay in the original folder. Only this CLI
+outcome permits the offer; cached rows, errors, and timeouts do not. Consent
+passes `--worktree PATH` with the selected provider, name, and prompt. The new
+typed session must match the worktree path before the app selects it. A failed
+creation or start stays in the sheet and does not create another worktree.
 Command-N opens New session. Its chooser starts at the default project or the
 selection's parent. Command-T starts the chosen provider in a private 0700
 `detach-chat-<UUID>` below its folder. The default is

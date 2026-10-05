@@ -457,6 +457,30 @@ claude_scenario_event begin SC-SESSION-PERSIST-CLAUDE
 claude_scenario_event begin SC-SESSION-RECOVER-CLAUDE
 claude_scenario_event begin SC-SESSION-STOP-CLAUDE
 claude_scenario_event begin SC-SESSION-DELETE-CLAUDE
+(
+  export CLAUDE_CONFIG_DIR="$TMP_ROOT/worktree-claude-home"
+  export FAKE_CLAUDE_ARGS_FILE="$TMP_ROOT/worktree-claude-args.txt"
+  export FAKE_CLAUDE_READY_FILE="$TMP_ROOT/worktree-claude-ready"
+  worktree_source="$TMP_ROOT/claude-worktree-source"
+  worktree_target="$TMP_ROOT/claude-worktree-target"
+  mkdir "$worktree_source"
+  /usr/bin/git -C "$worktree_source" init -q
+  /usr/bin/git -C "$worktree_source" -c user.name=Fixture -c user.email=fixture@example.invalid \
+    commit --allow-empty -qm initial
+  cd "$worktree_source"
+  "$SCRIPT" claude --name worktree-source --detach >/dev/null
+  conflict_status=0
+  "$SCRIPT" claude --detach >"$TMP_ROOT/worktree-conflict.log" 2>&1 || conflict_status=$?
+  [ "$conflict_status" = 20 ]
+  "$SCRIPT" claude --name worktree-target --detach --worktree "$worktree_target" >/dev/null
+  [ "$(tmux -L "$SOCKET" show-options -qv -t '=detach-claude-worktree-source:' @detach_running)" = 1 ]
+  [ "$(tmux -L "$SOCKET" show-options -qv -t '=detach-claude-worktree-target:' @detach_cwd)" = "$(cd -P "$worktree_target" && pwd)" ]
+  for name in worktree-source worktree-target; do
+    "$SCRIPT" claude stop "$name" >/dev/null
+    "$SCRIPT" claude delete --force "$name" >/dev/null
+  done
+  [ -f "$worktree_target/.git" ]
+)
 reset_fake_claude_ready
 LC_ALL=C "$SCRIPT" claude --name "$human_label" --detach -- \
   --name display-name "$literal_prompt" --add-dir "$TMP_ROOT/extra-a" "$TMP_ROOT/extra-b"

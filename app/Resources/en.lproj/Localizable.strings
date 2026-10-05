@@ -480,4 +480,9 @@
 "You can create up to %d groups." = "You can create up to %d groups.";
 "This group no longer exists." = "This group no longer exists.";
 
+/* Parallel worktree sessions */
+"Work is already in progress here. Create a new worktree?" = "Work is already in progress here. Create a new worktree?";
+"The new branch starts from the current commit. Uncommitted changes stay in the original folder." = "The new branch starts from the current commit. Uncommitted changes stay in the original folder.";
+"Create worktree" = "Create worktree";
+
 "Quick chat files stay in this folder. Temporary folders use the default location." = "Quick chat files stay in this folder. Temporary folders use the default location.";

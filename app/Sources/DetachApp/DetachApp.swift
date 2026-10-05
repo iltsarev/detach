@@ -115,8 +115,8 @@ struct UIE2EConfiguration: Sendable {
         }
         guard let rawDriverBudget = environment["DETACH_UI_E2E_DRIVER_BUDGET"],
               let driverBudgetSeconds = Int(rawDriverBudget),
-              (1...30).contains(driverBudgetSeconds) else {
-            try fail("DETACH_UI_E2E_DRIVER_BUDGET must be from 1 through 30 seconds")
+              (1...40).contains(driverBudgetSeconds) else {
+            try fail("DETACH_UI_E2E_DRIVER_BUDGET must be from 1 through 40 seconds")
         }
         return UIE2EConfiguration(
             root: root,

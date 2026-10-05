@@ -146,13 +146,23 @@ final class UIE2EConfigurationTests: XCTestCase {
         }
     }
 
+    func testAcceptsExtendedMainScenarioAndBoundaryDriverBudgets() throws {
+        try withFixture { fixture in
+            for budget in [1, 37, 40] {
+                var environment = fixture.environment
+                environment["DETACH_UI_E2E_DRIVER_BUDGET"] = String(budget)
+                XCTAssertEqual(try fixture.validate(environment).driverBudgetSeconds, budget)
+            }
+        }
+    }
+
     func testRejectsMissingOrOutOfRangeDriverBudget() throws {
         try withFixture { fixture in
-            for value in [nil, "0", "31", "later"] as [String?] {
+            for value in [nil, "0", "41", "later"] as [String?] {
                 var environment = fixture.environment
                 environment["DETACH_UI_E2E_DRIVER_BUDGET"] = value
                 XCTAssertThrowsError(try fixture.validate(environment)) { error in
-                    XCTAssertTrue(error.localizedDescription.contains("from 1 through 30"))
+                    XCTAssertTrue(error.localizedDescription.contains("from 1 through 40"))
                 }
             }
         }
