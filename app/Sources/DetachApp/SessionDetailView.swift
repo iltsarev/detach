@@ -328,7 +328,7 @@ struct SessionDetailView: View {
 
     private static let placeholderAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-        .foregroundColor: NSColor(white: 0.85, alpha: 1),
+        .foregroundColor: TerminalPalette.adaptiveForeground,
     ]
 
     private var logContent: NSAttributedString {
@@ -457,6 +457,7 @@ struct SessionDetailView: View {
                 .accessibilityIdentifier("session-preview-transition-frame")
             }
         }
+        .terminalAppearance()
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onGeometryChange(for: CGSize.self) { $0.size } action: {
             terminalSurfaceSize = $0

@@ -3,7 +3,7 @@ import DetachKit
 
 /// The app-wide Light/Dark choice. `system` leaves `NSApp.appearance` unset,
 /// so every window, sheet, panel, and menu follows macOS. Terminal surfaces
-/// keep their own dark palette in every mode.
+/// have a separate appearance preference.
 enum AppAppearance: String, CaseIterable, Identifiable {
     case system
     case light

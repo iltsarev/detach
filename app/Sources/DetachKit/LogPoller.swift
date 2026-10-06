@@ -18,7 +18,7 @@ public final class LogPoller {
 
     private static let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .bold)
-    private static let defaultColor = NSColor(white: 0.85, alpha: 1)
+    private static let defaultColor = TerminalPalette.adaptiveForeground
 
     public init(cli: DetachCLIRunning, provider: Provider, sessionName: String) {
         self.cli = cli
@@ -56,7 +56,9 @@ public final class LogPoller {
             lines = tail
             attributed = ANSIParser.parse(
                 tail.joined(separator: "\n"),
-                font: Self.font, boldFont: Self.boldFont, defaultColor: Self.defaultColor)
+                font: Self.font, boldFont: Self.boldFont, defaultColor: Self.defaultColor,
+                defaultBackground: TerminalPalette.adaptiveBackground,
+                ansiColors: TerminalPalette.adaptiveANSIColors)
             errorText = nil
         } catch {
             errorText = error.localizedDescription

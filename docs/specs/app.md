@@ -8,8 +8,10 @@ pinned dependencies, provenance, and license notices.
 
 `ANSIParser` strips non-SGR sequences and preserves colors, bold, dim, italic,
 underline, strikethrough, and reverse video. Reverse swaps colors against
-`ANSIParser.terminalBackground`, also the `LogTextView` background. Font
-scaling changes only the font.
+the selected terminal background, also the `LogTextView` background. Cached
+logs retain semantic default and ANSI palette colors. A theme change resolves
+these colors without another log read. Explicit RGB and extended palette
+colors stay unchanged. Font scaling changes only the font.
 
 <a id="qc-health-presentation"></a>
 

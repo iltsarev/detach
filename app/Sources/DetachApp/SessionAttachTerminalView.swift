@@ -342,6 +342,10 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     private var startScheduled = false
     private var retainedScreenDeadline: DispatchWorkItem?
 
+    func applyRetainedPalette(_ palette: TerminalPalette) {
+        (retainedScreenView as? RetainedTerminalScreenView)?.applyPalette(palette)
+    }
+
     func startWhenSized(_ start: @escaping () -> Void) {
         pendingStart = start
         scheduleSizedStart()
@@ -372,13 +376,15 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     /// live terminal because they would create phantom scrollback after Resume.
     func retainScreen(
         _ screen: Data,
-        fontPointSize: CGFloat
+        fontPointSize: CGFloat,
+        palette: TerminalPalette = .dark
     ) {
         removeRetainedScreen()
         let overlay = RetainedTerminalScreenView(
             frame: bounds,
             screen: screen,
-            fontPointSize: fontPointSize)
+            fontPointSize: fontPointSize,
+            palette: palette)
         overlay.autoresizingMask = [.width, .height]
         addSubview(overlay, positioned: .above, relativeTo: nil)
         retainedScreenView = overlay
@@ -488,19 +494,22 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
 
 /// A passive text screen that cannot take focus or intercept pointer input.
 /// It exists only while a new terminal makes its first cold attachment.
-private final class RetainedTerminalScreenView: NSView {
+final class RetainedTerminalScreenView: NSView {
+    private let terminal: TerminalView
+
+    func applyPalette(_ palette: TerminalPalette) { palette.apply(to: terminal) }
     init(
         frame: NSRect,
         screen: Data,
-        fontPointSize: CGFloat
+        fontPointSize: CGFloat,
+        palette: TerminalPalette = .dark
     ) {
-        super.init(frame: frame)
-        let terminal = TerminalView(
-            frame: bounds,
+        terminal = TerminalView(
+            frame: NSRect(origin: .zero, size: frame.size),
             font: SessionAttachController.terminalFont(
                 pointSize: fontPointSize))
-        terminal.nativeBackgroundColor = ANSIParser.terminalBackground
-        terminal.nativeForegroundColor = NSColor(white: 0.85, alpha: 1)
+        super.init(frame: frame)
+        palette.apply(to: terminal)
         terminal.terminal.setCursorStyle(.steadyBlock)
         try? terminal.setUseMetal(false)
         terminal.feed(byteArray: Array(screen)[...])
@@ -638,6 +647,7 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
     private(set) weak var terminalView: LocalProcessTerminalView?
     private(set) var lastSize: (cols: Int, rows: Int)?
     private(set) var exitCode: Int32?
+    private var palette: TerminalPalette?
     var onTerminated: ((Int32?) -> Void)?
 
     init(invocation: SessionAttachInvocation) {
@@ -647,6 +657,13 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
     func applyFont(pointSize: CGFloat) {
         guard let terminalView else { return }
         applyFont(to: terminalView, pointSize: pointSize)
+    }
+
+    func applyPalette(_ palette: TerminalPalette) {
+        guard self.palette != palette, let terminalView else { return }
+        self.palette = palette
+        palette.apply(to: terminalView)
+        (terminalView as? SessionAttachLocalProcessTerminalView)?.applyRetainedPalette(palette)
     }
 
     func start() {
@@ -736,11 +753,14 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
         handleProcessExit(exitCode)
     }
 
-    func configure(_ view: LocalProcessTerminalView, fontPointSize: CGFloat) {
+    func configure(
+        _ view: LocalProcessTerminalView, fontPointSize: CGFloat,
+        palette: TerminalPalette = .dark
+    ) {
         view.processDelegate = self
         view.font = Self.terminalFont(pointSize: fontPointSize)
-        view.nativeBackgroundColor = ANSIParser.terminalBackground
-        view.nativeForegroundColor = NSColor(white: 0.85, alpha: 1)
+        self.palette = palette
+        palette.apply(to: view)
         view.linkHighlightMode = .hover
         view.setAccessibilityIdentifier("session-preview-terminal")
         view.setAccessibilityLabel(L10n.string("Live session terminal"))
@@ -786,6 +806,7 @@ enum SessionAttachClipboard {
 }
 
 struct SessionAttachTerminalView: NSViewRepresentable {
+    @Environment(\.terminalPalette) private var palette
     let detachPath: String
     let session: Session
     let fontPointSize: CGFloat
@@ -821,13 +842,15 @@ struct SessionAttachTerminalView: NSViewRepresentable {
             coordinator.reportFirstVisibleFrame(from: view)
         }
         context.coordinator.controller.onTerminated = context.coordinator.onTerminated
-        context.coordinator.controller.configure(view, fontPointSize: fontPointSize)
+        context.coordinator.controller.configure(
+            view, fontPointSize: fontPointSize, palette: palette)
         context.coordinator.installKeyboardMonitor(for: view)
         if let screen = context.coordinator.screenCache.screen(
             for: context.coordinator.session) {
             view.retainScreen(
                 screen,
-                fontPointSize: fontPointSize)
+                fontPointSize: fontPointSize,
+                palette: palette)
         }
         context.coordinator.controller.start()
         return view
@@ -839,6 +862,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         context.coordinator.onSwitchFailed = onSwitchFailed
         context.coordinator.controller.onTerminated = onTerminated
         context.coordinator.controller.applyFont(pointSize: fontPointSize)
+        context.coordinator.controller.applyPalette(palette)
         context.coordinator.requestSession(session, in: view)
     }
 

@@ -41,8 +41,12 @@ owns **Appearance**: Match System, Light, or Dark. The default is Match System.
 An unknown stored value reads as Match System. The stored choice sets the
 application appearance before the first window opens. A change applies at once
 to every app window, sheet, panel, and menu. The menu bar icon follows the menu
-bar, not this choice. The terminal, log view, and terminal previews keep their
-dark palette in each appearance. Settings → System keeps the only
+bar, not this choice. Settings → Terminal owns **Terminal appearance**: Auto,
+Light, or Dark. Dark is the default and the fallback for an unknown stored
+value. Auto follows macOS independently of the app appearance. The choice
+persists and applies at once to live terminals, cached screens, log views, and
+terminal previews. A theme change keeps the PTY, content, and log scroll
+position. Provider RGB colors stay unchanged. Settings → System keeps the only
 Mac Power status and approval controls. Settings follows the hosting screen;
 System scrolls. A size or screen change moves the window inside the visible
 screen area. A window that already fits keeps its position.

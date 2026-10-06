@@ -99,6 +99,7 @@ struct SessionRowPreviewCard: View {
 /// Miniature terminal screenshot acting as one side of the tmux theme picker,
 /// in the manner of the system Light/Dark appearance chooser.
 struct TmuxThemeThumbnail: View {
+    @Environment(\.terminalPalette) private var palette
     let title: String
     let statusText: String
     let detachStyled: Bool
@@ -110,9 +111,9 @@ struct TmuxThemeThumbnail: View {
             VStack(spacing: 6) {
                 ZStack(alignment: .bottom) {
                     VStack(alignment: .leading, spacing: 6) {
-                        line(width: 46, color: Color(red: 0.25, green: 0.56, blue: 0.37))
-                        line(width: 62, color: Color(white: 0.52))
-                        line(width: 40, color: Color(white: 0.28))
+                        line(width: 46, color: Color(nsColor: palette.ansiColors[2]))
+                        line(width: 62, color: Color(nsColor: palette.foreground).opacity(0.7))
+                        line(width: 40, color: Color(nsColor: palette.foreground).opacity(0.4))
                         Spacer(minLength: 0)
                     }
                     .padding(.top, 10)
@@ -121,7 +122,7 @@ struct TmuxThemeThumbnail: View {
                     statusBar
                 }
                 .frame(width: 128, height: 76)
-                .background(Color(red: 0.08, green: 0.085, blue: 0.11))
+                .background(Color(nsColor: palette.background))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)

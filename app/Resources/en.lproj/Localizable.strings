@@ -486,3 +486,6 @@
 "Create worktree" = "Create worktree";
 
 "Quick chat files stay in this folder. Temporary folders use the default location." = "Quick chat files stay in this folder. Temporary folders use the default location.";
+"Auto" = "Auto";
+"Terminal appearance" = "Terminal appearance";
+"Auto follows macOS. This setting applies to the embedded terminal and session logs, independently of the app appearance." = "Auto follows macOS. This setting applies to the embedded terminal and session logs, independently of the app appearance.";

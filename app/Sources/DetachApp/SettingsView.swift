@@ -174,7 +174,7 @@ private extension SettingsDestination {
     var baseHeight: CGFloat {
         switch self {
         case .general: 652
-        case .terminal: 460
+        case .terminal: 560
         case .notifications: 350
         case .system: 780
         case .updates: 500
@@ -199,6 +199,8 @@ struct SettingsView: View {
     private var fontPointSize = AppFontSize.defaultValue
     @AppStorage(AppAppearance.storageKey, store: AppSettings.defaults)
     private var appearanceRawValue = AppAppearance.defaultValue.rawValue
+    @AppStorage(TerminalAppearance.storageKey, store: AppSettings.defaults)
+    private var terminalAppearanceRawValue = TerminalAppearance.defaultValue.rawValue
     @AppStorage(AppSettings.terminalBundleIdentifierKey, store: AppSettings.defaults)
     private var terminalBundleIdentifier =
         TerminalCatalog.defaultBundleIdentifier
@@ -700,6 +702,32 @@ struct SettingsView: View {
 
     private var terminalTab: some View {
         Form {
+            Section(L10n.string("Appearance")) {
+                Picker(L10n.string("Terminal appearance"), selection: Binding(
+                    get: { TerminalAppearance(storedValue: terminalAppearanceRawValue) },
+                    set: { terminalAppearanceRawValue = $0.rawValue }
+                )) {
+                    ForEach(TerminalAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings-terminal-appearance")
+// quality-coverage:begin ui-e2e-instrumentation
+#if !DEBUG
+                .overlay {
+                    if AppSettings.uiE2E != nil {
+                        UIE2EGeometryProbe(
+                            identifier: "settings-terminal-appearance",
+                            semanticLabel: L10n.string("Terminal appearance"),
+                            semanticRole: .radioGroup)
+                    }
+                }
+#endif
+// quality-coverage:end ui-e2e-instrumentation
+                Text(L10n.string("Auto follows macOS. This setting applies to the embedded terminal and session logs, independently of the app appearance."))
+                    .settingsMessage()
+            }
             Section(L10n.string("tmux status line")) {
                 HStack(spacing: 18) {
                     Spacer(minLength: 0)
@@ -859,6 +887,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .terminalAppearance()
         .onChange(of: terminalBundleIdentifier) {
             terminalChoiceError = nil
             refreshTerminalApplications()
