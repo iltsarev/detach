@@ -1011,11 +1011,6 @@ public enum DetachStateCommand {
             transcriptPath, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { return empty }
         defer { close(descriptor) }
-        var beforeMetadata = stat()
-        guard fstat(descriptor, &beforeMetadata) == 0,
-              let before = TranscriptValidationIdentity(beforeMetadata) else {
-            return empty
-        }
 
         let receiptName = ".transcript-summary-cache.json"
         let cachedReceipt = readOwnedMetadataFile(
@@ -1023,92 +1018,110 @@ public enum DetachStateCommand {
                 try? JSONDecoder().decode(
                     TranscriptSummaryReceipt.self, from: $0)
             }
-        if let values = cachedReceipt?.snapshotValues(
-                provider: provider,
-                transcriptPath: transcriptPath,
-                identity: before) {
-            return values
-        }
-
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-        let size = UInt64(beforeMetadata.st_size)
-        let maximumByteCount: UInt64 = 262_144
-        let continuation = cachedReceipt?.continuation(
-            provider: provider,
-            transcriptPath: transcriptPath,
-            identity: before,
-            maximumByteCount: maximumByteCount)
-        let startOffset = continuation?.offset
-            ?? (size > maximumByteCount ? size - maximumByteCount : 0)
-        guard (try? handle.seek(toOffset: startOffset)) != nil
-        else { return empty }
-        var tail = Data()
-        while tail.count < Int(maximumByteCount) {
-            let remaining = Int(maximumByteCount) - tail.count
-            let chunk: Data
-            do {
-                chunk = try handle.read(
-                    upToCount: min(64 * 1_024, remaining)) ?? Data()
-            } catch {
+        // A provider can append while the tail is read. A changed identity
+        // takes a new observation instead of dropping the summary.
+        for _ in 0..<3 {
+            var beforeMetadata = stat()
+            guard fstat(descriptor, &beforeMetadata) == 0,
+                  let before = TranscriptValidationIdentity(beforeMetadata) else {
                 return empty
             }
-            guard !chunk.isEmpty else { break }
-            tail.append(chunk)
-        }
-        var afterMetadata = stat()
-        guard fstat(descriptor, &afterMetadata) == 0,
-              let after = TranscriptValidationIdentity(afterMetadata),
-              before == after else { return empty }
-        var summary = TranscriptDocument.summary(
-            ofTail: tail,
-            provider: provider,
-            startingFrom: continuation?.summary ?? TranscriptSummary())
-        if continuation == nil {
-            // A continuation carries pending background work forward; a cold
-            // tail may have cut off the launches of still-running work.
-            summary = TranscriptDocument.resolvingBackgroundWork(
-                summary, provider: provider
-            ) {
-                let deep = TranscriptDocument.backgroundSearchByteCount
-                guard (try? handle.seek(
-                    toOffset: size > deep ? size - deep : 0)) != nil else { return nil }
-                return try? handle.read(upToCount: Int(deep))
+            if let values = cachedReceipt?.snapshotValues(
+                    provider: provider,
+                    transcriptPath: transcriptPath,
+                    identity: before) {
+                return values
             }
+
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            let size = UInt64(beforeMetadata.st_size)
+            let continuation = cachedReceipt?.continuation(
+                provider: provider,
+                transcriptPath: transcriptPath,
+                identity: before,
+                maximumByteCount: TranscriptSummaryReceipt.continuationByteCount)
+            let readLimit = continuation == nil
+                ? TranscriptSummaryReceipt.coldTailByteCount
+                : TranscriptSummaryReceipt.continuationByteCount
+            let startOffset = continuation?.offset
+                ?? (size > readLimit ? size - readLimit : 0)
+            guard (try? handle.seek(toOffset: startOffset)) != nil
+            else { return empty }
+            var tail = Data()
+            while tail.count < Int(readLimit) {
+                let remaining = Int(readLimit) - tail.count
+                let chunk: Data
+                do {
+                    chunk = try handle.read(
+                        upToCount: min(64 * 1_024, remaining)) ?? Data()
+                } catch {
+                    return empty
+                }
+                guard !chunk.isEmpty else { break }
+                tail.append(chunk)
+            }
+            var afterMetadata = stat()
+            guard fstat(descriptor, &afterMetadata) == 0,
+                  let after = TranscriptValidationIdentity(afterMetadata) else {
+                return empty
+            }
+            guard before == after else { continue }
+            var summary = TranscriptDocument.summary(
+                ofTail: tail,
+                provider: provider,
+                startingFrom: continuation?.summary ?? TranscriptSummary())
+            if continuation == nil {
+                // A continuation carries pending background work forward; a cold
+                // tail may have cut off the launches of still-running work.
+                summary = TranscriptDocument.resolvingBackgroundWork(
+                    summary, provider: provider
+                ) {
+                    let deep = TranscriptDocument.backgroundSearchByteCount
+                    guard (try? handle.seek(
+                        toOffset: size > deep ? size - deep : 0)) != nil else { return nil }
+                    return try? handle.read(upToCount: Int(deep))
+                }
+            }
+            let values = [
+                summary.model ?? "",
+                summary.contextUsed.map(String.init) ?? "",
+                summary.contextWindow.map(String.init) ?? "",
+                summary.agentTurnState?.rawValue ?? "",
+                summary.agentTurnID ?? "",
+                summary.agentWaitingReason?.rawValue ?? "",
+            ]
+            let receipt = TranscriptSummaryReceipt(
+                schema: TranscriptSummaryReceipt.currentSchema,
+                provider: provider.rawValue,
+                transcriptPath: transcriptPath,
+                identity: after,
+                model: summary.model,
+                contextUsed: summary.contextUsed,
+                contextWindow: summary.contextWindow,
+                agentTurnState: summary.agentTurnState?.rawValue,
+                agentTurnID: summary.agentTurnID,
+                agentWaitingReason: summary.agentWaitingReason?.rawValue,
+                pendingToolUseID: summary.pendingToolUseID,
+                pendingBackground: summary.pendingBackground.isEmpty
+                    ? nil : summary.pendingBackground)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            if var receiptData = try? encoder.encode(receipt) {
+                receiptData.append(0x0A)
+                try? replaceOwnedFileAtomically(
+                    receiptData, in: sessionDirectory, name: receiptName)
+            }
+            return values
         }
-        let values = [
-            summary.model ?? "",
-            summary.contextUsed.map(String.init) ?? "",
-            summary.contextWindow.map(String.init) ?? "",
-            summary.agentTurnState?.rawValue ?? "",
-            summary.agentTurnID ?? "",
-            summary.agentWaitingReason?.rawValue ?? "",
-        ]
-        let receipt = TranscriptSummaryReceipt(
-            schema: TranscriptSummaryReceipt.currentSchema,
-            provider: provider.rawValue,
-            transcriptPath: transcriptPath,
-            identity: after,
-            model: summary.model,
-            contextUsed: summary.contextUsed,
-            contextWindow: summary.contextWindow,
-            agentTurnState: summary.agentTurnState?.rawValue,
-            agentTurnID: summary.agentTurnID,
-            agentWaitingReason: summary.agentWaitingReason?.rawValue,
-            pendingToolUseID: summary.pendingToolUseID,
-            pendingBackground: summary.pendingBackground.isEmpty
-                ? nil : summary.pendingBackground)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        if var receiptData = try? encoder.encode(receipt) {
-            receiptData.append(0x0A)
-            try? replaceOwnedFileAtomically(
-                receiptData, in: sessionDirectory, name: receiptName)
-        }
-        return values
+        return empty
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 6
+        static let currentSchema = 7
+        static let coldTailByteCount: UInt64 = 262_144
+        /// One provider record can exceed the cold tail, for example a Codex
+        /// compaction. A continuation reads the complete append up to here.
+        static let continuationByteCount: UInt64 = 8 * 1_024 * 1_024
         private static let overlapByteCount: UInt64 = 64 * 1_024
 
         var schema: Int

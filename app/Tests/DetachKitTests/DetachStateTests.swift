@@ -24,6 +24,33 @@ final class DetachStateTests: XCTestCase {
         XCTAssertNil(TranscriptDocument.summary(ofTail: async, provider: .codex).agentWaitingReason)
     }
 
+    func testCodexColdTailInfersAnUnfinishedTurnOnlyFromTurnScopedRecords() {
+        func summary(_ lines: String...) -> TranscriptSummary {
+            TranscriptDocument.summary(
+                ofTail: Data(lines.joined(separator: "\n").utf8), provider: .codex)
+        }
+        let usage = #"{"type":"token_usage_record","payload":{"turn_id":"turn-a"}}"#
+        let context = #"{"type":"turn_context","payload":{"turn_id":"turn-a","model":"m"}}"#
+        let completed = #"{"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-a"}}"#
+        let finished = #"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-a"}}"#
+        for record in [usage, context] {
+            let active = summary(completed, record)
+            XCTAssertEqual(active.agentTurnState, .working)
+            XCTAssertEqual(active.agentTurnID, "turn-a")
+            XCTAssertNil(active.agentWaitingReason)
+        }
+        XCTAssertEqual(summary(context).model, "m")
+        XCTAssertNil(summary(completed).agentTurnState, "Command completions can follow their turn")
+        XCTAssertNil(summary(#"{"type":"token_usage_record","payload":{"turn_id":""}}"#).agentTurnState)
+        XCTAssertNil(summary(#"{"type":"response_item","payload":{"type":"message","turn_id":"turn-a"}}"#)
+            .agentTurnState)
+        let done = summary(usage, finished, usage)
+        XCTAssertEqual(done.agentTurnState, .waiting)
+        XCTAssertEqual(done.agentWaitingReason, .answerReady)
+        let next = summary(finished, #"{"type":"token_usage_record","payload":{"turn_id":"turn-b"}}"#)
+        XCTAssertEqual(next.agentTurnID, "turn-a", "A known turn state is never overridden")
+    }
+
     func testMetadataValidationKeepsTheExistingSchemaContract() throws {
         let data = Data(#"{"schema":1,"session_name":"detach-codex-project","project_dir":"/tmp/project"}"#.utf8)
 

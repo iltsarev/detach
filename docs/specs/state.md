@@ -66,7 +66,10 @@ Typed state caches Codex checkpoint assessment by provider, session ID, and
 file identity. A change forces a full scan. Restore ignores this receipt,
 validates a temporary copy, then replaces the live file. List summaries use an
 atomic receipt bound to provider, path, device, inode, size, and nanosecond
-mtime. An unchanged identity skips the 256 KiB tail read.
+mtime. An unchanged identity skips the 256 KiB tail read. A continuation reads
+the complete append up to 8 MiB, so one large record, such as a Codex
+compaction, keeps the turn state. An append during the read causes a new
+observation, at most three times.
 
 State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
@@ -109,7 +112,7 @@ mutation token. Keep the emitter and Swift `Session` decoder in sync.
 `watch --json` emits only change hints and never replaces this snapshot.
 Provider lifecycle records, never terminal text, supply turn state and the
 private activity file in `power.md`. Bounded append caching retains typed turns;
-an unseen oversized gap clears waiting to prevent stale Answer ready. A
+an unseen append larger than 8 MiB clears waiting to prevent stale Answer ready. A
 main-chain Claude `AskUserQuestion` with `stop_reason: tool_use` and a tool ID
 means waiting with `input_required`; only its matching user tool result
 restores working. Reducer
@@ -125,12 +128,15 @@ result. A finished Claude turn stays working while a main-chain
 not count, because they record no notification. At most 32 such tasks are
 tracked. A cold tail that ends in a finished turn also replays these records
 from the last 4 MiB, because large records can push a launch above the tail.
+A Codex tail without a turn event treats a `token_usage_record` or
+`turn_context` with a turn ID as a working turn. `item_completed` does not
+count, because a command completion can arrive after its turn.
 Codex task or turn completion means waiting with `answer_ready`. A synchronous
 `request_user_input` function call means waiting with `input_required`; its
 matching function-call output restores working. Async questions do not prove
 that work stopped. New turns and aborts clear the waiting reason. Missing or
 unknown waiting reasons cannot claim a ready answer or an input request.
-Schema-6 summary receipts carry the reason and pending tool IDs for both
+Schema-7 summary receipts carry the reason and pending tool IDs for both
 providers. They retain pending background tasks and invalidate earlier cached
 turn states.
 Typed cleanup uses `cleanup_eligible`.

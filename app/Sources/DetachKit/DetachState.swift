@@ -715,6 +715,18 @@ public enum TranscriptDocument {
             result.contextWindow = integer(info?["model_context_window"])
         }
 
+        // A cold tail can start inside a long turn, after its `task_started`.
+        // Codex writes these records only while a turn runs, so they prove
+        // activity when no turn event is known. Command completions
+        // (`item_completed`) can arrive after their turn and do not count.
+        if result.agentTurnState == nil,
+           ["token_usage_record", "turn_context"].contains(record["type"] as? String),
+           let turnID = payload["turn_id"] as? String, !turnID.isEmpty {
+            result.agentTurnState = .working
+            result.agentTurnID = turnID
+            return
+        }
+
         guard record["type"] as? String == "event_msg",
               let turnID = payload["turn_id"] as? String,
               !turnID.isEmpty,
