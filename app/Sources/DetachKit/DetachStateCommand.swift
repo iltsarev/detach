@@ -615,6 +615,7 @@ public enum DetachStateCommand {
             "context_used_tokens": NSNull(),
             "context_window": NSNull(),
             "agent_turn_state": NSNull(),
+            "agent_waiting_reason": NSNull(),
             "agent_turn_id": NSNull(),
             "power_protection_state": NSNull(),
             "health_reason": NSNull(),
@@ -675,6 +676,11 @@ public enum DetachStateCommand {
                 }
             case "--agent-turn-id":
                 object["agent_turn_id"] = optionalString(value)
+            case "--agent-waiting-reason":
+                guard isNullPlaceholder(value) || AgentWaitingReason(rawValue: value) != nil else {
+                    throw DetachStateCommandError.invalidArguments
+                }
+                object["agent_waiting_reason"] = optionalString(value)
             case "--session-color":
                 if isNullPlaceholder(value) {
                     object["session_color"] = NSNull()
@@ -981,7 +987,7 @@ public enum DetachStateCommand {
         metadataValues: [DetachStateScalar?]?,
         sessionDirectory: Int32
     ) -> [String] {
-        let empty = Array(repeating: "", count: 5)
+        let empty = Array(repeating: "", count: 6)
         guard let metadataValues,
               let transcriptIndex = metadataSnapshotFields.firstIndex(where: {
                   $0.0 == "transcript_path"
@@ -1075,6 +1081,7 @@ public enum DetachStateCommand {
             summary.contextWindow.map(String.init) ?? "",
             summary.agentTurnState?.rawValue ?? "",
             summary.agentTurnID ?? "",
+            summary.agentWaitingReason?.rawValue ?? "",
         ]
         let receipt = TranscriptSummaryReceipt(
             schema: TranscriptSummaryReceipt.currentSchema,
@@ -1086,6 +1093,7 @@ public enum DetachStateCommand {
             contextWindow: summary.contextWindow,
             agentTurnState: summary.agentTurnState?.rawValue,
             agentTurnID: summary.agentTurnID,
+            agentWaitingReason: summary.agentWaitingReason?.rawValue,
             pendingToolUseID: summary.pendingToolUseID,
             pendingBackground: summary.pendingBackground.isEmpty
                 ? nil : summary.pendingBackground)
@@ -1100,7 +1108,7 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 5
+        static let currentSchema = 6
         private static let overlapByteCount: UInt64 = 64 * 1_024
 
         var schema: Int
@@ -1112,6 +1120,7 @@ public enum DetachStateCommand {
         var contextWindow: Int?
         var agentTurnState: String?
         var agentTurnID: String?
+        var agentWaitingReason: String?
         var pendingToolUseID: String?
         var pendingBackground: [PendingBackgroundTask]?
 
@@ -1127,6 +1136,7 @@ public enum DetachStateCommand {
                   contextUsed.map({ $0 >= 0 }) ?? true,
                   contextWindow.map({ $0 >= 0 }) ?? true,
                   agentTurnState.map({ AgentTurnState(rawValue: $0) != nil }) ?? true,
+                  agentWaitingReason.map({ AgentWaitingReason(rawValue: $0) != nil }) ?? true,
                   hasValidPendingToolUse
             else { return nil }
             return [
@@ -1135,6 +1145,7 @@ public enum DetachStateCommand {
                 contextWindow.map(String.init) ?? "",
                 agentTurnState ?? "",
                 agentTurnID ?? "",
+                agentWaitingReason ?? "",
             ]
         }
 
@@ -1159,6 +1170,7 @@ public enum DetachStateCommand {
                   contextUsed.map({ $0 >= 0 }) ?? true,
                   contextWindow.map({ $0 >= 0 }) ?? true,
                   agentTurnState.map({ AgentTurnState(rawValue: $0) != nil }) ?? true,
+                  agentWaitingReason.map({ AgentWaitingReason(rawValue: $0) != nil }) ?? true,
                   hasValidPendingToolUse
             else { return nil }
 
@@ -1172,7 +1184,8 @@ public enum DetachStateCommand {
                 contextUsed: contextUsed,
                 contextWindow: contextWindow,
                 agentTurnState: agentTurnState.flatMap(AgentTurnState.init(rawValue:)),
-                agentTurnID: agentTurnID)
+                agentTurnID: agentTurnID,
+                agentWaitingReason: agentWaitingReason.flatMap(AgentWaitingReason.init(rawValue:)))
             summary.pendingToolUseID = pendingToolUseID
             summary.pendingBackground = Array(
                 (pendingBackground ?? []).suffix(PendingBackgroundTask.limit))
@@ -1181,10 +1194,10 @@ public enum DetachStateCommand {
 
         private var hasValidPendingToolUse: Bool {
             guard let pendingToolUseID else { return true }
-            return provider == Provider.claude.rawValue
-                && !pendingToolUseID.isEmpty
+            return !pendingToolUseID.isEmpty
                 && agentTurnState == AgentTurnState.waiting.rawValue
                 && agentTurnID == pendingToolUseID
+                && agentWaitingReason == AgentWaitingReason.inputRequired.rawValue
         }
     }
 
@@ -1832,6 +1845,7 @@ public enum DetachStateCommand {
                 ("context_window", summary.contextWindow.map(String.init)),
                 ("agent_turn_state", summary.agentTurnState?.rawValue),
                 ("agent_turn_id", summary.agentTurnID),
+                ("agent_waiting_reason", summary.agentWaitingReason?.rawValue),
             ]
             let output = fields.compactMap { key, value in
                 value.map { "\(key)\t\($0)\n" }
@@ -1845,6 +1859,7 @@ public enum DetachStateCommand {
             "context_window": summary.contextWindow ?? NSNull(),
             "agent_turn_state": summary.agentTurnState?.rawValue ?? NSNull(),
             "agent_turn_id": summary.agentTurnID ?? NSNull(),
+            "agent_waiting_reason": summary.agentWaitingReason?.rawValue ?? NSNull(),
         ]
         var output = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         output.append(0x0A)

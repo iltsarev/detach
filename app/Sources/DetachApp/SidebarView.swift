@@ -77,13 +77,14 @@ struct SidebarView: View {
     private var sectionLayouts: [SidebarSectionLayout] {
         SidebarSectionLayout.build(
             sessions: store.sessions,
-            document: groups.document)
+            document: groups.document,
+            shortcutAssignments: shortcutAssignments)
     }
 
     /// Bulk selection shows every Finished row, so Select all never reaches a
     /// hidden session. The stored collapse state does not change.
-    private func isGroupCollapsed(_ groupID: UUID, in section: SessionSection) -> Bool {
-        guard !(isSelectingFinished && section == .finished) else { return false }
+    private func isGroupCollapsed(_ groupID: UUID, in section: SidebarSection) -> Bool {
+        guard !isSelectingFinished else { return false }
         return groups.isCollapsed(section: section, groupID: groupID)
     }
 
@@ -116,16 +117,18 @@ struct SidebarView: View {
             List(selection: $selectedID) {
                 ForEach(sectionLayouts, id: \.section) { layout in
                     Section {
-                        ForEach(layout.groupBlocks) { block in
-                            groupHeader(block, in: layout.section)
-                            if !isGroupCollapsed(block.group.id, in: layout.section) {
-                                ForEach(block.sessions) { session in
-                                    sessionRow(session, isGrouped: true)
+                        if layout.section != .stopped || !groups.stoppedCollapsed || isSelectingFinished {
+                            ForEach(layout.groupBlocks) { block in
+                                groupHeader(block, in: layout.section)
+                                if !isGroupCollapsed(block.group.id, in: layout.section) {
+                                    ForEach(block.sessions) { session in
+                                        sessionRow(session, isGrouped: true)
+                                    }
                                 }
                             }
-                        }
-                        ForEach(layout.ungrouped) { session in
-                            sessionRow(session)
+                            ForEach(layout.ungrouped) { session in
+                                sessionRow(session)
+                            }
                         }
                     } header: {
                         sectionHeader(layout.section, count: layout.count)
@@ -278,7 +281,7 @@ struct SidebarView: View {
                 HStack(spacing: 6) {
                     Text(hint.shortcut)
                         .appFont(.caption, weight: .semibold, design: .monospaced)
-                        .foregroundStyle(Brand.indigo)
+                        .foregroundStyle(.secondary)
                     Text(isStartingQuickChat && hint.shortcut == "⌘T"
                          ? L10n.string("Starting…") : hint.title)
                         .appFont(.caption)
@@ -308,14 +311,30 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func sectionHeader(_ section: SessionSection, count: Int) -> some View {
+    private func sectionHeader(_ section: SidebarSection, count: Int) -> some View {
         let dropKey = "section/\(section.rawValue)"
         HStack(spacing: 8) {
-            Text(L10n.format("%@ · %d", section.displayName, count))
-                .foregroundStyle(
-                    section == .answerReady ? Color.orange : Color.secondary)
+            if section == .stopped {
+                Button {
+                    groups.setStoppedCollapsed(!groups.stoppedCollapsed)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(groups.stoppedCollapsed && !isSelectingFinished ? 0 : 90))
+                        Text(L10n.format("%@ · %d", section.displayName, count))
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(isSelectingFinished)
+                .accessibilityValue(groups.stoppedCollapsed && !isSelectingFinished
+                    ? L10n.string("Collapsed") : L10n.string("Expanded"))
+                .accessibilityIdentifier("stopped-section-toggle")
+                .uiE2EGeometryProbe("stopped-section-toggle", label: L10n.string("Stopped"), role: .button)
+            } else {
+                Text(section.displayName)
+            }
             Spacer(minLength: 0)
-            if section == .finished && !deletableFinishedSessions.isEmpty {
+            if section == sectionLayouts.first?.section && !deletableFinishedSessions.isEmpty {
                 Button(L10n.string(isSelectingFinished ? "Done" : "Select")) {
                     if isSelectingFinished {
                         selectedFinishedIDs.removeAll()
@@ -342,6 +361,8 @@ struct SidebarView: View {
                 .padding(.trailing, 12)
             }
         }
+        .appFont(.caption, weight: .semibold)
+        .foregroundStyle(SessionPalette.secondary)
         // Dropping a grouped row on its section header removes it from the group.
         .contentShape(Rectangle())
         .dropDestination(for: String.self) { sessionIDs, _ in
@@ -355,7 +376,7 @@ struct SidebarView: View {
 // quality-coverage:begin ui-e2e-instrumentation
 #if !DEBUG
         .background {
-            if AppSettings.uiE2E != nil && section == .finished {
+            if AppSettings.uiE2E != nil && section == sectionLayouts.first?.section {
                 UIE2EGeometryProbe(identifier: "finished-section-header")
             }
         }
@@ -366,7 +387,7 @@ struct SidebarView: View {
     @ViewBuilder
     private func groupHeader(
         _ block: SidebarSectionLayout.GroupBlock,
-        in section: SessionSection
+        in section: SidebarSection
     ) -> some View {
         let groupID = block.group.id
         let isCollapsed = isGroupCollapsed(groupID, in: section)
@@ -380,7 +401,8 @@ struct SidebarView: View {
                 groups.setCollapsed(!isCollapsed, section: section, groupID: groupID)
             }
         }
-        .disabled(isSelectingFinished && section == .finished)
+        .disabled(isSelectingFinished)
+        .listRowSeparator(.hidden)
         .dropDestination(for: String.self) { sessionIDs, _ in
             moveSessions(sessionIDs, to: groupID)
         } isTargeted: { targeted in
@@ -506,7 +528,9 @@ struct SidebarView: View {
                 }
 #endif
 // quality-coverage:end ui-e2e-instrumentation
-                SessionRow(session: session, shortcutSlot: shortcutSlot)
+                SessionRow(
+                    session: session, shortcutSlot: shortcutSlot,
+                    isFresh: store.hasFreshSnapshot && store.state == .ok)
             }
             .padding(.leading, isGrouped ? SidebarGroupLayout.rowIndent : 0)
 // quality-coverage:begin ui-e2e-instrumentation
@@ -515,18 +539,23 @@ struct SidebarView: View {
 #endif
 // quality-coverage:end ui-e2e-instrumentation
             .tag(session.id)
+            .listRowSeparator(.hidden)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(SessionShortcutPresentation.accessibilityLabel(
                 title: session.displayTitle,
                 slot: shortcutSlot))
             .accessibilityIdentifier("session-row-\(session.id)")
             .listRowBackground(
-                session.isWaitingForUser ? Color.orange.opacity(0.10) : nil)
+                SessionRowBackground(
+                    session: session, selected: selectedID == session.id,
+                    isFresh: store.hasFreshSnapshot && store.state == .ok))
         } else {
             Button {
                 selectedID = session.id
             } label: {
-                SessionRow(session: session, shortcutSlot: shortcutSlot)
+                SessionRow(
+                    session: session, shortcutSlot: shortcutSlot,
+                    isFresh: store.hasFreshSnapshot && store.state == .ok)
                     .padding(.leading, isGrouped ? SidebarGroupLayout.rowIndent : 0)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -540,13 +569,16 @@ struct SidebarView: View {
 #endif
 // quality-coverage:end ui-e2e-instrumentation
             .tag(session.id)
+            .listRowSeparator(.hidden)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(SessionShortcutPresentation.accessibilityLabel(
                 title: session.displayTitle,
                 slot: shortcutSlot))
             .accessibilityIdentifier("session-row-\(session.id)")
             .listRowBackground(
-                session.isWaitingForUser ? Color.orange.opacity(0.10) : nil)
+                SessionRowBackground(
+                    session: session, selected: selectedID == session.id,
+                    isFresh: store.hasFreshSnapshot && store.state == .ok))
         }
     }
 
@@ -668,95 +700,6 @@ struct SidebarView: View {
     }
 #endif
 // quality-coverage:end ui-e2e-instrumentation
-}
-
-struct SessionRow: View {
-    let session: Session
-    let shortcutSlot: Int?
-
-    private var dotColor: Color {
-        SessionIdentity.statusColor(for: session)
-    }
-
-    private var isCustomName: Bool {
-        guard session.displayName == nil else { return false }
-        // Default names end with the 8-hex project-dir digest; custom ones don't.
-        return session.name.range(
-            of: "-[0-9a-f]{8}$",
-            options: .regularExpression) == nil
-    }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        if isCustomName { parts.append(session.name) }
-        parts.append(session.displayStatus)
-        if let exit = session.exitStatus { parts.append(L10n.format("exit %d", exit)) }
-        if let created = session.createdAt {
-            parts.append(created.formatted(.relative(presentation: .named)))
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if session.isWaitingForUser {
-                Capsule(style: .continuous)
-                    .fill(Color.orange)
-                    .frame(width: 3, height: 30)
-                    .accessibilityHidden(true)
-            }
-            if let sessionColor = session.sessionColor {
-                Capsule(style: .continuous)
-                    .fill(SessionIdentity.color(sessionColor).opacity(
-                        SessionIdentity.emphasis(for: session.effectiveStatus)))
-                    .frame(width: 4, height: 34)
-                    .help(L10n.format("Session color: %@", sessionColor.hex))
-                    .accessibilityHidden(true)
-            }
-            Circle().fill(dotColor).frame(width: 9, height: 9)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(session.displayTitle).appFont(.body, weight: .semibold).lineLimit(1)
-                    if let shortcutSlot {
-                        Text(SessionShortcutPresentation.badge(slot: shortcutSlot))
-                            .appFont(.caption2, weight: .semibold, design: .monospaced)
-                            .foregroundStyle(Brand.indigo)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(
-                                Brand.indigo.opacity(0.12),
-                                in: RoundedRectangle(cornerRadius: 4))
-                            .fixedSize()
-                            .help(L10n.format(
-                                "Switch to %@ with Command-%d",
-                                session.displayTitle,
-                                shortcutSlot))
-                            .accessibilityHidden(true)
-// quality-coverage:begin ui-e2e-instrumentation
-#if !DEBUG
-                            .background {
-                                if AppSettings.uiE2E != nil {
-                                    UIE2EGeometryProbe(
-                                        identifier: "session-shortcut-\(session.id)",
-                                        semanticLabel: "Command-\(shortcutSlot)",
-                                        semanticRole: .staticText)
-                                }
-                            }
-#endif
-// quality-coverage:end ui-e2e-instrumentation
-                    }
-                    Text(session.provider.rawValue)
-                        .appFont(.caption2)
-                        .foregroundStyle(Brand.tint(for: session.provider))
-                        .padding(.horizontal, 4).padding(.vertical, 1)
-                        .overlay(RoundedRectangle(cornerRadius: 4)
-                            .strokeBorder(Brand.tint(for: session.provider).opacity(0.35)))
-                }
-                Text(subtitle).appFont(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-        .padding(.vertical, 2)
-    }
 }
 
 struct StatusBar: View {

@@ -809,6 +809,7 @@ reset_meta_snapshot() {
   TRANSCRIPT_CTX_WINDOW=""
   TRANSCRIPT_AGENT_TURN_STATE=""
   TRANSCRIPT_AGENT_TURN_ID=""
+  TRANSCRIPT_AGENT_WAITING_REASON=""
 }
 
 load_meta_snapshot_path() {
@@ -6594,6 +6595,7 @@ transcript_model_context() {
   TRANSCRIPT_CTX_WINDOW=""
   TRANSCRIPT_AGENT_TURN_STATE=""
   TRANSCRIPT_AGENT_TURN_ID=""
+  TRANSCRIPT_AGENT_WAITING_REASON=""
   [ -n "$transcript" ] && [ -f "$transcript" ] || return 0
   while IFS=$'\t' read -r field value; do
     case "$field" in
@@ -6602,6 +6604,7 @@ transcript_model_context() {
       context_window) TRANSCRIPT_CTX_WINDOW="$value" ;;
       agent_turn_state) TRANSCRIPT_AGENT_TURN_STATE="$value" ;;
       agent_turn_id) TRANSCRIPT_AGENT_TURN_ID="$value" ;;
+      agent_waiting_reason) TRANSCRIPT_AGENT_WAITING_REASON="$value" ;;
     esac
   done < <("$STATE_BIN" jsonl summary "$PROVIDER" "$transcript" --tsv 2>/dev/null)
 
@@ -7163,6 +7166,7 @@ prepare_list_json_args() {
   local display_name="${19:-}"
   local stop_requested_at="${20:-}"
   local lifecycle_id="${21:-}"
+  local agent_waiting_reason="${22:-}"
   local session_args
 
   [[ "$session_color" =~ ^#[0-9A-Fa-f]{6}$ ]] || session_color=''
@@ -7180,6 +7184,7 @@ prepare_list_json_args() {
     --model "$model"
     --agent-turn-state "$agent_turn_state"
     --agent-turn-id "$agent_turn_id"
+    --agent-waiting-reason "$agent_waiting_reason"
     --session-color "$session_color"
     --power-state "$power_state"
   )
@@ -7304,7 +7309,8 @@ list_session_records() {
       IFS= read -r -d '' TRANSCRIPT_CTX_USED && \
       IFS= read -r -d '' TRANSCRIPT_CTX_WINDOW && \
       IFS= read -r -d '' TRANSCRIPT_AGENT_TURN_STATE && \
-      IFS= read -r -d '' TRANSCRIPT_AGENT_TURN_ID || \
+      IFS= read -r -d '' TRANSCRIPT_AGENT_TURN_ID && \
+      IFS= read -r -d '' TRANSCRIPT_AGENT_WAITING_REASON || \
         die "could not decode metadata snapshot for '$session'"
     if [ "$metadata_valid" != true ]; then
       cwd="?"
@@ -7429,7 +7435,7 @@ list_session_records() {
         "$TRANSCRIPT_CTX_WINDOW" "$TRANSCRIPT_AGENT_TURN_STATE" \
         "$TRANSCRIPT_AGENT_TURN_ID" "$session_color" "$power_state" \
         "$worker_pid" "$provider_pid" "$worker_heartbeat_at" "$display_name" \
-        "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_ID"
+        "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_ID" "$TRANSCRIPT_AGENT_WAITING_REASON"
       session_health_envelope \
         "$session" true "$health_status" "$health_id" "$health_run_token" \
         "$worker_pid" "$provider_pid" "$health_worker_heartbeat_epoch" \

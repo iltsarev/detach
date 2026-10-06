@@ -20,6 +20,10 @@ public enum SessionAction: String, Codable, CaseIterable, Sendable {
     case attach, stop, resume, recover, delete
 }
 
+public enum SessionStatusSignal: Equatable, Sendable {
+    case working, ready, inputRequired, stopped, error, waiting, unknown, recoverable
+}
+
 public extension Session {
     /// Finished-list bulk actions stay behind the same typed Delete permission
     /// as the detail view. A terminal-looking row without that permission is
@@ -30,6 +34,29 @@ public extension Session {
 
     var isWaitingForUser: Bool {
         effectiveStatus == .running && agentTurnState == .waiting
+    }
+
+    var statusSignal: SessionStatusSignal {
+        switch effectiveStatus {
+        case .starting, .recovering: return .working
+        case .running:
+            switch agentTurnState {
+            case .working: return .working
+            case .waiting:
+                switch agentWaitingReason {
+                case .answerReady: return .ready
+                case .inputRequired: return .inputRequired
+                case .unknown, nil: return .waiting
+                }
+            case .interrupted: return .stopped
+            case .unknown, nil: return .unknown
+            }
+        case .completed: return .ready
+        case .stopped, .interrupted: return .stopped
+        case .failed, .hung, .orphaned, .corrupt, .collision: return .error
+        case .recoverable: return .recoverable
+        case .unknown: return .unknown
+        }
     }
 
     /// Whether the provider process is still expected to produce live output.
@@ -45,7 +72,16 @@ public extension Session {
     }
 
     var displayStatus: String {
-        if isWaitingForUser { return L10n.string("answer ready") }
+        if isWaitingForUser {
+            return switch agentWaitingReason {
+            case .answerReady: L10n.string("answer ready")
+            case .inputRequired: L10n.string("needs your input")
+            case .unknown, nil: L10n.string("waiting")
+            }
+        }
+        if effectiveStatus == .running && agentTurnState == .interrupted {
+            return L10n.string("interrupted")
+        }
         return switch effectiveStatus {
         case .starting: L10n.string("starting")
         case .running: L10n.string("running")

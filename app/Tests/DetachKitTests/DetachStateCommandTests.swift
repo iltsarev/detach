@@ -57,6 +57,7 @@ final class DetachStateCommandTests: XCTestCase {
             "--context-window", "200000",
             "--agent-turn-state", "waiting",
             "--agent-turn-id", "turn-1",
+            "--agent-waiting-reason", "input_required",
             "--session-color", "#1aB2c3",
             "--power-state", "protected",
             "--lifecycle-id", "opaque-run-id",
@@ -69,7 +70,7 @@ final class DetachStateCommandTests: XCTestCase {
             "effective_status", "meta_status", "agent_session_id", "project_dir",
             "created_at", "last_checkpoint_at", "exit_status", "finished_at",
             "stop_requested_at", "lifecycle_id", "model",
-            "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
+            "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id", "agent_waiting_reason",
             "power_protection_state", "health_reason", "health_actions",
             "reconcile_action", "ownership_proven", "cleanup_eligible",
             "worker_pid", "provider_pid", "worker_heartbeat_at",
@@ -85,6 +86,8 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertTrue(object["context_used_tokens"] is NSNull)
         XCTAssertEqual(object["context_window"] as? Int, 200_000)
         XCTAssertEqual(object["agent_turn_state"] as? String, "waiting")
+        XCTAssertEqual(object["agent_waiting_reason"] as? String, "input_required")
+        XCTAssertEqual(SessionListParser.parse(String(decoding: output, as: UTF8.self)).sessions.first?.agentWaitingReason, .inputRequired)
         XCTAssertEqual(object["power_protection_state"] as? String, "protected")
         XCTAssertEqual(object["session_color"] as? String, "#1aB2c3")
         XCTAssertEqual(object["lifecycle_id"] as? String, "opaque-run-id")
@@ -102,7 +105,7 @@ final class DetachStateCommandTests: XCTestCase {
             "display_name", "session_color", "meta_status", "agent_session_id", "project_dir",
             "created_at", "last_checkpoint_at", "exit_status", "finished_at",
             "stop_requested_at", "lifecycle_id", "model",
-            "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id",
+            "context_used_tokens", "context_window", "agent_turn_state", "agent_turn_id", "agent_waiting_reason",
             "power_protection_state", "health_reason", "health_actions",
             "reconcile_action", "ownership_proven", "cleanup_eligible",
             "worker_pid", "provider_pid", "worker_heartbeat_at",
@@ -1000,6 +1003,37 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testCodexWaitingReasonSurvivesReceiptReuseAndMatchingReply() throws {
+        let root = temporaryDirectory.appendingPathComponent("reasons")
+        let session = root.appendingPathComponent("detach-codex-reason")
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent("reason.jsonl")
+        let request = #"{"type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"ask"}}"# + "\n"
+        try Data(request.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: ["schema": 1,
+            "session_name": "detach-codex-reason", "project_dir": "/tmp/project",
+            "status": "running", "transcript_path": transcript.path])
+            .write(to: session.appendingPathComponent("meta.json"))
+        func fields() throws -> [String] {
+            let data = try DetachStateCommand.run(arguments: ["meta", "snapshots", root.path, "--with-transcript-summary"])
+            return data.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+        }
+        XCTAssertEqual(Array(try fields()[28...30]), ["waiting", "ask", "input_required"])
+        XCTAssertEqual(Array(try fields()[28...30]), ["waiting", "ask", "input_required"])
+        let receipt = session.appendingPathComponent(".transcript-summary-cache.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+        legacy["schema"] = 5
+        legacy["agentWaitingReason"] = NSNull()
+        try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
+        XCTAssertEqual(Array(try fields()[28...30]), ["waiting", "ask", "input_required"])
+        let response = #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"ask","output":"done"}}"# + "\n"
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(response.utf8))
+        try handle.close()
+        XCTAssertEqual(Array(try fields()[28...30]), ["working", "ask", ""])
+    }
+
     func testMetaSnapshotsCanBatchBoundedTranscriptSummaries() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "summary-sessions", isDirectory: true)
@@ -1029,7 +1063,7 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 30 + 2)
+        XCTAssertEqual(values.count, 31 + 2)
         XCTAssertEqual(values[0], "detach-codex-summary")
         XCTAssertEqual(values[1], "true")
         XCTAssertEqual(values[24], "primary")
@@ -1122,7 +1156,7 @@ final class DetachStateCommandTests: XCTestCase {
         let waitingValues = waitingOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(waitingValues[28..<30]), ["waiting", "tool-1"])
+        XCTAssertEqual(Array(waitingValues[28...30]), ["waiting", "tool-1", "input_required"])
 
         let receipt = session.appendingPathComponent(
             ".transcript-summary-cache.json")
@@ -1144,7 +1178,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 5)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 6)
 
         let unrelatedToolResult = Data("""
 
@@ -1238,7 +1272,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let updated = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
-        XCTAssertEqual(updated["schema"] as? Int, 5)
+        XCTAssertEqual(updated["schema"] as? Int, 6)
 
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()
@@ -1271,7 +1305,7 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 30 + 2)
+        XCTAssertEqual(values.count, 31 + 2)
         XCTAssertEqual(values[24], "primary")
         XCTAssertEqual(Array(values[25..<30]), Array(repeating: "", count: 5))
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])

@@ -44,28 +44,54 @@ up its runtime identity. This is a starting state with no mutation actions.
 It is not a Problems row. A failed or completed operation restores the normal
 typed health rules. A failed coherent List read keeps the previous rows.
 
-The dashboard separates identity, status, and Mac Power. Identity is a thin
-tmux-colored capsule. Status is a filled circle. Power uses a neutral surface
-and semantic color. Clicking the UUID chip copies the full UUID and shows
-**Copied**.
+The detail view separates identity, status, and Mac Power. Identity is a thin
+tmux-colored capsule. Power uses a neutral surface and semantic color. Clicking
+the UUID chip copies the full UUID and shows **Copied**.
 
-**Finished** bulk Delete stays outside `List`, uses typed Delete, asks once,
-tolerates failures, and keeps transcripts. Select/Done keeps 12-point clearance.
+Sidebar rows show a status symbol, name, trailing shortcut, and a second line
+with status and provider. They have no tmux identity bar or colored badges.
+Launch time and exit details remain in help and accessible descriptions.
+Text and status marks follow the app text size. Status colors keep contrast in
+light and dark appearances. One custom selection surface preserves native
+List selection and keyboard navigation. A group has a distinct row identity
+in each section, so its count and collapse control refer to that section.
+Each lifecycle and turn state has an explicit available system symbol. Input
+uses a message symbol, interruption uses pause, and recovery uses a return
+arrow. Missing status data has an ellipsis and a status-unavailable label.
+No state uses a question-mark placeholder.
+Ready answers and completed sessions use green; explicit input requests use
+yellow; errors use red. Stopped and uncertain states use neutral colors.
+Ready answers, input requests, and errors have a faint row fill. Working rows
+have no status fill, including when selected. Their small ring rotates only
+when the snapshot is fresh, the row is visible, the app is active, and Reduce
+Motion is off. Cached or failed snapshots use neutral symbols, no animation,
+and a last-known-status label.
 
-The sidebar keeps its status sections. User groups arrange rows inside each
-section: groups first, in user order, then the rows outside every group. A
-section shows a group only when it holds a row of that section. Groups are
-app-only presentation preferences stored in `sidebarGroupsV1`. The CLI and
-typed state never read them. The session name keys each assignment because it
-survives Resume and Recover. An unreadable, oversized, or unknown-schema
-document means no groups. Only a fresh list removes the assignment of a
-missing session; cached rows cannot. Group names are trimmed, printable,
-unique without case, and at most 60 characters. Deleting a group never deletes
-a session. Collapse state is per section and group, and persists. A selection
-from outside the sidebar opens the group that holds the row. Bulk selection
-shows every Finished row. A dropped row joins the target group; a drop on a
-section header removes it from its group. Drops accept only current session
-names. Groups never change status, actions, shortcuts, or Delete eligibility.
+The sidebar has Sessions and Stopped sections. Only stopped and interrupted
+lifecycles enter Stopped. Completed and failed sessions remain in Sessions.
+Working, ready, and input transitions do not move a row. Groups come first in
+user order, then rows outside groups. Within each upper group or ungrouped
+set, assigned shortcuts sort first by number. Remaining rows sort by newest
+creation time. Stopped rows sort by newest creation time within their groups.
+
+User groups are app-only preferences stored in `sidebarGroupsV1`. The CLI and
+typed state never read them. Session names key assignments across Resume and
+Recover. Unreadable, oversized, or unknown-schema documents mean no groups.
+Only a fresh list removes assignments for missing sessions. Names are trimmed,
+printable, unique without case, and at most 60 characters. Deleting a group
+never deletes a session. Group collapse persists per section. Older group
+assignments, order, and compatible collapse keys remain valid.
+Stopped has its own persistent collapse setting. External selection opens the
+section and group that hold the row. Bulk selection temporarily reveals every
+finished candidate without changing those settings. Drops accept only current
+session names. A row joins the target group; a drop on a section header removes
+its group assignment. Groups never change actions or shortcut eligibility.
+
+Select/Done appears at the first section header with 12-point clearance. Bulk
+Delete stays outside `List`, uses typed Delete, asks once, tolerates partial
+failures, and keeps provider transcripts. Its candidates still include
+completed, failed, stopped, and interrupted sessions with Delete permission,
+regardless of their sidebar section.
 
 A first-run setup card stays mounted during retry. App Start uses `--detach`,
 keeps sheet errors, and selects the new session. Start, Resume, and Recover open
@@ -145,10 +171,10 @@ selects an unambiguous `starting` session before readiness, without polling.
 Invalid folders block launch.
 <a id="qc-app-tips"></a>
 
-Command-1 through Command-9 open main and select numbered Working or Answer
-ready sessions. Numbers appear in rows and stay stable across both sections.
-When a session leaves them, the earliest waiting session gets its number;
-extras stay unnumbered. The sidebar guide shows Command-N, Command-T,
+Command-1 through Command-9 open main and select numbered active or waiting
+sessions. Numbers stay stable across working and waiting states. A finished
+session or problem state releases its number to the earliest unnumbered
+eligible session. At most nine sessions have numbers. The sidebar guide shows Command-N, Command-T,
 Command-comma, and terminal Command-F.
 Notifications are opt-in and deduplicated. Stop intent is not failure;
 `interrupted` and `hung` get one 350 ms recheck. Snapshot bursts do not restart
