@@ -26,9 +26,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/detach-app.png" width="920" alt="Detach dashboard with an Answer ready session, working Codex and Claude sessions, finished history, and a live terminal">
+  <img src="docs/assets/detach-app.png" width="920" alt="Detach dashboard with stable session order, ready and input indicators, stopped history, and a live terminal">
   <br>
-  <sub>Answer-ready work comes first. Switch live sessions without restarting the agent.</sub>
+  <sub>Sessions stay in place as their status changes. Stopped sessions stay below.</sub>
 </p>
 
 Detach is a native control center for agent work that must outlive a terminal
@@ -49,9 +49,10 @@ not be the weak link.
 - **Work in one native terminal.** Type, paste text or images, find output, and
   switch between live sessions with `Cmd-1` through `Cmd-9`. Detach keeps the
   same PTY and does not restart the agent during a switch.
-- **See what needs you now.** Sessions that wait for a reply move into
-  **Answer ready**. Notifications and the menu bar show when a turn finishes,
-  fails, or becomes recoverable.
+- **See what needs you now.** Green marks show ready answers. Yellow marks show
+  requests for your input. Status changes keep the session order stable.
+  Notifications and the menu bar show when a turn finishes, fails, or becomes
+  recoverable.
 - **Use actions that match proven state.** Stop is for a live owned process.
   Resume continues a provider conversation. Recover restarts an interrupted
   managed run from a validated recovery source. Delete stays blocked until
