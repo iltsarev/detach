@@ -169,8 +169,10 @@ Rows outside groups use the same order. Stopped rows use newest launch time.
 Green means an answer is ready or the session completed. Yellow means the
 provider explicitly requests your input. Red means an error. Working sessions
 have a small rotating indicator and no yellow background. Stopped sessions
-are gray. Unknown waiting reasons stay neutral. The provider and status appear
-below the name; launch time and exit details appear in the row help.
+are gray. Unknown waiting reasons stay neutral. A new session shows
+**new session** until the provider records its first prompt. The provider and
+status appear below the name; launch time and exit details appear in the row
+help.
 
 Detach shows each assigned shortcut beside the session name. The number stays
 with the session while it works or waits. Detach reuses the number when the

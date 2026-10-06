@@ -21,18 +21,20 @@ enum Brand {
 
 /// Status colors retain contrast on both light and dark sidebar surfaces.
 enum SessionPalette {
-    static let attention = adaptive(light: 0x986700, dark: 0xE8BE58)
-    static let ready = adaptive(light: 0x287C4B, dark: 0x6DCA91)
-    static let error = adaptive(light: 0xBD3B42, dark: 0xF28B82)
-    static let secondary = adaptive(light: 0x565D65, dark: 0xADB1B8)
+    /// Core Animation layers resolve this dynamic color themselves.
+    static let attentionNSColor = adaptive(light: 0x986700, dark: 0xE8BE58)
+    static let attention = Color(nsColor: attentionNSColor)
+    static let ready = Color(nsColor: adaptive(light: 0x287C4B, dark: 0x6DCA91))
+    static let error = Color(nsColor: adaptive(light: 0xBD3B42, dark: 0xF28B82))
+    static let secondary = Color(nsColor: adaptive(light: 0x565D65, dark: 0xADB1B8))
 
-    private static func adaptive(light: UInt32, dark: UInt32) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
+    private static func adaptive(light: UInt32, dark: UInt32) -> NSColor {
+        NSColor(name: nil) { appearance in
             let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
             return NSColor(srgbRed: Double((hex >> 16) & 255) / 255,
                            green: Double((hex >> 8) & 255) / 255,
                            blue: Double(hex & 255) / 255, alpha: 1)
-        })
+        }
     }
 }
 
@@ -50,7 +52,7 @@ enum SessionIdentity {
         case .working, .inputRequired: return SessionPalette.attention
         case .ready: return SessionPalette.ready
         case .error: return SessionPalette.error
-        case .stopped, .waiting, .unknown, .recoverable: return SessionPalette.secondary
+        case .stopped, .waiting, .unknown, .recoverable, .new: return SessionPalette.secondary
         }
     }
 

@@ -21,6 +21,7 @@ enum SessionRowPresentation {
             switch session.agentTurnState {
             case .working: "circle.dotted"
             case .interrupted: "pause.circle"
+            case nil where !session.hasTranscriptEvidence: "circle"
             case .unknown, nil: "minus.circle"
             case .waiting:
                 switch session.agentWaitingReason {
@@ -120,7 +121,6 @@ private struct SessionStatusMark: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isVisible = false
-    @State private var rotating = false
 
     private var markSize: CGFloat { max(14, fontPointSize * 8 / 7) }
 
@@ -132,11 +132,7 @@ private struct SessionStatusMark: View {
     var body: some View {
         Group {
             if isFresh && session.statusSignal == .working {
-                Circle().inset(by: 0.8).trim(from: 0, to: 0.72)
-                    .stroke(SessionPalette.attention, style: StrokeStyle(lineWidth: max(1.5, markSize / 10), lineCap: .round))
-                    .rotationEffect(.degrees(rotating ? 360 : 0))
-                    .animation(shouldAnimate ? .linear(duration: 1.8).repeatForever(autoreverses: false) : nil,
-                               value: rotating)
+                WorkingRing(lineWidth: max(1.5, markSize / 10), isRotating: shouldAnimate)
             } else {
                 Image(systemName: SessionRowPresentation.symbol(for: session, isFresh: isFresh))
                     .resizable()
@@ -149,7 +145,111 @@ private struct SessionStatusMark: View {
         .accessibilityHidden(true)
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }
-        .onChange(of: shouldAnimate, initial: true) { _, value in rotating = value }
+    }
+}
+
+/// Core Animation spins the working ring in the render server. SwiftUI only
+/// starts or stops it, so list refreshes, row reuse, layout passes, and
+/// main-thread work cannot restart, move, or stall the rotation.
+private struct WorkingRing: NSViewRepresentable {
+    let lineWidth: CGFloat
+    let isRotating: Bool
+
+    func makeNSView(context: Context) -> WorkingRingView { WorkingRingView() }
+
+    func updateNSView(_ view: WorkingRingView, context: Context) {
+        view.lineWidth = lineWidth
+        view.isRotating = isRotating
+    }
+}
+
+final class WorkingRingView: NSView {
+    static let period: CFTimeInterval = 1.8
+    static let rotationKey = "detach.working-ring.rotation"
+    let ring = CAShapeLayer()
+
+    var lineWidth: CGFloat = 1.5 {
+        didSet { if lineWidth != oldValue { needsLayout = true } }
+    }
+
+    var isRotating = false {
+        didSet { if isRotating != oldValue { updateRotation() } }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        ring.fillColor = nil
+        ring.lineCap = .round
+        ring.strokeEnd = 0.72
+        // Geometry and color follow SwiftUI layout and appearance at once.
+        ring.actions = ["bounds": NSNull(), "position": NSNull(), "path": NSNull(),
+                        "lineWidth": NSNull(), "strokeColor": NSNull(), "contentsScale": NSNull()]
+        attachRing()
+        updateColor()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func isAccessibilityElement() -> Bool { false }
+
+    override func layout() {
+        super.layout()
+        attachRing()
+        ring.frame = bounds
+        let inset = lineWidth / 2
+        ring.path = CGPath(ellipseIn: bounds.insetBy(dx: inset, dy: inset), transform: nil)
+        ring.lineWidth = lineWidth
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachRing()
+        ring.contentsScale = window?.backingScaleFactor ?? ring.contentsScale
+        updateColor()
+        updateRotation()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        ring.contentsScale = window?.backingScaleFactor ?? ring.contentsScale
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColor()
+    }
+
+    private func attachRing() {
+        guard let layer, ring.superlayer !== layer else { return }
+        layer.addSublayer(ring)
+    }
+
+    private func updateColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            ring.strokeColor = SessionPalette.attentionNSColor.cgColor
+        }
+    }
+
+    private func updateRotation() {
+        guard isRotating else {
+            ring.removeAnimation(forKey: Self.rotationKey)
+            return
+        }
+        guard ring.animation(forKey: Self.rotationKey) == nil else { return }
+        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+        rotation.fromValue = 0
+        // Layer space has a bottom-left origin, so a negative turn is clockwise.
+        rotation.toValue = -2 * Double.pi
+        rotation.duration = Self.period
+        rotation.repeatCount = .infinity
+        rotation.isRemovedOnCompletion = false
+        // One shared phase keeps rings in step and lets a recreated row
+        // continue where the previous one was.
+        rotation.timeOffset = CACurrentMediaTime().truncatingRemainder(dividingBy: Self.period)
+        ring.add(rotation, forKey: Self.rotationKey)
     }
 }
 

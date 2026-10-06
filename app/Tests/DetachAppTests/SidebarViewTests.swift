@@ -54,7 +54,7 @@ final class SidebarViewTests: XCTestCase {
                 }
             }
         }
-        for signal in [SessionStatusSignal.ready, .inputRequired, .error, .stopped, .waiting, .unknown] {
+        for signal in [SessionStatusSignal.ready, .inputRequired, .error, .stopped, .waiting, .unknown, .new] {
             XCTAssertFalse(SessionRowPresentation.shouldAnimate(signal: signal,
                 isFresh: true, isVisible: true, isActive: true, reduceMotion: false))
         }
@@ -81,6 +81,11 @@ final class SidebarViewTests: XCTestCase {
         row.agentWaitingReason = .inputRequired
         XCTAssertEqual(SessionRowPresentation.symbol(for: row), "exclamationmark.circle")
         row.agentTurnState = nil
+        XCTAssertEqual(SessionRowPresentation.status(for: row), L10n.string("new session"))
+        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "circle")
+        XCTAssertEqual(SessionIdentity.statusColor(for: row), SessionPalette.secondary)
+        XCTAssertNil(SessionRowPresentation.background(for: row, selected: false, isFresh: true))
+        row.agentTurnID = "turn"
         XCTAssertEqual(SessionRowPresentation.status(for: row), L10n.string("status unavailable"))
         XCTAssertEqual(SessionRowPresentation.symbol(for: row), "minus.circle")
         let staleSymbol = SessionRowPresentation.symbol(for: row, isFresh: false)
@@ -92,6 +97,53 @@ final class SidebarViewTests: XCTestCase {
             return SessionRowPresentation.symbol(for: row)
         }
         XCTAssertEqual(Set(errorSymbols).count, 5, "Error causes keep distinct icons")
+    }
+
+    func testWorkingRingSpinsInCoreAnimationOnlyWhileAllowed() throws {
+        let view = WorkingRingView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
+        view.lineWidth = 2
+        view.layout()
+        XCTAssertTrue(view.ring.superlayer === view.layer)
+        XCTAssertEqual(view.ring.frame, view.bounds)
+        XCTAssertEqual(view.ring.path?.boundingBox, CGRect(x: 1, y: 1, width: 14, height: 14))
+        XCTAssertEqual(view.ring.lineWidth, 2)
+        XCTAssertEqual(view.ring.strokeEnd, 0.72)
+        XCTAssertEqual(view.ring.lineCap, .round)
+        XCTAssertNil(view.ring.fillColor)
+        XCTAssertNil(view.hitTest(NSPoint(x: 8, y: 8)))
+        XCTAssertFalse(view.isAccessibilityElement())
+        XCTAssertNil(view.ring.animation(forKey: WorkingRingView.rotationKey))
+
+        view.isRotating = true
+        let rotation = try XCTUnwrap(
+            view.ring.animation(forKey: WorkingRingView.rotationKey) as? CABasicAnimation)
+        XCTAssertEqual(rotation.keyPath, "transform.rotation.z")
+        XCTAssertEqual(rotation.fromValue as? Int, 0)
+        XCTAssertEqual(rotation.toValue as? Double, -2 * Double.pi)
+        XCTAssertEqual(rotation.duration, WorkingRingView.period)
+        XCTAssertEqual(rotation.repeatCount, .infinity)
+        XCTAssertFalse(rotation.isRemovedOnCompletion)
+        let phase = CACurrentMediaTime().truncatingRemainder(dividingBy: WorkingRingView.period)
+        let drift = abs(rotation.timeOffset - phase)
+        XCTAssertLessThan(min(drift, WorkingRingView.period - drift), 0.5,
+                          "Rings share one clock phase")
+        view.isRotating = true
+        XCTAssertEqual(view.ring.animationKeys(), [WorkingRingView.rotationKey])
+
+        view.isRotating = false
+        XCTAssertNil(view.ring.animation(forKey: WorkingRingView.rotationKey))
+    }
+
+    func testWorkingRingResolvesTheAttentionColorForItsAppearance() throws {
+        let view = WorkingRingView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
+        for (name, hex) in [(NSAppearance.Name.aqua, 0x986700), (.darkAqua, 0xE8BE58)] {
+            view.appearance = NSAppearance(named: name)
+            let color = try XCTUnwrap(view.ring.strokeColor.flatMap(NSColor.init(cgColor:))?
+                .usingColorSpace(.sRGB))
+            XCTAssertEqual(Int((color.redComponent * 255).rounded()), (hex >> 16) & 255)
+            XCTAssertEqual(Int((color.greenComponent * 255).rounded()), (hex >> 8) & 255)
+            XCTAssertEqual(Int((color.blueComponent * 255).rounded()), hex & 255)
+        }
     }
 
     private func assertSymbol(_ session: Session) throws {
