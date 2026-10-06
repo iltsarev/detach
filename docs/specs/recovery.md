@@ -8,7 +8,14 @@ Claude gets a wrapper-owned UUID via `--session-id`. Resume uses `--resume` with
 a valid transcript or matching checkpoint. It uses `--session-id` only if both
 are absent. A present invalid transcript fails closed. Startup companions such
 as `session-env/<uuid>` or `tasks/session-<short>` are not transcript evidence
-and do not block that path. Codex binds identity
+and do not block that path. Claude can continue a conversation under a new
+UUID in the same process. The bound transcript then has a `continued-in`
+record that names the successor. Discovery follows at most 8 such records,
+within one heartbeat or checkpoint tick, and rebinds identity and transcript.
+Each successor must have a valid transcript in the same Claude project
+directory. A later user or assistant record in the bound transcript cancels
+its continuation. A missing or invalid successor keeps the current binding.
+Codex binds identity
 after launch by matching the run-token originator in rollout files and SQLite.
 Root user threads with source `cli` or `vscode` are eligible. These source labels
 do not identify the launch UI. The known-thread snapshot uses the same filter.

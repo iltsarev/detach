@@ -51,6 +51,36 @@ final class DetachStateTests: XCTestCase {
         XCTAssertEqual(next.agentTurnID, "turn-a", "A known turn state is never overridden")
     }
 
+    func testClaudeSuccessorFollowsOnlyTheLatestUnreusedContinuation() {
+        let old = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        let next = "5f6e7d8c-9b0a-4c1d-8e2f-3a4b5c6d7e8f"
+        let later = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        func successor(_ lines: String...) -> String? {
+            TranscriptDocument.claudeSuccessorID(
+                ofTail: Data(lines.joined(separator: "\n").utf8), expectedSessionID: old)
+        }
+        func marker(_ from: String, _ to: String) -> String {
+            "{\"type\":\"continued-in\",\"sessionId\":\"\(from)\",\"continuedInSessionId\":\"\(to)\"}"
+        }
+        func record(_ type: String) -> String {
+            "{\"type\":\"\(type)\",\"sessionId\":\"\(old)\",\"message\":{\"role\":\"\(type)\",\"content\":\"go\"}}"
+        }
+        XCTAssertEqual(successor(record("user"), marker(old, next)), next)
+        XCTAssertEqual(successor(marker(old, next), #"{"type":"ai-title","aiTitle":"t"}"#), next,
+                       "Metadata after the marker keeps the continuation")
+        XCTAssertEqual(successor(marker(old, next), marker(old, later)), later)
+        for type in ["user", "assistant"] {
+            XCTAssertNil(successor(marker(old, next), record(type)),
+                         "A later \(type) record makes the old session current again")
+        }
+        XCTAssertNil(successor(marker(later, next)), "Another session's marker does not count")
+        XCTAssertNil(successor(marker(old, old)))
+        XCTAssertNil(successor(marker(old, "not-a-uuid")))
+        XCTAssertNil(successor(marker(old, next.uppercased())))
+        XCTAssertNil(successor(#"{"type":"continued-in","sessionId":"\#(old)"}"#))
+        XCTAssertNil(successor(record("user")))
+    }
+
     func testMetadataValidationKeepsTheExistingSchemaContract() throws {
         let data = Data(#"{"schema":1,"session_name":"detach-codex-project","project_dir":"/tmp/project"}"#.utf8)
 

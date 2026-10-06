@@ -3631,6 +3631,9 @@ discover_codex_session() {
   local id_created_ms
   local previous_created_ms
   local bound_created_ms
+  local successor
+  local successor_transcript
+  local hops
 
   meta="$(session_meta "$session")"
   [ -f "$meta" ] || return 1
@@ -3647,6 +3650,23 @@ discover_codex_session() {
       rollout="$(claude_transcript_for_id "$existing_id" 2>/dev/null || true)"
     fi
     [ -n "$rollout" ] && valid_claude_transcript "$rollout" "$existing_id" || return 1
+    # Claude can continue the conversation under a new session ID in the
+    # same process (for example, when plan mode clears the context). The bound
+    # transcript then names its successor. Follow it only to a valid
+    # transcript in the same Claude project directory; until the successor
+    # writes one, keep the current binding.
+    hops=0
+    while [ "$hops" -lt 8 ]; do
+      successor="$("$STATE_BIN" jsonl successor claude "$rollout" "$existing_id" 2>/dev/null || true)"
+      [ -n "$successor" ] || break
+      successor_transcript="$(claude_transcript_for_id "$successor" 2>/dev/null || true)"
+      [ -n "$successor_transcript" ] && \
+        [ "$(dirname "$successor_transcript")" = "$(dirname "$rollout")" ] || break
+      checkpoint_log "$session" "rebound Claude session identity after a continuation: $existing_id -> $successor"
+      existing_id="$successor"
+      rollout="$successor_transcript"
+      hops=$((hops + 1))
+    done
     if [ -n "$run_token" ]; then
       state_update_meta_for_run "$session" "$run_token" \
         --string agent_session_id "$existing_id" --string transcript_path "$rollout"
@@ -3749,6 +3769,23 @@ discover_codex_session() {
       --string agent_session_id "$id" --string transcript_path "$rollout" \
       --string codex_session_id "$id" --string rollout_path "$rollout"
   fi
+}
+
+# Reports whether the bound Claude transcript names a successor whose
+# transcript already sits beside it, so a heartbeat can rebind at once.
+claude_continuation_pending() {
+  local meta
+  local id
+  local transcript
+  local successor
+
+  [ "$PROVIDER" = "claude" ] || return 1
+  meta="$(session_meta "$1")"
+  id="$("$STATE_BIN" meta get "$meta" agent_session_id 2>/dev/null)" || return 1
+  transcript="$("$STATE_BIN" meta get "$meta" transcript_path 2>/dev/null)" || return 1
+  [ -n "$id" ] && [ -n "$transcript" ] || return 1
+  successor="$("$STATE_BIN" jsonl successor claude "$transcript" "$id" 2>/dev/null)" || return 1
+  [ -n "$successor" ] && [ -f "${transcript%/*}/$successor.jsonl" ]
 }
 
 valid_jsonl() {
@@ -5277,9 +5314,10 @@ runtime_heartbeat_locked() {
     "${TMUX_CMD[@]}" set-option -qu -t "=$session:" \
       @detach_provider_pid 2>/dev/null || return 1
   fi
-  # A provider thread switch (for example /clear) should surface in list
-  # output within one heartbeat, not only on the next checkpoint tick.
-  if [ "$PROVIDER" = "codex" ]; then
+  # A provider thread switch (Codex /clear or a Claude continuation) should
+  # surface in list output within one heartbeat, not only on the next
+  # checkpoint tick. Claude pays only for a bounded tail probe.
+  if [ "$PROVIDER" = "codex" ] || claude_continuation_pending "$session"; then
     runtime_writer_matches_live_worker \
       "$session" "$run_token" "$worker_pid" || return 1
     discover_codex_session "$session" "$run_token" >/dev/null 2>&1 || true

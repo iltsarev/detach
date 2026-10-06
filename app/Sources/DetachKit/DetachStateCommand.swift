@@ -100,6 +100,10 @@ public enum DetachStateCommand {
             return try jsonlSummary(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("jsonl", "successor"):
+            return try jsonlSuccessor(
+                Array(arguments.dropFirst(2)),
+                standardInput: injectedStandardInput)
         case ("storage", "report"):
             return try storageReport(
                 Array(arguments.dropFirst(2)),
@@ -1824,6 +1828,25 @@ public enum DetachStateCommand {
             throw DetachStateCommandError.invalidTranscript
         }
         return Data()
+    }
+
+    /// Prints the session ID that a Claude transcript names as its
+    /// continuation, or nothing. Only the bounded tail is read.
+    private static func jsonlSuccessor(
+        _ arguments: [String],
+        standardInput: Data?
+    ) throws -> Data {
+        guard arguments.count == 3, try provider(arguments[0]) == .claude,
+              !arguments[2].isEmpty else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let successor = TranscriptDocument.claudeSuccessorID(
+            ofTail: try tail(
+                atPath: arguments[1],
+                maximumByteCount: 262_144,
+                standardInput: standardInput),
+            expectedSessionID: arguments[2])
+        return successor.map { Data(($0 + "\n").utf8) } ?? Data()
     }
 
     private static func jsonlSummary(

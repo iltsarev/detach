@@ -850,6 +850,73 @@ mv "$dangling_writer_saved" "$dangling_writer_source"
 "$SCRIPT" claude stop "$human_label"
 fi
 
+if [ "$CLAUDE_TEST_PART" != recovery-guardrails ] && \
+   [ "$CLAUDE_TEST_PART" != lifecycle-guardrails ]; then
+# Claude can continue a conversation under a new session ID in the same
+# process. Discovery follows the `continued-in` record only to a valid
+# successor transcript in the bound project directory.
+continued_label='Continued chat'
+export FAKE_CLAUDE_SLEEP=20
+export FAKE_CLAUDE_EXIT=0
+export FAKE_CLAUDE_EXPECT_RESTORED=0
+reset_fake_claude_ready
+continued_output="$("$SCRIPT" claude --name "$continued_label" --detach -- 'continued chat')"
+wait_for_fake_claude_ready
+continued_session="$(printf '%s\n' "$continued_output" | awk '/^Started / { print $2; exit }')"
+continued_dir="$DETACH_CLAUDE_STATE_ROOT/sessions/$continued_session"
+continued_meta="$continued_dir/meta.json"
+continued_id="$("$STATE_HELPER" meta get "$continued_meta" agent_session_id)"
+continued_transcript="$CLAUDE_CONFIG_DIR/projects/fake/$continued_id.jsonl"
+foreign_id=11111111-2222-4333-8444-555555555555
+successor_id=66666666-7777-4888-9999-aaaaaaaaaaaa
+mkdir -p "$CLAUDE_CONFIG_DIR/projects/alternate"
+printf '{"type":"user","sessionId":"%s","message":{"role":"user","content":"elsewhere"},"uuid":"foreign-turn"}\n' \
+  "$foreign_id" >"$CLAUDE_CONFIG_DIR/projects/alternate/$foreign_id.jsonl"
+printf '{"type":"continued-in","sessionId":"%s","continuedInSessionId":"%s"}\n' \
+  "$continued_id" "$foreign_id" >>"$continued_transcript"
+attempts=0
+until [ "$(basename "$("$STATE_HELPER" meta get "$continued_meta" transcript_path 2>/dev/null)")" = \
+    "$continued_id.jsonl" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 100 ] || {
+    printf 'Claude transcript was not bound within 10 seconds\n' >&2
+    exit 1
+  }
+  sleep 0.1
+done
+# Several checkpoint and heartbeat ticks pass; another project's transcript
+# never becomes this session's identity.
+sleep 3
+[ "$("$STATE_HELPER" meta get "$continued_meta" agent_session_id)" = "$continued_id" ]
+printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":"after clear"},"uuid":"successor-turn","timestamp":"2099-01-01T00:04:01.000Z"}\n' \
+  "$successor_id" >"$CLAUDE_CONFIG_DIR/projects/fake/$successor_id.jsonl"
+printf '{"type":"continued-in","sessionId":"%s","continuedInSessionId":"%s"}\n' \
+  "$continued_id" "$successor_id" >>"$continued_transcript"
+attempts=0
+until [ "$("$STATE_HELPER" meta get "$continued_meta" agent_session_id)" = "$successor_id" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 100 ] || {
+    printf 'Claude continuation was not rebound within 10 seconds\n' >&2
+    exit 1
+  }
+  sleep 0.1
+done
+[ "$(basename "$("$STATE_HELPER" meta get "$continued_meta" transcript_path)")" = \
+  "$successor_id.jsonl" ]
+continued_json="$("$SCRIPT" claude list --json | \
+  grep -F "\"session_name\":\"$continued_session\"")"
+[ "$(printf '%s' "$continued_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_session_id)" = "$successor_id" ]
+[ "$(printf '%s' "$continued_json" | \
+  "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = successor-turn ]
+grep -F "rebound Claude session identity after a continuation: $continued_id -> $successor_id" \
+  "$continued_dir/checkpoint.log" >/dev/null
+! grep -F "$foreign_id" "$continued_dir/checkpoint.log" >/dev/null
+"$SCRIPT" claude stop "$continued_label"
+"$SCRIPT" claude delete --force "$continued_label"
+rm -f "$CLAUDE_CONFIG_DIR/projects/alternate/$foreign_id.jsonl"
+fi
+
 "$STATE_HELPER" meta patch "$checkpoint/meta.json" --string status running --null exit_status
 rm -f "$meta"
 printf '{damaged transcript\n' >"$CLAUDE_CONFIG_DIR/projects/fake/$session_id.jsonl"

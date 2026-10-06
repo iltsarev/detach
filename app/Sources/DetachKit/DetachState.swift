@@ -849,6 +849,46 @@ public enum TranscriptDocument {
         result.pendingToolUseID = nil
     }
 
+    /// Claude can continue a conversation under a new session ID in the same
+    /// process, for example when plan mode clears the context. The old
+    /// transcript then records `continued-in` with the successor ID. Returns
+    /// that successor unless a later conversation record reuses this session.
+    /// A session never names itself.
+    public static func claudeSuccessorID(
+        ofTail data: Data,
+        expectedSessionID: String
+    ) -> String? {
+        var successor: String?
+        var emitted = false
+        _ = try? scanRecords(
+            tolerateInvalid: true,
+            nextChunk: {
+                guard !emitted else { return nil }
+                emitted = true
+                return data
+            }
+        ) { record, _ in
+            let type = record["type"] as? String
+            if type == "user" || type == "assistant" {
+                // A later conversation record makes this session current again.
+                successor = nil
+                return true
+            }
+            guard type == "continued-in",
+                  record["sessionId"] as? String == expectedSessionID,
+                  let next = record["continuedInSessionId"] as? String,
+                  next != expectedSessionID,
+                  next.range(of: claudeSessionIDPattern, options: .regularExpression) != nil
+            else { return true }
+            successor = next
+            return true
+        }
+        return successor
+    }
+
+    private static let claudeSessionIDPattern =
+        "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
     /// Bytes searched for background launches when a cold tail ends in a
     /// finished turn. Launch records can sit far above the summary tail.
     public static let backgroundSearchByteCount: UInt64 = 4 * 1_024 * 1_024

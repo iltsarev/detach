@@ -398,8 +398,10 @@ the conversation belongs to the managed run. Review and subagent threads do
 not become the session identity.
 
 When Codex starts a fresh conversation in the same run, for example with
-`/clear`, Detach follows the new conversation. Status and later checkpoints
-then refer to the conversation that is in use.
+`/clear`, Detach follows the new conversation. When Claude continues a
+conversation under a new session ID in the same run, for example after plan
+mode clears the context, Detach follows that continuation too. Status, Resume,
+and later checkpoints then refer to the conversation that is in use.
 
 - **Codex:** Detach saves the session UUID and rollout JSONL. It keeps a valid
   live rollout when that file is at least as large as the checkpoint. It

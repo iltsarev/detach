@@ -1786,6 +1786,41 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript() throws {
+        let old = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        let next = "5f6e7d8c-9b0a-4c1d-8e2f-3a4b5c6d7e8f"
+        let transcript = temporaryDirectory.appendingPathComponent("\(old).jsonl")
+        try Data("""
+        {"type":"user","sessionId":"\(old)","message":{"role":"user","content":"go"}}
+
+        """.utf8).write(to: transcript)
+        let arguments = ["jsonl", "successor", "claude", transcript.path, old]
+        XCTAssertEqual(try DetachStateCommand.run(arguments: arguments), Data())
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("""
+        {"type":"continued-in","sessionId":"\(old)","continuedInSessionId":"\(next)"}
+
+        """.utf8))
+        try handle.close()
+        XCTAssertEqual(try DetachStateCommand.run(arguments: arguments), Data("\(next)\n".utf8))
+
+        let link = temporaryDirectory.appendingPathComponent("successor-link.jsonl")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: transcript)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "successor", "claude", link.path, old,
+        ]))
+        for invalid in [
+            ["jsonl", "successor", "codex", transcript.path, old],
+            ["jsonl", "successor", "claude", transcript.path, ""],
+            ["jsonl", "successor", "claude", transcript.path],
+        ] {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: invalid)) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
+        }
+    }
+
     func testJSONLValidateRejectsFIFOWithoutWaitingForAWriter() throws {
         let fifo = temporaryDirectory.appendingPathComponent("fifo.jsonl")
         try checkWithoutWriter(fifo) {
