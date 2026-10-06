@@ -6,6 +6,9 @@ set -E
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 PROJECT_LABEL="${ROOT##*/}"
+# The status strip caps the project label; the window title stays complete.
+STATUS_PROJECT_LABEL="$PROJECT_LABEL"
+[ "${#STATUS_PROJECT_LABEL}" -le 28 ] || STATUS_PROJECT_LABEL="${STATUS_PROJECT_LABEL:0:27}…"
 SCRIPT="$ROOT/bin/detach"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-claude-test.XXXXXX")"
 TEST_INSTALL_STATE_ROOT="/tmp/detach-claude-install-state-$$"
@@ -544,7 +547,7 @@ tmux -L "$SOCKET" show-options -qv -t "=$session:" status-style | \
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
   grep -F "bg=$session_color" >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-left | \
-  grep -F 'Claude' | grep -F "$PROJECT_LABEL" | grep -F 'RUNNING' >/dev/null
+  grep -F 'Claude' | grep -F "$STATUS_PROJECT_LABEL" | grep -F 'RUNNING' >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$session:" status-right | \
   grep -F 'MAC AWAKE' >/dev/null
 # The shared private-server input contract applies to Claude sessions too.

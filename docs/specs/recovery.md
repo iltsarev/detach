@@ -9,8 +9,12 @@ a valid transcript or matching checkpoint. It uses `--session-id` only if both
 are absent. A present invalid transcript fails closed. Startup companions such
 as `session-env/<uuid>` or `tasks/session-<short>` are not transcript evidence
 and do not block that path. Codex binds identity
-after launch by matching the run-token originator in rollout files and SQLite;
-an ambiguous first binding fails. If the provider switches to another run-owned
+after launch by matching the run-token originator in rollout files and SQLite.
+Root user threads with source `cli` or `vscode` are eligible. These source labels
+do not identify the launch UI. The known-thread snapshot uses the same filter.
+The project path must match, including after worktree creation. Subagents and
+guardian review threads remain ineligible, even with the same originator.
+An ambiguous first binding fails. If the provider switches to another run-owned
 user thread (for example `/clear`), discovery rebinds identity, transcript, and
 checkpoints to the newest originator-matched thread within one heartbeat or
 checkpoint tick, records superseded thread IDs so the next switch stays

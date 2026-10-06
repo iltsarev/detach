@@ -9,6 +9,8 @@ fi
 
 cwd="$PWD"
 mode="start"
+source="${FAKE_CODEX_SOURCE:-cli}"
+case "$source" in cli|vscode) ;; *) exit 2 ;; esac
 resume_id=""
 args_file="${FAKE_CODEX_ARGS_FILE:?}"
 codex_home="${CODEX_HOME:?}"
@@ -55,7 +57,7 @@ if [ "${FAKE_CODEX_FOREIGN_FIRST:-0}" = "1" ]; then
     "$foreign_id" "$cwd" >"$foreign_rollout"
   escaped_foreign_rollout="${foreign_rollout//\'/\'\'}"
   escaped_foreign_cwd="${cwd//\'/\'\'}"
-  sqlite "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) VALUES ('$foreign_id', '$escaped_foreign_rollout', $now_ms, $now_ms, 'cli', 'user', '$escaped_foreign_cwd');"
+  sqlite "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) VALUES ('$foreign_id', '$escaped_foreign_rollout', $now_ms, $now_ms, '$source', 'user', '$escaped_foreign_cwd');"
 fi
 
 sleep "${FAKE_CODEX_INIT_DELAY:-0}"
@@ -68,14 +70,30 @@ fi
 
 rollout="$codex_home/sessions/2099/01/01/rollout-test-$id.jsonl"
 originator="${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-codex_cli_rs}"
-printf '{"timestamp":"2099-01-01T00:00:00Z","type":"session_meta","payload":{"id":"%s","cwd":"%s","originator":"%s"}}\n' \
-  "$id" "$cwd" "$originator" >"$rollout"
+if [ "${FAKE_CODEX_GUARDIAN:-0}" = 1 ]; then
+  # Review companions inherit the run originator. Neither their client source
+  # nor their originator makes them the user's conversation.
+  for guardian_source in vscode '{"subagent":{"other":"guardian"}}'; do
+    case "$guardian_source" in
+      vscode) guardian_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" ;;
+      *) guardian_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" ;;
+    esac
+    guardian_rollout="$codex_home/sessions/2099/01/01/rollout-guardian-$guardian_id.jsonl"
+    printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s","originator":"%s"}}\n' \
+      "$guardian_id" "$cwd" "$originator" >"$guardian_rollout"
+    escaped_guardian_rollout="${guardian_rollout//\'/\'\'}"
+    escaped_guardian_cwd="${cwd//\'/\'\'}"
+    sqlite "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) VALUES ('$guardian_id', '$escaped_guardian_rollout', $now_ms, $now_ms, '$guardian_source', 'guardian_review', '$escaped_guardian_cwd');"
+  done
+fi
+printf '{"timestamp":"2099-01-01T00:00:00Z","type":"session_meta","payload":{"id":"%s","cwd":"%s","originator":"%s","source":"%s"}}\n' \
+  "$id" "$cwd" "$originator" "$source" >"$rollout"
 printf '{"timestamp":"2099-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"fake-turn-%s"}}\n' \
   "$id" >>"$rollout"
 
 escaped_cwd="${cwd//\'/\'\'}"
 escaped_rollout="${rollout//\'/\'\'}"
-sqlite "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) VALUES ('$id', '$escaped_rollout', $now_ms, $now_ms, 'cli', 'user', '$escaped_cwd');"
+sqlite "$db" "INSERT OR REPLACE INTO threads (id, rollout_path, created_at_ms, updated_at_ms, source, thread_source, cwd) VALUES ('$id', '$escaped_rollout', $now_ms, $now_ms, '$source', 'user', '$escaped_cwd');"
 
 printf 'fake Codex started in %s\n' "$cwd"
 printf 'mode=%s id=%s\n' "$mode" "$id"

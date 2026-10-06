@@ -377,6 +377,11 @@ a final attempt when the worker exits. Detach also retains terminal output and
 records canonical repository context without invoking Git or the Apple Command
 Line Tools shim.
 
+Codex can label a user conversation as `cli` or `vscode`, including after a
+terminal launch in a new worktree. Detach accepts both labels and checks that
+the conversation belongs to the managed run. Review and subagent threads do
+not become the session identity.
+
 When Codex starts a fresh conversation in the same run, for example with
 `/clear`, Detach follows the new conversation. Status and later checkpoints
 then refer to the conversation that is in use.
