@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import XCTest
 import DetachKit
@@ -24,6 +25,88 @@ final class SidebarViewTests: XCTestCase {
                 suiteName: "SidebarViewTests.\(UUID().uuidString)")!))
 
         _ = view.body
+    }
+
+    func testWorkingRowsHaveNeutralSelectionAndNoIdleFill() throws {
+        let working = try rowSession(state: "working")
+        XCTAssertNil(SessionRowPresentation.background(for: working, selected: false, isFresh: true))
+        XCTAssertEqual(SessionRowPresentation.background(for: working, selected: true, isFresh: true),
+                       Color.primary.opacity(0.10))
+        for (reason, color) in [("input_required", SessionPalette.attention), ("answer_ready", SessionPalette.ready)] {
+            let waiting = try rowSession(state: "waiting", reason: reason)
+            XCTAssertEqual(SessionIdentity.statusColor(for: waiting), color)
+            XCTAssertNotNil(SessionRowPresentation.background(for: waiting, selected: false, isFresh: true))
+            XCTAssertNil(SessionRowPresentation.background(for: waiting, selected: false, isFresh: false))
+            XCTAssertEqual(SessionRowPresentation.background(for: waiting, selected: true, isFresh: false),
+                           Color.primary.opacity(0.10))
+        }
+    }
+
+    func testWorkingAnimationRequiresFreshVisibleActiveStateAndMotionPermission() {
+        for fresh in [false, true] {
+            for visible in [false, true] {
+                for active in [false, true] {
+                    for reduced in [false, true] {
+                        XCTAssertEqual(SessionRowPresentation.shouldAnimate(signal: .working,
+                            isFresh: fresh, isVisible: visible, isActive: active, reduceMotion: reduced),
+                            fresh && visible && active && !reduced)
+                    }
+                }
+            }
+        }
+        for signal in [SessionStatusSignal.ready, .inputRequired, .error, .stopped, .waiting, .unknown] {
+            XCTAssertFalse(SessionRowPresentation.shouldAnimate(signal: signal,
+                isFresh: true, isVisible: true, isActive: true, reduceMotion: false))
+        }
+    }
+
+    func testEveryLifecycleAndTurnHasAnAvailableExplicitSymbol() throws {
+        var row = try rowSession(state: "working")
+        let lifecycles: [EffectiveStatus] = [.starting, .running, .recovering, .hung,
+            .completed, .failed, .interrupted, .stopped, .recoverable, .orphaned,
+            .corrupt, .collision, .unknown]
+        for lifecycle in lifecycles {
+            row.effectiveStatus = lifecycle
+            try assertSymbol(row)
+        }
+        row.effectiveStatus = .running
+        for turn in [AgentTurnState.working, .waiting, .interrupted, .unknown, nil] {
+            row.agentTurnState = turn
+            for reason in [AgentWaitingReason.answerReady, .inputRequired, .unknown, nil] {
+                row.agentWaitingReason = reason
+                try assertSymbol(row)
+            }
+        }
+        row.agentTurnState = .waiting
+        row.agentWaitingReason = .inputRequired
+        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "exclamationmark.circle")
+        row.agentTurnState = nil
+        XCTAssertEqual(SessionRowPresentation.status(for: row), L10n.string("status unavailable"))
+        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "minus.circle")
+        let staleSymbol = SessionRowPresentation.symbol(for: row, isFresh: false)
+        XCTAssertEqual(staleSymbol, "clock.arrow.circlepath")
+        XCTAssertNotNil(NSImage(systemSymbolName: staleSymbol, accessibilityDescription: nil))
+
+        let errorSymbols = [EffectiveStatus.failed, .hung, .orphaned, .corrupt, .collision].map { status in
+            row.effectiveStatus = status
+            return SessionRowPresentation.symbol(for: row)
+        }
+        XCTAssertEqual(Set(errorSymbols).count, 5, "Error causes keep distinct icons")
+    }
+
+    private func assertSymbol(_ session: Session) throws {
+        let name = SessionRowPresentation.symbol(for: session)
+        XCTAssertFalse(name.contains("questionmark"))
+        XCTAssertFalse(name.contains("ellipsis"))
+        XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil),
+                        "Missing system symbol for \(session.effectiveStatus): \(name)")
+    }
+
+    private func rowSession(state: String, reason: String? = nil) throws -> Session {
+        let reasonField = reason.map { ",\"agent_waiting_reason\":\"\($0)\"" } ?? ""
+        return try XCTUnwrap(SessionListParser.parse("""
+            {"schema":1,"provider":"codex","session_name":"work","name":"work",            "effective_status":"running","agent_turn_state":"\(state)"\(reasonField)}
+            """).sessions.first)
     }
 
     func testFormatsEveryFinishedDeletionFailure() {

@@ -58,16 +58,16 @@ final class SidebarGroupsTests: XCTestCase {
         let personal = try store.createGroup(named: "Personal").get()
         store.assign("a", to: work)
         store.assign("b", to: personal)
-        store.setCollapsed(true, section: .active, groupID: work)
-        store.setCollapsed(true, section: .finished, groupID: personal)
+        store.setCollapsed(true, section: .sessions, groupID: work)
+        store.setCollapsed(true, section: .stopped, groupID: personal)
 
         store.deleteGroup(work)
 
         XCTAssertEqual(store.groups.map(\.id), [personal])
         XCTAssertNil(store.groupID(for: "a"))
         XCTAssertEqual(store.groupID(for: "b"), personal)
-        XCTAssertFalse(store.isCollapsed(section: .active, groupID: work))
-        XCTAssertTrue(store.isCollapsed(section: .finished, groupID: personal))
+        XCTAssertFalse(store.isCollapsed(section: .sessions, groupID: work))
+        XCTAssertTrue(store.isCollapsed(section: .stopped, groupID: personal))
     }
 
     func testAssignMovesRemovesAndIgnoresUnknownGroups() throws {
@@ -89,13 +89,13 @@ final class SidebarGroupsTests: XCTestCase {
         let work = try store.createGroup(named: "Work").get()
         store.assign("a", to: work)
 
-        store.setCollapsed(true, section: .finished, groupID: work)
+        store.setCollapsed(true, section: .stopped, groupID: work)
 
-        XCTAssertTrue(store.isCollapsed(section: .finished, groupID: work))
-        XCTAssertFalse(store.isCollapsed(section: .active, groupID: work))
+        XCTAssertTrue(store.isCollapsed(section: .stopped, groupID: work))
+        XCTAssertFalse(store.isCollapsed(section: .sessions, groupID: work))
         let reloaded = SidebarGroupStore(defaults: defaults)
         XCTAssertEqual(reloaded.document, store.document)
-        XCTAssertTrue(reloaded.isCollapsed(section: .finished, groupID: work))
+        XCTAssertTrue(reloaded.isCollapsed(section: .stopped, groupID: work))
         XCTAssertEqual(reloaded.groupID(for: "a"), work)
     }
 
@@ -104,15 +104,15 @@ final class SidebarGroupsTests: XCTestCase {
         let work = try store.createGroup(named: "Work").get()
         let running = session(id: "a", status: "running")
         store.assign(running.id, to: work)
-        store.setCollapsed(true, section: .active, groupID: work)
-        store.setCollapsed(true, section: .finished, groupID: work)
+        store.setCollapsed(true, section: .sessions, groupID: work)
+        store.setCollapsed(true, section: .stopped, groupID: work)
 
         store.reveal(running)
 
-        XCTAssertFalse(store.isCollapsed(section: .active, groupID: work))
-        XCTAssertTrue(store.isCollapsed(section: .finished, groupID: work))
+        XCTAssertFalse(store.isCollapsed(section: .sessions, groupID: work))
+        XCTAssertTrue(store.isCollapsed(section: .stopped, groupID: work))
         store.reveal(session(id: "ungrouped", status: "running"))
-        XCTAssertTrue(store.isCollapsed(section: .finished, groupID: work))
+        XCTAssertTrue(store.isCollapsed(section: .stopped, groupID: work))
     }
 
     func testPruneKeepsOnlyListedSessions() throws {
@@ -158,8 +158,8 @@ final class SidebarGroupsTests: XCTestCase {
         ]
         document.assignments = ["a": work, "b": missing]
         document.collapsed = [
-            SidebarGroupsDocument.collapseKey(section: .active, groupID: work),
-            SidebarGroupsDocument.collapseKey(section: .active, groupID: missing),
+            SidebarGroupsDocument.collapseKey(section: .sessions, groupID: work),
+            SidebarGroupsDocument.collapseKey(section: .sessions, groupID: missing),
             "garbage",
         ]
 
@@ -168,60 +168,80 @@ final class SidebarGroupsTests: XCTestCase {
         XCTAssertEqual(decoded.groups, [SidebarGroup(id: work, name: "Work")])
         XCTAssertEqual(decoded.assignments, ["a": work])
         XCTAssertEqual(decoded.collapsed, [
-            SidebarGroupsDocument.collapseKey(section: .active, groupID: work),
+            SidebarGroupsDocument.collapseKey(section: .sessions, groupID: work),
         ])
     }
 
-    func testLayoutKeepsStatusSectionsAndPutsGroupsFirstInUserOrder() {
+    func testLayoutKeepsGroupsAndShortcutOrderWithStoppedRowsLast() {
         let work = SidebarGroup(id: UUID(), name: "Work")
         let personal = SidebarGroup(id: UUID(), name: "Personal")
-        let empty = SidebarGroup(id: UUID(), name: "Empty")
         var document = SidebarGroupsDocument()
-        document.groups = [personal, work, empty]
-        document.assignments = [
-            "work-running": work.id,
-            "work-waiting": work.id,
-            "personal-done": personal.id,
-            "personal-running": personal.id,
-        ]
-        let sessions = [
-            session(id: "loose-running", status: "running"),
-            session(id: "work-running", status: "running"),
-            session(id: "work-waiting", status: "running", turnState: "waiting"),
-            session(id: "personal-running", status: "running"),
-            session(id: "personal-done", status: "completed"),
-            session(id: "loose-done", status: "completed"),
-        ]
+        document.groups = [personal, work]
+        document.assignments = ["first": work.id, "second": work.id,
+                                "done": personal.id, "stopped": work.id]
+        let sessions = [session(id: "second", status: "running"),
+                        session(id: "stopped", status: "stopped"),
+                        session(id: "first", status: "running", turnState: "waiting"),
+                        session(id: "done", status: "completed"),
+                        session(id: "error", status: "failed"),
+                        session(id: "interrupted", status: "interrupted")]
+        let slots = [SessionShortcutAssignment(sessionID: "first", displayTitle: "First", slot: 1),
+                     SessionShortcutAssignment(sessionID: "second", displayTitle: "Second", slot: 2)]
+        let layout = SidebarSectionLayout.build(sessions: sessions, document: document, shortcutAssignments: slots)
+        XCTAssertEqual(layout.map(\.section), [.sessions, .stopped])
+        let groupIDs = layout.flatMap { $0.groupBlocks.map(\.id) }
+        XCTAssertEqual(groupIDs.count, Set(groupIDs).count,
+                       "A group in two sections must have distinct List identities")
+        XCTAssertEqual(layout[0].groupBlocks.map(\.group), [personal, work])
+        XCTAssertEqual(layout[0].groupBlocks[1].sessions.map(\.id), ["first", "second"])
+        XCTAssertEqual(layout[0].ungrouped.map(\.id), ["error"])
+        XCTAssertEqual(layout[0].count, 4)
+        XCTAssertEqual(layout[1].groupBlocks[0].sessions.map(\.id), ["stopped"])
+        XCTAssertEqual(layout[1].ungrouped.map(\.id), ["interrupted"])
 
-        let layout = SidebarSectionLayout.build(sessions: sessions, document: document)
-
-        XCTAssertEqual(layout.map(\.section), [.answerReady, .active, .finished])
-        XCTAssertEqual(layout[0].groupBlocks.map(\.group), [work])
-        XCTAssertEqual(layout[0].groupBlocks[0].sessions.map(\.id), ["work-waiting"])
-        XCTAssertTrue(layout[0].ungrouped.isEmpty)
-        XCTAssertEqual(layout[1].groupBlocks.map(\.group), [personal, work])
-        XCTAssertEqual(layout[1].groupBlocks.map { $0.sessions.map(\.id) }, [
-            ["personal-running"], ["work-running"],
-        ])
-        XCTAssertEqual(layout[1].ungrouped.map(\.id), ["loose-running"])
-        XCTAssertEqual(layout[1].count, 3)
-        XCTAssertEqual(layout[2].groupBlocks.map(\.group), [personal])
-        XCTAssertEqual(layout[2].ungrouped.map(\.id), ["loose-done"])
+        var changed = sessions
+        changed[0].agentTurnState = .waiting
+        changed[2].agentTurnState = .working
+        XCTAssertEqual(SidebarSectionLayout.build(sessions: changed, document: document,
+            shortcutAssignments: slots).map { $0.groupBlocks.map { $0.sessions.map(\.id) } },
+            layout.map { $0.groupBlocks.map { $0.sessions.map(\.id) } })
     }
 
-    func testLayoutWithoutGroupsMatchesTheStatusSections() {
-        let sessions = [
-            session(id: "a", status: "running"),
-            session(id: "b", status: "hung"),
-        ]
-
-        let layout = SidebarSectionLayout.build(
-            sessions: sessions, document: SidebarGroupsDocument())
-
-        XCTAssertEqual(layout.map(\.section), [.active, .problems])
-        XCTAssertTrue(layout.allSatisfy(\.groupBlocks.isEmpty))
-        XCTAssertEqual(layout.map { $0.ungrouped.map(\.id) }, [["a"], ["b"]])
+    func testUnnumberedRowsFollowShortcutsAndUseNewestLaunchFirst() {
+        var older = session(id: "older", status: "running")
+        older.createdAt = Date(timeIntervalSince1970: 10)
+        var newer = session(id: "newer", status: "completed")
+        newer.createdAt = Date(timeIntervalSince1970: 20)
+        let numbered = session(id: "numbered", status: "running")
+        let slots = [SessionShortcutAssignment(sessionID: "numbered", displayTitle: "N", slot: 8)]
+        let layout = SidebarSectionLayout.build(sessions: [older, newer, numbered],
+            document: SidebarGroupsDocument(), shortcutAssignments: slots)
+        XCTAssertEqual(layout.map(\.section), [.sessions])
+        XCTAssertEqual(layout[0].ungrouped.map(\.id), ["numbered", "newer", "older"])
     }
+
+    func testStoppedCollapsePersistsAndRevealOpensEvenAnUngroupedSession() {
+        let store = SidebarGroupStore(defaults: defaults)
+        store.setStoppedCollapsed(true)
+        let reloaded = SidebarGroupStore(defaults: defaults)
+        XCTAssertTrue(reloaded.stoppedCollapsed)
+        reloaded.reveal(session(id: "done", status: "stopped"))
+        XCTAssertFalse(reloaded.stoppedCollapsed)
+    }
+
+    func testLegacyGroupsKeepAssignmentsAndCompatibleCollapseKeys() throws {
+        let id = UUID()
+        let legacy: [String: Any] = ["schema": 1,
+            "groups": [["id": id.uuidString, "name": "Work"]],
+            "assignments": ["session": id.uuidString],
+            "collapsed": ["active/" + id.uuidString, "finished/" + id.uuidString,
+                          "answerReady/" + id.uuidString]]
+        let document = SidebarGroupsDocument.decode(try JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(document.assignments, ["session": id])
+        XCTAssertNil(document.stoppedCollapsed)
+        XCTAssertEqual(document.collapsed, ["active/" + id.uuidString, "finished/" + id.uuidString])
+    }
+
 }
 
 private extension Result {

@@ -364,6 +364,7 @@ public struct TranscriptSummary: Equatable, Sendable {
     public var contextUsed: Int?
     public var contextWindow: Int?
     public var agentTurnState: AgentTurnState?
+    public var agentWaitingReason: AgentWaitingReason?
     public var agentTurnID: String?
     var pendingToolUseID: String?
     /// Background work the agent started and still waits for (Claude:
@@ -376,12 +377,14 @@ public struct TranscriptSummary: Equatable, Sendable {
         contextUsed: Int? = nil,
         contextWindow: Int? = nil,
         agentTurnState: AgentTurnState? = nil,
-        agentTurnID: String? = nil
+        agentTurnID: String? = nil,
+        agentWaitingReason: AgentWaitingReason? = nil
     ) {
         self.model = model
         self.contextUsed = contextUsed
         self.contextWindow = contextWindow
         self.agentTurnState = agentTurnState
+        self.agentWaitingReason = agentWaitingReason
         self.agentTurnID = agentTurnID
         self.pendingToolUseID = nil
         self.pendingBackground = []
@@ -392,6 +395,7 @@ public struct TranscriptSummary: Equatable, Sendable {
             && lhs.contextUsed == rhs.contextUsed
             && lhs.contextWindow == rhs.contextWindow
             && lhs.agentTurnState == rhs.agentTurnState
+            && lhs.agentWaitingReason == rhs.agentWaitingReason
             && lhs.agentTurnID == rhs.agentTurnID
     }
 }
@@ -567,6 +571,9 @@ public enum TranscriptDocument {
             result.agentTurnState = nil
             result.agentTurnID = nil
         }
+        if result.agentTurnState != .waiting {
+            result.agentWaitingReason = nil
+        }
         return result
     }
 
@@ -674,6 +681,27 @@ public enum TranscriptDocument {
     ) {
         guard let payload = record["payload"] as? [String: Any] else { return }
 
+        // Rollout response items retain tool call IDs. Only the synchronous
+        // user-input tool blocks this turn; unrelated tool results cannot
+        // resolve it. Async questions do not prove that work has stopped.
+        if record["type"] as? String == "response_item",
+           let callID = payload["call_id"] as? String, !callID.isEmpty {
+            if payload["type"] as? String == "function_call",
+               let name = payload["name"] as? String,
+               ["request_user_input", "functions.request_user_input"].contains(name) {
+                result.agentTurnState = .waiting
+                result.agentWaitingReason = .inputRequired
+                result.agentTurnID = callID
+                result.pendingToolUseID = callID
+            } else if payload["type"] as? String == "function_call_output",
+                      result.pendingToolUseID == callID {
+                result.agentTurnState = .working
+                result.agentWaitingReason = nil
+                result.pendingToolUseID = nil
+            }
+            return
+        }
+
         if let model = payload["model"] as? String {
             result.model = model
         }
@@ -696,12 +724,18 @@ public enum TranscriptDocument {
         switch event {
         case "task_started", "turn_started":
             result.agentTurnState = .working
+            result.agentWaitingReason = nil
+            result.pendingToolUseID = nil
             result.agentTurnID = turnID
         case "task_complete", "turn_complete":
             result.agentTurnState = .waiting
+            result.agentWaitingReason = .answerReady
+            result.pendingToolUseID = nil
             result.agentTurnID = turnID
         case "turn_aborted":
             result.agentTurnState = .interrupted
+            result.agentWaitingReason = nil
+            result.pendingToolUseID = nil
             result.agentTurnID = turnID
         default:
             break
@@ -746,6 +780,7 @@ public enum TranscriptDocument {
            let toolUseID = toolUseID(
             message?["content"], named: "AskUserQuestion") {
             result.agentTurnState = .waiting
+            result.agentWaitingReason = .inputRequired
             result.agentTurnID = toolUseID
             result.pendingToolUseID = toolUseID
             return
@@ -773,6 +808,7 @@ public enum TranscriptDocument {
                 // A tool continuation can follow a completed answer without a
                 // new plain user record (for example, after a Stop hook).
                 result.agentTurnState = .working
+                result.agentWaitingReason = nil
                 result.agentTurnID = turnID
             }
             return
@@ -796,6 +832,7 @@ public enum TranscriptDocument {
             return
         }
         result.agentTurnState = .working
+        result.agentWaitingReason = nil
         result.agentTurnID = turnID
         result.pendingToolUseID = nil
     }
@@ -841,6 +878,7 @@ public enum TranscriptDocument {
         var result = summary
         result.pendingBackground = scan.pendingBackground
         result.agentTurnState = .working
+        result.agentWaitingReason = nil
         return result
     }
 
@@ -849,9 +887,11 @@ public enum TranscriptDocument {
     private static func finishTurn(_ turnID: String, into result: inout TranscriptSummary) {
         if result.pendingBackground.isEmpty {
             result.agentTurnState = .waiting
+            result.agentWaitingReason = .answerReady
         } else {
             guard result.agentTurnState != .working else { return }
             result.agentTurnState = .working
+            result.agentWaitingReason = nil
         }
         result.agentTurnID = turnID
     }

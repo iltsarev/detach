@@ -2,6 +2,28 @@ import XCTest
 @testable import DetachKit
 
 final class DetachStateTests: XCTestCase {
+    func testCodexInputReasonRequiresMatchingResultAndClearsOnTurnTransition() {
+        let request = Data(#"{"type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"ask-1","arguments":"{}"}}"#.utf8)
+        let waiting = TranscriptDocument.summary(ofTail: request, provider: .codex)
+        XCTAssertEqual(waiting.agentTurnState, .waiting)
+        XCTAssertEqual(waiting.agentWaitingReason, .inputRequired)
+        let unrelated = Data(#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"other","output":"ok"}}"#.utf8)
+        XCTAssertEqual(TranscriptDocument.summary(ofTail: unrelated, provider: .codex, startingFrom: waiting), waiting)
+        let answer = Data(#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"ask-1","output":"ok"}}"#.utf8)
+        let resumed = TranscriptDocument.summary(ofTail: answer, provider: .codex, startingFrom: waiting)
+        XCTAssertEqual(resumed.agentTurnState, .working)
+        XCTAssertNil(resumed.agentWaitingReason)
+        XCTAssertNil(resumed.pendingToolUseID)
+        for event in ["task_started", "turn_aborted", "task_complete"] {
+            let record = Data("{\"type\":\"event_msg\",\"payload\":{\"type\":\"\(event)\",\"turn_id\":\"turn\"}}".utf8)
+            let next = TranscriptDocument.summary(ofTail: record, provider: .codex, startingFrom: waiting)
+            XCTAssertEqual(next.agentWaitingReason, event == "task_complete" ? .answerReady : nil)
+            XCTAssertNil(next.pendingToolUseID)
+        }
+        let async = Data(#"{"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","call_id":"async"}}"#.utf8)
+        XCTAssertNil(TranscriptDocument.summary(ofTail: async, provider: .codex).agentWaitingReason)
+    }
+
     func testMetadataValidationKeepsTheExistingSchemaContract() throws {
         let data = Data(#"{"schema":1,"session_name":"detach-codex-project","project_dir":"/tmp/project"}"#.utf8)
 
@@ -494,7 +516,8 @@ final class DetachStateTests: XCTestCase {
                 contextUsed: 150,
                 contextWindow: 1000,
                 agentTurnState: .waiting,
-                agentTurnID: "turn-1"))
+                agentTurnID: "turn-1",
+                agentWaitingReason: .answerReady))
     }
 
     func testCodexSummaryCoversInterruptedUnknownAndInvalidNumericEvents() {
@@ -544,7 +567,8 @@ final class DetachStateTests: XCTestCase {
                 contextUsed: 60,
                 contextWindow: nil,
                 agentTurnState: .waiting,
-                agentTurnID: "real-user"))
+                agentTurnID: "real-user",
+                agentWaitingReason: .answerReady))
     }
 
     func testClaudeSummaryCompletesFinalTextWithoutTurnDuration() {
@@ -814,7 +838,8 @@ final class DetachStateTests: XCTestCase {
             TranscriptSummary(
                 contextUsed: 0,
                 agentTurnState: .waiting,
-                agentTurnID: "ask-1"))
+                agentTurnID: "ask-1",
+                agentWaitingReason: .inputRequired))
 
         var answeredTail = waitingTail
         answeredTail.append(Data("""

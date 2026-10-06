@@ -19,6 +19,35 @@ final class SessionPresentationTests: XCTestCase {
         return SessionListParser.parse(json).sessions[0]
     }
 
+    func testWaitingReasonsAndUnknownEvidenceHaveDistinctSignals() {
+        var row = make(.running, turnState: .waiting)
+        XCTAssertEqual(row.statusSignal, .waiting)
+        XCTAssertEqual(row.displayStatus, L10n.string("waiting"))
+        row.agentWaitingReason = .inputRequired
+        XCTAssertEqual(row.statusSignal, .inputRequired)
+        XCTAssertEqual(row.displayStatus, L10n.string("needs your input"))
+        row.agentWaitingReason = .answerReady
+        XCTAssertEqual(row.statusSignal, .ready)
+        row.agentTurnState = .working
+        XCTAssertEqual(row.statusSignal, .working)
+        row.agentTurnState = .interrupted
+        XCTAssertEqual(row.statusSignal, .stopped)
+        XCTAssertEqual(row.displayStatus, L10n.string("interrupted"))
+        row.agentTurnState = nil
+        XCTAssertEqual(row.statusSignal, .unknown)
+        for status in [EffectiveStatus.completed, .stopped, .interrupted, .failed, .hung, .recoverable, .unknown] {
+            row.effectiveStatus = status
+            let expected: SessionStatusSignal = switch status {
+            case .completed: .ready
+            case .stopped, .interrupted: .stopped
+            case .failed, .hung: .error
+            case .recoverable: .recoverable
+            default: .unknown
+            }
+            XCTAssertEqual(row.statusSignal, expected)
+        }
+    }
+
     func testSections() {
         XCTAssertEqual(
             SessionSection.allCases,
@@ -38,6 +67,16 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertEqual(SessionSection.active.displayName, L10n.string("Working"))
         XCTAssertEqual(SessionSection.finished.displayName, L10n.string("Finished"))
         XCTAssertEqual(SessionSection.problems.displayName, L10n.string("Problems"))
+    }
+
+    func testUnknownWaitingReasonDecodesWithoutClaimingReadiness() throws {
+        let parsed = SessionListParser.parse("""
+            {"schema":1,"provider":"codex","session_name":"future","name":"future",            "effective_status":"running","agent_turn_state":"waiting",            "agent_waiting_reason":"future_reason"}
+            """)
+        let session = try XCTUnwrap(parsed.sessions.first)
+        XCTAssertEqual(session.agentWaitingReason, .unknown)
+        XCTAssertEqual(session.statusSignal, .waiting)
+        XCTAssertEqual(session.displayStatus, L10n.string("waiting"))
     }
 
     func testEveryEffectiveStatusHasConsistentLifecyclePresentation() {
@@ -169,7 +208,8 @@ final class SessionPresentationTests: XCTestCase {
     }
 
     func testWaitingTurnHasAttentionStatusWhileRemainingActive() {
-        let waiting = make(.running, turnState: .waiting)
+        var waiting = make(.running, turnState: .waiting)
+        waiting.agentWaitingReason = .answerReady
         XCTAssertTrue(waiting.isWaitingForUser)
         XCTAssertTrue(waiting.isLive)
         XCTAssertEqual(waiting.displayStatus, L10n.string("answer ready"))

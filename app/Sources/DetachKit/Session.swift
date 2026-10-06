@@ -29,6 +29,19 @@ public enum AgentTurnState: String, Codable, Sendable {
     }
 }
 
+/// The evidence for a waiting turn. Missing or newer values make no success
+/// or input-request claim in older clients.
+public enum AgentWaitingReason: String, Codable, Sendable {
+    case answerReady = "answer_ready"
+    case inputRequired = "input_required"
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AgentWaitingReason(rawValue: raw) ?? .unknown
+    }
+}
+
 /// The stable accent assigned to one managed tmux session.
 ///
 /// The CLI is the source of truth for this value so terminal and app visuals
@@ -111,6 +124,7 @@ public struct Session: Identifiable, Equatable, Sendable, Codable {
     public var contextUsedTokens: Int?
     public var contextWindow: Int?
     public var agentTurnState: AgentTurnState?
+    public var agentWaitingReason: AgentWaitingReason?
     public var agentTurnID: String?
     public var sessionColor: SessionColor?
     public var powerProtectionState: PowerProtectionState?
@@ -148,6 +162,7 @@ public struct Session: Identifiable, Equatable, Sendable, Codable {
         case contextUsedTokens = "context_used_tokens"
         case contextWindow = "context_window"
         case agentTurnState = "agent_turn_state"
+        case agentWaitingReason = "agent_waiting_reason"
         case agentTurnID = "agent_turn_id"
         case sessionColor = "session_color"
         case powerProtectionState = "power_protection_state"

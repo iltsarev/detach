@@ -41,7 +41,6 @@
 "%@ could not open the command: %@" = "%@ не смог открыть команду: %@";
 
 /* tmux session identity */
-"Session color: %@" = "Цвет сессии: %@";
 "Session base color: %@" = "Базовый цвет сессии: %@";
 "Session identity color" = "Цвет сессии";
 "Reading the setting from detach…" = "Читаем настройку из detach…";
@@ -489,3 +488,15 @@
 "Auto" = "Авто";
 "Terminal appearance" = "Оформление терминала";
 "Auto follows macOS. This setting applies to the embedded terminal and session logs, independently of the app appearance." = "Авто следует теме macOS. Настройка применяется к встроенному терминалу и журналам сессий независимо от оформления приложения.";
+
+"Stopped" = "Остановленные";
+
+"waiting" = "ожидание";
+
+"needs your input" = "нужен ваш ответ";
+
+"last known status" = "последний известный статус";
+
+"Started %@" = "Запущена %@";
+
+"status unavailable" = "статус недоступен";

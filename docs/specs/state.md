@@ -102,7 +102,8 @@ Watcher shutdown drains native callbacks before its output can close.
 ## Snapshot contract
 
 `list --json` emits JSONL schema 1 with optional `display_name`, power and turn
-state, opaque turn ID, PIDs, health, reconcile, freshness, ownership, cleanup,
+state, optional `agent_waiting_reason`, opaque turn ID, PIDs, health, reconcile,
+freshness, ownership, cleanup,
 `stop_requested_at`, and a per-run opaque `lifecycle_id` distinct from the
 mutation token. Keep the emitter and Swift `Session` decoder in sync.
 `watch --json` emits only change hints and never replaces this snapshot.
@@ -110,10 +111,11 @@ Provider lifecycle records, never terminal text, supply turn state and the
 private activity file in `power.md`. Bounded append caching retains typed turns;
 an unseen oversized gap clears waiting to prevent stale Answer ready. A
 main-chain Claude `AskUserQuestion` with `stop_reason: tool_use` and a tool ID
-means waiting; only its matching user tool result restores working. Reducer
+means waiting with `input_required`; only its matching user tool result
+restores working. Reducer
 changes invalidate old receipts so unchanged prompts are reclassified.
 A main-chain Claude assistant record with `stop_reason: end_turn` and nonempty
-text also means waiting. Thinking-only, metadata, and tool-use blocks do not
+text also means waiting with `answer_ready`. Thinking-only, metadata, and tool-use blocks do not
 prove a completed answer. Repeated final text and a later `turn_duration` keep
 the waiting turn ID. A new user request or an assistant `tool_use` continuation
 restores working. A pending `AskUserQuestion` still requires its matching
@@ -123,6 +125,12 @@ result. A finished Claude turn stays working while a main-chain
 not count, because they record no notification. At most 32 such tasks are
 tracked. A cold tail that ends in a finished turn also replays these records
 from the last 4 MiB, because large records can push a launch above the tail.
-Schema-5 summary receipts carry them and invalidate earlier cached turn
-states.
+Codex task or turn completion means waiting with `answer_ready`. A synchronous
+`request_user_input` function call means waiting with `input_required`; its
+matching function-call output restores working. Async questions do not prove
+that work stopped. New turns and aborts clear the waiting reason. Missing or
+unknown waiting reasons cannot claim a ready answer or an input request.
+Schema-6 summary receipts carry the reason and pending tool IDs for both
+providers. They retain pending background tasks and invalidate earlier cached
+turn states.
 Typed cleanup uses `cleanup_eligible`.

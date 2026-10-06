@@ -1001,7 +1001,7 @@ enum UIE2ETestDriver {
             throw Failure(message: "cannot create the sidebar group")
         }
         sidebarGroups.assign(groupedID, to: groupID)
-        let section = grouped.section
+        let section = SidebarSection.containing(grouped)
         let headerIdentifier = "sidebar-group-\(section.rawValue)-\(groupID.uuidString)"
         let rowIdentifier = "session-row-\(groupedID)"
         let header = try await element(identifier: headerIdentifier)
@@ -1040,6 +1040,25 @@ enum UIE2ETestDriver {
                 !sidebarGroups.isCollapsed(section: section, groupID: groupID)
                     && hasVisibleProbe(rowIdentifier)
             }
+        guard let stoppedID = store.sessions.first(where: {
+            SidebarSection.containing($0) == .stopped
+        })?.id else {
+            throw Failure(message: "Stopped fixture is missing")
+        }
+        let stoppedRow = "session-row-\(stoppedID)"
+        let stoppedToggle = try await element(identifier: "stopped-section-toggle")
+        try requireSemanticControl(stoppedToggle, name: "Stopped section")
+        try await clickUntil(stoppedToggle, name: "Stopped section", outcome: "Stopped section collapses") {
+            sidebarGroups.stoppedCollapsed && !hasVisibleProbe(stoppedRow)
+        }
+        guard SidebarGroupsDocument.decode(AppSettings.defaults.data(
+            forKey: SidebarGroupStore.storageKey)).stoppedCollapsed == true else {
+            throw Failure(message: "Stopped section collapse did not persist")
+        }
+        let collapsedStopped = try await element(identifier: "stopped-section-toggle")
+        try await clickUntil(collapsedStopped, name: "Stopped section", outcome: "Stopped section expands") {
+            !sidebarGroups.stoppedCollapsed && hasVisibleProbe(stoppedRow)
+        }
         sidebarGroups.deleteGroup(groupID)
         try await waitUntil("deleted sidebar group keeps its session") {
             !hasVisibleProbe(headerIdentifier)
@@ -1063,7 +1082,7 @@ enum UIE2ETestDriver {
         func group(named name: String) -> SidebarGroup? {
             sidebarGroups.groups.first { $0.name == name }
         }
-        func header(_ section: SessionSection, _ name: String) throws -> String {
+        func header(_ section: SidebarSection, _ name: String) throws -> String {
             guard let group = group(named: name) else {
                 throw Failure(message: "sidebar group \(name) is missing")
             }
@@ -1080,7 +1099,7 @@ enum UIE2ETestDriver {
             group(named: "Work").map { sidebarGroups.groupID(for: runningID) == $0.id } == true
                 && NSApp.windows.allSatisfy(\.sheets.isEmpty)
         }
-        guard hasVisibleProbe(try header(.active, "Work")) else {
+        guard hasVisibleProbe(try header(.sessions, "Work")) else {
             throw Failure(message: "new group header is not visible")
         }
 
@@ -1115,7 +1134,7 @@ enum UIE2ETestDriver {
         }
 
         guard try await dropSession(
-            completedID, on: try header(.active, "Personal"), in: mainWindow),
+            completedID, on: try header(.sessions, "Personal"), in: mainWindow),
             sidebarGroups.groupID(for: completedID) == personal.id else {
             throw Failure(message: "a session dropped on a group did not join it")
         }
@@ -1136,7 +1155,7 @@ enum UIE2ETestDriver {
         }
 
         try await performContextMenu(
-            of: try header(.finished, "Home"), in: mainWindow,
+            of: try header(.sessions, "Home"), in: mainWindow,
             path: [L10n.string("Delete Group")])
         try await waitUntil("deleting a group keeps its sessions") {
             group(named: "Home") == nil

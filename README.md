@@ -159,9 +159,21 @@ default, use the new default location. This keeps new chats outside macOS
 temporary-file cleanup. Existing sessions keep their saved paths and files;
 this change does not move them or restore missing files.
 
-Detach shows each assigned session shortcut beside its name. The number stays
-with the session while it is in Working or Answer ready. Detach reuses the
-number after the session leaves both sections. If more than nine sessions are
+The sidebar keeps stopped and interrupted sessions in a collapsible Stopped
+section at the bottom. Other sessions stay in Sessions as their status changes.
+User groups keep their order. Within each group, numbered sessions follow
+`Cmd-1` through `Cmd-9`; unnumbered sessions follow by newest launch time.
+Rows outside groups use the same order. Stopped rows use newest launch time.
+
+Green means an answer is ready or the session completed. Yellow means the
+provider explicitly requests your input. Red means an error. Working sessions
+have a small rotating indicator and no yellow background. Stopped sessions
+are gray. Unknown waiting reasons stay neutral. The provider and status appear
+below the name; launch time and exit details appear in the row help.
+
+Detach shows each assigned shortcut beside the session name. The number stays
+with the session while it works or waits. Detach reuses the number when the
+session finishes or enters a problem state. If more than nine sessions are
 eligible, each extra session waits for the first free number.
 
 Start, Resume, and Recover run inside Detach and do not require an outer

@@ -2,8 +2,25 @@ import Foundation
 import Observation
 import DetachKit
 
-/// A user-defined sidebar group. Groups only organize rows inside each status
-/// section. They never change status, actions, ownership, or shortcuts.
+/// A sidebar bucket is independent from lifecycle action eligibility. Raw
+/// values preserve existing Working and Finished group collapse preferences.
+enum SidebarSection: String, CaseIterable {
+    case sessions = "active"
+    case stopped = "finished"
+
+    var displayName: String {
+        L10n.string(self == .sessions ? "Sessions" : "Stopped")
+    }
+
+    static func containing(_ session: Session) -> Self {
+        switch session.effectiveStatus {
+        case .stopped, .interrupted: .stopped
+        default: .sessions
+        }
+    }
+}
+
+/// Groups never change status, actions, ownership, or shortcuts.
 struct SidebarGroup: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     var name: String
@@ -44,10 +61,11 @@ struct SidebarGroupsDocument: Codable, Equatable, Sendable {
     /// Session name to group. The session name survives Resume and Recover;
     /// the lifecycle ID and provider UUID do not.
     var assignments: [String: UUID] = [:]
-    /// Collapsed (status section, group) pairs.
+    /// Collapsed (sidebar section, group) pairs.
     var collapsed: Set<String> = []
+    var stoppedCollapsed: Bool?
 
-    static func collapseKey(section: SessionSection, groupID: UUID) -> String {
+    static func collapseKey(section: SidebarSection, groupID: UUID) -> String {
         "\(section.rawValue)/\(groupID.uuidString)"
     }
 
@@ -75,6 +93,7 @@ struct SidebarGroupsDocument: Codable, Equatable, Sendable {
 
     func validated() -> Self {
         var result = Self()
+        result.stoppedCollapsed = stoppedCollapsed
         var names = Set<String>()
         for group in groups where result.groups.count < Self.maximumGroups {
             guard let name = Self.normalizedName(group.name),
@@ -87,7 +106,7 @@ struct SidebarGroupsDocument: Codable, Equatable, Sendable {
         result.assignments = assignments.filter { groupIDs.contains($0.value) }
         result.collapsed = collapsed.filter { key in
             result.groups.contains { group in
-                SessionSection.allCases.contains {
+                SidebarSection.allCases.contains {
                     Self.collapseKey(section: $0, groupID: group.id) == key
                 }
             }
@@ -96,17 +115,18 @@ struct SidebarGroupsDocument: Codable, Equatable, Sendable {
     }
 }
 
-/// One status section with its groups first, in user order, and then the
+/// One sidebar bucket with its groups first, in user order, and then the
 /// sessions outside every group. Empty groups and sections are omitted.
 struct SidebarSectionLayout: Equatable {
     struct GroupBlock: Equatable, Identifiable {
         let group: SidebarGroup
+        let section: SidebarSection
         let sessions: [Session]
 
-        var id: UUID { group.id }
+        var id: String { SidebarGroupsDocument.collapseKey(section: section, groupID: group.id) }
     }
 
-    let section: SessionSection
+    let section: SidebarSection
     let groupBlocks: [GroupBlock]
     let ungrouped: [Session]
 
@@ -116,16 +136,36 @@ struct SidebarSectionLayout: Equatable {
 
     static func build(
         sessions: [Session],
-        document: SidebarGroupsDocument
+        document: SidebarGroupsDocument,
+        shortcutAssignments: [SessionShortcutAssignment] = []
     ) -> [SidebarSectionLayout] {
-        SessionSection.allCases.compactMap { section in
-            let items = sessions.filter { $0.section == section }
+        let slots = Dictionary(uniqueKeysWithValues: shortcutAssignments.map {
+            ($0.sessionID, $0.slot)
+        })
+        func slot(_ session: Session) -> Int {
+            guard session.section == .active || session.section == .answerReady else {
+                return Int.max
+            }
+            return slots[session.id] ?? Int.max
+        }
+        return SidebarSection.allCases.compactMap { section in
+            let items = sessions.enumerated().filter {
+                SidebarSection.containing($0.element) == section
+            }.sorted { lhs, rhs in
+                if section == .sessions, slot(lhs.element) != slot(rhs.element) {
+                    return slot(lhs.element) < slot(rhs.element)
+                }
+                let leftDate = lhs.element.createdAt ?? .distantPast
+                let rightDate = rhs.element.createdAt ?? .distantPast
+                if leftDate != rightDate { return leftDate > rightDate }
+                return lhs.offset < rhs.offset
+            }.map(\.element)
             guard !items.isEmpty else { return nil }
             let blocks = document.groups.compactMap { group -> GroupBlock? in
                 let members = items.filter {
                     document.assignments[$0.id] == group.id
                 }
-                return members.isEmpty ? nil : GroupBlock(group: group, sessions: members)
+                return members.isEmpty ? nil : GroupBlock(group: group, section: section, sessions: members)
             }
             let groupedIDs = Set(blocks.flatMap { $0.sessions.map(\.id) })
             return SidebarSectionLayout(
@@ -209,12 +249,18 @@ final class SidebarGroupStore {
         update { $0.assignments[sessionID] = groupID }
     }
 
-    func isCollapsed(section: SessionSection, groupID: UUID) -> Bool {
+    var stoppedCollapsed: Bool { document.stoppedCollapsed ?? false }
+
+    func setStoppedCollapsed(_ collapsed: Bool) {
+        update { $0.stoppedCollapsed = collapsed }
+    }
+
+    func isCollapsed(section: SidebarSection, groupID: UUID) -> Bool {
         document.collapsed.contains(
             SidebarGroupsDocument.collapseKey(section: section, groupID: groupID))
     }
 
-    func setCollapsed(_ collapsed: Bool, section: SessionSection, groupID: UUID) {
+    func setCollapsed(_ collapsed: Bool, section: SidebarSection, groupID: UUID) {
         let key = SidebarGroupsDocument.collapseKey(section: section, groupID: groupID)
         update { document in
             if collapsed {
@@ -228,8 +274,10 @@ final class SidebarGroupStore {
     /// A selection made outside the sidebar (a shortcut, a notification, or a
     /// new session) opens the group that holds the row.
     func reveal(_ session: Session) {
+        let section = SidebarSection.containing(session)
+        if section == .stopped { setStoppedCollapsed(false) }
         guard let groupID = groupID(for: session.id) else { return }
-        setCollapsed(false, section: session.section, groupID: groupID)
+        setCollapsed(false, section: section, groupID: groupID)
     }
 
     /// Call only with an authoritative session list. Cached rows cannot

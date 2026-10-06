@@ -15,7 +15,7 @@ enum SidebarGroupNamePrompt: Identifiable, Equatable {
     }
 }
 
-/// A group row inside one status section. The whole row toggles the group
+/// A group row inside one sidebar section. The whole row toggles the group
 /// and accepts dropped session rows.
 struct SidebarGroupHeader: View {
     let group: SidebarGroup
@@ -29,18 +29,17 @@ struct SidebarGroupHeader: View {
                 Image(systemName: "chevron.right")
                     .appFont(.caption2, weight: .semibold)
                     .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SessionPalette.secondary)
                     .frame(width: 12)
-                Image(systemName: "folder")
-                    .foregroundStyle(Brand.indigo)
                 Text(group.name)
-                    .appFont(.body, weight: .semibold)
+                    .appFont(.caption, weight: .semibold)
+                    .foregroundStyle(SessionPalette.secondary)
                     .lineLimit(1)
+                Spacer(minLength: 0)
                 Text(verbatim: "\(count)")
                     .appFont(.caption)
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
+                    .foregroundStyle(SessionPalette.secondary)
             }
             .padding(.vertical, 2)
             .contentShape(Rectangle())
@@ -144,6 +143,6 @@ struct SidebarGroupNameSheet: View {
 }
 
 enum SidebarGroupLayout {
-    /// Grouped rows sit one disclosure step to the right of their group.
-    static let rowIndent: CGFloat = 16
+    /// Align group disclosures and session status marks.
+    static let rowIndent: CGFloat = 0
 }

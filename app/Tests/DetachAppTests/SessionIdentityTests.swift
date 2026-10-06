@@ -66,6 +66,42 @@ final class SessionIdentityTests: XCTestCase {
         }
     }
 
+    func testSidebarPaletteKeepsTextAndSignalsVisibleInBothAppearances() throws {
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            var colors: [NSColor?] = []
+            appearance.performAsCurrentDrawingAppearance {
+                colors = [SessionPalette.secondary, SessionPalette.attention, SessionPalette.ready,
+                          SessionPalette.error].map { NSColor($0).usingColorSpace(.sRGB) }
+            }
+            let base = name == .aqua ? 1.0 : 0.12
+            let text = try XCTUnwrap(colors[0])
+            for color in colors.dropFirst() {
+                let signal = try XCTUnwrap(color)
+                let background = NSColor(srgbRed: base * 0.82 + signal.redComponent * 0.18,
+                    green: base * 0.82 + signal.greenComponent * 0.18,
+                    blue: base * 0.82 + signal.blueComponent * 0.18, alpha: 1)
+                XCTAssertGreaterThanOrEqual(contrast(text, background), 4.5,
+                    "Small status text must remain readable on selected rows in \(name)")
+                XCTAssertGreaterThanOrEqual(contrast(signal, background), 3,
+                    "Status marks must remain visible in \(name)")
+            }
+        }
+    }
+
+    private func contrast(_ first: NSColor, _ second: NSColor) -> Double {
+        func luminance(_ color: NSColor) -> Double {
+            func linear(_ value: Double) -> Double {
+                value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            return linear(color.redComponent) * 0.2126
+                + linear(color.greenComponent) * 0.7152
+                + linear(color.blueComponent) * 0.0722
+        }
+        let a = luminance(first), b = luminance(second)
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
     private func assertColorsEqual(
         _ actual: Color,
         _ expected: Color,
