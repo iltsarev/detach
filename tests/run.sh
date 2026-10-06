@@ -6,6 +6,9 @@ set -E
 
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
 PROJECT_LABEL="${ROOT##*/}"
+# The status strip caps the project label; the window title stays complete.
+STATUS_PROJECT_LABEL="$PROJECT_LABEL"
+[ "${#STATUS_PROJECT_LABEL}" -le 28 ] || STATUS_PROJECT_LABEL="${STATUS_PROJECT_LABEL:0:27}…"
 SCRIPT="$ROOT/bin/detach"
 DETACH="$ROOT/bin/detach"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-codex-test.XXXXXX")"
@@ -1293,7 +1296,7 @@ tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-style | \
 status_left="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-left)"
 printf '%s' "$status_left" | grep -F "bg=$session_color" >/dev/null
 printf '%s' "$status_left" | grep -F 'Detach' | grep -F 'Codex' | \
-  grep -F "$PROJECT_LABEL" | grep -F 'RUNNING' >/dev/null
+  grep -F "$STATUS_PROJECT_LABEL" | grep -F 'RUNNING' >/dev/null
 tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" status-right | \
   grep -F 'MAC AWAKE' >/dev/null
 # Mouse input: wheel scrolling stays one line per step and selections land in
@@ -3184,6 +3187,76 @@ fi
 # run-owned thread, refuse a creation-time tie, ignore subagent threads, and
 # consume superseded ids so the next switch is unambiguous again.
 if codex_part_selected identity; then
+# A terminal launch in a new worktree can have Codex source=vscode. The
+# run-owned user thread must bind while foreign roots and guardian companions
+# stay excluded. The fixture uses the public worktree startup path.
+(
+  discovery_source="$TMP_ROOT/discovery-source"
+  discovery_target="$(cd -P "$TMP_ROOT" && pwd)/discovery-worktree"
+  discovery_name=source-discovery
+  discovery_session="detach-codex-$discovery_name"
+  discovery_dir="$DETACH_CODEX_STATE_ROOT/sessions/$discovery_session"
+  discovery_meta="$discovery_dir/meta.json"
+  discovery_bin="$TMP_ROOT/fake-codex-vscode"
+  mkdir -p "$discovery_source"
+  /usr/bin/git -C "$discovery_source" init -q
+  printf 'fixture\n' >"$discovery_source/tracked.txt"
+  /usr/bin/git -C "$discovery_source" add tracked.txt
+  /usr/bin/git -C "$discovery_source" -c user.name=Fixture -c user.email=fixture@example.invalid \
+    commit -qm initial
+  test_sqlite "$CODEX_HOME/state_5.sqlite" \
+    'CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at_ms INTEGER, updated_at_ms INTEGER, source TEXT, thread_source TEXT, cwd TEXT);'
+  discovery_known=cccccccc-cccc-4ccc-8ccc-cccccccccccc
+  test_sqlite "$CODEX_HOME/state_5.sqlite" \
+    "INSERT INTO threads (id, rollout_path, source, thread_source, cwd) \
+     VALUES ('$discovery_known', '/unused/old-rollout.jsonl', 'vscode', 'user', '${discovery_target//\'/\'\'}');"
+  printf '%s\n' \
+    '#!/bin/bash' \
+    'export FAKE_CODEX_SOURCE=vscode FAKE_CODEX_GUARDIAN=1 FAKE_CODEX_FOREIGN_FIRST=1' \
+    "export FAKE_CODEX_RELEASE_FILE='$TMP_ROOT/discovery-release'" \
+    "exec \"$ROOT/tests/fake-codex\" \"\$@\"" >"$discovery_bin"
+  chmod 0755 "$discovery_bin"
+  cd "$discovery_source"
+  DETACH_CODEX_BIN="$discovery_bin" \
+    run_codex --name "$discovery_name" --detach --worktree "$discovery_target"
+  attempts=0
+  discovery_id=""
+  while [ "$attempts" -lt 80 ]; do
+    discovery_id="$("$STATE_HELPER" meta get "$discovery_meta" agent_session_id)"
+    [ -z "$discovery_id" ] || break
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  [ -n "$discovery_id" ] || {
+    printf 'Codex source=vscode was not discovered after worktree creation\n' >&2
+    exit 1
+  }
+  grep -Fqx "$discovery_known" "$discovery_dir/known-thread-ids.txt"
+  [ "$(test_sqlite "$CODEX_HOME/state_5.sqlite" \
+    "SELECT source || ':' || thread_source FROM threads WHERE id = '$discovery_id';")" = vscode:user ]
+  discovery_rollout="$("$STATE_HELPER" meta get "$discovery_meta" transcript_path)"
+  discovery_token="$("$STATE_HELPER" meta get "$discovery_meta" run_token)"
+  discovery_pid="$("$STATE_HELPER" meta get "$discovery_meta" provider_pid)"
+  [ "$("$STATE_HELPER" jsonl first "$discovery_rollout" payload.originator)" = "detach_$discovery_token" ]
+  [ "$("$STATE_HELPER" meta get "$discovery_meta" project_dir)" = "$discovery_target" ]
+  printf '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"fake-turn-%s"}}\n' \
+    "$discovery_id" >>"$discovery_rollout"
+  discovery_json="$(run_codex list --json | grep -F "\"session_name\":\"$discovery_session\"")"
+  [ "$(printf '%s' "$discovery_json" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = waiting ]
+  [ "$(printf '%s' "$discovery_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+  [ "$(printf '%s' "$discovery_json" | "$STATE_HELPER" meta get /dev/stdin ownership_proven)" = true ]
+  wait_for_file_text "$discovery_dir/power-activity-$discovery_token" waiting
+  printf '%s\n' '{"type":"event_msg","payload":{"type":"task_started","turn_id":"worktree-next-turn"}}' \
+    >>"$discovery_rollout"
+  discovery_json="$(run_codex list --json | grep -F "\"session_name\":\"$discovery_session\"")"
+  [ "$(printf '%s' "$discovery_json" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = working ]
+  [ "$(printf '%s' "$discovery_json" | "$STATE_HELPER" meta get /dev/stdin provider_pid)" = "$discovery_pid" ]
+  wait_for_file_text "$discovery_dir/power-activity-$discovery_token" working
+  wait_for_file_text "$discovery_dir/checkpoint/rollout.jsonl" worktree-next-turn
+  run_codex stop "$discovery_name"
+  run_codex delete --force "$discovery_name"
+  printf 'Codex worktree source discovery passed\n'
+)
 if [ "$CODEX_TEST_PART" = identity ]; then
   export FAKE_CODEX_SLEEP=60
   export FAKE_CODEX_EXIT=0

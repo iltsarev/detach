@@ -3439,7 +3439,7 @@ snapshot_known_threads() {
   cwd_sql="$(sql_escape "$cwd")"
   if ! "$SQLITE_BIN" -noheader -cmd '.timeout 5000' "$db" \
     "SELECT id FROM threads
-     WHERE source = 'cli'
+     WHERE source IN ('cli', 'vscode')
        AND COALESCE(thread_source, 'user') = 'user'
        AND cwd = '$cwd_sql'
      ORDER BY id;" >"$tmp"; then
@@ -3664,10 +3664,12 @@ discover_codex_session() {
   known="$(session_dir "$session")/known-thread-ids.txt"
   [ -f "$known" ] || return "$bound_status"
 
+  # Codex can label a terminal-launched root as vscode. The client source is
+  # only a root-kind filter; the run originator below proves ownership.
   cwd_sql="$(sql_escape "$cwd")"
   rows="$($SQLITE_BIN -noheader -separator $'\t' -cmd '.timeout 5000' "$db" \
     "SELECT id, rollout_path FROM threads
-     WHERE source = 'cli'
+     WHERE source IN ('cli', 'vscode')
        AND COALESCE(thread_source, 'user') = 'user'
        AND cwd = '$cwd_sql'
      ORDER BY created_at_ms ASC, id ASC;" 2>/dev/null || true)"
