@@ -79,14 +79,25 @@ final class SidebarViewTests: XCTestCase {
         }
         row.agentTurnState = .waiting
         row.agentWaitingReason = .inputRequired
-        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "text.bubble")
+        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "exclamationmark.circle")
         row.agentTurnState = nil
         XCTAssertEqual(SessionRowPresentation.status(for: row), L10n.string("status unavailable"))
+        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "minus.circle")
+        let staleSymbol = SessionRowPresentation.symbol(for: row, isFresh: false)
+        XCTAssertEqual(staleSymbol, "clock.arrow.circlepath")
+        XCTAssertNotNil(NSImage(systemSymbolName: staleSymbol, accessibilityDescription: nil))
+
+        let errorSymbols = [EffectiveStatus.failed, .hung, .orphaned, .corrupt, .collision].map { status in
+            row.effectiveStatus = status
+            return SessionRowPresentation.symbol(for: row)
+        }
+        XCTAssertEqual(Set(errorSymbols).count, 5, "Error causes keep distinct icons")
     }
 
     private func assertSymbol(_ session: Session) throws {
         let name = SessionRowPresentation.symbol(for: session)
         XCTAssertFalse(name.contains("questionmark"))
+        XCTAssertFalse(name.contains("ellipsis"))
         XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil),
                         "Missing system symbol for \(session.effectiveStatus): \(name)")
     }

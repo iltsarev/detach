@@ -3,29 +3,29 @@ import SwiftUI
 import DetachKit
 
 enum SessionRowPresentation {
-    static func symbol(for session: Session) -> String {
-        switch session.effectiveStatus {
-        case .starting: "arrow.up.circle"
-        case .recovering: "arrow.clockwise"
+    static func symbol(for session: Session, isFresh: Bool = true) -> String {
+        guard isFresh else { return "clock.arrow.circlepath" }
+        return switch session.effectiveStatus {
+        case .starting, .recovering: "circle.dotted"
         case .hung: "hourglass"
         case .completed: "checkmark.circle"
         case .failed: "exclamationmark.circle"
-        case .interrupted: "pause.fill"
-        case .stopped: "stop.fill"
-        case .recoverable: "arrow.counterclockwise.circle"
+        case .interrupted: "pause.circle"
+        case .stopped: "stop.circle"
+        case .recoverable: "arrow.counterclockwise"
         case .orphaned: "link"
         case .corrupt: "exclamationmark.triangle"
         case .collision: "square.on.square"
-        case .unknown: "ellipsis.circle"
+        case .unknown: "minus.circle"
         case .running:
             switch session.agentTurnState {
             case .working: "circle.dotted"
-            case .interrupted: "pause.fill"
-            case .unknown, nil: "ellipsis.circle"
+            case .interrupted: "pause.circle"
+            case .unknown, nil: "minus.circle"
             case .waiting:
                 switch session.agentWaitingReason {
-                case .answerReady: "checkmark"
-                case .inputRequired: "text.bubble"
+                case .answerReady: "checkmark.circle"
+                case .inputRequired: "exclamationmark.circle"
                 case .unknown, nil: "clock"
                 }
             }
@@ -122,27 +122,30 @@ private struct SessionStatusMark: View {
     @State private var isVisible = false
     @State private var rotating = false
 
+    private var markSize: CGFloat { max(14, fontPointSize * 8 / 7) }
+
     private var shouldAnimate: Bool {
-        session.effectiveStatus == .running && SessionRowPresentation.shouldAnimate(signal: session.statusSignal, isFresh: isFresh,
+        SessionRowPresentation.shouldAnimate(signal: session.statusSignal, isFresh: isFresh,
             isVisible: isVisible, isActive: scenePhase == .active, reduceMotion: reduceMotion)
     }
 
     var body: some View {
         Group {
-            if isFresh && session.effectiveStatus == .running && session.statusSignal == .working {
-                Circle().trim(from: 0, to: 0.72)
-                    .stroke(SessionPalette.attention, style: StrokeStyle(lineWidth: max(1.5, fontPointSize / 9), lineCap: .round))
+            if isFresh && session.statusSignal == .working {
+                Circle().inset(by: 0.8).trim(from: 0, to: 0.72)
+                    .stroke(SessionPalette.attention, style: StrokeStyle(lineWidth: max(1.5, markSize / 10), lineCap: .round))
                     .rotationEffect(.degrees(rotating ? 360 : 0))
                     .animation(shouldAnimate ? .linear(duration: 1.8).repeatForever(autoreverses: false) : nil,
                                value: rotating)
             } else {
-                Image(systemName: isFresh ? SessionRowPresentation.symbol(for: session) : "ellipsis.circle")
-                    .appFont(.caption, weight: .medium)
+                Image(systemName: SessionRowPresentation.symbol(for: session, isFresh: isFresh))
+                    .resizable()
+                    .scaledToFit()
+                    .font(.system(size: markSize, weight: .medium))
                     .foregroundStyle(isFresh ? SessionIdentity.statusColor(for: session) : SessionPalette.secondary)
-                    .scaleEffect(session.statusSignal == .stopped ? 0.6 : 1)
             }
         }
-        .frame(width: max(12, fontPointSize * 0.9), height: max(12, fontPointSize * 0.9))
+        .frame(width: markSize, height: markSize)
         .accessibilityHidden(true)
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }

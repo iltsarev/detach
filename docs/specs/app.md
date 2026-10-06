@@ -55,14 +55,18 @@ Text and status marks follow the app text size. Status colors keep contrast in
 light and dark appearances. One custom selection surface preserves native
 List selection and keyboard navigation. A group has a distinct row identity
 in each section, so its count and collapse control refer to that section.
-Each lifecycle and turn state has an explicit available system symbol. Input
-uses a message symbol, interruption uses pause, and recovery uses a return
-arrow. Missing status data has an ellipsis and a status-unavailable label.
-No state uses a question-mark placeholder.
+Each lifecycle and turn state has an explicit symbol. Marks have a consistent
+size: 16 points at the default text size. Ready uses a circled check. Input
+uses a circled exclamation mark. Stop and interruption use circled stop and
+pause marks. Recovery data uses a return arrow. Missing status data has a
+circled dash and a status-unavailable label. Stale data uses a history clock.
+Errors keep distinct symbols for failure, hang, lost session, corrupt data,
+and name collision. No state uses a question-mark or ellipsis placeholder.
 Ready answers and completed sessions use green; explicit input requests use
 yellow; errors use red. Stopped and uncertain states use neutral colors.
 Ready answers, input requests, and errors have a faint row fill. Working rows
-have no status fill, including when selected. Their small ring rotates only
+have no status fill, including when selected. Starting, working, and recovering
+use the same small ring. It rotates only
 when the snapshot is fresh, the row is visible, the app is active, and Reduce
 Motion is off. Cached or failed snapshots use neutral symbols, no animation,
 and a last-known-status label.
