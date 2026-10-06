@@ -247,8 +247,11 @@ section. Deleting a group keeps its sessions.
 
 Settings → General → **Appearance** selects **Match System**, **Light**, or
 **Dark** for the app. The default is **Match System**. The change applies at
-once. The embedded terminal and session logs keep a dark background in each
-appearance.
+once. Settings → Terminal → **Terminal appearance** selects **Auto**, **Light**,
+or **Dark** for the embedded terminal and session logs. The default is **Dark**.
+**Auto** follows the macOS appearance independently of the app setting. Terminal
+changes apply at once and keep the session connected. A provider can set its
+own explicit text colors.
 
 Sessions that wait for your reply move into **Answer ready**, before agents
 that are still working. Detach reads structured provider lifecycle records for

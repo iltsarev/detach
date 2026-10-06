@@ -6,6 +6,7 @@ import DetachKit
 /// update, so window resizes stay cheap even with thousands of styled runs.
 struct LogTextView: NSViewRepresentable {
     @Environment(\.appFontPointSize) private var fontPointSize
+    @Environment(\.terminalPalette) private var palette
     let text: NSAttributedString
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -13,6 +14,7 @@ struct LogTextView: NSViewRepresentable {
         Self.apply(
             text: text,
             pointSize: fontPointSize,
+            palette: palette,
             to: scrollView,
             coordinator: context.coordinator)
         return scrollView
@@ -51,12 +53,14 @@ struct LogTextView: NSViewRepresentable {
     final class Coordinator {
         var lastText: NSAttributedString?
         var lastFontPointSize: CGFloat?
+        var lastPalette: TerminalPalette?
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         Self.apply(
             text: text,
             pointSize: fontPointSize,
+            palette: palette,
             to: scrollView,
             coordinator: context.coordinator)
     }
@@ -64,6 +68,7 @@ struct LogTextView: NSViewRepresentable {
     static func apply(
         text: NSAttributedString,
         pointSize: CGFloat,
+        palette: TerminalPalette = .dark,
         to scrollView: NSScrollView,
         coordinator: Coordinator
     ) {
@@ -73,9 +78,18 @@ struct LogTextView: NSViewRepresentable {
               let container = textView.textContainer else { return }
         // Identity check keeps resize frames free of O(n) text work.
         guard coordinator.lastText !== text
-                || coordinator.lastFontPointSize != pointSize else { return }
+                || coordinator.lastFontPointSize != pointSize
+                || coordinator.lastPalette != palette else { return }
         coordinator.lastText = text
         coordinator.lastFontPointSize = pointSize
+        coordinator.lastPalette = palette
+        scrollView.appearance = palette.appearance
+        scrollView.backgroundColor = palette.background
+        textView.backgroundColor = palette.background
+        textView.insertionPointColor = palette.foreground
+        textView.selectedTextAttributes = [
+            .backgroundColor: palette.selection, .foregroundColor: palette.foreground,
+        ]
 
         // Terminal semantics: pinned to the bottom → follow the tail;
         // scrolled up → keep the current offset (both axes). The tail intent
@@ -88,7 +102,18 @@ struct LogTextView: NSViewRepresentable {
         let wasAtBottom = logScrollView?.followsTail
             ?? (oldHeight <= visible.height + 1 || visible.maxY >= oldHeight - 5)
 
-        storage.setAttributedString(Self.resizedText(text, to: pointSize))
+        let styled = NSMutableAttributedString(attributedString: Self.resizedText(text, to: pointSize))
+        palette.appearance.performAsCurrentDrawingAppearance {
+            for key in [NSAttributedString.Key.foregroundColor, .backgroundColor] {
+                text.enumerateAttribute(key, in: NSRange(location: 0, length: text.length)) {
+                    value, range, _ in
+                    guard let color = value as? NSColor,
+                          let resolved = color.usingColorSpace(.sRGB) else { return }
+                    styled.addAttribute(key, value: resolved, range: range)
+                }
+            }
+        }
+        storage.setAttributedString(styled)
         // Force layout so the new document height is real before we scroll.
         layoutManager.ensureLayout(for: container)
         textView.sizeToFit()

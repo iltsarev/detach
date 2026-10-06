@@ -3,10 +3,8 @@ import AppKit
 /// Converts terminal output with ANSI SGR escape sequences (tmux capture-pane -e)
 /// into an NSAttributedString. Non-SGR CSI sequences and OSC sequences are stripped.
 public enum ANSIParser {
-    /// The dark canvas every terminal preview draws on; reverse video swaps
-    /// against it so highlights survive outside a real terminal.
-    public static let terminalBackground = NSColor(
-        srgbRed: 0.05, green: 0.05, blue: 0.06, alpha: 1)
+    /// Default canvas for callers that do not select an appearance.
+    public static let terminalBackground = TerminalPalette.dark.background
 
     private struct SGRState {
         var fg: NSColor?
@@ -24,8 +22,10 @@ public enum ANSIParser {
         font: NSFont,
         boldFont: NSFont,
         defaultColor: NSColor,
-        defaultBackground: NSColor = ANSIParser.terminalBackground
+        defaultBackground: NSColor = ANSIParser.terminalBackground,
+        ansiColors: [NSColor] = TerminalPalette.dark.ansiColors
     ) -> NSAttributedString {
+        precondition(ansiColors.count == 16)
         let result = NSMutableAttributedString()
         var state = SGRState()
         var buffer = ""
@@ -72,7 +72,7 @@ public enum ANSIParser {
                     if scan < raw.endIndex {
                         if raw[scan] == "m" {
                             flush()
-                            apply(params, state: &state)
+                            apply(params, state: &state, colors: ansiColors)
                         }
                         index = raw.index(after: scan)
                     } else {
@@ -106,7 +106,7 @@ public enum ANSIParser {
         return result
     }
 
-    private static func apply(_ params: String, state: inout SGRState) {
+    private static func apply(_ params: String, state: inout SGRState, colors: [NSColor]) {
         var codes = params.split(separator: ";", omittingEmptySubsequences: false)
             .map { Int($0) ?? 0 }
         if codes.isEmpty { codes = [0] }
@@ -125,16 +125,16 @@ public enum ANSIParser {
             case 24: state.underline = false
             case 27: state.reverse = false
             case 29: state.strikethrough = false
-            case 30...37: state.fg = basic[codes[i] - 30]
-            case 90...97: state.fg = bright[codes[i] - 90]
+            case 30...37: state.fg = colors[codes[i] - 30]
+            case 90...97: state.fg = colors[codes[i] - 90 + 8]
             case 39: state.fg = nil
-            case 40...47: state.bg = basic[codes[i] - 40]
-            case 100...107: state.bg = bright[codes[i] - 100]
+            case 40...47: state.bg = colors[codes[i] - 40]
+            case 100...107: state.bg = colors[codes[i] - 100 + 8]
             case 49: state.bg = nil
             case 38, 48:
                 let isForeground = codes[i] == 38
                 if i + 2 < codes.count, codes[i + 1] == 5 {
-                    let color = xterm(codes[i + 2])
+                    let color = xterm(codes[i + 2], colors: colors)
                     if isForeground { state.fg = color } else { state.bg = color }
                     i += 2
                 } else if i + 4 < codes.count, codes[i + 1] == 2 {
@@ -150,33 +150,11 @@ public enum ANSIParser {
         }
     }
 
-    // Palette tuned for a dark background.
-    private static let basic: [NSColor] = [
-        NSColor(srgbRed: 0.45, green: 0.47, blue: 0.51, alpha: 1), // black → visible gray
-        NSColor(srgbRed: 0.93, green: 0.42, blue: 0.41, alpha: 1), // red
-        NSColor(srgbRed: 0.36, green: 0.80, blue: 0.47, alpha: 1), // green
-        NSColor(srgbRed: 0.87, green: 0.75, blue: 0.35, alpha: 1), // yellow
-        NSColor(srgbRed: 0.39, green: 0.60, blue: 0.94, alpha: 1), // blue
-        NSColor(srgbRed: 0.78, green: 0.49, blue: 0.87, alpha: 1), // magenta
-        NSColor(srgbRed: 0.32, green: 0.78, blue: 0.78, alpha: 1), // cyan
-        NSColor(srgbRed: 0.86, green: 0.87, blue: 0.89, alpha: 1), // white
-    ]
-
-    private static let bright: [NSColor] = [
-        NSColor(srgbRed: 0.58, green: 0.60, blue: 0.64, alpha: 1),
-        NSColor(srgbRed: 1.00, green: 0.55, blue: 0.52, alpha: 1),
-        NSColor(srgbRed: 0.50, green: 0.91, blue: 0.60, alpha: 1),
-        NSColor(srgbRed: 0.95, green: 0.86, blue: 0.49, alpha: 1),
-        NSColor(srgbRed: 0.54, green: 0.72, blue: 1.00, alpha: 1),
-        NSColor(srgbRed: 0.88, green: 0.62, blue: 0.96, alpha: 1),
-        NSColor(srgbRed: 0.47, green: 0.90, blue: 0.90, alpha: 1),
-        NSColor(srgbRed: 0.96, green: 0.96, blue: 0.98, alpha: 1),
-    ]
-
-    static func xterm(_ n: Int) -> NSColor {
+    static func xterm(
+        _ n: Int, colors: [NSColor] = TerminalPalette.dark.ansiColors
+    ) -> NSColor {
         switch n {
-        case 0...7: return basic[n]
-        case 8...15: return bright[n - 8]
+        case 0...15: return colors[n]
         case 16...231:
             let value = n - 16
             let levels: [CGFloat] = [0, 95, 135, 175, 215, 255]

@@ -1403,6 +1403,23 @@ enum UIE2ETestDriver {
             throw Failure(message: "Settings window is off the hosting screen")
         }
         checks.append("settings-window-stays-on-screen")
+        let terminalTab = try await buttonLabeled(L10n.string("Terminal"), attempts: 40)
+        _ = try await clickUntilElement(
+            terminalTab, name: "Terminal settings tab",
+            resultIdentifier: "settings-terminal-appearance")
+        let terminalAppearance = try await element(identifier: "settings-terminal-appearance")
+        try requireSemanticControl(terminalAppearance, name: "terminal appearance")
+        for choice in [TerminalAppearance.light, .system, .dark] {
+            let button = try await buttonLabeled(choice.title, attempts: 40)
+            try await clickUntil(button, name: "terminal \(choice.rawValue)",
+                                 outcome: "terminal appearance persists independently") {
+                AppSettings.defaults.string(forKey: TerminalAppearance.storageKey) == choice.rawValue
+                    && AppSettings.defaults.string(forKey: AppAppearance.storageKey)
+                        == AppAppearance.system.rawValue
+                    && NSApp.appearance == nil
+            }
+        }
+        checks.append("settings-terminal-appearance-applies")
         let systemTab = try await buttonLabeled(
             L10n.string("System"), attempts: 40)
         try await click(systemTab, name: "System settings tab")
@@ -1796,6 +1813,7 @@ enum UIE2ETestDriver {
         identifier == "new-session-button"
             || identifier == "settings-show-tips"
             || identifier == "settings-appearance"
+            || identifier == "settings-terminal-appearance"
             || identifier.hasPrefix("sidebar-group-")
             || identifier.hasPrefix("settings-default-project-")
             || identifier.hasPrefix("settings-quick-chat-")

@@ -544,6 +544,7 @@ run_app_scenario() {
       settings-session-defaults-visible) ;;
       settings-quick-chat-provider-persists) ;;
       settings-appearance-applies) ;;
+      settings-terminal-appearance-applies) ;;
       settings-quick-chat-folder-panel) ;;
       quick-chat-command-starts-session) ;;
       session-shortcut-reopens-closed-main-window) ;;
@@ -602,6 +603,7 @@ run_app_scenario main sessions 40 \
   settings-appearance-applies \
   settings-quick-chat-folder-panel \
   settings-window-stays-on-screen \
+  settings-terminal-appearance-applies \
   settings-system-reveals-storage-and-installation \
   settings-text-growth-stays-on-screen \
   quick-chat-command-starts-session \
