@@ -88,18 +88,10 @@ struct SessionRow: View {
                             .fixedSize()
                             .accessibilityHidden(true)
                             .help(L10n.format("Switch to %@ with Command-%d", session.displayTitle, shortcutSlot))
-// quality-coverage:begin ui-e2e-instrumentation
-#if !DEBUG
-                            .background {
-                                if AppSettings.uiE2E != nil {
-                                    UIE2EGeometryProbe(
-                                        identifier: "session-shortcut-\(session.id)",
-                                        semanticLabel: "Command-\(shortcutSlot)",
-                                        semanticRole: .staticText)
-                                }
-                            }
-#endif
-// quality-coverage:end ui-e2e-instrumentation
+                            .uiE2EGeometryProbe(
+                                "session-shortcut-\(session.id)",
+                                label: "Command-\(shortcutSlot)",
+                                role: .staticText)
                     }
                 }
                 HStack(spacing: 8) {

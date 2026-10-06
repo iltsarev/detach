@@ -142,6 +142,12 @@ final class DetachStateCommandTests: XCTestCase {
         }
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "emit", "session", "codex", "session", "running",
+            "--agent-waiting-reason", "needs_input",
+        ])) { error in
+            XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+        }
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "emit", "session", "codex", "session", "running",
             "--power-state", "maybe",
         ])) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .invalidPowerState("maybe"))
@@ -170,6 +176,7 @@ final class DetachStateCommandTests: XCTestCase {
         let output = try DetachStateCommand.run(arguments: [
             "emit", "session", "codex", "detach-codex-project", "running",
             "--agent-turn-state", "-",
+            "--agent-waiting-reason", "-",
             "--session-color", "?",
             "--power-state", "",
             "--health-json", healthJSON,
@@ -183,6 +190,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(object["stop_requested_at"] as? String, "2026-09-02T10:00:00Z")
 
         XCTAssertTrue(object["agent_turn_state"] is NSNull)
+        XCTAssertTrue(object["agent_waiting_reason"] is NSNull)
         XCTAssertTrue(object["session_color"] is NSNull)
         XCTAssertTrue(object["power_protection_state"] is NSNull)
         XCTAssertEqual(object["health_reason"] as? String, "heartbeat_stale")
