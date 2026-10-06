@@ -914,7 +914,18 @@ grep -F "rebound Claude session identity after a continuation: $continued_id -> 
 ! grep -F "$foreign_id" "$continued_dir/checkpoint.log" >/dev/null
 "$SCRIPT" claude stop "$continued_label"
 "$SCRIPT" claude delete --force "$continued_label"
-rm -f "$CLAUDE_CONFIG_DIR/projects/alternate/$foreign_id.jsonl"
+# Delete keeps provider data; later checks expect only the main session's.
+rm -rf \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$continued_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$continued_id" \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$successor_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/alternate/$foreign_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/file-history/$continued_id" \
+  "$CLAUDE_CONFIG_DIR/session-env/$continued_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/$continued_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/session-${continued_id:0:8}" \
+  "$CLAUDE_CONFIG_DIR/teams/session-${continued_id:0:8}"
+rmdir "$CLAUDE_CONFIG_DIR/projects/alternate"
 fi
 
 "$STATE_HELPER" meta patch "$checkpoint/meta.json" --string status running --null exit_status
