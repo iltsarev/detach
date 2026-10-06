@@ -1186,7 +1186,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 6)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 7)
 
         let unrelatedToolResult = Data("""
 
@@ -1280,7 +1280,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let updated = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
-        XCTAssertEqual(updated["schema"] as? Int, 6)
+        XCTAssertEqual(updated["schema"] as? Int, 7)
 
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()
@@ -1415,10 +1415,120 @@ final class DetachStateCommandTests: XCTestCase {
         """.utf8))
         let irrelevant = Data(String(
             repeating: "{\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-new\"}}\n",
-            count: 4_000).utf8)
+            count: 110_000).utf8)
         try handle.write(contentsOf: irrelevant)
+        XCTAssertGreaterThan(
+            try Data(contentsOf: transcript).count, 8 * 1_024 * 1_024)
 
         XCTAssertEqual(try turnFields(), ["", ""])
+    }
+
+    func testMetaSnapshotsKeepTheSummaryWhileTheTranscriptGrows() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "growing-summary-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-growing", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent(
+            "growing-summary-rollout.jsonl")
+        try Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-live"}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-growing",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        final class StopFlag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stopped = false
+            var isStopped: Bool { lock.withLock { stopped } }
+            func stop() { lock.withLock { stopped = true } }
+        }
+        let flag = StopFlag()
+        let finished = DispatchSemaphore(value: 0)
+        let writer = try FileHandle(forWritingTo: transcript)
+        let record = Data(#"{"type":"event_msg","payload":{"type":"token_count"}}"#.utf8 + [0x0A])
+        DispatchQueue.global().async {
+            while !flag.isStopped {
+                try? writer.seekToEnd()
+                try? writer.write(contentsOf: record)
+                usleep(50)
+            }
+            finished.signal()
+        }
+        defer {
+            flag.stop()
+            finished.wait()
+            try? writer.close()
+        }
+        // The provider appends while each list reads the tail. Every read
+        // still reports the running turn instead of an empty summary.
+        for _ in 0..<40 {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(separator: 0, omittingEmptySubsequences: false)
+                .dropLast().map { String(decoding: $0, as: UTF8.self) }
+            XCTAssertEqual(Array(values[28..<30]), ["working", "turn-live"])
+        }
+    }
+
+    func testMetaSnapshotsKeepTurnStateAcrossOneRecordLargerThanTheColdTail() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "compacted-summary-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-compacted", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent(
+            "compacted-summary-rollout.jsonl")
+        try Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-long"}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-compacted",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        func turnFields() throws -> [String] {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(
+                separator: 0, omittingEmptySubsequences: false)
+                .dropLast()
+                .map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[28..<30])
+        }
+
+        XCTAssertEqual(try turnFields(), ["working", "turn-long"])
+        // A Codex compaction writes one record larger than the cold tail.
+        let compacted = "{\"type\":\"compacted\",\"payload\":{\"message\":\""
+            + String(repeating: "x", count: 1_100_000) + "\"}}\n"
+        let handle = try FileHandle(forWritingTo: transcript)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(compacted.utf8))
+        try handle.write(contentsOf: Data("""
+        {"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-long"}}
+
+        """.utf8))
+        XCTAssertEqual(try turnFields(), ["working", "turn-long"])
+        try handle.write(contentsOf: Data("""
+        {"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-long"}}
+
+        """.utf8))
+        XCTAssertEqual(try turnFields(), ["waiting", "turn-long"])
     }
 
     func testMetaCreateWritesTypedObjectAndRefusesAnExistingFile() throws {
@@ -1729,6 +1839,41 @@ final class DetachStateCommandTests: XCTestCase {
             "jsonl", "validate", "other", "-", "session",
         ])) { error in
             XCTAssertEqual(error as? DetachStateCommandError, .invalidProvider("other"))
+        }
+    }
+
+    func testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript() throws {
+        let old = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        let next = "5f6e7d8c-9b0a-4c1d-8e2f-3a4b5c6d7e8f"
+        let transcript = temporaryDirectory.appendingPathComponent("\(old).jsonl")
+        try Data("""
+        {"type":"user","sessionId":"\(old)","message":{"role":"user","content":"go"}}
+
+        """.utf8).write(to: transcript)
+        let arguments = ["jsonl", "successor", "claude", transcript.path, old]
+        XCTAssertEqual(try DetachStateCommand.run(arguments: arguments), Data())
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("""
+        {"type":"continued-in","sessionId":"\(old)","continuedInSessionId":"\(next)"}
+
+        """.utf8))
+        try handle.close()
+        XCTAssertEqual(try DetachStateCommand.run(arguments: arguments), Data("\(next)\n".utf8))
+
+        let link = temporaryDirectory.appendingPathComponent("successor-link.jsonl")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: transcript)
+        XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
+            "jsonl", "successor", "claude", link.path, old,
+        ]))
+        for invalid in [
+            ["jsonl", "successor", "codex", transcript.path, old],
+            ["jsonl", "successor", "claude", transcript.path, ""],
+            ["jsonl", "successor", "claude", transcript.path],
+        ] {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: invalid)) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
         }
     }
 

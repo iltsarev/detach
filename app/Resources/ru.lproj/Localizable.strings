@@ -500,3 +500,5 @@
 "Started %@" = "Запущена %@";
 
 "status unavailable" = "статус недоступен";
+
+"new session" = "новая сессия";

@@ -169,8 +169,10 @@ Rows outside groups use the same order. Stopped rows use newest launch time.
 Green means an answer is ready or the session completed. Yellow means the
 provider explicitly requests your input. Red means an error. Working sessions
 have a small rotating indicator and no yellow background. Stopped sessions
-are gray. Unknown waiting reasons stay neutral. The provider and status appear
-below the name; launch time and exit details appear in the row help.
+are gray. Unknown waiting reasons stay neutral. A new session shows
+**new session** until the provider records its first prompt. The provider and
+status appear below the name; launch time and exit details appear in the row
+help.
 
 Detach shows each assigned shortcut beside the session name. The number stays
 with the session while it works or waits. Detach reuses the number when the
@@ -396,8 +398,10 @@ the conversation belongs to the managed run. Review and subagent threads do
 not become the session identity.
 
 When Codex starts a fresh conversation in the same run, for example with
-`/clear`, Detach follows the new conversation. Status and later checkpoints
-then refer to the conversation that is in use.
+`/clear`, Detach follows the new conversation. When Claude continues a
+conversation under a new session ID in the same run, for example after plan
+mode clears the context, Detach follows that continuation too. Status, Resume,
+and later checkpoints then refer to the conversation that is in use.
 
 - **Codex:** Detach saves the session UUID and rollout JSONL. It keeps a valid
   live rollout when that file is at least as large as the checkpoint. It

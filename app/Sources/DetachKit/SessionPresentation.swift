@@ -21,7 +21,7 @@ public enum SessionAction: String, Codable, CaseIterable, Sendable {
 }
 
 public enum SessionStatusSignal: Equatable, Sendable {
-    case working, ready, inputRequired, stopped, error, waiting, unknown, recoverable
+    case working, ready, inputRequired, stopped, error, waiting, unknown, recoverable, new
 }
 
 public extension Session {
@@ -34,6 +34,12 @@ public extension Session {
 
     var isWaitingForUser: Bool {
         effectiveStatus == .running && agentTurnState == .waiting
+    }
+
+    /// Providers write a transcript only after the first prompt. Until then a
+    /// live session has no model, context, or turn ID in the list snapshot.
+    var hasTranscriptEvidence: Bool {
+        model != nil || contextUsedTokens != nil || contextWindow != nil || agentTurnID != nil
     }
 
     var statusSignal: SessionStatusSignal {
@@ -49,6 +55,7 @@ public extension Session {
                 case .unknown, nil: return .waiting
                 }
             case .interrupted: return .stopped
+            case nil where !hasTranscriptEvidence: return .new
             case .unknown, nil: return .unknown
             }
         case .completed: return .ready
@@ -82,6 +89,7 @@ public extension Session {
         if effectiveStatus == .running && agentTurnState == .interrupted {
             return L10n.string("interrupted")
         }
+        if statusSignal == .new { return L10n.string("new session") }
         return switch effectiveStatus {
         case .starting: L10n.string("starting")
         case .running: L10n.string("running")

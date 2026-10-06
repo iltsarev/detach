@@ -100,6 +100,10 @@ public enum DetachStateCommand {
             return try jsonlSummary(
                 Array(arguments.dropFirst(2)),
                 standardInput: injectedStandardInput)
+        case ("jsonl", "successor"):
+            return try jsonlSuccessor(
+                Array(arguments.dropFirst(2)),
+                standardInput: injectedStandardInput)
         case ("storage", "report"):
             return try storageReport(
                 Array(arguments.dropFirst(2)),
@@ -1011,11 +1015,6 @@ public enum DetachStateCommand {
             transcriptPath, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { return empty }
         defer { close(descriptor) }
-        var beforeMetadata = stat()
-        guard fstat(descriptor, &beforeMetadata) == 0,
-              let before = TranscriptValidationIdentity(beforeMetadata) else {
-            return empty
-        }
 
         let receiptName = ".transcript-summary-cache.json"
         let cachedReceipt = readOwnedMetadataFile(
@@ -1023,6 +1022,11 @@ public enum DetachStateCommand {
                 try? JSONDecoder().decode(
                     TranscriptSummaryReceipt.self, from: $0)
             }
+        var beforeMetadata = stat()
+        guard fstat(descriptor, &beforeMetadata) == 0,
+              let before = TranscriptValidationIdentity(beforeMetadata) else {
+            return empty
+        }
         if let values = cachedReceipt?.snapshotValues(
                 provider: provider,
                 transcriptPath: transcriptPath,
@@ -1032,19 +1036,21 @@ public enum DetachStateCommand {
 
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         let size = UInt64(beforeMetadata.st_size)
-        let maximumByteCount: UInt64 = 262_144
         let continuation = cachedReceipt?.continuation(
             provider: provider,
             transcriptPath: transcriptPath,
             identity: before,
-            maximumByteCount: maximumByteCount)
+            maximumByteCount: TranscriptSummaryReceipt.continuationByteCount)
+        let readLimit = continuation == nil
+            ? TranscriptSummaryReceipt.coldTailByteCount
+            : TranscriptSummaryReceipt.continuationByteCount
         let startOffset = continuation?.offset
-            ?? (size > maximumByteCount ? size - maximumByteCount : 0)
+            ?? (size > readLimit ? size - readLimit : 0)
         guard (try? handle.seek(toOffset: startOffset)) != nil
         else { return empty }
         var tail = Data()
-        while tail.count < Int(maximumByteCount) {
-            let remaining = Int(maximumByteCount) - tail.count
+        while tail.count < Int(readLimit) {
+            let remaining = Int(readLimit) - tail.count
             let chunk: Data
             do {
                 chunk = try handle.read(
@@ -1055,10 +1061,13 @@ public enum DetachStateCommand {
             guard !chunk.isEmpty else { break }
             tail.append(chunk)
         }
+        // A provider can append while the tail is read. The bytes read are
+        // still a valid prefix; the receipt keeps the earlier size so the
+        // next read continues from there. A replacement is not a prefix.
         var afterMetadata = stat()
         guard fstat(descriptor, &afterMetadata) == 0,
               let after = TranscriptValidationIdentity(afterMetadata),
-              before == after else { return empty }
+              after.isUnchangedOrAppended(to: before) else { return empty }
         var summary = TranscriptDocument.summary(
             ofTail: tail,
             provider: provider,
@@ -1087,7 +1096,7 @@ public enum DetachStateCommand {
             schema: TranscriptSummaryReceipt.currentSchema,
             provider: provider.rawValue,
             transcriptPath: transcriptPath,
-            identity: after,
+            identity: before,
             model: summary.model,
             contextUsed: summary.contextUsed,
             contextWindow: summary.contextWindow,
@@ -1108,7 +1117,11 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 6
+        static let currentSchema = 7
+        static let coldTailByteCount: UInt64 = 262_144
+        /// One provider record can exceed the cold tail, for example a Codex
+        /// compaction. A continuation reads the complete append up to here.
+        static let continuationByteCount: UInt64 = 8 * 1_024 * 1_024
         private static let overlapByteCount: UInt64 = 64 * 1_024
 
         var schema: Int
@@ -1813,6 +1826,25 @@ public enum DetachStateCommand {
         return Data()
     }
 
+    /// Prints the session ID that a Claude transcript names as its
+    /// continuation, or nothing. Only the bounded tail is read.
+    private static func jsonlSuccessor(
+        _ arguments: [String],
+        standardInput: Data?
+    ) throws -> Data {
+        guard arguments.count == 3, try provider(arguments[0]) == .claude,
+              !arguments[2].isEmpty else {
+            throw DetachStateCommandError.invalidArguments
+        }
+        let successor = TranscriptDocument.claudeSuccessorID(
+            ofTail: try tail(
+                atPath: arguments[1],
+                maximumByteCount: 262_144,
+                standardInput: standardInput),
+            expectedSessionID: arguments[2])
+        return successor.map { Data(($0 + "\n").utf8) } ?? Data()
+    }
+
     private static func jsonlSummary(
         _ arguments: [String],
         standardInput: Data?
@@ -1882,6 +1914,13 @@ public enum DetachStateCommand {
             size = Int64(item.st_size)
             modificationSeconds = Int64(item.st_mtimespec.tv_sec)
             modificationNanoseconds = Int64(item.st_mtimespec.tv_nsec)
+        }
+
+        /// Providers only append to transcripts. Growth of the same file keeps
+        /// an earlier read valid; any other change does not.
+        func isUnchangedOrAppended(to before: Self) -> Bool {
+            self == before
+                || (device == before.device && inode == before.inode && size > before.size)
         }
     }
 

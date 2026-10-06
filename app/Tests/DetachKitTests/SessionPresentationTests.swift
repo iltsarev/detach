@@ -48,6 +48,31 @@ final class SessionPresentationTests: XCTestCase {
         }
     }
 
+    func testLiveSessionWithoutTranscriptEvidenceIsNew() {
+        var row = make(.running)
+        row.agentTurnID = nil
+        XCTAssertFalse(row.hasTranscriptEvidence)
+        XCTAssertEqual(row.statusSignal, .new)
+        XCTAssertEqual(row.displayStatus, L10n.string("new session"))
+        let evidence: [(inout Session) -> Void] = [
+            { $0.model = "model" }, { $0.contextUsedTokens = 1 },
+            { $0.contextWindow = 1 }, { $0.agentTurnID = "turn" },
+        ]
+        for add in evidence {
+            var observed = row
+            add(&observed)
+            XCTAssertTrue(observed.hasTranscriptEvidence)
+            XCTAssertEqual(observed.statusSignal, .unknown)
+            XCTAssertEqual(observed.displayStatus, L10n.string("running"))
+        }
+        row.agentTurnState = .unknown
+        XCTAssertEqual(row.statusSignal, .unknown)
+        row.agentTurnState = nil
+        row.effectiveStatus = .starting
+        XCTAssertEqual(row.statusSignal, .working)
+        XCTAssertEqual(row.displayStatus, L10n.string("starting"))
+    }
+
     func testSections() {
         XCTAssertEqual(
             SessionSection.allCases,
