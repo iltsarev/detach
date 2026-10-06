@@ -195,6 +195,11 @@ final class WorkingRingView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func isAccessibilityElement() -> Bool { false }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
     override func layout() {
         super.layout()
         attachRing()

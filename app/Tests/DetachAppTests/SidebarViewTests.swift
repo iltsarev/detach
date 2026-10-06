@@ -132,6 +132,11 @@ final class SidebarViewTests: XCTestCase {
 
         view.isRotating = false
         XCTAssertNil(view.ring.animation(forKey: WorkingRingView.rotationKey))
+
+        view.setFrameSize(NSSize(width: 20, height: 20))
+        XCTAssertTrue(view.needsLayout, "A SwiftUI size change re-lays out the ring")
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.ring.path?.boundingBox, CGRect(x: 1, y: 1, width: 18, height: 18))
     }
 
     func testWorkingRingResolvesTheAttentionColorForItsAppearance() throws {
