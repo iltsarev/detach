@@ -1423,6 +1423,62 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["", ""])
     }
 
+    func testMetaSnapshotsKeepTheSummaryWhileTheTranscriptGrows() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "growing-summary-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-growing", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent(
+            "growing-summary-rollout.jsonl")
+        try Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-live"}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-growing",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+
+        final class StopFlag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stopped = false
+            var isStopped: Bool { lock.withLock { stopped } }
+            func stop() { lock.withLock { stopped = true } }
+        }
+        let flag = StopFlag()
+        let finished = DispatchSemaphore(value: 0)
+        let writer = try FileHandle(forWritingTo: transcript)
+        let record = Data(#"{"type":"event_msg","payload":{"type":"token_count"}}"#.utf8 + [0x0A])
+        DispatchQueue.global().async {
+            while !flag.isStopped {
+                try? writer.seekToEnd()
+                try? writer.write(contentsOf: record)
+                usleep(50)
+            }
+            finished.signal()
+        }
+        defer {
+            flag.stop()
+            finished.wait()
+            try? writer.close()
+        }
+        // The provider appends while each list reads the tail. Every read
+        // still reports the running turn instead of an empty summary.
+        for _ in 0..<40 {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(separator: 0, omittingEmptySubsequences: false)
+                .dropLast().map { String(decoding: $0, as: UTF8.self) }
+            XCTAssertEqual(Array(values[28..<30]), ["working", "turn-live"])
+        }
+    }
+
     func testMetaSnapshotsKeepTurnStateAcrossOneRecordLargerThanTheColdTail() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "compacted-summary-sessions", isDirectory: true)

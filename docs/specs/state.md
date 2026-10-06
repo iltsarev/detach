@@ -68,8 +68,9 @@ validates a temporary copy, then replaces the live file. List summaries use an
 atomic receipt bound to provider, path, device, inode, size, and nanosecond
 mtime. An unchanged identity skips the 256 KiB tail read. A continuation reads
 the complete append up to 8 MiB, so one large record, such as a Codex
-compaction, keeps the turn state. An append during the read causes a new
-observation, at most three times.
+compaction, keeps the turn state. An append during the read keeps the summary
+of the bytes read. The receipt keeps the earlier size, so the next read
+continues from there. A replaced or rewritten file gives no summary.
 
 State is private (`umask 077`) under
 `~/.local/state/detach/{codex,claude}/sessions/<name>/` and contains full
