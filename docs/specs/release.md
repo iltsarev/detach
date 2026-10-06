@@ -46,6 +46,9 @@ change real power state, upload assets, or claim publication.
   `release-scan` row refines one lid-gated path: a plain modification whose
   diff hunks (changed lines and the enclosing function names) contain no
   power token reports `lid_test_scan_waived` and does not select the probe.
+  A token counts only at the start of a word part. Camel case and acronyms
+  are split first, so `DetachPowerHelper` and `IOPMAssertion` count, but
+  `lid` in `valid` and `lease` in `release` do not.
   Added, deleted, renamed, or copied files keep the gate. Test-only,
   documentation-only, release-orchestrator, and known unrelated product paths
   do not select it.

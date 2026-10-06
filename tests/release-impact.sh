@@ -95,6 +95,29 @@ assert_value "$TMP_ROOT/core-power.tsv" lid_test_required true
 assert_value "$TMP_ROOT/core-power.tsv" lid_test_reason bin/detach-core
 ! grep -F 'lid_test_scan_waived' "$TMP_ROOT/core-power.tsv" >/dev/null
 
+# A token counts only at the start of a word part. `lid` inside `valid` and
+# `lease` inside `release` do not select the probe.
+CORE_WORD_BASE="$(commit_path bin/detach-core 'core resume companion directories')"
+CORE_WORD_HEAD="$(commit_path bin/detach-core 'core keeps a valid transcript after release')"
+"$REPO/scripts/release-impact" "$CORE_WORD_BASE" "$CORE_WORD_HEAD" \
+  >"$TMP_ROOT/core-word.tsv"
+assert_value "$TMP_ROOT/core-word.tsv" lid_test_required false
+assert_value "$TMP_ROOT/core-word.tsv" lid_test_scan_waived bin/detach-core
+
+# Snake case, kebab case, camel case, and acronym word parts still count.
+previous_scan_head="$CORE_WORD_HEAD"
+for token_line in 'core uses $POWER_BIN' 'core starts detach-power' \
+    'core starts DetachPowerHelper' 'core reads IOPMAssertionCreate' \
+    'core sets kIOPMAssertPreventUserIdleSystemSleep'; do
+  CORE_TOKEN_HEAD="$(commit_path bin/detach-core "$token_line")"
+  "$REPO/scripts/release-impact" "$previous_scan_head" "$CORE_TOKEN_HEAD" \
+    >"$TMP_ROOT/core-token.tsv"
+  assert_value "$TMP_ROOT/core-token.tsv" lid_test_required true
+  assert_value "$TMP_ROOT/core-token.tsv" lid_test_reason bin/detach-core
+  # Return to a token-free line so the next case diffs only its own line.
+  previous_scan_head="$(commit_path bin/detach-core 'core resume companion directories')"
+done
+
 # A change inside a power function keeps the probe through the hunk header
 # even when the changed line itself has no token.
 printf '%s\n' 'power_refresh_state() {' '  local sample=1' '}' 'list_sessions() {' '  local rows=1' '}' \

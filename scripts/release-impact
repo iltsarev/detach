@@ -125,7 +125,9 @@ apply_semantic_review() {
 # A lid-gated path with a policy release-scan pattern keeps the closed-lid
 # probe only when its diff hunks mention a power token: changed lines or the
 # enclosing function names in the hunk headers. Only plain modifications are
-# scanned; added, deleted, renamed, or copied files keep the gate.
+# scanned; added, deleted, renamed, or copied files keep the gate. A token
+# counts at the start of a word part, so `lid` in `valid` does not; camel case
+# and acronyms are split first (`DetachPowerHelper`, `IOPMAssertion`).
 apply_release_scans() {
   local path pattern diff remaining=()
   for path in "${LID_REASONS[@]-}"; do
@@ -143,7 +145,8 @@ apply_release_scans() {
         /^@@/ { sub(/^@@[^@]*@@ ?/, ""); print; next }
         /^(\+\+\+|---) / { next }
         /^[-+]/ { print substr($0, 2) }
-      ' | grep -Eiq -- "$pattern"; then
+      ' | sed -E 's/([[:lower:][:digit:]])([[:upper:]])/\1 \2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1 \2/g' | \
+        grep -Eiq -- "(^|[^[:alpha:]])($pattern)"; then
       remaining+=( "$path" )
     else
       SCAN_WAIVED+=( "$path" )
