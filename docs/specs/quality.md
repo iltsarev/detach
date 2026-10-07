@@ -50,6 +50,11 @@ stage's success as separate proof for each scenario.
   a capability, and a requirement. Each requirement links to a user journey
   and at least one automated scenario. Generated JSON and Markdown views must
   match the policy.
+- A wildcard route with unknown release impact covers only a product path that
+  the policy has not classified yet. Each tracked file needs an explicit route
+  in the change that adds it, so a later release does not select the
+  closed-lid gate for an ordinary UI file. Exact routes can still choose
+  unknown impact for build and packaging inputs.
 - Retained gates are timing and quality history, not policy history. An
   unsupported schema is outside telemetry. Current-schema data can span older
   policy identifiers. Malformed evidence remains an attention signal.

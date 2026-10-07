@@ -268,7 +268,7 @@ Direct acceptance evidence for `QC-POWER-PLATFORM`: `SC-POWER-UNIT`.
 - `app/Sources/DetachApp/QuickChat.swift`
 - `app/Sources/DetachApp/RootView.swift`
 - `app/Sources/DetachApp/Session*.swift`
-- `app/Sources/DetachApp/SidebarView.swift`
+- `app/Sources/DetachApp/Sidebar*.swift`
 - `app/Sources/DetachApp/TerminalPreferencePicker.swift`
 - `app/Sources/DetachApp/TextSize.swift`
 - `app/Sources/DetachApp/Theme.swift`
@@ -309,9 +309,11 @@ Direct acceptance evidence for `QC-APP-TIPS`: `SC-UI-EMPTY`.
 
 ### Owned path patterns
 
+- `app/Sources/DetachApp/AppAppearance.swift`
 - `app/Sources/DetachApp/Onboarding*.swift`
 - `app/Sources/DetachApp/Settings*.swift`
 - `app/Sources/DetachApp/SetupGuidance.swift`
+- `app/Sources/DetachApp/TerminalAppearance.swift`
 - `app/Sources/DetachApp/UpdaterService.swift`
 - `app/Sources/DetachKit/DoctorReport.swift`
 - `app/Sources/DetachKit/Localization.swift`
@@ -504,6 +506,7 @@ Direct acceptance evidence for `QC-RUNTIME-TRANSITION`: `SC-SESSION-RECOVER-CODE
 ### Owned path patterns
 
 - `app/Sources/DetachApp/PowerHelperService.swift`
+- `app/Sources/DetachApp/ServiceManagementMutationAdmission.swift`
 - `app/Sources/DetachApp/WatchdogService.swift`
 - `docs/specs/power-handoff.md`
 
