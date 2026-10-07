@@ -207,6 +207,32 @@ final class SidebarGroupsTests: XCTestCase {
             layout.map { $0.groupBlocks.map { $0.sessions.map(\.id) } })
     }
 
+    func testStoppedRowsSortByNewestStopTimeAndLiveRowsByLaunch() {
+        func at(_ seconds: TimeInterval) -> Date { Date(timeIntervalSince1970: seconds) }
+        var earlyStop = session(id: "early-stop", status: "stopped")
+        earlyStop.createdAt = at(300)
+        earlyStop.finishedAt = at(400)
+        var lateStop = session(id: "late-stop", status: "stopped")
+        lateStop.createdAt = at(100)
+        lateStop.finishedAt = at(900)
+        var legacy = session(id: "legacy", status: "interrupted")
+        legacy.createdAt = at(500)
+        legacy.finishedAt = nil
+        var olderLive = session(id: "older-live", status: "running")
+        olderLive.createdAt = at(10)
+        olderLive.finishedAt = at(2_000)
+        var newerLive = session(id: "newer-live", status: "running")
+        newerLive.createdAt = at(20)
+        let layout = SidebarSectionLayout.build(
+            sessions: [earlyStop, olderLive, legacy, lateStop, newerLive],
+            document: SidebarGroupsDocument())
+        XCTAssertEqual(layout.map(\.section), [.sessions, .stopped])
+        XCTAssertEqual(layout[0].ungrouped.map(\.id), ["newer-live", "older-live"],
+                       "Live rows keep newest launch first")
+        XCTAssertEqual(layout[1].ungrouped.map(\.id), ["late-stop", "legacy", "early-stop"],
+                       "Stopped rows use the stop time, or the launch time without one")
+    }
+
     func testUnnumberedRowsFollowShortcutsAndUseNewestLaunchFirst() {
         var older = session(id: "older", status: "running")
         older.createdAt = Date(timeIntervalSince1970: 10)

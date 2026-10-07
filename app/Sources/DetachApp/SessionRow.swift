@@ -56,6 +56,34 @@ enum SessionRowPresentation {
         signal == .working && isFresh && isVisible && isActive && !reduceMotion
     }
 
+    /// Live rows name their provider. A stopped row shows when it stopped; its
+    /// provider stays in the row help.
+    static func trailingDetail(for session: Session, now: Date = Date(),
+                               calendar: Calendar = .current, locale: Locale = .current) -> String {
+        guard SidebarSection.containing(session) == .stopped,
+              let finished = session.finishedAt else { return session.provider.rawValue }
+        return stoppedDate(finished, now: now, calendar: calendar, locale: locale)
+    }
+
+    /// A time today, "yesterday" with a time, a short date this year, and the
+    /// year before.
+    static func stoppedDate(_ date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
+        let time = date.formatted(Date.FormatStyle(
+            date: .omitted, time: .shortened, locale: locale,
+            calendar: calendar, timeZone: calendar.timeZone))
+        if calendar.isDate(date, inSameDayAs: now) { return time }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return L10n.format("yesterday, %@", time)
+        }
+        var style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
+            .day().month(.abbreviated)
+        if calendar.component(.year, from: date) != calendar.component(.year, from: now) {
+            style = style.year()
+        }
+        return date.formatted(style)
+    }
+
     static func help(for session: Session, isFresh: Bool = true) -> String {
         var parts = [session.displayTitle, session.provider.rawValue,
                      isFresh ? status(for: session) : L10n.string("last known status")]
@@ -63,6 +91,9 @@ enum SessionRowPresentation {
         if let exit = session.exitStatus { parts.append(L10n.format("exit %d", exit)) }
         if let created = session.createdAt {
             parts.append(L10n.format("Started %@", created.formatted(date: .abbreviated, time: .shortened)))
+        }
+        if SidebarSection.containing(session) == .stopped, let finished = session.finishedAt {
+            parts.append(L10n.format("Stopped %@", finished.formatted(date: .abbreviated, time: .shortened)))
         }
         return parts.joined(separator: " · ")
     }
@@ -99,7 +130,12 @@ struct SessionRow: View {
                     Text(isFresh ? SessionRowPresentation.status(for: session) : L10n.string("last known status"))
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    Text(session.provider.rawValue).fixedSize()
+                    // A minute timeline keeps "today" and "yesterday" true
+                    // after midnight without a new session snapshot.
+                    TimelineView(.everyMinute) { context in
+                        Text(SessionRowPresentation.trailingDetail(for: session, now: context.date))
+                            .fixedSize()
+                    }
                 }
                 .appFont(.caption)
                 .foregroundStyle(SessionPalette.secondary)

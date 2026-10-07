@@ -49,8 +49,11 @@ tmux-colored capsule. Power uses a neutral surface and semantic color. Clicking
 the UUID chip copies the full UUID and shows **Copied**.
 
 Sidebar rows show a status symbol, name, trailing shortcut, and a second line
-with status and provider. They have no tmux identity bar or colored badges.
-Launch time and exit details remain in help and accessible descriptions.
+with status and provider. A row in Stopped shows its stop time instead of the
+provider: a time today, yesterday with a time, a day and month this year, or a
+date with the year. They have no tmux identity bar or colored badges.
+Launch time, stop time, provider, and exit details remain in help and
+accessible descriptions.
 Text and status marks follow the app text size. Status colors keep contrast in
 light and dark appearances. One custom selection surface preserves native
 List selection and keyboard navigation. A group has a distinct row identity
@@ -80,7 +83,8 @@ Working, ready, and input transitions do not move a row. Groups come first in
 user order, then rows outside groups. Grouped rows start under the group name;
 rows outside groups stay at the section edge. Within each upper group or ungrouped
 set, assigned shortcuts sort first by number. Remaining rows sort by newest
-creation time. Stopped rows sort by newest creation time within their groups.
+creation time. Stopped rows sort by newest stop time within their groups; a
+row without a stop time uses its creation time.
 
 User groups are app-only preferences stored in `sidebarGroupsV1`. The CLI and
 typed state never read them. Session names key assignments across Resume and
