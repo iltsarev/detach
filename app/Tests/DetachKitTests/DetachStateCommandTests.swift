@@ -1116,6 +1116,55 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testMetaSnapshotsKeepCodexContextAcrossARateLimitOnlyAppend() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "context-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-context", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcript = temporaryDirectory.appendingPathComponent(
+            "context-rollout.jsonl")
+        try Data("""
+        {"payload":{"model":"gpt-context"}}
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+        {"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":150,"output_tokens":50},"model_context_window":1000}}}
+
+        """.utf8).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-context",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcript.path,
+        ]).write(to: session.appendingPathComponent("meta.json"))
+        func summaryFields() throws -> [String] {
+            let output = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ])
+            let values = output.split(
+                separator: 0, omittingEmptySubsequences: false)
+                .dropLast()
+                .map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[25..<30])
+        }
+
+        XCTAssertEqual(try summaryFields(), ["gpt-context", "200", "1000", "working", "turn-1"])
+        // The receipt continuation reads only the append; a rate-limit-only
+        // token_count must not erase the cached context.
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("""
+        {"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}
+        {"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}
+
+        """.utf8))
+        try handle.close()
+        XCTAssertEqual(try summaryFields(), ["gpt-context", "200", "1000", "waiting", "turn-1"])
+        // An unchanged transcript reuses the receipt with the same values.
+        XCTAssertEqual(try summaryFields(), ["gpt-context", "200", "1000", "waiting", "turn-1"])
+    }
+
     func testMetaSnapshotsCanBatchAClaudeTranscriptSummary() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "claude-summary-sessions", isDirectory: true)
