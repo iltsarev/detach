@@ -42,6 +42,32 @@ final class TerminalAppearanceTests: XCTestCase {
         XCTAssertEqual(app.appearance?.name, .aqua)
     }
 
+    func testPalettesKeepReadableContrast() throws {
+        func luminance(_ color: NSColor) throws -> Double {
+            let srgb = try XCTUnwrap(color.usingColorSpace(.sRGB))
+            func channel(_ value: CGFloat) -> Double {
+                let value = Double(value)
+                return value <= 0.03928 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * channel(srgb.redComponent) + 0.7152 * channel(srgb.greenComponent)
+                + 0.0722 * channel(srgb.blueComponent)
+        }
+        func contrast(_ first: NSColor, _ second: NSColor) throws -> Double {
+            let (a, b) = (try luminance(first), try luminance(second))
+            return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+        }
+        for palette in [TerminalPalette.light, .dark] {
+            XCTAssertGreaterThanOrEqual(try contrast(palette.foreground, palette.background), 7)
+            XCTAssertGreaterThanOrEqual(try contrast(palette.foreground, palette.selection), 4.5)
+            XCTAssertEqual(palette.ansiColors.count, 16)
+            for (index, color) in palette.ansiColors.enumerated() {
+                let minimum = index == 8 || index == 15 ? 2.5 : 3.0
+                XCTAssertGreaterThanOrEqual(try contrast(color, palette.background), minimum,
+                                            "\(palette) ANSI color \(index)")
+            }
+        }
+    }
+
     func testLiveAndRetainedScreensRecolorWithoutLosingContent() throws {
         let terminal = SessionAttachLocalProcessTerminalView(
             frame: NSRect(x: 0, y: 0, width: 640, height: 300))

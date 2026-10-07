@@ -11,7 +11,10 @@ underline, strikethrough, and reverse video. Reverse swaps colors against
 the selected terminal background, also the `LogTextView` background. Cached
 logs retain semantic default and ANSI palette colors. A theme change resolves
 these colors without another log read. Explicit RGB and extended palette
-colors stay unchanged. Font scaling changes only the font.
+colors stay unchanged. Font scaling changes only the font. The light terminal
+palette uses One Light colors. In both palettes, text has 7:1 contrast with the
+background and 4.5:1 with the selection. Each ANSI color has 3:1 contrast with
+the background; bright black and bright white have 2.5:1.
 
 <a id="qc-health-presentation"></a>
 
