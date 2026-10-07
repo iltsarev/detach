@@ -88,6 +88,9 @@ if [ "$no_daemon" = 0 ] && [ "${FAKE_CODEX_LEGACY:-0}" != 1 ] && \
    [ -n "${FAKE_CODEX_DAEMON_ORIGINATOR:-}" ]; then
   originator="$FAKE_CODEX_DAEMON_ORIGINATOR"
 fi
+# An inherited provider environment can name another run's originator even
+# without a shared daemon.
+[ -z "${FAKE_CODEX_FORCE_ORIGINATOR:-}" ] || originator="$FAKE_CODEX_FORCE_ORIGINATOR"
 if [ "${FAKE_CODEX_GUARDIAN:-0}" = 1 ]; then
   # Review companions inherit the run originator. Neither their client source
   # nor their originator makes them the user's conversation.

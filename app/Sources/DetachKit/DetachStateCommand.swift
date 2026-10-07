@@ -431,7 +431,8 @@ public enum DetachStateCommand {
         let allowed = required.union(processInspection).union([
             "--stop-requested", "--lifecycle-phase", "--uncommitted-replacement",
             "--runtime-quiescent",
-            "--runtime-ready-at", "--operation-lock",
+            "--runtime-ready-at", "--operation-lock", "--identity-state",
+            "--transcript-bound", "--checkpoint-threshold", "--now",
         ])
         var values: [String: String] = [:]
         var index = 0
@@ -460,7 +461,7 @@ public enum DetachStateCommand {
               let heartbeatRaw = values["--heartbeat"],
               let heartbeat = FreshnessState(rawValue: heartbeatRaw),
               let checkpointRaw = values["--checkpoint"],
-              let checkpoint = FreshnessState(rawValue: checkpointRaw),
+              var checkpoint = FreshnessState(rawValue: checkpointRaw),
               let recoverableRaw = values["--checkpoint-recoverable"],
               let knownRaw = values["--agent-session-known"] else {
             throw DetachStateCommandError.invalidArguments
@@ -500,6 +501,33 @@ public enum DetachStateCommand {
         } else if !processInspection.isDisjoint(with: values.keys) {
             throw DetachStateCommandError.invalidArguments
         }
+        // A bound conversation that has published no checkpoint long after
+        // its runtime became ready is overdue, not merely too new for one.
+        if checkpoint == .missing,
+           try values["--transcript-bound"].map(boolean) ?? false,
+           let readyRaw = values["--runtime-ready-at"],
+           let ready = ISO8601DateFormatter().date(from: readyRaw),
+           let thresholdRaw = values["--checkpoint-threshold"],
+           let nowRaw = values["--now"] {
+            guard let threshold = Int(thresholdRaw), threshold > 0,
+                  let now = Int(nowRaw) else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            if now - Int(ready.timeIntervalSince1970) > threshold {
+                checkpoint = .stale
+            }
+        }
+        // An empty value means the run has not recorded a discovery outcome.
+        let identityState: ProviderIdentityState?
+        switch values["--identity-state"] {
+        case nil, ""?:
+            identityState = nil
+        case let raw?:
+            guard let parsed = ProviderIdentityState(rawValue: raw) else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            identityState = parsed
+        }
         let operationBusy = try values["--operation-lock"].map(operationLockIsHeld) ?? false
         var assessment = SessionHealthEvaluator.evaluate(SessionHealthEvidence(
             metadataValid: try boolean(metadataRaw),
@@ -516,7 +544,8 @@ public enum DetachStateCommand {
             uncommittedReplacement: uncommittedReplacement,
             runtimeQuiescent: runtimeQuiescent,
             stopRequested: stopRequested,
-            lifecyclePhase: lifecyclePhase))
+            lifecyclePhase: lifecyclePhase,
+            identityState: identityState))
         if operationBusy {
             // A session operation can expose its placeholder pane before its
             // metadata and tmux identity are committed. It grants no mutation
@@ -780,6 +809,7 @@ public enum DetachStateCommand {
         ("lifecycle_phase", ["lifecycle_phase"]),
         ("preserve_recovery_until_ready", ["preserve_recovery_until_ready"]),
         ("runtime_ready_at", ["runtime_ready_at"]),
+        ("identity_state", ["identity_state"]),
     ]
 
     private static let recoveryBindingFields: [(String, [String])] = [
@@ -832,6 +862,9 @@ public enum DetachStateCommand {
             if case .integer = value { return true }
         case "preserve_recovery_until_ready":
             if case .bool = value { return true }
+        case "identity_state":
+            if case .string(let state) = value,
+               ProviderIdentityState(rawValue: state) != nil { return true }
         default:
             if case .string = value { return true }
         }

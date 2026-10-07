@@ -48,6 +48,24 @@ final class SessionPresentationTests: XCTestCase {
         }
     }
 
+    func testLiveSessionWithAnUnconfirmedIdentityIsNotLinked() {
+        var row = make(.running)
+        row.agentTurnID = nil
+        row.healthReason = .identityUnconfirmed
+        XCTAssertEqual(row.statusSignal, .unlinked)
+        XCTAssertEqual(row.displayStatus, L10n.string("not linked"))
+        XCTAssertEqual(
+            row.healthReasonLabel,
+            L10n.string("Detach could not link this conversation. Checkpoints and Resume are unavailable for this run."))
+        XCTAssertEqual(row.section, .active)
+        // A finished run reports its terminal state, not the old binding issue.
+        row.effectiveStatus = .stopped
+        XCTAssertEqual(row.statusSignal, .stopped)
+        row.effectiveStatus = .running
+        row.healthReason = .healthy
+        XCTAssertEqual(row.statusSignal, .new)
+    }
+
     func testLiveSessionWithoutTranscriptEvidenceIsNew() {
         var row = make(.running)
         row.agentTurnID = nil

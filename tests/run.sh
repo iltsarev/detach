@@ -3257,6 +3257,9 @@ if codex_part_selected identity; then
   discovery_token="$("$STATE_HELPER" meta get "$discovery_meta" run_token)"
   discovery_pid="$("$STATE_HELPER" meta get "$discovery_meta" provider_pid)"
   [ "$("$STATE_HELPER" jsonl first "$discovery_rollout" payload.originator)" = "detach_$discovery_token" ]
+  # A codex_cli_rs root from FAKE_CODEX_FOREIGN_FIRST is unrelated, not foreign.
+  [ "$("$STATE_HELPER" meta get "$discovery_meta" identity_state)" = bound ]
+  ! grep -F 'identity not confirmed' "$discovery_dir/checkpoint.log" >/dev/null
   [ "$("$STATE_HELPER" meta get "$discovery_meta" project_dir)" = "$discovery_target" ]
   printf '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"fake-turn-%s"}}\n' \
     "$discovery_id" >>"$discovery_rollout"
@@ -3275,6 +3278,40 @@ if codex_part_selected identity; then
   run_codex stop "$discovery_name"
   run_codex delete --force "$discovery_name"
   printf 'Codex worktree source discovery passed\n'
+)
+# A conversation created under another Detach run's originator (an inherited
+# provider environment or shared app-server) cannot be proven as this run's.
+# The live run reports identity_unconfirmed and logs the outcome once.
+(
+  foreign_project="$TMP_ROOT/foreign-originator"
+  foreign_name=foreign-originator
+  foreign_session="detach-codex-$foreign_name"
+  foreign_dir="$DETACH_CODEX_STATE_ROOT/sessions/$foreign_session"
+  foreign_meta="$foreign_dir/meta.json"
+  mkdir -p "$foreign_project"
+  cd "$foreign_project"
+  FAKE_CODEX_FORCE_ORIGINATOR=detach_another-run FAKE_CODEX_SLEEP=20 \
+    FAKE_CODEX_FOREIGN_FIRST=0 \
+    run_codex --name "$foreign_name" --detach -- 'foreign originator'
+  attempts=0
+  until [ "$("$STATE_HELPER" meta get "$foreign_meta" identity_state 2>/dev/null)" = foreign ]; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 100 ] || {
+      printf 'a foreign Codex originator was not reported\n' >&2
+      exit 1
+    }
+    sleep 0.1
+  done
+  [ -z "$("$STATE_HELPER" meta get "$foreign_meta" agent_session_id)" ]
+  # Several heartbeat and checkpoint ticks pass without another log line.
+  sleep 3
+  foreign_json="$(run_codex list --json | grep -F "\"session_name\":\"$foreign_session\"")"
+  [ "$(printf '%s' "$foreign_json" | "$STATE_HELPER" meta get /dev/stdin effective_status)" = running ]
+  [ "$(printf '%s' "$foreign_json" | "$STATE_HELPER" meta get /dev/stdin health_reason)" = identity_unconfirmed ]
+  [ "$(grep -c 'identity not confirmed (foreign)' "$foreign_dir/checkpoint.log")" = 1 ]
+  run_codex stop "$foreign_name"
+  run_codex delete --force "$foreign_name"
+  printf 'Codex foreign originator diagnosis passed\n'
 )
 if [ "$CODEX_TEST_PART" = identity ]; then
   export FAKE_CODEX_SLEEP=60

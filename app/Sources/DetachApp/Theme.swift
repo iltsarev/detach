@@ -49,7 +49,7 @@ enum SessionIdentity {
     /// One status color shared by the sidebar symbols and the detail status pill.
     static func statusColor(for session: Session) -> Color {
         switch session.statusSignal {
-        case .working, .inputRequired: return SessionPalette.attention
+        case .working, .inputRequired, .unlinked: return SessionPalette.attention
         case .ready: return SessionPalette.ready
         case .error: return SessionPalette.error
         case .stopped, .waiting, .unknown, .recoverable, .new: return SessionPalette.secondary

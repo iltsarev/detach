@@ -404,6 +404,7 @@
 /* Session health */
 "hung" = "зависла";
 "The provider is alive; the last checkpoint is old." = "Процесс провайдера работает; последняя контрольная точка устарела.";
+"Detach could not link this conversation. Checkpoints and Resume are unavailable for this run." = "Detach не смог привязать этот разговор. Контрольные точки и Resume для этого запуска недоступны.";
 "The provider is alive, but its health heartbeat is stale." = "Процесс провайдера работает, но heartbeat контроля состояния устарел.";
 "The provider is alive, but no health heartbeat is available yet." = "Процесс провайдера работает, но heartbeat контроля состояния ещё не появился.";
 "The managed tmux session disappeared." = "Управляемая tmux-сессия исчезла.";
@@ -501,6 +502,7 @@
 "status unavailable" = "статус недоступен";
 
 "new session" = "новая сессия";
+"not linked" = "не привязана";
 
 "yesterday, %@" = "вчера, %@";
 

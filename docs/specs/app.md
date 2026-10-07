@@ -68,7 +68,10 @@ size: 16 points at the default text size. Ready uses a circled check. Input
 uses a circled exclamation mark. Stop and interruption use circled stop and
 pause marks. Recovery data uses a return arrow. A live session without
 transcript evidence (no model, context, or turn ID) has a plain circle and a
-new-session label. Other missing status data has a circled dash and a
+new-session label. A live session whose health reason is
+`identity_unconfirmed` instead has a warning triangle, a not-linked label,
+the input-request yellow, and a faint row fill; its detail chip says that
+checkpoints and Resume are unavailable. Other missing status data has a circled dash and a
 status-unavailable label. Stale data uses a history clock.
 Errors keep distinct symbols for failure, hang, lost session, corrupt data,
 and name collision. No state uses a question-mark or ellipsis placeholder.

@@ -813,7 +813,7 @@ final class DetachStateCommandTests: XCTestCase {
         let values = output.split(separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        let recordSize = 25
+        let recordSize = 26
         XCTAssertEqual(values.count, recordSize * 4 + 2)
         XCTAssertEqual(values[0], "detach-claude-three")
         XCTAssertEqual(values[1], "true")
@@ -821,15 +821,15 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(values[4], "/tmp/primary")
         XCTAssertEqual(values[22], "true")
         XCTAssertEqual(values[23], "2026-09-04T12:00:00Z")
-        XCTAssertEqual(values[24], "primary")
+        XCTAssertEqual(values[25], "primary")
         XCTAssertEqual(values[recordSize], "detach-codex-one")
         XCTAssertEqual(values[recordSize + 1], "true")
         XCTAssertEqual(values[recordSize + 2], "stopped")
         XCTAssertEqual(values[recordSize + 4], project)
-        XCTAssertEqual(values[recordSize + 24], "checkpoint")
+        XCTAssertEqual(values[recordSize + 25], "checkpoint")
         XCTAssertEqual(values[recordSize * 2], "detach-codex-two")
         XCTAssertEqual(values[recordSize * 2 + 1], "false")
-        XCTAssertEqual(values[recordSize * 2 + 24], "")
+        XCTAssertEqual(values[recordSize * 2 + 25], "")
         XCTAssertTrue(values[(recordSize * 2 + 2)..<(recordSize * 3)].allSatisfy(\.isEmpty))
         XCTAssertEqual(values[recordSize * 3], "detach-codex-zempty")
         XCTAssertEqual(values[recordSize * 3 + 1], "false")
@@ -960,6 +960,36 @@ final class DetachStateCommandTests: XCTestCase {
         }
     }
 
+    func testMetadataSnapshotsCarryTheIdentityState() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "identity-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(
+            "detach-codex-identity", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let primary = session.appendingPathComponent("meta.json")
+        try JSONSerialization.data(withJSONObject: [
+            "schema": 1,
+            "session_name": "detach-codex-identity",
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "identity_state": "foreign",
+        ]).write(to: primary)
+
+        let values = try DetachStateCommand.run(arguments: [
+            "meta", "snapshots", root.path,
+        ]).split(separator: 0, omittingEmptySubsequences: false)
+            .dropLast().map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(values[24], "foreign")
+        XCTAssertEqual(values[25], "primary")
+        let pairs = try DetachStateCommand.run(arguments: [
+            "meta", "snapshot", primary.path, "detach-codex-identity",
+        ]).split(separator: 0, omittingEmptySubsequences: false)
+            .map { String(decoding: $0, as: UTF8.self) }
+        let index = try XCTUnwrap(pairs.firstIndex(of: "identity_state"))
+        XCTAssertEqual(pairs[index + 1], "foreign")
+    }
+
     func testMetadataSnapshotsRejectMistypedOperationalFieldsWithoutFallback() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "typed-sessions", isDirectory: true)
@@ -983,6 +1013,8 @@ final class DetachStateCommandTests: XCTestCase {
             ("runtime_shutdown_observed_at", 0),
             ("exit_status", "not-an-integer"),
             ("status", 7),
+            ("identity_state", "lost"),
+            ("identity_state", 3),
         ]
         for (field, value) in malformedValues {
             var object: [String: Any] = [
@@ -1007,7 +1039,7 @@ final class DetachStateCommandTests: XCTestCase {
             ).dropLast().map { String(decoding: $0, as: UTF8.self) }
             XCTAssertEqual(values[0], "detach-codex-typed")
             XCTAssertEqual(values[1], "false")
-            XCTAssertEqual(values[24], "")
+            XCTAssertEqual(values[25], "")
         }
     }
 
@@ -1026,20 +1058,20 @@ final class DetachStateCommandTests: XCTestCase {
             let data = try DetachStateCommand.run(arguments: ["meta", "snapshots", root.path, "--with-transcript-summary"])
             return data.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
         }
-        XCTAssertEqual(Array(try fields()[28...30]), ["waiting", "ask", "input_required"])
-        XCTAssertEqual(Array(try fields()[28...30]), ["waiting", "ask", "input_required"])
+        XCTAssertEqual(Array(try fields()[29...31]), ["waiting", "ask", "input_required"])
+        XCTAssertEqual(Array(try fields()[29...31]), ["waiting", "ask", "input_required"])
         let receipt = session.appendingPathComponent(".transcript-summary-cache.json")
         var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
         legacy["schema"] = 5
         legacy["agentWaitingReason"] = NSNull()
         try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
-        XCTAssertEqual(Array(try fields()[28...30]), ["waiting", "ask", "input_required"])
+        XCTAssertEqual(Array(try fields()[29...31]), ["waiting", "ask", "input_required"])
         let response = #"{"type":"response_item","payload":{"type":"function_call_output","call_id":"ask","output":"done"}}"# + "\n"
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(response.utf8))
         try handle.close()
-        XCTAssertEqual(Array(try fields()[28...30]), ["working", "ask", ""])
+        XCTAssertEqual(Array(try fields()[29...31]), ["working", "ask", ""])
     }
 
     func testMetaSnapshotsCanBatchBoundedTranscriptSummaries() throws {
@@ -1071,11 +1103,11 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 31 + 2)
+        XCTAssertEqual(values.count, 32 + 2)
         XCTAssertEqual(values[0], "detach-codex-summary")
         XCTAssertEqual(values[1], "true")
-        XCTAssertEqual(values[24], "primary")
-        XCTAssertEqual(Array(values[25..<30]), [
+        XCTAssertEqual(values[25], "primary")
+        XCTAssertEqual(Array(values[26..<31]), [
             "gpt-batched", "", "", "working", "turn-batched",
         ])
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
@@ -1094,7 +1126,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(cachedValues[25], "cached-proof")
+        XCTAssertEqual(cachedValues[26], "cached-proof")
 
         try Data("""
         {"payload":{"model":"gpt-updated"}}
@@ -1107,7 +1139,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false)
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(changedValues[25], "gpt-updated")
+        XCTAssertEqual(changedValues[26], "gpt-updated")
 
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "meta", "snapshots", root.path, "--unknown",
@@ -1146,7 +1178,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[25..<30])
+            return Array(values[26..<31])
         }
 
         XCTAssertEqual(try summaryFields(), ["gpt-context", "200", "1000", "working", "turn-1"])
@@ -1193,8 +1225,8 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values[24], "primary")
-        XCTAssertEqual(Array(values[25..<30]), [
+        XCTAssertEqual(values[25], "primary")
+        XCTAssertEqual(Array(values[26..<31]), [
             "claude-test", "10", "", "working", "turn-claude",
         ])
 
@@ -1213,7 +1245,7 @@ final class DetachStateCommandTests: XCTestCase {
         let waitingValues = waitingOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(waitingValues[28...30]), ["waiting", "tool-1", "input_required"])
+        XCTAssertEqual(Array(waitingValues[29...31]), ["waiting", "tool-1", "input_required"])
 
         let receipt = session.appendingPathComponent(
             ".transcript-summary-cache.json")
@@ -1231,7 +1263,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedValues = migratedOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(migratedValues[28..<30]), ["waiting", "tool-1"])
+        XCTAssertEqual(Array(migratedValues[29..<31]), ["waiting", "tool-1"])
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
@@ -1253,7 +1285,7 @@ final class DetachStateCommandTests: XCTestCase {
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
         XCTAssertEqual(
-            Array(stillWaitingValues[28..<30]), ["waiting", "tool-1"])
+            Array(stillWaitingValues[29..<31]), ["waiting", "tool-1"])
 
         let plainUser = Data("""
 
@@ -1270,7 +1302,7 @@ final class DetachStateCommandTests: XCTestCase {
         let latchedValues = latchedOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(latchedValues[28..<30]), ["waiting", "tool-1"])
+        XCTAssertEqual(Array(latchedValues[29..<31]), ["waiting", "tool-1"])
 
         let toolResult = Data("""
 
@@ -1287,7 +1319,7 @@ final class DetachStateCommandTests: XCTestCase {
         let workingValues = workingOutput.split(
             separator: 0, omittingEmptySubsequences: false
         ).dropLast().map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(Array(workingValues[28..<30]), ["working", "answer-user"])
+        XCTAssertEqual(Array(workingValues[29..<31]), ["working", "answer-user"])
     }
 
     func testMetaSnapshotsReclassifyCachedClaudeEndTurnWithoutTranscriptChange() throws {
@@ -1312,7 +1344,7 @@ final class DetachStateCommandTests: XCTestCase {
             ])
             let values = output.split(separator: 0, omittingEmptySubsequences: false)
                 .dropLast().map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[28..<30])
+            return Array(values[29..<31])
         }
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let receipt = session.appendingPathComponent(".transcript-summary-cache.json")
@@ -1386,9 +1418,9 @@ final class DetachStateCommandTests: XCTestCase {
             .dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
 
-        XCTAssertEqual(values.count, 31 + 2)
-        XCTAssertEqual(values[24], "primary")
-        XCTAssertEqual(Array(values[25..<30]), Array(repeating: "", count: 5))
+        XCTAssertEqual(values.count, 32 + 2)
+        XCTAssertEqual(values[25], "primary")
+        XCTAssertEqual(Array(values[26..<31]), Array(repeating: "", count: 5))
         XCTAssertEqual(Array(values.suffix(2)), ["", "true"])
     }
 
@@ -1421,7 +1453,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[28..<30])
+            return Array(values[29..<31])
         }
 
         XCTAssertEqual(try turnFields(), ["working", "turn-long"])
@@ -1475,7 +1507,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[28..<30])
+            return Array(values[29..<31])
         }
 
         XCTAssertEqual(try turnFields(), ["waiting", "turn-old"])
@@ -1548,7 +1580,7 @@ final class DetachStateCommandTests: XCTestCase {
             ])
             let values = output.split(separator: 0, omittingEmptySubsequences: false)
                 .dropLast().map { String(decoding: $0, as: UTF8.self) }
-            XCTAssertEqual(Array(values[28..<30]), ["working", "turn-live"])
+            XCTAssertEqual(Array(values[29..<31]), ["working", "turn-live"])
         }
     }
 
@@ -1581,7 +1613,7 @@ final class DetachStateCommandTests: XCTestCase {
                 separator: 0, omittingEmptySubsequences: false)
                 .dropLast()
                 .map { String(decoding: $0, as: UTF8.self) }
-            return Array(values[28..<30])
+            return Array(values[29..<31])
         }
 
         XCTAssertEqual(try turnFields(), ["working", "turn-long"])
@@ -2283,6 +2315,57 @@ final class DetachStateCommandTests: XCTestCase {
             from: output[output.index(after: newline)...])
         XCTAssertEqual(assessment.effectiveStatus, .running)
         XCTAssertEqual(assessment.reason, .healthy)
+    }
+
+    func testHealthEvaluateReportsUnconfirmedIdentityAndOverdueCheckpoints() throws {
+        let live = [
+            "health", "evaluate",
+            "--metadata-valid", "true",
+            "--runtime-identity-expected", "true",
+            "--meta-status", "running",
+            "--tmux", "live",
+            "--run-token", "match",
+            "--worker", "alive",
+            "--provider-process", "alive",
+            "--heartbeat", "fresh",
+            "--checkpoint-recoverable", "false",
+            "--agent-session-known", "true",
+        ]
+        func reason(_ extra: [String]) throws -> SessionHealthReason {
+            try JSONDecoder().decode(
+                SessionHealthAssessment.self,
+                from: DetachStateCommand.run(arguments: live + extra)).reason
+        }
+        let ready = "2026-10-07T10:00:00Z"
+        let readyEpoch = 1_791_367_200
+        let overdue = [
+            "--checkpoint", "missing", "--transcript-bound", "true",
+            "--runtime-ready-at", ready, "--checkpoint-threshold", "660",
+        ]
+
+        XCTAssertEqual(try reason(["--checkpoint", "fresh", "--identity-state", "foreign"]),
+                       .identityUnconfirmed)
+        XCTAssertEqual(try reason(["--checkpoint", "fresh", "--identity-state", ""]), .healthy)
+        XCTAssertEqual(try reason(["--checkpoint", "fresh", "--identity-state", "pending"]), .healthy)
+        XCTAssertEqual(try reason(overdue + ["--now", String(readyEpoch + 661)]), .checkpointStale)
+        XCTAssertEqual(try reason(overdue + ["--now", String(readyEpoch + 660)]), .healthy)
+        // An unused session has no transcript and no checkpoint to publish.
+        XCTAssertEqual(try reason([
+            "--checkpoint", "missing", "--transcript-bound", "false",
+            "--runtime-ready-at", ready, "--checkpoint-threshold", "660",
+            "--now", String(readyEpoch + 9_999),
+        ]), .healthy)
+        for invalid in [
+            ["--checkpoint", "fresh", "--identity-state", "lost"],
+            overdue + ["--now", "soon"],
+            ["--checkpoint", "missing", "--transcript-bound", "true",
+             "--runtime-ready-at", ready, "--checkpoint-threshold", "0",
+             "--now", String(readyEpoch)],
+        ] {
+            XCTAssertThrowsError(try DetachStateCommand.run(arguments: live + invalid)) { error in
+                XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)
+            }
+        }
     }
 
     func testHealthEvaluateRequiresQuiescenceForUncommittedRecovery() throws {
