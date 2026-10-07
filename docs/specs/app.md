@@ -26,7 +26,9 @@ working and orange means waiting. Claude `AskUserQuestion` records with a
 return to working. Waiting outranks working. A badge hides both tints so power
 warnings stay visible. Monochrome states remain template; tints resolve from
 label or system colors. VoiceOver names the session state. The first menu line
-is `state · reason · freshness`.
+is `state · reason · freshness`. Each menu session line uses the sidebar status
+label. The menu and the detail status pill follow the same snapshot authority
+as the sidebar.
 <a id="qc-health-freshness"></a>
 
 Protected counts working sessions. Allowed names all-waiting or an unprotected

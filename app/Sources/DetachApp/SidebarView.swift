@@ -530,7 +530,7 @@ struct SidebarView: View {
 // quality-coverage:end ui-e2e-instrumentation
                 SessionRow(
                     session: session, shortcutSlot: shortcutSlot,
-                    isFresh: store.hasFreshSnapshot && store.state == .ok)
+                    isFresh: store.snapshotIsAuthoritative)
             }
             .padding(.leading, isGrouped ? SidebarGroupLayout.rowIndent : 0)
 // quality-coverage:begin ui-e2e-instrumentation
@@ -548,14 +548,14 @@ struct SidebarView: View {
             .listRowBackground(
                 SessionRowBackground(
                     session: session, selected: selectedID == session.id,
-                    isFresh: store.hasFreshSnapshot && store.state == .ok))
+                    isFresh: store.snapshotIsAuthoritative))
         } else {
             Button {
                 selectedID = session.id
             } label: {
                 SessionRow(
                     session: session, shortcutSlot: shortcutSlot,
-                    isFresh: store.hasFreshSnapshot && store.state == .ok)
+                    isFresh: store.snapshotIsAuthoritative)
                     .padding(.leading, isGrouped ? SidebarGroupLayout.rowIndent : 0)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -578,7 +578,7 @@ struct SidebarView: View {
             .listRowBackground(
                 SessionRowBackground(
                     session: session, selected: selectedID == session.id,
-                    isFresh: store.hasFreshSnapshot && store.state == .ok))
+                    isFresh: store.snapshotIsAuthoritative))
         }
     }
 

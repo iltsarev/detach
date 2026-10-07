@@ -273,8 +273,36 @@ final class MenuBarPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.sessions.count, 6)
         XCTAssertEqual(presentation.sessions.first?.id, "detach-codex-waiting")
-        XCTAssertTrue(presentation.sessions.first?.answerReady == true)
+        XCTAssertTrue(presentation.sessions.first?.waitingForUser == true)
         XCTAssertEqual(presentation.hiddenSessionCount, 2)
+    }
+
+    func testSessionLinesUseTheSidebarStatusLabel() {
+        func line(_ id: String, _ fields: String) -> Session {
+            let parsed = SessionListParser.parse("""
+            {"schema":1,"provider":"codex","session_name":"detach-codex-\(id)",\
+            "name":"\(id)","effective_status":"running","meta_status":"running",\
+            "project_dir":"/tmp/p","created_at":"2026-07-15T10:00:00Z",\
+            "last_checkpoint_at":null,"exit_status":null,"finished_at":null\(fields)}
+            """)
+            precondition(!parsed.sessions.isEmpty, "fixture must parse")
+            return parsed.sessions[0]
+        }
+        let sessions = [
+            line("input", #","agent_turn_state":"waiting","agent_turn_id":"t","agent_waiting_reason":"input_required""#),
+            line("unknown-reason", #","agent_turn_state":"waiting","agent_turn_id":"t""#),
+            line("interrupted", #","agent_turn_state":"interrupted","agent_turn_id":"t""#),
+            line("fresh", ""),
+        ]
+        let presentation = makePresentation(powerState: "protected", sessions: sessions)
+        let labels = Dictionary(uniqueKeysWithValues: presentation.sessions.map { ($0.id, $0.status) })
+        for session in sessions {
+            XCTAssertEqual(labels[session.id], session.displayStatus, session.id)
+        }
+        XCTAssertEqual(labels["detach-codex-input"], L10n.string("needs your input"))
+        XCTAssertEqual(labels["detach-codex-unknown-reason"], L10n.string("waiting"))
+        XCTAssertEqual(labels["detach-codex-interrupted"], L10n.string("interrupted"))
+        XCTAssertEqual(labels["detach-codex-fresh"], L10n.string("new session"))
     }
 
     func testFinishedSessionsAreNotListed() {

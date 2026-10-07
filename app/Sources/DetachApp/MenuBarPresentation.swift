@@ -34,7 +34,9 @@ struct MenuBarPresentation: Equatable {
     struct SessionEntry: Equatable, Identifiable {
         let id: String
         let title: String
-        let answerReady: Bool
+        let waitingForUser: Bool
+        /// The sidebar status label, so both surfaces name the same state.
+        let status: String
     }
 
     let icon: Icon
@@ -126,7 +128,8 @@ struct MenuBarPresentation: Equatable {
             SessionEntry(
                 id: $0.id,
                 title: $0.displayTitle,
-                answerReady: $0.isWaitingForUser)
+                waitingForUser: $0.isWaitingForUser,
+                status: $0.displayStatus)
         }
         hiddenSessionCount = max(0, ordered.count - visible.count)
     }

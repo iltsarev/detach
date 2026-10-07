@@ -16,7 +16,7 @@ struct MenuBarLabel: View {
         // claim needs typed fresh state.
         let presentation = MenuBarPresentation(
             heartbeat: installation.watchdogHeartbeat,
-            sessions: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [],
+            sessions: sessionStore.snapshotIsAuthoritative ? sessionStore.sessions : [],
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
@@ -76,7 +76,7 @@ struct MenuBarMenu: View {
     private var presentation: MenuBarPresentation {
         MenuBarPresentation(
             heartbeat: installation.watchdogHeartbeat,
-            sessions: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [],
+            sessions: sessionStore.snapshotIsAuthoritative ? sessionStore.sessions : [],
             helperStatus: installation.powerHelperStatus,
             watchdogStatus: installation.watchdogStatus,
             distributionMatchesBundle: installation.distributionMatchesBundle,
@@ -121,10 +121,7 @@ struct MenuBarMenu: View {
     }
 
     private func sessionLine(_ entry: MenuBarPresentation.SessionEntry) -> String {
-        let state = entry.answerReady
-            ? L10n.string("answer ready")
-            : L10n.string("working")
-        return "\(entry.title) — \(state)"
+        "\(entry.title) — \(entry.status)"
     }
 
     private func problemTitle(

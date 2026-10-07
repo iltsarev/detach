@@ -89,6 +89,9 @@ public final class SessionStore {
     public private(set) var sessions: [Session] = []
     public private(set) var lastUpdated: Date?
     public private(set) var hasFreshSnapshot = false
+    /// Current status and activity claims need a typed snapshot from this
+    /// launch and a successful latest List; otherwise rows are last known.
+    public var snapshotIsAuthoritative: Bool { hasFreshSnapshot && state == .ok }
     public private(set) var state: State = .ok
 
     /// Called after every successful typed snapshot — including an unchanged list — so

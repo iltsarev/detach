@@ -628,6 +628,32 @@ final class DetachStateTests: XCTestCase {
                 agentWaitingReason: .answerReady))
     }
 
+    func testClaudeSidechainAndMetadataOnlyRecordsKeepMainConversationFields() {
+        let tail = Data("""
+        {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","model":"main-model","stop_reason":"end_turn","usage":{"input_tokens":10000},"content":[{"type":"text","text":"Done."}]}}
+        {"type":"assistant","uuid":"side","isSidechain":true,"message":{"role":"assistant","model":"side-model","usage":{"input_tokens":25}}}
+        {"type":"assistant","uuid":"bare","isSidechain":true,"message":{"role":"assistant"}}
+        {"type":"assistant","uuid":"notice","message":{"role":"assistant","model":"<synthetic>","usage":{"input_tokens":0},"content":[{"type":"text","text":"API Error"}]}}
+        """.utf8)
+        let summary = TranscriptDocument.summary(ofTail: tail, provider: .claude)
+        XCTAssertEqual(summary.model, "main-model")
+        XCTAssertEqual(summary.contextUsed, 10000)
+        XCTAssertEqual(summary.agentTurnState, .waiting)
+    }
+
+    func testCodexTokenEventWithoutUsageKeepsEstablishedContext() {
+        let tail = Data("""
+        {"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":150,"output_tokens":50},"model_context_window":1000}}}
+        {"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}
+        {"type":"event_msg","payload":{"type":"token_count","rate_limits":{}}}
+        {"type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":1000}}}
+        """.utf8)
+        let summary = TranscriptDocument.summary(ofTail: tail, provider: .codex)
+        XCTAssertEqual(summary.contextUsed, 200)
+        XCTAssertEqual(summary.contextWindow, 1000)
+    }
+
     func testClaudeSummaryCompletesFinalTextWithoutTurnDuration() {
         let thinking = Data("""
         {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
@@ -873,7 +899,6 @@ final class DetachStateTests: XCTestCase {
         XCTAssertEqual(
             TranscriptDocument.summary(ofTail: contradictoryTail, provider: .claude),
             TranscriptSummary(
-                contextUsed: 0,
                 agentTurnState: .working,
                 agentTurnID: "real-user"))
 
@@ -893,7 +918,6 @@ final class DetachStateTests: XCTestCase {
         XCTAssertEqual(
             TranscriptDocument.summary(ofTail: waitingTail, provider: .claude),
             TranscriptSummary(
-                contextUsed: 0,
                 agentTurnState: .waiting,
                 agentTurnID: "ask-1",
                 agentWaitingReason: .inputRequired))
@@ -906,7 +930,6 @@ final class DetachStateTests: XCTestCase {
         XCTAssertEqual(
             TranscriptDocument.summary(ofTail: answeredTail, provider: .claude),
             TranscriptSummary(
-                contextUsed: 0,
                 agentTurnState: .working,
                 agentTurnID: "answer-record"))
     }
