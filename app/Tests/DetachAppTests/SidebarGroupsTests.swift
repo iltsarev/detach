@@ -242,6 +242,13 @@ final class SidebarGroupsTests: XCTestCase {
         XCTAssertEqual(document.collapsed, ["active/" + id.uuidString, "finished/" + id.uuidString])
     }
 
+
+    func testGroupedRowsStartUnderTheGroupName() {
+        XCTAssertEqual(SidebarGroupLayout.rowIndent,
+                       SidebarGroupLayout.disclosureWidth + SidebarGroupLayout.disclosureSpacing)
+        XCTAssertGreaterThan(SidebarGroupLayout.rowIndent, 0,
+                             "Rows outside groups must not look like members of the last group")
+    }
 }
 
 private extension Result {

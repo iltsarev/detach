@@ -25,12 +25,12 @@ struct SidebarGroupHeader: View {
 
     var body: some View {
         Button(action: toggle) {
-            HStack(spacing: 6) {
+            HStack(spacing: SidebarGroupLayout.disclosureSpacing) {
                 Image(systemName: "chevron.right")
                     .appFont(.caption2, weight: .semibold)
                     .rotationEffect(.degrees(isCollapsed ? 0 : 90))
                     .foregroundStyle(SessionPalette.secondary)
-                    .frame(width: 12)
+                    .frame(width: SidebarGroupLayout.disclosureWidth)
                 Text(group.name)
                     .appFont(.caption, weight: .semibold)
                     .foregroundStyle(SessionPalette.secondary)
@@ -143,6 +143,9 @@ struct SidebarGroupNameSheet: View {
 }
 
 enum SidebarGroupLayout {
-    /// Align group disclosures and session status marks.
-    static let rowIndent: CGFloat = 0
+    static let disclosureWidth: CGFloat = 12
+    static let disclosureSpacing: CGFloat = 6
+    /// Grouped rows start under the group name. Rows outside groups stay at
+    /// the section edge, so a row after the last group never looks grouped.
+    static let rowIndent = disclosureWidth + disclosureSpacing
 }
