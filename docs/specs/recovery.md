@@ -17,6 +17,9 @@ directory. A later user or assistant record in the bound transcript cancels
 its continuation. A missing or invalid successor keeps the current binding.
 Codex binds identity
 after launch by matching the run-token originator in rollout files and SQLite.
+Detach rejects `--remote` and adds `--no-daemon` when `codex --help` lists it.
+A shared or remote app-server creates the thread with its own originator, so
+discovery cannot bind it. A release without that flag has no shared app-server.
 Root user threads with source `cli` or `vscode` are eligible. These source labels
 do not identify the launch UI. The known-thread snapshot uses the same filter.
 The project path must match, including after worktree creation. Subagents and
