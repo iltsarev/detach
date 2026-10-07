@@ -194,6 +194,7 @@ usage() {
       '' \
       'Codex defaults to:' \
       '  --sandbox workspace-write --no-alt-screen' \
+      '  --no-daemon, when this Codex supports it; --remote is rejected' \
       '  approval=never, unless managed policy requires its configured reviewer' \
       '' \
       'Pass explicit Codex flags to override approval or sandbox defaults.'
@@ -3514,15 +3515,13 @@ write_resume_args() {
     shift
     case "$arg" in
       -c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|\
-      --add-dir|--enable|--disable|--local-provider|--remote|--remote-auth-token-env|\
-      -i|--image)
+      --add-dir|--enable|--disable|--local-provider|-i|--image)
         [ "$#" -gt 0 ] || continue
         printf '%s\0%s\0' "$arg" "$1" >>"$tmp" || { rm -f "$tmp"; return 1; }
         shift
         ;;
       --config=*|--model=*|--profile=*|--sandbox=*|--ask-for-approval=*|\
-      --add-dir=*|--enable=*|--disable=*|--local-provider=*|--remote=*|\
-      --remote-auth-token-env=*|--image=*)
+      --add-dir=*|--enable=*|--disable=*|--local-provider=*|--image=*)
         printf '%s\0' "$arg" >>"$tmp" || { rm -f "$tmp"; return 1; }
         ;;
       --search|--oss|--strict-config|--no-alt-screen|\
@@ -5607,6 +5606,8 @@ worker_main() {
   local has_sandbox=0
   local has_cd=0
   local has_no_alt=0
+  local has_no_daemon=0
+  local has_remote=0
   local codex_args=()
   local claude_args=()
   local agent_session_id=""
@@ -5872,10 +5873,17 @@ worker_main() {
           ;;
         -C|--cd|--cd=*) has_cd=1 ;;
         --no-alt-screen) has_no_alt=1 ;;
+        --no-daemon) has_no_daemon=1 ;;
+        --remote|--remote=*|--remote-auth-token-env|--remote-auth-token-env=*)
+          has_remote=1
+          ;;
       esac
     done
 
     [ "$has_cd" -eq 0 ] || die "do not pass -C/--cd; start $PROGRAM from the target project"
+    # A shared or remote app-server creates the thread with its own originator,
+    # so run-token discovery could never bind it. Keep the thread in this process.
+    [ "$has_remote" -eq 0 ] || die "do not pass --remote; $PROGRAM runs Codex with its own app-server"
     if [ "$has_approval" -eq 0 ]; then
       if managed_policy_disallows_never; then
         error "managed policy disallows approval=never; inheriting its approval policy and auto-reviewer"
@@ -5885,6 +5893,12 @@ worker_main() {
     fi
     [ "$has_sandbox" -eq 1 ] || codex_args+=( --sandbox workspace-write )
     [ "$has_no_alt" -eq 1 ] || codex_args+=( --no-alt-screen )
+    # Codex releases with a shared app-server list --no-daemon; older ones have
+    # no daemon and reject the flag.
+    if [ "$has_no_daemon" -eq 0 ] && \
+       "$agent_bin" --help 2>/dev/null | grep -F -- '--no-daemon' >/dev/null; then
+      codex_args+=( --no-daemon )
+    fi
     codex_args+=( -C "$cwd" )
     codex_args+=( "$@" )
     export CODEX_INTERNAL_ORIGINATOR_OVERRIDE="detach_$run_token"
