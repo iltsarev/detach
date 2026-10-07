@@ -488,6 +488,9 @@ export FAKE_CODEX_SLEEP=4
 export FAKE_CODEX_EXIT=7
 export FAKE_CODEX_FOREIGN_FIRST=1
 export FAKE_CODEX_INIT_DELAY=0.1
+# Another process started the shared Codex app-server. Without --no-daemon, its
+# originator, not this run token, would mark every new thread.
+export FAKE_CODEX_DAEMON_ORIGINATOR="detach_shared-app-server-owner"
 export TMUX_TMPDIR="/tmp/detach-codex-tmux-$$"
 # The test owns a private tmux server. An outer Detach/tmux context must not
 # influence the absolute Detach socket or make attach semantics switch clients.
@@ -846,6 +849,19 @@ FAKE_POWER_STATE=temperature expect_cli_refusal 'start during thermal safety' \
   run_codex --name power-preflight --detach -- \
   'must not start during thermal safety'
 ! tmux -L "$SOCKET" has-session -t '=detach-codex-power-preflight' 2>/dev/null
+for remote_arg in --remote=ws://127.0.0.1:9 --remote-auth-token-env=DETACH_TEST_TOKEN; do
+  expect_cli_refusal "remote Codex app-server $remote_arg" \
+    run_codex --name remote-app-server --detach -- "$remote_arg" \
+    'must not start on another app-server'
+  ! tmux -L "$SOCKET" has-session -t '=detach-codex-remote-app-server' 2>/dev/null
+  ! grep -Fx -- "$remote_arg" "$FAKE_CODEX_ARGS_FILE" >/dev/null 2>&1
+done
+# A Codex release without the shared app-server does not get --no-daemon.
+FAKE_CODEX_LEGACY=1 run_codex --name legacy-codex --detach -- 'legacy codex start'
+wait_for_file_text "$FAKE_CODEX_ARGS_FILE" 'legacy codex start'
+! grep -Fx -- '--no-daemon' "$FAKE_CODEX_ARGS_FILE" >/dev/null
+run_codex stop legacy-codex >/dev/null
+run_codex delete --force legacy-codex >/dev/null
 
 # A tmux server keeps the cwd from which it was first daemonized. Simulate an
 # unmounted project behind an already-running server, then prove Detach repairs
@@ -1570,6 +1586,7 @@ reconcile_plan="$("$DETACH" reconcile --dry-run --json)"
 ! printf '%s' "$reconcile_plan" | grep -F "$SESSION" >/dev/null
 grep -F -- "$literal_prompt" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 ! grep -Fx -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE" >/dev/null
+[ "$(grep -Fxc -- '--no-daemon' "$FAKE_CODEX_ARGS_FILE")" = 1 ]
 [ ! -e "$marker" ]
 
 # A client in an unrelated tmux server cannot switch-client into Detach's
@@ -2117,6 +2134,7 @@ fi
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
+require_file_line "$FAKE_CODEX_ARGS_FILE" --no-daemon
 # A new run under the same name starts without the previous Stop intent.
 [ -z "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"
@@ -2239,8 +2257,9 @@ restart_session_dir="$(dirname "$meta")"
 
   export FAKE_CODEX_INIT_DELAY=5
 printf '%s\n' 'allowed_approval_policies = ["untrusted", "on-request", "never"]' >"$DETACH_CODEX_REQUIREMENTS_FILE"
-run_codex --name integration --detach -- 'start a new thread'
+run_codex --name integration --detach -- --no-daemon 'start a new thread'
 wait_for_file_text "$FAKE_CODEX_ARGS_FILE" 'start a new thread'
+[ "$(grep -Fxc -- '--no-daemon' "$FAKE_CODEX_ARGS_FILE")" = 1 ]
 [ "$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_cli_version)" = "$upgraded_version" ]
 [ "$(grep -Fxc -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE")" = "1" ]
 [ "$(grep -Fxc -- 'never' "$FAKE_CODEX_ARGS_FILE")" = "1" ]

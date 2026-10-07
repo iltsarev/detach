@@ -683,12 +683,15 @@ Choose **My tmux theme** in Settings → Terminal, or run
 On an unmanaged Mac, Detach defaults to:
 
 ```text
---ask-for-approval never --sandbox workspace-write --no-alt-screen
+--ask-for-approval never --sandbox workspace-write --no-alt-screen --no-daemon
 ```
 
 Explicit approval and sandbox arguments override these defaults. If managed
 requirements disallow `never`, Detach inherits the managed approval policy and
-reviewer. Detach owns `-C/--cd`. Start it from the target project.
+reviewer. Detach owns `-C/--cd`. Start it from the target project. Detach also
+owns the Codex app-server. It rejects `--remote`. It adds `--no-daemon` when the
+installed Codex supports that flag. The session process then creates the
+conversation, and Resume can identify it.
 
 ### Claude Code
 
