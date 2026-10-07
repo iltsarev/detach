@@ -1197,6 +1197,103 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try summaryFields(), ["gpt-context", "200", "1000", "waiting", "turn-1"])
     }
 
+    private func summarySession(
+        _ name: String, transcript: Data, metadata: [String: Any] = [:]
+    ) throws -> (root: URL, transcript: URL, fields: () throws -> [String]) {
+        let root = temporaryDirectory.appendingPathComponent(
+            name + "-sessions", isDirectory: true)
+        let session = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: session, withIntermediateDirectories: true)
+        let transcriptURL = temporaryDirectory.appendingPathComponent(name + ".jsonl")
+        try transcript.write(to: transcriptURL)
+        var object: [String: Any] = [
+            "schema": 1,
+            "session_name": name,
+            "project_dir": "/tmp/project",
+            "status": "running",
+            "transcript_path": transcriptURL.path,
+        ]
+        object.merge(metadata) { _, new in new }
+        try JSONSerialization.data(withJSONObject: object)
+            .write(to: session.appendingPathComponent("meta.json"))
+        let fields = {
+            let values = try DetachStateCommand.run(arguments: [
+                "meta", "snapshots", root.path, "--with-transcript-summary",
+            ]).split(separator: 0, omittingEmptySubsequences: false)
+                .dropLast().map { String(decoding: $0, as: UTF8.self) }
+            return Array(values[29...31])
+        }
+        return (root, transcriptURL, fields)
+    }
+
+    private func append(_ text: String, to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(text.utf8))
+        try handle.close()
+    }
+
+    func testMetaSnapshotsCompleteARecordThatWasPartialAtTheLastRead() throws {
+        let request = #"{"type":"user","uuid":"request","message":{"role":"user","content":"go"}}"# + "\n"
+        let answer = #"{"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":""#
+            + String(repeating: "a", count: 160 * 1_024)
+            + #""}]}}"# + "\n"
+        let split = answer.index(answer.startIndex, offsetBy: 120 * 1_024)
+        let fixture = try summarySession(
+            "detach-claude-partial", transcript: Data((request + answer[..<split]).utf8))
+
+        // The answer record is still being written; the request is current.
+        XCTAssertEqual(try fixture.fields(), ["working", "request", ""])
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+            fixture.root.appendingPathComponent("detach-claude-partial/.transcript-summary-cache.json")))
+            as? [String: Any])
+        let identity = try XCTUnwrap(receipt["identity"] as? [String: Any])
+        XCTAssertEqual(identity["size"] as? Int, request.utf8.count)
+
+        // The rest arrives without another record. The record that was
+        // partial more than any fixed overlap ago is now complete.
+        try append(String(answer[split...]), to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["waiting", "answer", "answer_ready"])
+    }
+
+    func testMetaSnapshotsTreatAnUnfinishedTurnBeforeTheRunBoundaryAsHistory() throws {
+        let transcript = """
+        {"payload":{"model":"gpt-boundary"}}
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"old-turn"}}
+
+        """
+        let size = transcript.utf8.count
+        let fixture = try summarySession(
+            "detach-codex-boundary", transcript: Data(transcript.utf8))
+        // Without a boundary the unfinished turn is current.
+        XCTAssertEqual(try fixture.fields(), ["working", "old-turn", ""])
+
+        let meta = fixture.root.appendingPathComponent("detach-codex-boundary/meta.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: meta)) as? [String: Any])
+        object["transcript_boundary_path"] = fixture.transcript.path
+        object["transcript_boundary_size"] = size
+        try JSONSerialization.data(withJSONObject: object).write(to: meta)
+        // The resumed run has written nothing: it waits for input.
+        XCTAssertEqual(try fixture.fields(), ["waiting", "old-turn", ""])
+        try append(#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"# + "\n",
+                   to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["waiting", "old-turn", ""])
+
+        // A turn event after the boundary is this run's own work.
+        try append(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"new-turn"}}"# + "\n",
+                   to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["working", "new-turn", ""])
+
+        // A boundary for another transcript does not apply.
+        object["transcript_boundary_path"] = "/tmp/other.jsonl"
+        try JSONSerialization.data(withJSONObject: object).write(to: meta)
+        try append(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"later-turn"}}"# + "\n",
+                   to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["working", "later-turn", ""])
+    }
+
     func testMetaSnapshotsCanBatchAClaudeTranscriptSummary() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "claude-summary-sessions", isDirectory: true)
@@ -1267,7 +1364,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 8)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 9)
 
         let unrelatedToolResult = Data("""
 
@@ -1361,7 +1458,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let updated = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
-        XCTAssertEqual(updated["schema"] as? Int, 8)
+        XCTAssertEqual(updated["schema"] as? Int, 9)
 
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()

@@ -147,7 +147,14 @@ unknown waiting reasons cannot claim a ready answer or an input request.
 Model and context come only from fields that a record contains. Claude
 sidechain records and `<synthetic>` assistant notices do not change them. A
 Codex `token_count` without `info` or usage keeps the last values.
-Schema-8 summary receipts carry the reason and pending tool IDs for both
+Schema-9 summary receipts carry the reason and pending tool IDs for both
 providers. They retain pending background tasks and invalidate earlier cached
-turn states and model fields.
+turn states and model fields. A receipt records the end of the last complete
+record and a digest of up to 4 KiB before it. The next read continues at that
+boundary only when the digest still matches, so a record that was partial at
+the last read is reduced once complete, and a rewrite falls back to a cold
+tail. Resume and Recover record `transcript_boundary_path` and
+`transcript_boundary_size`, the transcript size at launch. While the current
+transcript is that path and no turn event follows the boundary, a `working`
+turn from before it presents as waiting with no reason.
 Typed cleanup uses `cleanup_eligible`.

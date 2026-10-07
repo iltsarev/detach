@@ -1587,6 +1587,8 @@ reconcile_plan="$("$DETACH" reconcile --dry-run --json)"
 grep -F -- "$literal_prompt" "$FAKE_CODEX_ARGS_FILE" >/dev/null
 ! grep -Fx -- '--ask-for-approval' "$FAKE_CODEX_ARGS_FILE" >/dev/null
 [ "$(grep -Fxc -- '--no-daemon' "$FAKE_CODEX_ARGS_FILE")" = 1 ]
+# A fresh conversation has no earlier run to separate.
+[ -z "$("$STATE_HELPER" meta get "$health_meta" transcript_boundary_path)" ]
 [ ! -e "$marker" ]
 
 # A client in an unrelated tmux server cannot switch-client into Detach's
@@ -2135,6 +2137,11 @@ wait_for_file_text "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" resume
 require_file_line "$FAKE_CODEX_ARGS_FILE" "$expected_id"
 require_file_line "$FAKE_CODEX_ARGS_FILE" --no-daemon
+# Recover records where this run's part of the transcript begins.
+[ "$("$STATE_HELPER" meta get "$meta" transcript_boundary_path)" = "$resume_rollout" ]
+case "$("$STATE_HELPER" meta get "$meta" transcript_boundary_size)" in
+  ''|*[!0-9]*) printf 'Recover did not record a transcript boundary\n' >&2; exit 1 ;;
+esac
 # A new run under the same name starts without the previous Stop intent.
 [ -z "$("$STATE_HELPER" meta get "$meta" stop_requested_at)" ]
 pane_id="$(tmux -L "$SOCKET" show-options -qv -t "=$SESSION:" @detach_pane_id)"

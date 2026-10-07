@@ -2587,6 +2587,7 @@ write_initial_meta() {
   local previous_meta
   local preserve_until_ready=false
   local stale_resume_args
+  local transcript_boundary_size
 
   dir="$(session_dir "$session")"
   meta="$dir/meta.json"
@@ -2684,6 +2685,23 @@ write_initial_meta() {
   else
     create_args+=( --null transcript_path )
   fi
+  # A resumed conversation's earlier records belong to a previous run. List
+  # needs a turn event after this boundary before it calls the run working.
+  transcript_boundary_size=""
+  if [ -n "$recovery_transcript" ] && safe_owned_plain_file "$recovery_transcript"; then
+    transcript_boundary_size="$(/usr/bin/stat -f %z "$recovery_transcript" 2>/dev/null || true)"
+  fi
+  case "$transcript_boundary_size" in
+    ''|*[!0-9]*)
+      create_args+=( --null transcript_boundary_path --null transcript_boundary_size )
+      ;;
+    *)
+      create_args+=(
+        --string transcript_boundary_path "$recovery_transcript"
+        --integer transcript_boundary_size "$transcript_boundary_size"
+      )
+      ;;
+  esac
   if [ "$PROVIDER" = "codex" ]; then
     create_args+=( --string codex_bin "$agent_bin" --string codex_version "$agent_version" )
     if [ -n "$recovery_id" ]; then
