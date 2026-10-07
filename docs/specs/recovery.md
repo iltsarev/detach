@@ -27,7 +27,13 @@ Root user threads with source `cli` or `vscode` are eligible. These source label
 do not identify the launch UI. The known-thread snapshot uses the same filter.
 The project path must match, including after worktree creation. Subagents and
 guardian review threads remain ineligible, even with the same originator.
-An ambiguous first binding fails. If the provider switches to another run-owned
+An ambiguous first binding fails. Discovery records its outcome as
+`identity_state` when the outcome changes: `pending` until an eligible thread
+exists, `bound`, `foreign` when a new root user thread in the project has
+another Detach run's originator, `ambiguous`, or `unavailable` when the thread database
+query fails. Claude records `ambiguous` for duplicate valid transcripts and
+`bound` on binding. The first change to a failed outcome writes one
+checkpoint log line. If the provider switches to another run-owned
 user thread (for example `/clear`), discovery rebinds identity, transcript, and
 checkpoints to the newest originator-matched thread within one heartbeat or
 checkpoint tick, records superseded thread IDs so the next switch stays

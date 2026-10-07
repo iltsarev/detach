@@ -248,11 +248,30 @@ enum SessionProcessHealthInspector {
 
 }
 
+/// The latest provider identity discovery outcome a run recorded. Only
+/// `foreign`, `ambiguous`, and `unavailable` mean the binding failed;
+/// `pending` is an unused session.
+public enum ProviderIdentityState: String, Codable, Sendable {
+    case pending
+    case bound
+    case foreign
+    case ambiguous
+    case unavailable
+
+    public var isUnconfirmed: Bool {
+        switch self {
+        case .foreign, .ambiguous, .unavailable: true
+        case .pending, .bound: false
+        }
+    }
+}
+
 public enum SessionHealthReason: String, Codable, Sendable {
     case operationInProgress = "operation_in_progress"
     case healthy
     case finished
     case checkpointStale = "checkpoint_stale"
+    case identityUnconfirmed = "identity_unconfirmed"
     case heartbeatStale = "heartbeat_stale"
     case heartbeatMissing = "heartbeat_missing"
     case tmuxServerMissing = "tmux_server_missing"
@@ -298,6 +317,7 @@ public struct SessionHealthEvidence: Equatable, Sendable {
     public var runtimeQuiescent: Bool
     public var stopRequested: Bool
     public var lifecyclePhase: RuntimeLifecyclePhase
+    public var identityState: ProviderIdentityState?
 
     public init(
         metadataValid: Bool,
@@ -314,7 +334,8 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         uncommittedReplacement: Bool = false,
         runtimeQuiescent: Bool = false,
         stopRequested: Bool = false,
-        lifecyclePhase: RuntimeLifecyclePhase? = nil
+        lifecyclePhase: RuntimeLifecyclePhase? = nil,
+        identityState: ProviderIdentityState? = nil
     ) {
         self.metadataValid = metadataValid
         self.runtimeIdentityExpected = runtimeIdentityExpected
@@ -332,6 +353,7 @@ public struct SessionHealthEvidence: Equatable, Sendable {
         self.stopRequested = stopRequested
         self.lifecyclePhase = lifecyclePhase
             ?? RuntimeLifecyclePhase.inferred(fromMetadataStatus: metaStatus.rawValue)
+        self.identityState = identityState
     }
 }
 
@@ -626,6 +648,10 @@ public enum SessionHealthEvaluator {
             reason = .heartbeatStale
         case .missing:
             reason = .heartbeatMissing
+        case .fresh where evidence.identityState?.isUnconfirmed == true:
+            // The provider works, but Detach cannot prove which conversation
+            // is this run's, so checkpoints and Resume are unavailable.
+            reason = .identityUnconfirmed
         case .fresh where evidence.checkpointFreshness == .stale:
             reason = .checkpointStale
         case .fresh:

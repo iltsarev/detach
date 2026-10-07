@@ -85,6 +85,13 @@ final class SidebarViewTests: XCTestCase {
         XCTAssertEqual(SessionRowPresentation.symbol(for: row), "circle")
         XCTAssertEqual(SessionIdentity.statusColor(for: row), SessionPalette.secondary)
         XCTAssertNil(SessionRowPresentation.background(for: row, selected: false, isFresh: true))
+        row.healthReason = .identityUnconfirmed
+        XCTAssertEqual(SessionRowPresentation.status(for: row), L10n.string("not linked"))
+        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "exclamationmark.triangle")
+        try assertSymbol(row)
+        XCTAssertEqual(SessionIdentity.statusColor(for: row), SessionPalette.attention)
+        XCTAssertNotNil(SessionRowPresentation.background(for: row, selected: false, isFresh: true))
+        row.healthReason = nil
         row.agentTurnID = "turn"
         XCTAssertEqual(SessionRowPresentation.status(for: row), L10n.string("status unavailable"))
         XCTAssertEqual(SessionRowPresentation.symbol(for: row), "minus.circle")

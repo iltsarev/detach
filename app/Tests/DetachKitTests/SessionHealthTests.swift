@@ -71,6 +71,22 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertTrue(result.ownershipProven)
     }
 
+    func testUnconfirmedIdentityDegradesALiveRunWithoutChangingItsActions() {
+        for state in [ProviderIdentityState.foreign, .ambiguous, .unavailable] {
+            let result = evaluate(checkpoint: .stale, identityState: state)
+            XCTAssertEqual(result.effectiveStatus, .running, "\(state)")
+            XCTAssertEqual(result.reason, .identityUnconfirmed, "\(state)")
+            XCTAssertEqual(result.actions, [.attach, .stop], "\(state)")
+            XCTAssertTrue(result.ownershipProven, "\(state)")
+        }
+        for state in [ProviderIdentityState.pending, .bound] {
+            XCTAssertEqual(evaluate(identityState: state).reason, .healthy, "\(state)")
+        }
+        // A stale observer is the first diagnosis; identity cannot be judged.
+        XCTAssertEqual(
+            evaluate(heartbeat: .stale, identityState: .foreign).reason, .heartbeatStale)
+    }
+
     func testStaleHeartbeatAloneNeverCallsALiveProviderHung() {
         let result = evaluate(heartbeat: .stale)
 
@@ -880,7 +896,8 @@ final class SessionHealthTests: XCTestCase {
         uncommittedReplacement: Bool = false,
         runtimeQuiescent: Bool = false,
         stopRequested: Bool = false,
-        lifecyclePhase: RuntimeLifecyclePhase? = nil
+        lifecyclePhase: RuntimeLifecyclePhase? = nil,
+        identityState: ProviderIdentityState? = nil
     ) -> SessionHealthAssessment {
         SessionHealthEvaluator.evaluate(SessionHealthEvidence(
             metadataValid: metadataValid,
@@ -897,6 +914,7 @@ final class SessionHealthTests: XCTestCase {
             uncommittedReplacement: uncommittedReplacement,
             runtimeQuiescent: runtimeQuiescent,
             stopRequested: stopRequested,
-            lifecyclePhase: lifecyclePhase))
+            lifecyclePhase: lifecyclePhase,
+            identityState: identityState))
     }
 }

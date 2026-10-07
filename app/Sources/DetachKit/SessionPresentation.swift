@@ -22,6 +22,8 @@ public enum SessionAction: String, Codable, CaseIterable, Sendable {
 
 public enum SessionStatusSignal: Equatable, Sendable {
     case working, ready, inputRequired, stopped, error, waiting, unknown, recoverable, new
+    /// The provider runs, but Detach could not bind its conversation.
+    case unlinked
 }
 
 public extension Session {
@@ -46,6 +48,7 @@ public extension Session {
         switch effectiveStatus {
         case .starting, .recovering: return .working
         case .running:
+            if healthReason == .identityUnconfirmed { return .unlinked }
             switch agentTurnState {
             case .working: return .working
             case .waiting:
@@ -89,6 +92,7 @@ public extension Session {
         if effectiveStatus == .running && agentTurnState == .interrupted {
             return L10n.string("interrupted")
         }
+        if statusSignal == .unlinked { return L10n.string("not linked") }
         if statusSignal == .new { return L10n.string("new session") }
         return switch effectiveStatus {
         case .starting: L10n.string("starting")
@@ -150,6 +154,8 @@ public extension Session {
             nil
         case .checkpointStale:
             L10n.string("The provider is alive; the last checkpoint is old.")
+        case .identityUnconfirmed:
+            L10n.string("Detach could not link this conversation. Checkpoints and Resume are unavailable for this run.")
         case .heartbeatStale:
             L10n.string("The provider is alive, but its health heartbeat is stale.")
         case .heartbeatMissing:

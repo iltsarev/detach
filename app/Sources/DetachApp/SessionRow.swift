@@ -17,6 +17,7 @@ enum SessionRowPresentation {
         case .corrupt: "exclamationmark.triangle"
         case .collision: "square.on.square"
         case .unknown: "minus.circle"
+        case .running where session.statusSignal == .unlinked: "exclamationmark.triangle"
         case .running:
             switch session.agentTurnState {
             case .working: "circle.dotted"
@@ -42,7 +43,7 @@ enum SessionRowPresentation {
         switch session.statusSignal {
         case .ready where session.effectiveStatus != .completed:
             return SessionPalette.ready.opacity(selected ? 0.16 : 0.06)
-        case .inputRequired:
+        case .inputRequired, .unlinked:
             return SessionPalette.attention.opacity(selected ? 0.18 : 0.07)
         case .error:
             return SessionPalette.error.opacity(selected ? 0.16 : 0.06)

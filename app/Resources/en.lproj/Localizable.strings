@@ -404,6 +404,7 @@
 /* Session health */
 "hung" = "hung";
 "The provider is alive; the last checkpoint is old." = "The provider is alive; the last checkpoint is old.";
+"Detach could not link this conversation. Checkpoints and Resume are unavailable for this run." = "Detach could not link this conversation. Checkpoints and Resume are unavailable for this run.";
 "The provider is alive, but its health heartbeat is stale." = "The provider is alive, but its health heartbeat is stale.";
 "The provider is alive, but no health heartbeat is available yet." = "The provider is alive, but no health heartbeat is available yet.";
 "The managed tmux session disappeared." = "The managed tmux session disappeared.";
@@ -501,6 +502,7 @@
 "status unavailable" = "status unavailable";
 
 "new session" = "new session";
+"not linked" = "not linked";
 
 "yesterday, %@" = "yesterday, %@";
 

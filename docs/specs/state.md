@@ -28,7 +28,14 @@ run token, PID ownership, metadata, and checkpoint freshness. Stale data cannot
 make a proven live provider hung. A
 runtime without managed tmux blocks mutations until its exact processes exit.
 `preserve_recovery_until_ready` is Boolean; `runtime_ready_at` and
-`runtime_shutdown_observed_at` are strings. A mistyped primary is unusable.
+`runtime_shutdown_observed_at` are strings. `identity_state` is one of
+`pending`, `bound`, `foreign`, `ambiguous`, or `unavailable`; any other value
+makes the primary unusable. A mistyped primary is unusable.
+A proven live run with a fresh heartbeat reports `identity_unconfirmed` when
+its `identity_state` is `foreign`, `ambiguous`, or `unavailable`. With a bound
+transcript, no checkpoint, and runtime readiness older than the checkpoint
+threshold (twice the interval plus 60 seconds), it reports `checkpoint_stale`.
+Status and actions do not change.
 Checkpoint metadata cannot replace it.
 
 `list --json` reads Codex and Claude concurrently and emits that order. Each

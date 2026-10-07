@@ -812,6 +812,7 @@ reset_meta_snapshot() {
   META_LIFECYCLE_PHASE=""
   META_PRESERVE_RECOVERY_UNTIL_READY=""
   META_RUNTIME_READY_AT=""
+  META_IDENTITY_STATE=""
   TRANSCRIPT_MODEL=""
   TRANSCRIPT_CTX_USED=""
   TRANSCRIPT_CTX_WINDOW=""
@@ -851,6 +852,7 @@ load_meta_snapshot_path() {
       lifecycle_phase) META_LIFECYCLE_PHASE="$value" ;;
       preserve_recovery_until_ready) META_PRESERVE_RECOVERY_UNTIL_READY="$value" ;;
       runtime_ready_at) META_RUNTIME_READY_AT="$value" ;;
+      identity_state) META_IDENTITY_STATE="$value" ;;
       snapshot_complete) [ "$value" = true ] && META_SNAPSHOT_COMPLETE=1 ;;
       *) return 1 ;;
     esac
@@ -3614,6 +3616,28 @@ codex_thread_created_ms() {
      WHERE id = '$id_sql' LIMIT 1;" 2>/dev/null
 }
 
+# Records the latest provider identity discovery outcome for this run, only
+# when it changes, so List can tell an unused session from a failed binding.
+# The run-token-checked patch rejects a stale writer.
+record_identity_state() {
+  local session="$1"
+  local run_token="$2"
+  local state="$3"
+  local detail="${4:-}"
+  local current
+
+  [ -n "$run_token" ] || return 0
+  current="$("$STATE_BIN" meta get "$(session_meta "$session")" identity_state 2>/dev/null || true)"
+  [ "$current" != "$state" ] || return 0
+  state_update_meta_for_run "$session" "$run_token" \
+    --string identity_state "$state" || return 0
+  case "$state" in
+    foreign|ambiguous|unavailable)
+      checkpoint_log "$session" "$PROVIDER_LABEL session identity not confirmed ($state)${detail:+: $detail}"
+      ;;
+  esac
+}
+
 discover_codex_session() {
   local session="$1"
   local run_token="${2:-}"
@@ -3632,6 +3656,8 @@ discover_codex_session() {
   local candidate_rollout
   local candidate_originator
   local expected_originator
+  local foreign_count
+  local thread_classes
   local bound_status
   local previous_id
   local id_created_ms
@@ -3653,7 +3679,11 @@ discover_codex_session() {
     if [ -z "$rollout" ] || \
        ! safe_claude_transcript_path "$rollout" "$existing_id" || \
        ! valid_claude_transcript "$rollout" "$existing_id"; then
-      rollout="$(claude_transcript_for_id "$existing_id" 2>/dev/null || true)"
+      rollout="$(claude_transcript_for_id "$existing_id" 2>/dev/null)" || {
+        [ "$?" -ne 2 ] || record_identity_state "$session" "$run_token" ambiguous \
+          "several valid transcripts named $existing_id"
+        rollout=""
+      }
     fi
     [ -n "$rollout" ] && valid_claude_transcript "$rollout" "$existing_id" || return 1
     # Claude can continue the conversation under a new session ID in the
@@ -3678,7 +3708,8 @@ discover_codex_session() {
     done
     if [ -n "$run_token" ]; then
       state_update_meta_for_run "$session" "$run_token" \
-        --string agent_session_id "$existing_id" --string transcript_path "$rollout"
+        --string agent_session_id "$existing_id" --string transcript_path "$rollout" \
+        --string identity_state bound
     else
       state_update_meta "$session" \
         --string agent_session_id "$existing_id" --string transcript_path "$rollout"
@@ -3687,9 +3718,13 @@ discover_codex_session() {
   fi
   bound_status=1
   [ -z "$existing_id" ] || bound_status=0
+  if [ -n "$existing_id" ] && [ -n "$run_token" ]; then
+    record_identity_state "$session" "$run_token" bound
+  fi
 
   cwd="$("$STATE_BIN" meta get "$meta" project_dir)"
   db="$(codex_state_db)"
+  # Codex creates its thread database with the first thread.
   [ -n "$db" ] && [ -f "$db" ] || return "$bound_status"
   known="$(session_dir "$session")/known-thread-ids.txt"
   [ -f "$known" ] || return "$bound_status"
@@ -3697,31 +3732,59 @@ discover_codex_session() {
   # Codex can label a terminal-launched root as vscode. The client source is
   # only a root-kind filter; the run originator below proves ownership.
   cwd_sql="$(sql_escape "$cwd")"
-  rows="$($SQLITE_BIN -noheader -separator $'\t' -cmd '.timeout 5000' "$db" \
+  if ! rows="$($SQLITE_BIN -noheader -separator $'\t' -cmd '.timeout 5000' "$db" \
     "SELECT id, rollout_path FROM threads
      WHERE source IN ('cli', 'vscode')
        AND COALESCE(thread_source, 'user') = 'user'
        AND cwd = '$cwd_sql'
-     ORDER BY created_at_ms ASC, id ASC;" 2>/dev/null || true)"
+     ORDER BY created_at_ms ASC, id ASC;" 2>/dev/null)"; then
+    [ -n "$existing_id" ] || \
+      record_identity_state "$session" "$run_token" unavailable "thread query failed"
+    return "$bound_status"
+  fi
 
   [ -n "$run_token" ] || return "$bound_status"
   expected_originator="detach_$run_token"
-  candidate_ids="$(printf '%s\n' "$rows" | \
+  # Classify new root threads once: this run's originator makes a candidate;
+  # another Detach run's originator means a shared or inherited provider
+  # environment created the conversation. Other originators are unrelated.
+  thread_classes="$(printf '%s\n' "$rows" | \
     while IFS=$'\t' read -r candidate candidate_rollout; do
+      [ -n "$candidate" ] || continue
       [ "$candidate" != "$existing_id" ] || continue
       grep -Fqx "$candidate" "$known" && continue
       [ -f "$candidate_rollout" ] || continue
       candidate_originator="$("$STATE_BIN" jsonl first "$candidate_rollout" payload.originator 2>/dev/null || true)"
-      [ "$candidate_originator" = "$expected_originator" ] && printf '%s\n' "$candidate"
-    done | sed '/^$/d')"
+      # Bash 3.2 cannot parse a case pattern inside command substitution.
+      if [ "$candidate_originator" = "$expected_originator" ]; then
+        printf 'C\t%s\n' "$candidate"
+      elif [ "${candidate_originator#detach_}" != "$candidate_originator" ]; then
+        printf 'F\t%s\n' "$candidate"
+      fi
+    done)"
+  candidate_ids="$(printf '%s\n' "$thread_classes" | awk -F '\t' '$1 == "C" { print $2 }')"
   candidate_count="$(printf '%s\n' "$candidate_ids" | sed '/^$/d' | wc -l | tr -d ' ')"
-  [ "$candidate_count" != "0" ] || return "$bound_status"
+  if [ "$candidate_count" = "0" ]; then
+    if [ -z "$existing_id" ]; then
+      # The provider started a conversation under another run's originator,
+      # so this run cannot prove it owns it.
+      foreign_count="$(printf '%s\n' "$thread_classes" | awk -F '\t' '$1 == "F"' | wc -l | tr -d ' ')"
+      if [ "$foreign_count" != "0" ]; then
+        record_identity_state "$session" "$run_token" foreign \
+          "$foreign_count new root thread(s) with another Detach originator"
+      else
+        record_identity_state "$session" "$run_token" pending
+      fi
+    fi
+    return "$bound_status"
+  fi
 
   if [ -z "$existing_id" ]; then
     # The first binding has no proof of which run-owned thread is current, so
     # any ambiguity is refused until exactly one candidate remains.
     [ "$candidate_count" = "1" ] || {
-      checkpoint_log "$session" "ambiguous Codex session discovery: $candidate_count new root threads"
+      record_identity_state "$session" "$run_token" ambiguous \
+        "$candidate_count new root threads"
       return 1
     }
     id="$(printf '%s\n' "$candidate_ids" | sed -n '1p')"
@@ -3772,7 +3835,8 @@ discover_codex_session() {
   if [ -n "$run_token" ]; then
     state_update_meta_for_run "$session" "$run_token" \
       --string agent_session_id "$id" --string transcript_path "$rollout" \
-      --string codex_session_id "$id" --string rollout_path "$rollout"
+      --string codex_session_id "$id" --string rollout_path "$rollout" \
+      --string identity_state bound
   else
     state_update_meta "$session" \
       --string agent_session_id "$id" --string transcript_path "$rollout" \
@@ -6991,6 +7055,9 @@ session_health_envelope() {
   local lifecycle_phase="${13:-}"
   local preserve_recovery_until_ready="${14:-}"
   local runtime_ready_at="${15:-}"
+  local transcript_path="${16:-}"
+  local identity_state="${17:-}"
+  local transcript_bound=false
   local stop_requested=false
   local uncommitted_replacement=false
   local runtime_quiescent=false
@@ -6999,11 +7066,12 @@ session_health_envelope() {
   local now
   local checkpoint_threshold
 
-  if [ "$#" -ge 15 ]; then
-    shift 15
+  if [ "$#" -ge 17 ]; then
+    shift 17
   else
     set --
   fi
+  [ -z "$transcript_path" ] || transcript_bound=true
 
   case "$meta_status" in
     starting|running|recovering|hung|completed|failed|interrupted|stopped|\
@@ -7116,6 +7184,10 @@ session_health_envelope() {
     --runtime-quiescent "$runtime_quiescent" \
     --stop-requested "$stop_requested"
     --lifecycle-phase "$lifecycle_phase"
+    --identity-state "$identity_state"
+    --transcript-bound "$transcript_bound"
+    --checkpoint-threshold "$checkpoint_threshold"
+    --now "$now"
   )
   # List and mutation eligibility must use the same kernel identity evidence.
   # A PID created after runtime readiness belongs to another process.
@@ -7172,7 +7244,8 @@ refuse_runtime_without_managed_tmux() {
     "$META_WORKER_PID" "$META_PROVIDER_PID" "$META_WORKER_HEARTBEAT_EPOCH" \
     "$META_LAST_CHECKPOINT_EPOCH" "$META_HEALTH_SCHEMA" assessment \
     "$META_STOP_REQUESTED_AT" "$META_LIFECYCLE_PHASE" \
-    "$META_PRESERVE_RECOVERY_UNTIL_READY" "$META_RUNTIME_READY_AT")" || \
+    "$META_PRESERVE_RECOVERY_UNTIL_READY" "$META_RUNTIME_READY_AT" \
+    "$META_TRANSCRIPT_PATH" "$META_IDENTITY_STATE")" || \
     die "could not safely evaluate runtime ownership for '$session'"
   health_json="${health_output#*$'\n'}"
   [ "$health_json" != "$health_output" ] || \
@@ -7317,6 +7390,8 @@ list_session_records() {
   local health_lifecycle_phase
   local health_preserve_recovery_until_ready
   local health_runtime_ready_at
+  local health_transcript_path
+  local health_identity_state
   local recovery_meta
   local model_database=""
   local LIST_HEALTH_NOW
@@ -7380,6 +7455,7 @@ list_session_records() {
       IFS= read -r -d '' META_LIFECYCLE_PHASE && \
       IFS= read -r -d '' META_PRESERVE_RECOVERY_UNTIL_READY && \
       IFS= read -r -d '' META_RUNTIME_READY_AT && \
+      IFS= read -r -d '' META_IDENTITY_STATE && \
       IFS= read -r -d '' metadata_source && \
       IFS= read -r -d '' TRANSCRIPT_MODEL && \
       IFS= read -r -d '' TRANSCRIPT_CTX_USED && \
@@ -7405,12 +7481,12 @@ list_session_records() {
           "" "" "" "" "" ""
         session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          request "" "" "" "" "${LIST_JSON_ARGS[@]}" || \
+          request "" "" "" "" "" "" "${LIST_JSON_ARGS[@]}" || \
           die "could not evaluate health for '$session'"
       else
         health_output="$(session_health_envelope \
           "$session" false unknown "-" "" "" "" "" "" "" \
-          list-assessment "" "" "" "")" || \
+          list-assessment "" "" "" "" "" "")" || \
           die "could not evaluate health for '$session'"
       fi
       if [ "$json_mode" = "1" ]; then
@@ -7450,6 +7526,8 @@ list_session_records() {
     health_lifecycle_phase="$META_LIFECYCLE_PHASE"
     health_preserve_recovery_until_ready="$META_PRESERVE_RECOVERY_UNTIL_READY"
     health_runtime_ready_at="$META_RUNTIME_READY_AT"
+    health_transcript_path="$META_TRANSCRIPT_PATH"
+    health_identity_state="$META_IDENTITY_STATE"
 
     # Once the replacement runtime is positively quiescent, present the
     # recovery generation while retaining its replacement PID/token evidence
@@ -7518,6 +7596,7 @@ list_session_records() {
         "$health_last_checkpoint_epoch" "$health_schema" \
         request "$health_stop_requested_at" "$health_lifecycle_phase" \
         "$health_preserve_recovery_until_ready" "$health_runtime_ready_at" \
+        "$health_transcript_path" "$health_identity_state" \
         "${LIST_JSON_ARGS[@]}" || \
         die "could not evaluate health for '$session'"
     else
@@ -7526,7 +7605,8 @@ list_session_records() {
         "$worker_pid" "$provider_pid" "$health_worker_heartbeat_epoch" \
         "$health_last_checkpoint_epoch" "$health_schema" list-assessment \
         "$health_stop_requested_at" "$health_lifecycle_phase" \
-        "$health_preserve_recovery_until_ready" "$health_runtime_ready_at")" || \
+        "$health_preserve_recovery_until_ready" "$health_runtime_ready_at" \
+        "$health_transcript_path" "$health_identity_state")" || \
         die "could not evaluate health for '$session'"
     fi
     if [ "$json_mode" = "1" ]; then
