@@ -3711,7 +3711,7 @@ discover_codex_session() {
     # writes one, keep the current binding.
     hops=0
     while [ "$hops" -lt 8 ]; do
-      successor="$("$STATE_BIN" jsonl successor claude "$rollout" "$existing_id" 2>/dev/null || true)"
+      successor="$(claude_successor_for_run "$meta" "$rollout" "$existing_id" 2>/dev/null || true)"
       [ -n "$successor" ] || break
       # The bound transcript names its project directory, so the successor
       # resolves there; a copy in another project must not veto it.
@@ -3873,6 +3873,28 @@ claude_transcript_unbound() {
   [ -z "$("$STATE_BIN" meta get "$meta" transcript_path 2>/dev/null)" ]
 }
 
+# A resumed transcript can retain an old continuation while the new provider
+# waits for its first prompt. Only records after this run's byte boundary can
+# move that binding. The same rule applies to discovery and heartbeat probes.
+claude_successor_for_run() {
+  local meta="$1"
+  local transcript="$2"
+  local id="$3"
+  local boundary_path
+  local boundary_size
+  local args=(jsonl successor claude "$transcript" "$id")
+
+  boundary_path="$("$STATE_BIN" meta get "$meta" transcript_boundary_path)" || return 1
+  if [ "$boundary_path" = "$transcript" ]; then
+    boundary_size="$("$STATE_BIN" meta get "$meta" transcript_boundary_size)" || return 1
+    case "$boundary_size" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    args+=(--after-byte "$boundary_size")
+  fi
+  "$STATE_BIN" "${args[@]}"
+}
+
 # Reports whether the bound Claude transcript names a successor whose
 # transcript already sits beside it, so a heartbeat can rebind at once.
 claude_continuation_pending() {
@@ -3886,7 +3908,7 @@ claude_continuation_pending() {
   id="$("$STATE_BIN" meta get "$meta" agent_session_id 2>/dev/null)" || return 1
   transcript="$("$STATE_BIN" meta get "$meta" transcript_path 2>/dev/null)" || return 1
   [ -n "$id" ] && [ -n "$transcript" ] || return 1
-  successor="$("$STATE_BIN" jsonl successor claude "$transcript" "$id" 2>/dev/null)" || return 1
+  successor="$(claude_successor_for_run "$meta" "$transcript" "$id" 2>/dev/null)" || return 1
   [ -n "$successor" ] && [ -f "${transcript%/*}/$successor.jsonl" ]
 }
 

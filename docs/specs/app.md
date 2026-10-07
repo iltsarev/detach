@@ -151,6 +151,8 @@ Reconnect.
 The embedded attach client always uses a UTF-8 character locale. A conflicting
 inherited locale cannot change how tmux encodes its output. Native paste sends
 Unicode text and line breaks with the provider's bracketed paste framing.
+Without that framing, paste still sends the complete UTF-8 text. Enhanced
+keyboard modes cannot encode a paste as one key or remove its line breaks.
 
 Cold start paints at most 128 rows and 1 MiB from private preferences. Cached
 rows grant no action, ownership, PID, cleanup, or power claim until a fresh

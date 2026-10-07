@@ -1257,6 +1257,33 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try fixture.fields(), ["waiting", "answer", "answer_ready"])
     }
 
+    func testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt() throws {
+        let answer = #"{"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"# + "\n"
+        let activity = #"{"type":"assistant","uuid":"next","message":{"role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":"Checking."}]}}"# + "\n"
+        let fixture = try summarySession(
+            "detach-claude-stream", transcript: Data(answer.utf8))
+        XCTAssertEqual(try fixture.fields(), ["waiting", "answer", "answer_ready"])
+        try append(activity, to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["working", "next", ""])
+
+        let receipt = fixture.root.appendingPathComponent(
+            "detach-claude-stream/.transcript-summary-cache.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: receipt)) as? [String: Any])
+        // Schema 9 retained the answer despite the completed streamed record.
+        // Keep the exact file identity to prove this needs no new file write.
+        legacy["schema"] = 9
+        legacy["agentTurnState"] = "waiting"
+        legacy["agentTurnID"] = "answer"
+        legacy["agentWaitingReason"] = "answer_ready"
+        try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
+        XCTAssertEqual(try fixture.fields(), ["working", "next", ""])
+        XCTAssertEqual(try fixture.fields(), ["working", "next", ""])
+
+        try append(answer, to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["waiting", "answer", "answer_ready"])
+    }
+
     func testMetaSnapshotsTreatAnUnfinishedTurnBeforeTheRunBoundaryAsHistory() throws {
         let transcript = """
         {"payload":{"model":"gpt-boundary"}}
@@ -1364,7 +1391,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 9)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 10)
 
         let unrelatedToolResult = Data("""
 
@@ -1458,7 +1485,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let updated = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
-        XCTAssertEqual(updated["schema"] as? Int, 9)
+        XCTAssertEqual(updated["schema"] as? Int, 10)
 
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()
@@ -2063,6 +2090,17 @@ final class DetachStateCommandTests: XCTestCase {
         try handle.close()
         XCTAssertEqual(try DetachStateCommand.run(arguments: arguments), Data("\(next)\n".utf8))
 
+        let boundary = try Data(contentsOf: transcript).count
+        let resumed = arguments + ["--after-byte", String(boundary)]
+        XCTAssertEqual(try DetachStateCommand.run(arguments: resumed), Data(),
+                       "Resume must not follow a previous run's continuation")
+        try append(#"{"type":"user","sessionId":"\#(old)","message":{"role":"user","content":"again"}}"# + "\n", to: transcript)
+        XCTAssertEqual(try DetachStateCommand.run(arguments: resumed), Data())
+        try append(#"{"type":"continued-in","sessionId":"\#(old)","continuedInSessionId":"\#(next)"}"# + "\n", to: transcript)
+        XCTAssertEqual(try DetachStateCommand.run(arguments: resumed), Data("\(next)\n".utf8))
+        XCTAssertEqual(try DetachStateCommand.run(
+            arguments: arguments + ["--after-byte", String(UInt64.max)]), Data())
+
         let link = temporaryDirectory.appendingPathComponent("successor-link.jsonl")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: transcript)
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
@@ -2072,6 +2110,9 @@ final class DetachStateCommandTests: XCTestCase {
             ["jsonl", "successor", "codex", transcript.path, old],
             ["jsonl", "successor", "claude", transcript.path, ""],
             ["jsonl", "successor", "claude", transcript.path],
+            arguments + ["--after-byte", "-1"],
+            arguments + ["--after-byte", "invalid"],
+            arguments + ["--other", "1"],
         ] {
             XCTAssertThrowsError(try DetachStateCommand.run(arguments: invalid)) { error in
                 XCTAssertEqual(error as? DetachStateCommandError, .invalidArguments)

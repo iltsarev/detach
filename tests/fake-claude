@@ -101,6 +101,16 @@ if [ "$mode" = "resume" ]; then
   record_type="assistant"
 fi
 
+if [ -n "${FAKE_CLAUDE_BEFORE_TRANSCRIPT_READY_FILE:-}" ]; then
+  : >"$FAKE_CLAUDE_BEFORE_TRANSCRIPT_READY_FILE"
+  attempts=0
+  while [ ! -f "${FAKE_CLAUDE_TRANSCRIPT_RELEASE_FILE:-}" ]; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 400 ] || exit 124
+    sleep 0.05
+  done
+fi
+
 jq -cn \
   --arg cwd "$PWD" \
   --arg session_id "$session_id" \

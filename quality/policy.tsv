@@ -1,5 +1,5 @@
 schema	1
-policy	60
+policy	61
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -274,10 +274,10 @@ capability	publication	docs/specs/release.md	QC-RELEASE-PUBLISH	J-PUBLISH-ARTIFA
 journey	J-QUALITY-CHANGE	quality-system	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT,SC-CONTRACT-CHANGE	A policy change keeps local feedback focused and hosted evidence complete.
 journey	J-DOCS-CONSISTENCY	documentation	QC-DOC-CONSISTENCY	SC-DOCS-CONTRACT	Documentation and executable contracts stay synchronized.
 journey	J-SESSION-CREATE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE	A user creates a managed provider session.
-journey	J-SESSION-PERSIST	session-state	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE	A live session remains available after the app exits.
+journey	J-SESSION-PERSIST	session-state	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-TRANSCRIPT-TURN-UNIT	A live session remains available after the app exits.
 journey	J-STATE-CLEANUP	session-state	QC-RUNTIME-STATE	SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE	A user removes only typed state that a complete scan marks eligible.
-journey	J-STATE-RECOVER	session-state	QC-RUNTIME-STORAGE	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-STATE-RESTORE-UNIT	A user restores recovery state only after complete validation.
-journey	J-SESSION-RECOVER	session-recovery	QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE	A user recovers the exact owned session after interruption.
+journey	J-STATE-RECOVER	session-state	QC-RUNTIME-STORAGE	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-STATE-RESTORE-UNIT,SC-TRANSCRIPT-TURN-UNIT	A user restores recovery state only after complete validation.
+journey	J-SESSION-RECOVER	session-recovery	QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-TRANSCRIPT-TURN-UNIT	A user recovers the exact owned session after interruption.
 journey	J-SESSION-STOP	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-OWNERSHIP-UNIT	A user stops only the selected owned session.
 journey	J-SESSION-DELETE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE	A user deletes selected eligible sessions without affecting current work.
 journey	J-POWER-ENABLE	power-protection	QC-POWER-ASSERTION,QC-POWER-LEASE,QC-POWER-CLI,QC-POWER-PLATFORM	SC-POWER-UNIT	A protected session acquires both required power protections.
@@ -285,7 +285,7 @@ journey	J-POWER-LOW-BATTERY	power-protection	QC-POWER-PROTECTION	SC-POWER-LOW-BA
 journey	J-POWER-HELPER-LEASE	power-protection	QC-POWER-AUTH,QC-POWER-LEASE,QC-POWER-XPC	SC-POWER-HELPER	The helper accepts only an authorized bounded lease.
 journey	J-POWER-CLOSED-LID	power-protection	QC-POWER-PROTECTION	SC-POWER-CLOSED-LID	A protected session continues on supervised supported hardware with the lid closed.
 journey	J-APP-DASHBOARD	app-experience	QC-HEALTH-FRESHNESS,QC-HEALTH-PRESENTATION	SC-UI-DASHBOARD	A user sees fresh typed session health on the dashboard.
-journey	J-APP-DETAIL	app-experience	QC-HEALTH-PRESENTATION	SC-UI-SESSION-DETAIL	A user selects a session and sees its details.
+journey	J-APP-DETAIL	app-experience	QC-HEALTH-PRESENTATION	SC-UI-SESSION-DETAIL,SC-TERMINAL-INPUT-UNIT	A user selects a session and sees its details.
 journey	J-APP-EMPTY	app-experience	QC-HEALTH-PRESENTATION,QC-APP-TIPS	SC-UI-EMPTY	A user sees useful empty-state guidance.
 journey	J-APP-FAILURE	app-experience	QC-HEALTH-PRESENTATION	SC-UI-FAILURE	A user sees an actionable failure without parsed terminal claims.
 journey	J-APP-FOCUS	app-experience	QC-HEALTH-PRESENTATION	SC-UI-FOCUS	Background status checks do not steal keyboard focus.
@@ -400,9 +400,9 @@ enforcement	aggregate_coverage	advisory
 enforcement	test_identity	advisory
 enforcement	changed_line_coverage	advisory
 enforcement	contract_evidence	blocking
-verification	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
+verification	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE,SC-TRANSCRIPT-TURN-UNIT
 verification	QC-RUNTIME-OWNERSHIP	SC-SESSION-OWNERSHIP-UNIT,SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
-verification	QC-RUNTIME-STORAGE	SC-STATE-RESTORE-UNIT,SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE
+verification	QC-RUNTIME-STORAGE	SC-STATE-RESTORE-UNIT,SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-TRANSCRIPT-TURN-UNIT
 verification	QC-POWER-ASSERTION	SC-POWER-UNIT
 verification	QC-POWER-AUTH	SC-POWER-HELPER
 verification	QC-POWER-LEASE	SC-POWER-UNIT,SC-POWER-HELPER
@@ -412,8 +412,8 @@ verification	QC-POWER-CLI	SC-POWER-UNIT
 verification	QC-POWER-PLATFORM	SC-POWER-UNIT
 verification	QC-POWER-HANDOFF	SC-POWER-HANDOFF
 verification	QC-HEALTH-FRESHNESS	SC-UI-DASHBOARD
-verification	QC-HEALTH-PRESENTATION	SC-UI-DASHBOARD,SC-UI-SESSION-DETAIL,SC-UI-EMPTY,SC-UI-FAILURE,SC-UI-FOCUS,SC-UI-NEW-SESSION
-verification	QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE
+verification	QC-HEALTH-PRESENTATION	SC-UI-DASHBOARD,SC-UI-SESSION-DETAIL,SC-UI-EMPTY,SC-UI-FAILURE,SC-UI-FOCUS,SC-UI-NEW-SESSION,SC-TERMINAL-INPUT-UNIT
+verification	QC-RUNTIME-TRANSITION	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-TRANSCRIPT-TURN-UNIT
 verification	QC-APP-TIPS	SC-UI-EMPTY
 verification	QC-APP-DOCTOR	SC-DOCTOR-REPORT
 verification	QC-APP-ONBOARDING	SC-APP-ONBOARDING-UNIT,SC-UI-ONBOARD-FIRST-RUN,SC-UI-ONBOARD-PROVIDER,SC-UI-ONBOARD-APPROVAL
@@ -473,3 +473,10 @@ scenario-test	SC-POWER-UNIT	DetachKitTests.PowerHelperPlatformTests/testPMSetBac
 scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot	app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift
 scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation	app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift
 scenario-test	SC-POWER-HELPER	DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly	app/Tests/DetachKitTests/DetachPowerCommandTests.swift
+scenario	SC-TERMINAL-INPUT-UNIT	swift	test-cases	cd app && swift test --filter SessionAttachTerminalTests
+scenario	SC-TRANSCRIPT-TURN-UNIT	swift	test-cases	cd app && swift test --filter DetachState
+scenario-test	SC-TERMINAL-INPUT-UNIT	DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy	app/Tests/DetachAppTests/SessionAttachTerminalTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer	app/Tests/DetachKitTests/DetachStateTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains	app/Tests/DetachKitTests/DetachStateTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt	app/Tests/DetachKitTests/DetachStateCommandTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript	app/Tests/DetachKitTests/DetachStateCommandTests.swift

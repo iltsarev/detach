@@ -819,6 +819,7 @@ public enum TranscriptDocument {
         if type == "assistant",
            !isJSONTrue(record["isMeta"]),
            message?["role"] as? String == "assistant",
+           message?["model"] as? String != "<synthetic>",
            result.pendingToolUseID == nil {
             if message?["stop_reason"] as? String == "end_turn",
                hasFinalText(message?["content"]) {
@@ -830,6 +831,14 @@ public enum TranscriptDocument {
             } else if message?["stop_reason"] as? String == "tool_use" {
                 // A tool continuation can follow a completed answer without a
                 // new plain user record (for example, after a Stop hook).
+                result.agentTurnState = .working
+                result.agentWaitingReason = nil
+                result.agentTurnID = turnID
+            } else if message?["stop_reason"] == nil || message?["stop_reason"] is NSNull,
+                      hasAssistantActivity(message?["content"]),
+                      result.agentTurnState != .working {
+                // Streaming and hook continuations can start without a new
+                // plain user record. A stop reason arrives only later.
                 result.agentTurnState = .working
                 result.agentWaitingReason = nil
                 result.agentTurnID = turnID
@@ -1056,6 +1065,18 @@ public enum TranscriptDocument {
         return content.contains {
             $0["type"] as? String == "text"
                 && ($0["text"] as? String)?.isEmpty == false
+        }
+    }
+
+    private static func hasAssistantActivity(_ value: Any?) -> Bool {
+        guard let content = value as? [[String: Any]] else { return false }
+        return content.contains { block in
+            switch block["type"] as? String {
+            case "text": return (block["text"] as? String)?.isEmpty == false
+            case "thinking": return (block["thinking"] as? String)?.isEmpty == false
+            case "tool_use": return (block["id"] as? String)?.isEmpty == false
+            default: return false
+            }
         }
     }
 

@@ -444,7 +444,8 @@
       ],
       "scenarios": [
         "SC-SESSION-PERSIST-CODEX",
-        "SC-SESSION-PERSIST-CLAUDE"
+        "SC-SESSION-PERSIST-CLAUDE",
+        "SC-TRANSCRIPT-TURN-UNIT"
       ],
       "summary": "A live session remains available after the app exits."
     },
@@ -470,7 +471,8 @@
       "scenarios": [
         "SC-SESSION-RECOVER-CODEX",
         "SC-SESSION-RECOVER-CLAUDE",
-        "SC-STATE-RESTORE-UNIT"
+        "SC-STATE-RESTORE-UNIT",
+        "SC-TRANSCRIPT-TURN-UNIT"
       ],
       "summary": "A user restores recovery state only after complete validation."
     },
@@ -482,7 +484,8 @@
       ],
       "scenarios": [
         "SC-SESSION-RECOVER-CODEX",
-        "SC-SESSION-RECOVER-CLAUDE"
+        "SC-SESSION-RECOVER-CLAUDE",
+        "SC-TRANSCRIPT-TURN-UNIT"
       ],
       "summary": "A user recovers the exact owned session after interruption."
     },
@@ -581,7 +584,8 @@
         "QC-HEALTH-PRESENTATION"
       ],
       "scenarios": [
-        "SC-UI-SESSION-DETAIL"
+        "SC-UI-SESSION-DETAIL",
+        "SC-TERMINAL-INPUT-UNIT"
       ],
       "summary": "A user selects a session and sees its details."
     },
@@ -780,7 +784,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 60,
+  "policy": 61,
   "release_domains": [
     {
       "gates": "-",
@@ -842,7 +846,8 @@
         "SC-SESSION-PERSIST-CLAUDE",
         "SC-SESSION-DELETE-CODEX",
         "SC-SESSION-DELETE-CLAUDE",
-        "SC-UI-SESSION-DELETE"
+        "SC-UI-SESSION-DELETE",
+        "SC-TRANSCRIPT-TURN-UNIT"
       ]
     },
     {
@@ -870,7 +875,8 @@
       "verification": [
         "SC-STATE-RESTORE-UNIT",
         "SC-SESSION-RECOVER-CODEX",
-        "SC-SESSION-RECOVER-CLAUDE"
+        "SC-SESSION-RECOVER-CLAUDE",
+        "SC-TRANSCRIPT-TURN-UNIT"
       ]
     },
     {
@@ -967,7 +973,8 @@
         "SC-UI-EMPTY",
         "SC-UI-FAILURE",
         "SC-UI-FOCUS",
-        "SC-UI-NEW-SESSION"
+        "SC-UI-NEW-SESSION",
+        "SC-TERMINAL-INPUT-UNIT"
       ]
     },
     {
@@ -977,7 +984,8 @@
       "summary": "Session transitions preserve exact process identity.",
       "verification": [
         "SC-SESSION-RECOVER-CODEX",
-        "SC-SESSION-RECOVER-CLAUDE"
+        "SC-SESSION-RECOVER-CLAUDE",
+        "SC-TRANSCRIPT-TURN-UNIT"
       ]
     },
     {
@@ -2711,6 +2719,27 @@
       "stage": "gate-contract",
       "status": "instrumented",
       "tests": []
+    },
+    {
+      "command": "cd app && swift test --filter SessionAttachTerminalTests",
+      "id": "SC-TERMINAL-INPUT-UNIT",
+      "stage": "swift",
+      "status": "test-cases",
+      "tests": [
+        "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy"
+      ]
+    },
+    {
+      "command": "cd app && swift test --filter DetachState",
+      "id": "SC-TRANSCRIPT-TURN-UNIT",
+      "stage": "swift",
+      "status": "test-cases",
+      "tests": [
+        "DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer",
+        "DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains",
+        "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt",
+        "DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript"
+      ]
     }
   ],
   "schema": 1,
@@ -2918,6 +2947,12 @@
               "status": "instrumented"
             },
             {
+              "command": "cd app && swift test --filter DetachState",
+              "id": "SC-TRANSCRIPT-TURN-UNIT",
+              "stage": "swift",
+              "status": "test-cases"
+            },
+            {
               "command": "tests/run.sh",
               "id": "SC-SESSION-DELETE-CODEX",
               "stage": "codex",
@@ -2942,7 +2977,8 @@
             "SC-SESSION-PERSIST-CLAUDE",
             "SC-SESSION-DELETE-CODEX",
             "SC-SESSION-DELETE-CLAUDE",
-            "SC-UI-SESSION-DELETE"
+            "SC-UI-SESSION-DELETE",
+            "SC-TRANSCRIPT-TURN-UNIT"
           ]
         },
         {
@@ -2969,13 +3005,20 @@
               "id": "SC-STATE-RESTORE-UNIT",
               "stage": "swift",
               "status": "test-cases"
+            },
+            {
+              "command": "cd app && swift test --filter DetachState",
+              "id": "SC-TRANSCRIPT-TURN-UNIT",
+              "stage": "swift",
+              "status": "test-cases"
             }
           ],
           "summary": "Restores validate path, symlink, identity, and JSONL data before replacement.",
           "verification": [
             "SC-STATE-RESTORE-UNIT",
             "SC-SESSION-RECOVER-CODEX",
-            "SC-SESSION-RECOVER-CLAUDE"
+            "SC-SESSION-RECOVER-CLAUDE",
+            "SC-TRANSCRIPT-TURN-UNIT"
           ]
         }
       ],
@@ -3252,6 +3295,12 @@
               "status": "instrumented"
             },
             {
+              "command": "cd app && swift test --filter SessionAttachTerminalTests",
+              "id": "SC-TERMINAL-INPUT-UNIT",
+              "stage": "swift",
+              "status": "test-cases"
+            },
+            {
               "command": "tests/ui-e2e.sh",
               "id": "SC-UI-EMPTY",
               "stage": "ui-e2e",
@@ -3283,7 +3332,8 @@
             "SC-UI-EMPTY",
             "SC-UI-FAILURE",
             "SC-UI-FOCUS",
-            "SC-UI-NEW-SESSION"
+            "SC-UI-NEW-SESSION",
+            "SC-TERMINAL-INPUT-UNIT"
           ]
         },
         {
@@ -3776,12 +3826,19 @@
               "id": "SC-SESSION-RECOVER-CLAUDE",
               "stage": "claude",
               "status": "instrumented"
+            },
+            {
+              "command": "cd app && swift test --filter DetachState",
+              "id": "SC-TRANSCRIPT-TURN-UNIT",
+              "stage": "swift",
+              "status": "test-cases"
             }
           ],
           "summary": "Session transitions preserve exact process identity.",
           "verification": [
             "SC-SESSION-RECOVER-CODEX",
-            "SC-SESSION-RECOVER-CLAUDE"
+            "SC-SESSION-RECOVER-CLAUDE",
+            "SC-TRANSCRIPT-TURN-UNIT"
           ]
         }
       ],
@@ -4097,6 +4154,7 @@
     "DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick": "app/Tests/DetachAppTests/OnboardingLivePollerTests.swift",
     "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding": "app/Tests/DetachAppTests/SetupGuidanceTests.swift",
     "DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
+    "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed": "app/Tests/DetachAppTests/WatchdogServiceTests.swift",
@@ -4104,8 +4162,12 @@
     "DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
     "DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains": "app/Tests/DetachKitTests/DetachStateTests.swift",
+    "DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer": "app/Tests/DetachKitTests/DetachStateTests.swift",
     "DetachKitTests.PowerAssertionControllerTests/testAcquireCreatesOneAssertionAndBecomesActive": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
     "DetachKitTests.PowerAssertionControllerTests/testFailedReleaseStaysActiveAndCanRetry": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
     "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsAnotherLocalUserAfterFastUserSwitching": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",
