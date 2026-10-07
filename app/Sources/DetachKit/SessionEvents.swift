@@ -102,18 +102,24 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
     /// Provider session directories whose metadata names managed transcripts.
     /// The runtime may relocate one provider root, so these are explicit.
     public let sessionsRoots: [String]
+    /// Health can change with time alone (a stale heartbeat, an overdue
+    /// checkpoint). While a session is live, a `changed` hint repeats at
+    /// this interval so List observes those deadlines.
+    public let healthHintInterval: TimeInterval?
 
     public init(
         stateRoot: String,
         signalPath: String,
         transcriptRoots: [String],
-        sessionsRoots: [String]? = nil
+        sessionsRoots: [String]? = nil,
+        healthHintInterval: TimeInterval? = nil
     ) {
         self.stateRoot = stateRoot
         self.signalPath = signalPath
         self.transcriptRoots = transcriptRoots
         self.sessionsRoots = sessionsRoots
             ?? Self.defaultSessionsRoots(stateRoot: stateRoot)
+        self.healthHintInterval = healthHintInterval
     }
 
     public static func defaultSessionsRoots(stateRoot: String) -> [String] {
@@ -130,6 +136,7 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
         var signalPath: String?
         var transcriptRoots: [String] = []
         var sessionsRoots: [String] = []
+        var healthHintInterval: TimeInterval?
         var sawJSON = false
         var index = 0
         while index < arguments.count {
@@ -148,6 +155,14 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
                 index += 2
             case "--sessions-root" where index + 1 < arguments.count:
                 sessionsRoots.append(arguments[index + 1])
+                index += 2
+            case "--health-hint-interval"
+                where healthHintInterval == nil && index + 1 < arguments.count:
+                guard let seconds = TimeInterval(arguments[index + 1]),
+                      seconds.isFinite, seconds > 0 else {
+                    throw DetachStateCommandError.invalidArguments
+                }
+                healthHintInterval = seconds
                 index += 2
             default:
                 throw DetachStateCommandError.invalidArguments
@@ -174,7 +189,8 @@ public struct SessionEventWatchConfiguration: Equatable, Sendable {
             signalPath: canonicalSignalPath,
             transcriptRoots: canonicalTranscriptRoots,
             sessionsRoots: sessionsRoots.isEmpty
-                ? nil : sessionsRoots.map(canonicalPath))
+                ? nil : sessionsRoots.map(canonicalPath),
+            healthHintInterval: healthHintInterval)
     }
 
     static func canonicalPath(_ path: String) -> String {
@@ -455,6 +471,7 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
     private var trailingWorkItem: DispatchWorkItem?
     private var managedTranscriptPaths: Set<String> = []
     private var activeWatchedPaths: [String] = []
+    private var healthHintTimer: (any DispatchSourceTimer)?
     private lazy var transcriptMonitor = SessionTranscriptFileMonitor(
         queue: queue,
         onChange: { [weak self] in self?.receiveTranscriptChange() })
@@ -498,6 +515,8 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
         let operation = {
             self.trailingWorkItem?.cancel()
             self.trailingWorkItem = nil
+            self.healthHintTimer?.cancel()
+            self.healthHintTimer = nil
             self.transcriptMonitor.stop()
             if let stream = self.stream {
                 FSEventStreamStop(stream)
@@ -588,7 +607,26 @@ public final class SessionFileEventWatcher: @unchecked Sendable {
             allowedRoots: configuration.transcriptRoots)
         managedTranscriptPaths = registry.all
         transcriptMonitor.update(paths: registry.live)
+        updateHealthHintTimer(liveSessions: registry.liveSessionCount)
     }
+
+    /// Repeats a `changed` hint only while a session is live. Lifecycle
+    /// events refresh the registry, so the timer stops with the last session.
+    private func updateHealthHintTimer(liveSessions: Int) {
+        guard let interval = configuration.healthHintInterval, liveSessions > 0 else {
+            healthHintTimer?.cancel()
+            healthHintTimer = nil
+            return
+        }
+        guard healthHintTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in self?.apply(.emit(.changed)) }
+        healthHintTimer = timer
+        timer.resume()
+    }
+
+    var healthHintsActive: Bool { healthHintTimer != nil }
 
     private func scheduleStreamRootRefreshIfNeeded() {
         let paths = availableWatchedPaths()

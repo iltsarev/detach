@@ -1413,6 +1413,29 @@ final class SessionStoreTests: XCTestCase {
         store.stopObserving()
     }
 
+    func testWatcherThatFailsBeforeItsFirstEventStillRefreshesOnRestart() async {
+        let cli = EventCLI(output: line)
+        let restart = ConfirmationSleepProbe()
+        let store = SessionStore(
+            cli: cli,
+            confirmationSleep: { _ in },
+            eventReadinessSleep: { try await Task.sleep(nanoseconds: $0) },
+            restartSleep: { _ in await restart.sleep() })
+        store.startObserving()
+        await cli.waitUntilSubscribed()
+        XCTAssertEqual(cli.currentCallCount, 0)
+
+        // A broken watcher never sends `ready`, so no hint would request a
+        // List. The restart reads one before installing the next watcher.
+        cli.end(throwing: DetachCLIStreamError.exited(1))
+        await restart.waitForCallCount(1)
+        await restart.resumeSleepers()
+        await cli.waitForCallCount(1)
+        await cli.waitUntilSubscribed()
+        XCTAssertEqual(store.sessions.count, 1)
+        store.stopObserving()
+    }
+
     func testForegroundPollingUsesTheBoundedBaseInterval() async {
         // Keep the historical regression ID. Foreground polling was replaced
         // by a native stream; this now proves the replacement uses the same

@@ -64,6 +64,24 @@ final class SessionEventsTests: XCTestCase {
         ]))
     }
 
+    func testWatchArgumentsAcceptOnePositiveHealthHintInterval() throws {
+        let base = [
+            "--json",
+            "--state-root", "/tmp/detach-state",
+            "--signal", "/tmp/detach-state/session-change",
+            "--transcript-root", "/tmp/codex/sessions",
+        ]
+        XCTAssertNil(try SessionEventWatchConfiguration.parse(arguments: base).healthHintInterval)
+        XCTAssertEqual(
+            try SessionEventWatchConfiguration.parse(
+                arguments: base + ["--health-hint-interval", "45"]).healthHintInterval,
+            45)
+        for invalid in [["0"], ["-1"], ["soon"], ["inf"], ["45", "--health-hint-interval", "45"]] {
+            XCTAssertThrowsError(try SessionEventWatchConfiguration.parse(
+                arguments: base + ["--health-hint-interval"] + invalid), "\(invalid)")
+        }
+    }
+
     func testClassifierIgnoresNoiseAndRecognizesLifecycleAndManagedTranscripts() {
         XCTAssertEqual(classify(paths: ["/private/tmp/detach-state/heartbeat"]), .ignored)
         XCTAssertEqual(
@@ -337,6 +355,64 @@ final class SessionEventsTests: XCTestCase {
 
         wait(for: [changed], timeout: 1)
         monitor.stop()
+    }
+
+    func testWatcherRepeatsHealthHintsOnlyWhileASessionIsLive() throws {
+        let root = URL(fileURLWithPath: SessionEventWatchConfiguration.canonicalPath(
+            "/private/tmp/detach-health-hints-\(UUID().uuidString)"), isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stateRoot = root.appendingPathComponent("state", isDirectory: true)
+        let sessionsRoot = stateRoot.appendingPathComponent("codex/sessions", isDirectory: true)
+        let sessionRoot = sessionsRoot.appendingPathComponent("detach-codex-hint", isDirectory: true)
+        let transcriptRoot = root.appendingPathComponent("provider", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: transcriptRoot, withIntermediateDirectories: true)
+        // A live session without a bound transcript still needs health hints.
+        func writeStatus(_ status: String) throws {
+            try SessionMetadataDocument.create(changes: [
+                .init(key: "schema", value: .integer(1)),
+                .init(key: "session_name", value: .string("detach-codex-hint")),
+                .init(key: "project_dir", value: .string("/private/tmp/project")),
+                .init(key: "status", value: .string(status)),
+            ]).write(to: sessionRoot.appendingPathComponent("meta.json"))
+        }
+        try writeStatus("running")
+        let canonicalStateRoot = SessionEventWatchConfiguration.canonicalPath(stateRoot.path)
+        let signalPath = canonicalStateRoot + "/session-change"
+        let pipe = Pipe()
+        defer {
+            try? pipe.fileHandleForWriting.close()
+            try? pipe.fileHandleForReading.close()
+        }
+        let queue = DispatchQueue(label: "detach-health-hint-test")
+        let watcher = SessionFileEventWatcher(
+            configuration: SessionEventWatchConfiguration(
+                stateRoot: canonicalStateRoot,
+                signalPath: signalPath,
+                transcriptRoots: [SessionEventWatchConfiguration.canonicalPath(transcriptRoot.path)],
+                sessionsRoots: [SessionEventWatchConfiguration.canonicalPath(sessionsRoot.path)],
+                healthHintInterval: 0.2),
+            quietWindow: 0.02,
+            queue: queue,
+            output: pipe.fileHandleForWriting)
+        defer { watcher.stop() }
+        var buffer = Data()
+
+        try watcher.start()
+        XCTAssertEqual(try readEvent(from: pipe.fileHandleForReading, buffer: &buffer),
+                       SessionEvent(event: .ready))
+        XCTAssertTrue(queue.sync { watcher.healthHintsActive })
+        // Two hints arrive without any file event.
+        for _ in 0..<2 {
+            XCTAssertEqual(try readEvent(from: pipe.fileHandleForReading, buffer: &buffer),
+                           SessionEvent(event: .changed))
+        }
+
+        try writeStatus("stopped")
+        queue.sync {
+            watcher.receive(SessionFileEventBatch(paths: [signalPath], flags: [0]))
+        }
+        XCTAssertFalse(queue.sync { watcher.healthHintsActive })
     }
 
     func testWatcherStreamsReadyLifecycleTranscriptAndResyncEvents() throws {

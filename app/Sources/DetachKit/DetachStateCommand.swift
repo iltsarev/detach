@@ -27,6 +27,8 @@ public enum DetachStateCommandError: Error, Equatable, Sendable {
 struct ManagedTranscriptRegistry: Equatable, Sendable {
     let all: Set<String>
     let live: Set<String>
+    /// Live sessions, with or without a bound transcript.
+    var liveSessionCount = 0
 }
 
 /// The command contract shared by the `detach-state` executable and unit
@@ -1529,11 +1531,17 @@ public enum DetachStateCommand {
 
         var all: Set<String> = []
         var live: Set<String> = []
+        var liveSessionCount = 0
         for sessionsRoot in sessionsRoots {
             guard let snapshots = try? metadataSnapshots(at: sessionsRoot) else {
                 continue
             }
             for (_, values) in snapshots {
+                if let values, values.indices.contains(statusIndex),
+                   case .string(let status)? = values[statusIndex],
+                   ["starting", "running", "recovering"].contains(status) {
+                    liveSessionCount += 1
+                }
                 guard let values,
                       values.indices.contains(transcriptIndex),
                       case .string(let rawPath)? = values[transcriptIndex] else {
@@ -1554,7 +1562,8 @@ public enum DetachStateCommand {
                 }
             }
         }
-        return ManagedTranscriptRegistry(all: all, live: live)
+        return ManagedTranscriptRegistry(
+            all: all, live: live, liveSessionCount: liveSessionCount)
     }
 
     private static let maximumOwnedRegularFileBytes: off_t = 1_048_576
