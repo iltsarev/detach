@@ -1284,6 +1284,57 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try fixture.fields(), ["waiting", "answer", "answer_ready"])
     }
 
+    func testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult() throws {
+        let launch = """
+        {"type":"assistant","uuid":"launch","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_job","name":"Bash","input":{"run_in_background":true}}]}}
+        {"type":"user","uuid":"launched","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_job","content":"Command running in background with ID: bjob."}]}}
+        {"type":"assistant","uuid":"stop","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_stop","name":"TaskStop","input":{"task_id":"bjob"}}]}}
+
+        """
+        let fixture = try summarySession(
+            "detach-claude-background-stop", transcript: Data(launch.utf8))
+        XCTAssertEqual(try fixture.fields(), ["working", "stop", ""])
+        let receipt = fixture.root.appendingPathComponent(
+            "detach-claude-background-stop/.transcript-summary-cache.json")
+        let stored = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: receipt)) as? [String: Any])
+        let tasks = try XCTUnwrap(stored["pendingBackground"] as? [[String: Any]])
+        XCTAssertEqual(tasks.first?["pendingStopToolUseID"] as? String, "toolu_stop")
+
+        try append("""
+        {"type":"user","uuid":"failed","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_stop","is_error":true,"content":"Permission denied"}]}}
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Still running."}]}}
+
+        """, to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["working", "stop", ""])
+        XCTAssertEqual(try fixture.fields(), ["working", "stop", ""])
+
+        // The old reducer forgot the task as soon as it saw TaskStop.
+        // An unchanged file must invalidate that cached answer.
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: receipt)) as? [String: Any])
+        legacy["schema"] = 10
+        legacy["agentTurnState"] = "waiting"
+        legacy["agentTurnID"] = "answer"
+        legacy["agentWaitingReason"] = "answer_ready"
+        legacy.removeValue(forKey: "pendingBackground")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
+        XCTAssertEqual(try fixture.fields(), ["working", "stop", ""])
+
+        try append("""
+        {"type":"assistant","uuid":"retry","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_retry","name":"TaskStop","input":{"task_id":"bjob"}}]}}
+
+        """, to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["working", "retry", ""])
+        try append("""
+        {"type":"user","uuid":"stopped","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_retry","content":"Stopped."}]}}
+        {"type":"assistant","uuid":"done","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Stopped."}]}}
+
+        """, to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["waiting", "done", "answer_ready"])
+        XCTAssertEqual(try fixture.fields(), ["waiting", "done", "answer_ready"])
+    }
+
     func testMetaSnapshotsTreatAnUnfinishedTurnBeforeTheRunBoundaryAsHistory() throws {
         let transcript = """
         {"payload":{"model":"gpt-boundary"}}
@@ -1391,7 +1442,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 10)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 11)
 
         let unrelatedToolResult = Data("""
 
@@ -1485,7 +1536,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let updated = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
-        XCTAssertEqual(updated["schema"] as? Int, 10)
+        XCTAssertEqual(updated["schema"] as? Int, 11)
 
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()
@@ -2375,6 +2426,31 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try state([file.path]), "working")
         // Standard input is read once, so only its bounded tail is used.
         XCTAssertEqual(try state(["-"], transcript), "waiting")
+    }
+
+    func testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch() throws {
+        for padding in [0, 300_000] {
+            for tool in ["Bash", "Workflow"] {
+                let transcript = """
+                {"type":"assistant","uuid":"launch","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_job","name":"\(tool)","input":{"run_in_background":true}}]}}
+                {"type":"user","uuid":"failed","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_job","is_error":true,"content":"Permission denied"}]}}
+                {"type":"progress","data":"\(String(repeating: "x", count: padding))"}
+                {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Could not start."}]}}
+
+                """
+                let fixture = try summarySession(
+                    "detach-claude-failed-\(tool)-\(padding)", transcript: Data(transcript.utf8))
+                let output = try DetachStateCommand.run(arguments: [
+                    "jsonl", "summary", "claude", fixture.transcript.path,
+                ])
+                let summary = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: output) as? [String: Any])
+                XCTAssertEqual(summary["agent_turn_state"] as? String, "waiting")
+                XCTAssertEqual(summary["agent_waiting_reason"] as? String, "answer_ready")
+                XCTAssertEqual(try fixture.fields(), ["waiting", "answer", "answer_ready"])
+                XCTAssertEqual(try fixture.fields(), ["waiting", "answer", "answer_ready"])
+            }
+        }
     }
 
     func testJSONLSummaryRejectsUnsupportedOptions() {
