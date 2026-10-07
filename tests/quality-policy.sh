@@ -56,7 +56,7 @@ policy_version="$("$ROOT/scripts/quality-policy" version)"
   fail 'capability inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" journeys | wc -l | tr -d ' ')" = 31 ] || \
   fail 'journey inventory is incomplete'
-[ "$("$ROOT/scripts/quality-policy" scenarios | wc -l | tr -d ' ')" = 48 ] || \
+[ "$("$ROOT/scripts/quality-policy" scenarios | wc -l | tr -d ' ')" = 50 ] || \
   fail 'scenario inventory is incomplete'
 [ "$("$ROOT/scripts/quality-policy" coverage-exclusions | wc -l | tr -d ' ')" = 4 ] || \
   fail 'coverage exclusion inventory is incomplete'

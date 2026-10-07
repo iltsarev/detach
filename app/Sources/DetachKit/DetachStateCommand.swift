@@ -1243,7 +1243,7 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 9
+        static let currentSchema = 10
         static let coldTailByteCount: UInt64 = 262_144
         /// One provider record can exceed the cold tail, for example a Codex
         /// compaction. A continuation reads the complete append up to here.
@@ -1966,15 +1966,24 @@ public enum DetachStateCommand {
         _ arguments: [String],
         standardInput: Data?
     ) throws -> Data {
-        guard arguments.count == 3, try provider(arguments[0]) == .claude,
+        guard arguments.count == 3 || arguments.count == 5,
+              try provider(arguments[0]) == .claude,
               !arguments[2].isEmpty else {
             throw DetachStateCommandError.invalidArguments
+        }
+        var minimumOffset: UInt64 = 0
+        if arguments.count == 5 {
+            guard arguments[3] == "--after-byte", let offset = UInt64(arguments[4]) else {
+                throw DetachStateCommandError.invalidArguments
+            }
+            minimumOffset = offset
         }
         let successor = TranscriptDocument.claudeSuccessorID(
             ofTail: try tail(
                 atPath: arguments[1],
                 maximumByteCount: 262_144,
-                standardInput: standardInput),
+                standardInput: standardInput,
+                minimumOffset: minimumOffset),
             expectedSessionID: arguments[2])
         return successor.map { Data(($0 + "\n").utf8) } ?? Data()
     }
@@ -2315,9 +2324,11 @@ public enum DetachStateCommand {
     private static func tail(
         atPath path: String,
         maximumByteCount: UInt64,
-        standardInput: Data?
+        standardInput: Data?,
+        minimumOffset: UInt64 = 0
     ) throws -> Data {
         if path == "/dev/stdin" || path == "-" {
+            guard minimumOffset == 0 else { throw DetachStateCommandError.invalidArguments }
             let limit = Int(maximumByteCount)
             if let standardInput {
                 let count = min(standardInput.count, limit)
@@ -2338,7 +2349,9 @@ public enum DetachStateCommand {
         defer { close(descriptor) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         let size = try handle.seekToEnd()
-        try handle.seek(toOffset: size > maximumByteCount ? size - maximumByteCount : 0)
-        return try handle.readToEnd() ?? Data()
+        guard minimumOffset <= size else { return Data() }
+        try handle.seek(toOffset: max(
+            minimumOffset, size > maximumByteCount ? size - maximumByteCount : 0))
+        return try handle.read(upToCount: Int(maximumByteCount)) ?? Data()
     }
 }

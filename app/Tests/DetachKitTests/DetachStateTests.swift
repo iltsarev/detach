@@ -865,8 +865,18 @@ final class DetachStateTests: XCTestCase {
     }
 
     func testClaudeSummaryResumesAfterFinalAnswer() {
-        let waiting = TranscriptSummary(agentTurnState: .waiting, agentTurnID: "answer")
+        let waiting = TranscriptSummary(
+            agentTurnState: .waiting, agentTurnID: "answer", agentWaitingReason: .answerReady)
         let continuations = [
+            """
+            {"type":"assistant","uuid":"next","message":{"role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":"Checking the result."}]}}
+            """,
+            """
+            {"type":"assistant","uuid":"next","message":{"role":"assistant","stop_reason":null,"content":[{"type":"text","text":"I will check that."}]}}
+            """,
+            """
+            {"type":"assistant","uuid":"next","message":{"role":"assistant","stop_reason":null,"content":[{"type":"tool_use","name":"Bash","id":"tool"}]}}
+            """,
             """
             {"type":"user","uuid":"next","message":{"role":"user","content":"continue"}}
             """,
@@ -879,6 +889,9 @@ final class DetachStateTests: XCTestCase {
                 ofTail: Data(continuation.utf8), provider: .claude, startingFrom: waiting)
             XCTAssertEqual(working.agentTurnState, .working)
             XCTAssertEqual(working.agentTurnID, "next")
+            XCTAssertNil(working.agentWaitingReason)
+            let cold = TranscriptDocument.summary(ofTail: Data(continuation.utf8), provider: .claude)
+            XCTAssertEqual(cold.agentTurnState, .working)
             let answer = Data("""
             {"type":"assistant","uuid":"next-answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done again."}]}}
             """.utf8)
@@ -886,6 +899,44 @@ final class DetachStateTests: XCTestCase {
                 ofTail: answer, provider: .claude, startingFrom: working)
             XCTAssertEqual(completed.agentTurnState, .waiting)
             XCTAssertEqual(completed.agentTurnID, "next-answer")
+        }
+    }
+
+    func testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains() throws {
+        let answer = TranscriptSummary(
+            agentTurnState: .waiting, agentTurnID: "answer", agentWaitingReason: .answerReady)
+        let activity: [String: Any] = [
+            "type": "assistant", "uuid": "next",
+            "message": ["role": "assistant", "stop_reason": NSNull(),
+                        "content": [["type": "thinking", "thinking": "Checking."]]],
+        ]
+        for excluded in [["isSidechain": true], ["isMeta": true]] {
+            let record = activity.merging(excluded) { _, new in new }
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: record),
+                provider: .claude, startingFrom: answer), answer)
+        }
+        var synthetic = activity
+        var message = try XCTUnwrap(synthetic["message"] as? [String: Any])
+        message["model"] = "<synthetic>"
+        synthetic["message"] = message
+        XCTAssertEqual(TranscriptDocument.summary(
+            ofTail: try JSONSerialization.data(withJSONObject: synthetic),
+            provider: .claude, startingFrom: answer), answer)
+
+        var input = TranscriptSummary(
+            agentTurnState: .waiting, agentTurnID: "question", agentWaitingReason: .inputRequired)
+        input.pendingToolUseID = "question"
+        XCTAssertEqual(TranscriptDocument.summary(
+            ofTail: try JSONSerialization.data(withJSONObject: activity),
+            provider: .claude, startingFrom: input), input)
+
+        for content in [[], [["type": "text", "text": ""]], [["type": "unknown"]]] {
+            var empty = activity
+            empty["message"] = ["role": "assistant", "content": content]
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: empty),
+                provider: .claude, startingFrom: answer), answer)
         }
     }
 

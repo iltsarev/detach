@@ -107,18 +107,26 @@ Direct acceptance evidence for `QC-RUNTIME-OWNERSHIP`: `SC-SESSION-OWNERSHIP-UNI
 
 | Requirement | Journeys | Scenarios | Outcome |
 | --- | --- | --- | --- |
-| [`QC-RUNTIME-STATE`](../../docs/specs/state.md#qc-runtime-state) | `J-SESSION-PERSIST`<br>`J-STATE-CLEANUP` | `SC-SESSION-PERSIST-CODEX` (instrumented, `codex`)<br>`SC-SESSION-PERSIST-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-DELETE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-DELETE-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-DELETE` (instrumented, `ui-e2e`) | Typed state is the only shared state mutation boundary. |
-| [`QC-RUNTIME-STORAGE`](../../docs/specs/state.md#qc-runtime-storage) | `J-STATE-RECOVER` | `SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`)<br>`SC-STATE-RESTORE-UNIT` (test-cases, `swift`) | Restores validate path, symlink, identity, and JSONL data before replacement. |
+| [`QC-RUNTIME-STATE`](../../docs/specs/state.md#qc-runtime-state) | `J-SESSION-PERSIST`<br>`J-STATE-CLEANUP` | `SC-SESSION-PERSIST-CODEX` (instrumented, `codex`)<br>`SC-SESSION-PERSIST-CLAUDE` (instrumented, `claude`)<br>`SC-TRANSCRIPT-TURN-UNIT` (test-cases, `swift`)<br>`SC-SESSION-DELETE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-DELETE-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-DELETE` (instrumented, `ui-e2e`) | Typed state is the only shared state mutation boundary. |
+| [`QC-RUNTIME-STORAGE`](../../docs/specs/state.md#qc-runtime-storage) | `J-STATE-RECOVER` | `SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`)<br>`SC-STATE-RESTORE-UNIT` (test-cases, `swift`)<br>`SC-TRANSCRIPT-TURN-UNIT` (test-cases, `swift`) | Restores validate path, symlink, identity, and JSONL data before replacement. |
 
-Direct acceptance evidence for `QC-RUNTIME-STATE`: `SC-SESSION-PERSIST-CODEX`, `SC-SESSION-PERSIST-CLAUDE`, `SC-SESSION-DELETE-CODEX`, `SC-SESSION-DELETE-CLAUDE`, `SC-UI-SESSION-DELETE`.
+Direct acceptance evidence for `QC-RUNTIME-STATE`: `SC-SESSION-PERSIST-CODEX`, `SC-SESSION-PERSIST-CLAUDE`, `SC-SESSION-DELETE-CODEX`, `SC-SESSION-DELETE-CLAUDE`, `SC-UI-SESSION-DELETE`, `SC-TRANSCRIPT-TURN-UNIT`.
+
+- `DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer`
+- `DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript`
 
 
-
-Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`.
+Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`, `SC-TRANSCRIPT-TURN-UNIT`.
 
 - `DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories`
 - `DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments`
 - `DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink`
+- `DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer`
+- `DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript`
 
 
 ## `power`
@@ -286,15 +294,16 @@ Direct acceptance evidence for `QC-POWER-PLATFORM`: `SC-POWER-UNIT`.
 | Requirement | Journeys | Scenarios | Outcome |
 | --- | --- | --- | --- |
 | [`QC-HEALTH-FRESHNESS`](../../docs/specs/app.md#qc-health-freshness) | `J-APP-DASHBOARD` | `SC-UI-DASHBOARD` (instrumented, `ui-e2e`) | Health claims use typed fresh state. |
-| [`QC-HEALTH-PRESENTATION`](../../docs/specs/app.md#qc-health-presentation) | `J-APP-DASHBOARD`<br>`J-APP-DETAIL`<br>`J-APP-EMPTY`<br>`J-APP-FAILURE`<br>`J-APP-FOCUS`<br>`J-APP-NEW-SESSION` | `SC-UI-DASHBOARD` (instrumented, `ui-e2e`)<br>`SC-UI-SESSION-DETAIL` (instrumented, `ui-e2e`)<br>`SC-UI-EMPTY` (instrumented, `ui-e2e`)<br>`SC-UI-FAILURE` (instrumented, `ui-e2e`)<br>`SC-UI-FOCUS` (instrumented, `ui-e2e`)<br>`SC-UI-NEW-SESSION` (instrumented, `ui-e2e`) | The app presents typed health state without parsing terminal text. |
+| [`QC-HEALTH-PRESENTATION`](../../docs/specs/app.md#qc-health-presentation) | `J-APP-DASHBOARD`<br>`J-APP-DETAIL`<br>`J-APP-EMPTY`<br>`J-APP-FAILURE`<br>`J-APP-FOCUS`<br>`J-APP-NEW-SESSION` | `SC-UI-DASHBOARD` (instrumented, `ui-e2e`)<br>`SC-UI-SESSION-DETAIL` (instrumented, `ui-e2e`)<br>`SC-TERMINAL-INPUT-UNIT` (test-cases, `swift`)<br>`SC-UI-EMPTY` (instrumented, `ui-e2e`)<br>`SC-UI-FAILURE` (instrumented, `ui-e2e`)<br>`SC-UI-FOCUS` (instrumented, `ui-e2e`)<br>`SC-UI-NEW-SESSION` (instrumented, `ui-e2e`) | The app presents typed health state without parsing terminal text. |
 | [`QC-APP-TIPS`](../../docs/specs/app.md#qc-app-tips) | `J-APP-EMPTY` | `SC-UI-EMPTY` (instrumented, `ui-e2e`) | Session tips remain deterministic and user visible. |
 
 Direct acceptance evidence for `QC-HEALTH-FRESHNESS`: `SC-UI-DASHBOARD`.
 
 
 
-Direct acceptance evidence for `QC-HEALTH-PRESENTATION`: `SC-UI-DASHBOARD`, `SC-UI-SESSION-DETAIL`, `SC-UI-EMPTY`, `SC-UI-FAILURE`, `SC-UI-FOCUS`, `SC-UI-NEW-SESSION`.
+Direct acceptance evidence for `QC-HEALTH-PRESENTATION`: `SC-UI-DASHBOARD`, `SC-UI-SESSION-DETAIL`, `SC-UI-EMPTY`, `SC-UI-FAILURE`, `SC-UI-FOCUS`, `SC-UI-NEW-SESSION`, `SC-TERMINAL-INPUT-UNIT`.
 
+- `DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy`
 
 
 Direct acceptance evidence for `QC-APP-TIPS`: `SC-UI-EMPTY`.
@@ -491,10 +500,14 @@ Direct acceptance evidence for `QC-QUALITY-SUPPLY-CHAIN`: `SC-POLICY-CONTRACT`, 
 
 | Requirement | Journeys | Scenarios | Outcome |
 | --- | --- | --- | --- |
-| [`QC-RUNTIME-TRANSITION`](../../docs/specs/recovery.md#qc-runtime-transition) | `J-SESSION-RECOVER` | `SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`) | Session transitions preserve exact process identity. |
+| [`QC-RUNTIME-TRANSITION`](../../docs/specs/recovery.md#qc-runtime-transition) | `J-SESSION-RECOVER` | `SC-SESSION-RECOVER-CODEX` (instrumented, `codex`)<br>`SC-SESSION-RECOVER-CLAUDE` (instrumented, `claude`)<br>`SC-TRANSCRIPT-TURN-UNIT` (test-cases, `swift`) | Session transitions preserve exact process identity. |
 
-Direct acceptance evidence for `QC-RUNTIME-TRANSITION`: `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`.
+Direct acceptance evidence for `QC-RUNTIME-TRANSITION`: `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`, `SC-TRANSCRIPT-TURN-UNIT`.
 
+- `DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer`
+- `DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript`
 
 
 ## `power-handoff`

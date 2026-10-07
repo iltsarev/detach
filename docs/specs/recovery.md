@@ -15,6 +15,9 @@ within one heartbeat or checkpoint tick, and rebinds identity and transcript.
 Each successor must have a valid transcript in the same Claude project
 directory. A later user or assistant record in the bound transcript cancels
 its continuation. A missing or invalid successor keeps the current binding.
+After Resume or Recover, discovery ignores continuation records before the
+launch byte boundary in the resumed transcript. An idle provider must keep
+the requested conversation even if its previous run continued elsewhere.
 Discovery reads the successor from the bound project directory, so a copy in
 another project cannot block it. Until a Claude run binds its first
 transcript, each heartbeat looks for it.

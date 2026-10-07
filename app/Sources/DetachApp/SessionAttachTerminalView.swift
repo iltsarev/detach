@@ -298,6 +298,18 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
             selection.getSelectedText(), to: .general)
     }
 
+    override func paste(_ sender: Any) {
+        guard let text = NSPasteboard.general.string(forType: .string),
+              !text.isEmpty else { return }
+        // Paste is a byte stream, even when the child requests Kitty key
+        // events. SwiftTerm otherwise encodes the whole text as one key and
+        // can discard line breaks when bracketed paste is disabled.
+        unmarkText()
+        if terminal.bracketedPasteMode { send(txt: "\u{1B}[200~") }
+        send(txt: text)
+        if terminal.bracketedPasteMode { send(txt: "\u{1B}[201~") }
+    }
+
     override func mouseDown(with event: NSEvent) {
         didDragPointer = false
         super.mouseDown(with: event)

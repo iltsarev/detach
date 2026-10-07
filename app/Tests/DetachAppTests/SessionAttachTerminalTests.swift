@@ -1094,15 +1094,24 @@ final class SessionAttachTerminalTests: XCTestCase {
         let text = "Привет, мир! Ёж 🦔\n第二行"
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
-        terminal.feed(text: "\u{1B}[?2004h")
-        for enhancement in ["", "\u{1B}[>1u"] {
-            terminal.feed(text: enhancement)
+        for enhancement in ["\u{1B}[>0u", "\u{1B}[>1u", "\u{1B}[>8u", "\u{1B}[>31u"] {
+            for bracketed in [false, true] {
+                terminal.feed(text: bracketed ? "\u{1B}[?2004h" : "\u{1B}[?2004l")
+                terminal.feed(text: enhancement)
+                terminal.sent.removeAll()
+                XCTAssertNil(coordinator.routeKeyboardEvent(
+                    commandV, window: nil, firstResponder: terminal, in: terminal,
+                    send: { _ in XCTFail("Command-V must use native paste") }))
+                let expected = bracketed ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+                XCTAssertEqual(terminal.sent, Array(expected.utf8))
+            }
+        }
+        for emptyText in [nil, ""] as [String?] {
+            pasteboard.clearContents()
+            if let emptyText { pasteboard.setString(emptyText, forType: .string) }
             terminal.sent.removeAll()
-            XCTAssertNil(coordinator.routeKeyboardEvent(
-                commandV, window: nil, firstResponder: terminal, in: terminal,
-                send: { _ in XCTFail("Command-V must use native paste") }))
-            XCTAssertEqual(terminal.sent,
-                Array(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
+            terminal.paste(terminal)
+            XCTAssertTrue(terminal.sent.isEmpty)
         }
     }
 

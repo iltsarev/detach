@@ -917,6 +917,47 @@ grep -F "rebound Claude session identity after a continuation: $continued_id -> 
 ! grep -F "$foreign_id" "$continued_dir/checkpoint.log" >/dev/null
 "$SCRIPT" claude stop "$continued_label"
 "$SCRIPT" claude delete --force "$continued_label"
+
+# Resume an earlier conversation while its last record still points at a
+# previous run's successor. The provider waits before its first write so
+# discovery and heartbeat both see that historical marker.
+export FAKE_CLAUDE_BEFORE_TRANSCRIPT_READY_FILE="$TMP_ROOT/resume-before-transcript"
+export FAKE_CLAUDE_TRANSCRIPT_RELEASE_FILE="$TMP_ROOT/resume-write-transcript"
+reset_fake_claude_ready
+continued_output="$("$SCRIPT" claude resume --name "$continued_label" --detach "$continued_id")"
+continued_session="$(printf '%s\n' "$continued_output" | awk '/^Started / { print $2; exit }')"
+continued_dir="$DETACH_CLAUDE_STATE_ROOT/sessions/$continued_session"
+continued_meta="$continued_dir/meta.json"
+attempts=0
+until [ -f "$FAKE_CLAUDE_BEFORE_TRANSCRIPT_READY_FILE" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 100 ] || exit 1
+  sleep 0.1
+done
+boundary_size="$("$STATE_HELPER" meta get "$continued_meta" transcript_boundary_size)"
+[ "$boundary_size" = "$(stat -f %z "$continued_transcript")" ]
+# Several ticks must not redirect this run before new transcript evidence.
+sleep 3
+[ "$("$STATE_HELPER" meta get "$continued_meta" agent_session_id)" = "$continued_id" ]
+touch "$FAKE_CLAUDE_TRANSCRIPT_RELEASE_FILE"
+wait_for_fake_claude_ready
+unset FAKE_CLAUDE_BEFORE_TRANSCRIPT_READY_FILE FAKE_CLAUDE_TRANSCRIPT_RELEASE_FILE
+printf '{"type":"user","sessionId":"%s","uuid":"resumed-turn","message":{"role":"user","content":"continue here"}}\n' \
+  "$continued_id" >>"$continued_transcript"
+continued_json="$("$SCRIPT" claude list --json | grep -F "\"session_name\":\"$continued_session\"")"
+[ "$(printf '%s' "$continued_json" | "$STATE_HELPER" meta get /dev/stdin agent_turn_state)" = working ]
+[ "$(printf '%s' "$continued_json" | "$STATE_HELPER" meta get /dev/stdin agent_turn_id)" = resumed-turn ]
+# A continuation written by this run still follows its validated sibling.
+printf '{"type":"continued-in","sessionId":"%s","continuedInSessionId":"%s"}\n' \
+  "$continued_id" "$successor_id" >>"$continued_transcript"
+attempts=0
+until [ "$("$STATE_HELPER" meta get "$continued_meta" agent_session_id)" = "$successor_id" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 100 ] || exit 1
+  sleep 0.1
+done
+"$SCRIPT" claude stop "$continued_label"
+"$SCRIPT" claude delete --force "$continued_label"
 # Delete keeps provider data; later checks expect only the main session's.
 rm -rf \
   "$CLAUDE_CONFIG_DIR/projects/fake/$continued_id.jsonl" \

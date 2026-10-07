@@ -129,7 +129,10 @@ A main-chain Claude assistant record with `stop_reason: end_turn` and nonempty
 text also means waiting with `answer_ready`. Thinking-only, metadata, and tool-use blocks do not
 prove a completed answer. Repeated final text and a later `turn_duration` keep
 the waiting turn ID. A new user request or an assistant `tool_use` continuation
-restores working. A pending `AskUserQuestion` still requires its matching
+restores working. Main-chain assistant text, thinking, or tool-use content
+with a null or absent stop reason also restores working. Metadata, empty
+content, sidechains, and synthetic notices cannot start that transition.
+A pending `AskUserQuestion` still requires its matching
 result. A finished Claude turn stays working while a main-chain
 `run_in_background` shell or a workflow it started has no matching
 `task-notification` (by tool use ID) and no `TaskStop`; background agents do
@@ -147,7 +150,7 @@ unknown waiting reasons cannot claim a ready answer or an input request.
 Model and context come only from fields that a record contains. Claude
 sidechain records and `<synthetic>` assistant notices do not change them. A
 Codex `token_count` without `info` or usage keeps the last values.
-Schema-9 summary receipts carry the reason and pending tool IDs for both
+Schema-10 summary receipts carry the reason and pending tool IDs for both
 providers. They retain pending background tasks and invalidate earlier cached
 turn states and model fields. A receipt records the end of the last complete
 record and a digest of up to 4 KiB before it. The next read continues at that
