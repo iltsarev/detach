@@ -226,8 +226,10 @@ struct SessionDetailView: View {
     }
 
     private var statusPill: some View {
-        let color = SessionIdentity.statusColor(for: session)
-        return Text(session.displayStatus)
+        // Match the sidebar: a failed or cold List shows a neutral last-known pill.
+        let isFresh = store.snapshotIsAuthoritative
+        let color = isFresh ? SessionIdentity.statusColor(for: session) : SessionPalette.secondary
+        return Text(isFresh ? session.displayStatus : L10n.string("last known status"))
             .appFont(.caption, weight: .semibold)
             .lineLimit(1)
             .padding(.horizontal, 7).padding(.vertical, 2)

@@ -137,7 +137,10 @@ Codex task or turn completion means waiting with `answer_ready`. A synchronous
 matching function-call output restores working. Async questions do not prove
 that work stopped. New turns and aborts clear the waiting reason. Missing or
 unknown waiting reasons cannot claim a ready answer or an input request.
-Schema-7 summary receipts carry the reason and pending tool IDs for both
+Model and context come only from fields that a record contains. Claude
+sidechain records and `<synthetic>` assistant notices do not change them. A
+Codex `token_count` without `info` or usage keeps the last values.
+Schema-8 summary receipts carry the reason and pending tool IDs for both
 providers. They retain pending background tasks and invalidate earlier cached
-turn states.
+turn states and model fields.
 Typed cleanup uses `cleanup_eligible`.

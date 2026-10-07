@@ -706,13 +706,17 @@ public enum TranscriptDocument {
             result.model = model
         }
 
-        if payload["type"] as? String == "token_count" {
-            let info = payload["info"] as? [String: Any]
-            let usage = info?["last_token_usage"] as? [String: Any]
-            result.contextUsed = safeSum(
-                integer(usage?["input_tokens"]),
-                integer(usage?["output_tokens"]))
-            result.contextWindow = integer(info?["model_context_window"])
+        // A rate-limit-only event has no `info`; it must not erase usage.
+        if payload["type"] as? String == "token_count",
+           let info = payload["info"] as? [String: Any] {
+            if let usage = info["last_token_usage"] as? [String: Any] {
+                result.contextUsed = safeSum(
+                    integer(usage["input_tokens"]),
+                    integer(usage["output_tokens"]))
+            }
+            if info["model_context_window"] != nil {
+                result.contextWindow = integer(info["model_context_window"])
+            }
         }
 
         // A cold tail can start inside a long turn, after its `task_started`.
@@ -771,13 +775,20 @@ public enum TranscriptDocument {
             trackBackgroundTasks(type: type, message: message, into: &result)
         }
 
-        if type == "assistant" {
-            result.model = message?["model"] as? String ?? ""
-            let usage = message?["usage"] as? [String: Any]
-            result.contextUsed = safeSum(
-                integer(usage?["input_tokens"]),
-                integer(usage?["cache_read_input_tokens"]),
-                integer(usage?["cache_creation_input_tokens"]))
+        // Sidechain records belong to subagents and describe another
+        // conversation, and `<synthetic>` marks a local error or interruption
+        // notice with zero usage. Only present main-chain model fields count.
+        if type == "assistant", !isJSONTrue(record["isSidechain"]),
+           message?["model"] as? String != "<synthetic>" {
+            if let model = message?["model"] as? String {
+                result.model = model
+            }
+            if let usage = message?["usage"] as? [String: Any] {
+                result.contextUsed = safeSum(
+                    integer(usage["input_tokens"]),
+                    integer(usage["cache_read_input_tokens"]),
+                    integer(usage["cache_creation_input_tokens"]))
+            }
         }
 
         guard !isJSONTrue(record["isSidechain"]),

@@ -890,6 +890,9 @@ sleep 3
 [ "$("$STATE_HELPER" meta get "$continued_meta" agent_session_id)" = "$continued_id" ]
 printf '{"type":"user","isSidechain":false,"isMeta":false,"sessionId":"%s","message":{"role":"user","content":"after clear"},"uuid":"successor-turn","timestamp":"2099-01-01T00:04:01.000Z"}\n' \
   "$successor_id" >"$CLAUDE_CONFIG_DIR/projects/fake/$successor_id.jsonl"
+# A valid copy of the successor in another project does not veto the sibling.
+cp "$CLAUDE_CONFIG_DIR/projects/fake/$successor_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/alternate/$successor_id.jsonl"
 printf '{"type":"continued-in","sessionId":"%s","continuedInSessionId":"%s"}\n' \
   "$continued_id" "$successor_id" >>"$continued_transcript"
 attempts=0
@@ -920,12 +923,44 @@ rm -rf \
   "$CLAUDE_CONFIG_DIR/projects/fake/$continued_id" \
   "$CLAUDE_CONFIG_DIR/projects/fake/$successor_id.jsonl" \
   "$CLAUDE_CONFIG_DIR/projects/alternate/$foreign_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/alternate/$successor_id.jsonl" \
   "$CLAUDE_CONFIG_DIR/file-history/$continued_id" \
   "$CLAUDE_CONFIG_DIR/session-env/$continued_id" \
   "$CLAUDE_CONFIG_DIR/tasks/$continued_id" \
   "$CLAUDE_CONFIG_DIR/tasks/session-${continued_id:0:8}" \
   "$CLAUDE_CONFIG_DIR/teams/session-${continued_id:0:8}"
 rmdir "$CLAUDE_CONFIG_DIR/projects/alternate"
+
+# Claude writes its first transcript only after the first prompt, which can
+# come after initial discovery gives up. A heartbeat binds it; the next
+# checkpoint tick is far away.
+late_label='Late first prompt'
+export FAKE_CLAUDE_SLEEP=20
+late_output="$(DETACH_INITIAL_DISCOVERY_ATTEMPTS=1 DETACH_CLAUDE_CHECKPOINT_INTERVAL=300 \
+  FAKE_CLAUDE_INIT_DELAY=4 "$SCRIPT" claude --name "$late_label" --detach -- 'late prompt')"
+late_session="$(printf '%s\n' "$late_output" | awk '/^Started / { print $2; exit }')"
+late_meta="$DETACH_CLAUDE_STATE_ROOT/sessions/$late_session/meta.json"
+late_id="$("$STATE_HELPER" meta get "$late_meta" agent_session_id)"
+attempts=0
+until [ "$(basename "$("$STATE_HELPER" meta get "$late_meta" transcript_path 2>/dev/null)")" = \
+    "$late_id.jsonl" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 150 ] || {
+    printf 'late Claude transcript was not bound within 15 seconds\n' >&2
+    exit 1
+  }
+  sleep 0.1
+done
+"$SCRIPT" claude stop "$late_label"
+"$SCRIPT" claude delete --force "$late_label"
+rm -rf \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$late_id.jsonl" \
+  "$CLAUDE_CONFIG_DIR/projects/fake/$late_id" \
+  "$CLAUDE_CONFIG_DIR/file-history/$late_id" \
+  "$CLAUDE_CONFIG_DIR/session-env/$late_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/$late_id" \
+  "$CLAUDE_CONFIG_DIR/tasks/session-${late_id:0:8}" \
+  "$CLAUDE_CONFIG_DIR/teams/session-${late_id:0:8}"
 fi
 
 "$STATE_HELPER" meta patch "$checkpoint/meta.json" --string status running --null exit_status

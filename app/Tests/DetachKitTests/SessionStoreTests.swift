@@ -363,6 +363,23 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(store.sessions.count, 1) // keeps last good data
     }
 
+    func testFailedRefreshAfterSuccessIsNotAuthoritative() async {
+        let cli = FakeCLI()
+        cli.responses["list --json"] = ok(line)
+        let store = SessionStore(cli: cli)
+        XCTAssertFalse(store.snapshotIsAuthoritative)
+        await store.refresh()
+        XCTAssertTrue(store.snapshotIsAuthoritative)
+        cli.responses["list --json"] = .success(CLIResult(exitCode: 1, stdout: "", stderr: "boom", timedOut: false))
+        await store.refresh()
+        XCTAssertTrue(store.hasFreshSnapshot)
+        XCTAssertFalse(store.snapshotIsAuthoritative)
+        XCTAssertEqual(store.sessions.count, 1)
+        cli.responses["list --json"] = ok(line)
+        await store.refresh()
+        XCTAssertTrue(store.snapshotIsAuthoritative)
+    }
+
     func testNonZeroExitSetsError() async {
         let cli = FakeCLI()
         cli.responses["list --json"] = .success(CLIResult(exitCode: 1, stdout: "", stderr: "boom", timedOut: false))

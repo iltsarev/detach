@@ -15,6 +15,9 @@ within one heartbeat or checkpoint tick, and rebinds identity and transcript.
 Each successor must have a valid transcript in the same Claude project
 directory. A later user or assistant record in the bound transcript cancels
 its continuation. A missing or invalid successor keeps the current binding.
+Discovery reads the successor from the bound project directory, so a copy in
+another project cannot block it. Until a Claude run binds its first
+transcript, each heartbeat looks for it.
 Codex binds identity
 after launch by matching the run-token originator in rollout files and SQLite.
 Detach rejects `--remote` and adds `--no-daemon` when `codex --help` lists it.

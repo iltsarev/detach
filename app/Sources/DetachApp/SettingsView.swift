@@ -1189,7 +1189,7 @@ struct SettingsView: View {
     var macPowerPresentation: MacPowerSettingsPresentation {
         // A cached cold-start row is presentation only and carries no power claim.
         let counts = MacPowerActiveSessions.counts(
-            in: sessionStore.hasFreshSnapshot ? sessionStore.sessions : [])
+            in: sessionStore.snapshotIsAuthoritative ? sessionStore.sessions : [])
         return MacPowerSettingsPresentation(
             state: installation.powerProtectionState,
             helperStatus: installation.powerHelperStatus,
