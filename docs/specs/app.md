@@ -77,7 +77,8 @@ and a last-known-status label.
 The sidebar has Sessions and Stopped sections. Only stopped and interrupted
 lifecycles enter Stopped. Completed and failed sessions remain in Sessions.
 Working, ready, and input transitions do not move a row. Groups come first in
-user order, then rows outside groups. Within each upper group or ungrouped
+user order, then rows outside groups. Grouped rows start under the group name;
+rows outside groups stay at the section edge. Within each upper group or ungrouped
 set, assigned shortcuts sort first by number. Remaining rows sort by newest
 creation time. Stopped rows sort by newest creation time within their groups.
 
