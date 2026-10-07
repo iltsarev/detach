@@ -37,8 +37,12 @@ working session and never claims no sessions. Typed heartbeat and
 `resync` starts a serialized `list --json`. Hints during a read share one ordered
 trailing read. Stop discards queued reads and prevents old results from updating
 the store. A new explicit read remains serialized with an active old read.
-No list timer runs. Dead or unready watchers and failed lists retry
-with 2–60 s backoff. Cold start waits 1 s for `ready`; a late `ready` repeats the
+The app runs no list timer. While a session is live, the watcher repeats a
+`changed` hint at the heartbeat stale threshold (45 s by default), so health
+that changes with time alone, such as a stale heartbeat or an overdue
+checkpoint, reaches List. Dead or unready watchers and failed lists retry
+with 2–60 s backoff. A watcher that ends before its first event reads one List
+before its restart. Cold start waits 1 s for `ready`; a late `ready` repeats the
 snapshot. UI never calls `pmset` or root XPC. The app, events, sessions,
 checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
 After a transcript file is replaced, registration of its new file observer

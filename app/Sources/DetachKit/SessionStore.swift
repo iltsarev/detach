@@ -115,6 +115,9 @@ public final class SessionStore {
     @ObservationIgnored private var eventReadinessTimedOutGeneration: UInt64?
     @ObservationIgnored private var eventRestartTask: Task<Void, Never>?
     @ObservationIgnored private var eventRestartAttempt = 0
+    /// The last watcher ended before its first event. Its restart reads one
+    /// List first, so a watcher that keeps failing still refreshes sessions.
+    @ObservationIgnored private var observationEndedBeforeFirstEvent = false
     @ObservationIgnored private var refreshRetryTask: Task<Void, Never>?
     @ObservationIgnored private var refreshRetryAttempt = 0
     @ObservationIgnored private var transientConfirmationTask: Task<Void, Never>?
@@ -222,6 +225,7 @@ public final class SessionStore {
                         // menu bar and notifications recover without a window.
                         self.logger.error(
                             "session event stream ended: \(String(describing: streamFailure), privacy: .public)")
+                        self.observationEndedBeforeFirstEvent = !receivedFirstEvent
                         self.scheduleObservationRestart()
                     }
                 }
@@ -316,6 +320,11 @@ public final class SessionStore {
                 return
             }
             guard let self, !Task.isCancelled, self.eventTask == nil else { return }
+            if self.observationEndedBeforeFirstEvent {
+                self.observationEndedBeforeFirstEvent = false
+                await self.refresh()
+                guard !Task.isCancelled, self.eventTask == nil else { return }
+            }
             self.eventRestartTask = nil
             self.startObserving()
         }

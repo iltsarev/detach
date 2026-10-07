@@ -501,9 +501,12 @@ watch_all() {
   [ -x "$STATE_BIN" ] || die "state helper not found: $STATE_BIN"
   # The ready event is emitted only after the native stream is installed, so
   # the app can take a fresh typed snapshot without a refresh/watch race.
+  # Health can go stale without a file event. Hint at the core's heartbeat
+  # stale threshold while a session is live, so List observes the deadline.
   exec "$STATE_BIN" events watch --json \
     --state-root "$STATE_ROOT" \
     --signal "$STATE_ROOT/session-change" \
+    --health-hint-interval "${DETACH_HEALTH_HEARTBEAT_STALE:-45}" \
     --sessions-root "$CODEX_STATE_ROOT/sessions" \
     --sessions-root "$CLAUDE_STATE_ROOT/sessions" \
     --transcript-root "$CODEX_PROVIDER_ROOT/sessions" \
