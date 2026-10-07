@@ -793,7 +793,7 @@ public enum DetachStateCommand {
         ("transcript_path", ["transcript_path", "rollout_path"]),
     ]
 
-    private enum MetadataSnapshotSource: String {
+    enum MetadataSnapshotSource: String {
         case primary
         case checkpoint
     }
@@ -1284,7 +1284,7 @@ public enum DetachStateCommand {
         return snapshots
     }
 
-    private static func forEachMetadataSnapshot(
+    static func forEachMetadataSnapshot(
         at root: String,
         visit: (
             String, [DetachStateScalar?]?, MetadataSnapshotSource?, Int32
