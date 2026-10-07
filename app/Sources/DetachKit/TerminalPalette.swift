@@ -12,17 +12,17 @@ public enum TerminalPalette: Equatable {
     public var background: NSColor {
         self == .dark
             ? NSColor(srgbRed: 0.05, green: 0.05, blue: 0.06, alpha: 1)
-            : NSColor(srgbRed: 0.98, green: 0.98, blue: 0.99, alpha: 1)
+            : Self.color(0xfafafa)
     }
 
     public var foreground: NSColor {
-        NSColor(white: self == .dark ? 0.85 : 0.12, alpha: 1)
+        self == .dark ? NSColor(white: 0.85, alpha: 1) : Self.color(0x383a42)
     }
 
     public var selection: NSColor {
         self == .dark
             ? NSColor(srgbRed: 0.22, green: 0.30, blue: 0.44, alpha: 1)
-            : NSColor(srgbRed: 0.73, green: 0.83, blue: 0.97, alpha: 1)
+            : Self.color(0xd6e2fb)
     }
 
     public var ansiColors: [NSColor] {
@@ -43,11 +43,13 @@ public enum TerminalPalette: Equatable {
         }
     }
 
+    // One Light accents. Colors keep 3:1 contrast with the background, and
+    // the bright black and bright white grays keep 2.5:1.
     private static let lightColors: [NSColor] = [
-        color(0x24292f), color(0xa32025), color(0x246c2c), color(0x755600),
-        color(0x2059b0), color(0x803b95), color(0x12676c), color(0x5c6066),
-        color(0x626870), color(0xb52b31), color(0x267533), color(0x806000),
-        color(0x2866c0), color(0x9046a5), color(0x16777c), color(0x717780),
+        color(0x383a42), color(0xe45649), color(0x50a14f), color(0xc18401),
+        color(0x4078f2), color(0xa626a4), color(0x0184bc), color(0x696c77),
+        color(0x9e9fa5), color(0xca1243), color(0x3e953a), color(0x986801),
+        color(0x2f6be0), color(0x9b2da0), color(0x0997b3), color(0x9d9d9f),
     ]
 
     private static func color(_ rgb: UInt32) -> NSColor {
