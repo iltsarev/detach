@@ -1060,20 +1060,31 @@ public enum DetachStateCommand {
               let before = TranscriptValidationIdentity(beforeMetadata) else {
             return empty
         }
+        let runBoundary = transcriptRunBoundary(
+            session: session, sessionDirectory: sessionDirectory)
         if let values = cachedReceipt?.snapshotValues(
                 provider: provider,
                 transcriptPath: transcriptPath,
                 identity: before) {
-            return values
+            return applyingRunBoundary(
+                values, boundary: runBoundary, transcriptPath: transcriptPath,
+                descriptor: descriptor, provider: provider)
         }
 
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         let size = UInt64(beforeMetadata.st_size)
+        // Continue only across a true append: the bytes before the recorded
+        // boundary must be the ones the receipt reduced.
         let continuation = cachedReceipt?.continuation(
             provider: provider,
             transcriptPath: transcriptPath,
             identity: before,
             maximumByteCount: TranscriptSummaryReceipt.continuationByteCount)
+            .flatMap { candidate in
+                cachedReceipt?.boundaryDigest != nil
+                    && boundaryDigest(of: handle, endingAt: candidate.offset)
+                        == cachedReceipt?.boundaryDigest ? candidate : nil
+            }
         let readLimit = continuation == nil
             ? TranscriptSummaryReceipt.coldTailByteCount
             : TranscriptSummaryReceipt.continuationByteCount
@@ -1095,12 +1106,22 @@ public enum DetachStateCommand {
             tail.append(chunk)
         }
         // A provider can append while the tail is read. The bytes read are
-        // still a valid prefix; the receipt keeps the earlier size so the
-        // next read continues from there. A replacement is not a prefix.
+        // still a valid prefix; a replacement is not. The reducer ignores a
+        // trailing fragment; the receipt remembers where the last complete
+        // record ends, so the next read starts at that record boundary and
+        // completes a record that was still being written.
         var afterMetadata = stat()
         guard fstat(descriptor, &afterMetadata) == 0,
               let after = TranscriptValidationIdentity(afterMetadata),
               after.isUnchangedOrAppended(to: before) else { return empty }
+        let completeCount = tail.lastIndex(of: 0x0A).map { $0 - tail.startIndex + 1 } ?? 0
+        var consumed = before
+        consumed.size = Int64(startOffset) + Int64(completeCount)
+        // A continuation and the file start begin at a record boundary. A cold
+        // tail without any newline sits inside one record and proves none.
+        let boundaryKnown = completeCount > 0 || startOffset == 0 || continuation != nil
+        let consumedDigest = boundaryKnown
+            ? boundaryDigest(of: handle, endingAt: UInt64(consumed.size)) : nil
         var summary = TranscriptDocument.summary(
             ofTail: tail,
             provider: provider,
@@ -1129,7 +1150,7 @@ public enum DetachStateCommand {
             schema: TranscriptSummaryReceipt.currentSchema,
             provider: provider.rawValue,
             transcriptPath: transcriptPath,
-            identity: before,
+            identity: consumed,
             model: summary.model,
             contextUsed: summary.contextUsed,
             contextWindow: summary.contextWindow,
@@ -1138,24 +1159,93 @@ public enum DetachStateCommand {
             agentWaitingReason: summary.agentWaitingReason?.rawValue,
             pendingToolUseID: summary.pendingToolUseID,
             pendingBackground: summary.pendingBackground.isEmpty
-                ? nil : summary.pendingBackground)
+                ? nil : summary.pendingBackground,
+            boundaryDigest: consumedDigest)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        if var receiptData = try? encoder.encode(receipt) {
+        if consumedDigest != nil, var receiptData = try? encoder.encode(receipt) {
             receiptData.append(0x0A)
             try? replaceOwnedFileAtomically(
                 receiptData, in: sessionDirectory, name: receiptName)
         }
-        return values
+        return applyingRunBoundary(
+            values, boundary: runBoundary, transcriptPath: transcriptPath,
+            descriptor: descriptor, provider: provider)
+    }
+
+    /// Hashes up to 4 KiB before a record boundary. A continuation compares it
+    /// so an in-place rewrite of the same file is not mistaken for an append.
+    private static func boundaryDigest(of handle: FileHandle, endingAt end: UInt64) -> String? {
+        let start = end > 4_096 ? end - 4_096 : 0
+        guard (try? handle.seek(toOffset: start)) != nil else { return nil }
+        var data = Data()
+        while data.count < Int(end - start) {
+            guard let chunk = try? handle.read(upToCount: Int(end - start) - data.count),
+                  !chunk.isEmpty else { return nil }
+            data.append(chunk)
+        }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The transcript size when Resume or Recover launched this run. Earlier
+    /// records belong to a previous run of the same conversation.
+    private static func transcriptRunBoundary(
+        session: String,
+        sessionDirectory: Int32
+    ) -> (path: String, size: UInt64)? {
+        guard let data = readOwnedMetadataFile(in: sessionDirectory, name: "meta.json"),
+              let values = try? SessionMetadataDocument.usableScalars(
+                in: data, expectedSessionName: session,
+                pathGroups: [["transcript_boundary_path"], ["transcript_boundary_size"]]),
+              values.count == 2,
+              case .string(let path)? = values[0],
+              case .integer(let size)? = values[1], size >= 0 else { return nil }
+        return (path, UInt64(size))
+    }
+
+    /// A previous run can end inside a turn. Until this run writes a turn
+    /// event after its launch boundary, that unfinished turn is history: the
+    /// resumed provider waits for input, so it is not reported as working.
+    private static func applyingRunBoundary(
+        _ values: [String],
+        boundary: (path: String, size: UInt64)?,
+        transcriptPath: String,
+        descriptor: Int32,
+        provider: Provider
+    ) -> [String] {
+        guard values.count == 6,
+              values[3] == AgentTurnState.working.rawValue,
+              let boundary, boundary.path == transcriptPath else { return values }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, metadata.st_size >= 0 else { return values }
+        let size = UInt64(metadata.st_size)
+        // A large append after the boundary is new activity in itself.
+        guard boundary.size <= size,
+              size - boundary.size <= TranscriptSummaryReceipt.continuationByteCount
+        else { return values }
+        var appended = Data()
+        if size > boundary.size {
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            guard (try? handle.seek(toOffset: boundary.size)) != nil,
+                  let read = try? handle.read(upToCount: Int(size - boundary.size))
+            else { return values }
+            appended = read
+        }
+        guard TranscriptDocument.summary(
+            ofTail: appended, provider: provider).agentTurnState == nil
+        else { return values }
+        var result = values
+        result[3] = AgentTurnState.waiting.rawValue
+        result[5] = ""
+        return result
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 8
+        static let currentSchema = 9
         static let coldTailByteCount: UInt64 = 262_144
         /// One provider record can exceed the cold tail, for example a Codex
         /// compaction. A continuation reads the complete append up to here.
         static let continuationByteCount: UInt64 = 8 * 1_024 * 1_024
-        private static let overlapByteCount: UInt64 = 64 * 1_024
 
         var schema: Int
         var provider: String
@@ -1169,6 +1259,9 @@ public enum DetachStateCommand {
         var agentWaitingReason: String?
         var pendingToolUseID: String?
         var pendingBackground: [PendingBackgroundTask]?
+        /// SHA-256 of up to 4 KiB that end at `identity.size`, the last
+        /// complete record boundary.
+        var boundaryDigest: String?
 
         func snapshotValues(
             provider expectedProvider: Provider,
@@ -1196,10 +1289,11 @@ public enum DetachStateCommand {
         }
 
         /// Continues a cached reduction only across a bounded append to the
-        /// same file. The overlap completes a record that may have been
-        /// partial at the previous identity. A larger unobserved gap falls
-        /// back to a cold tail so stale answer-ready state cannot survive an
-        /// unseen turn transition.
+        /// same file. The receipt size is the end of the last complete record,
+        /// so the append starts at a record boundary even when a record larger
+        /// than any fixed overlap was partial at the previous read. A larger
+        /// unobserved gap falls back to a cold tail so stale answer-ready state
+        /// cannot survive an unseen turn transition.
         func continuation(
             provider expectedProvider: Provider,
             transcriptPath expectedPath: String,
@@ -1220,10 +1314,8 @@ public enum DetachStateCommand {
                   hasValidPendingToolUse
             else { return nil }
 
-            let previousSize = UInt64(identity.size)
+            let offset = UInt64(identity.size)
             let currentSize = UInt64(expectedIdentity.size)
-            let overlap = min(previousSize, Self.overlapByteCount)
-            let offset = previousSize - overlap
             guard currentSize - offset <= maximumByteCount else { return nil }
             var summary = TranscriptSummary(
                 model: model,
