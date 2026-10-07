@@ -502,3 +502,7 @@
 "status unavailable" = "статус недоступен";
 
 "new session" = "новая сессия";
+
+"yesterday, %@" = "вчера, %@";
+
+"Stopped %@" = "Остановлена %@";

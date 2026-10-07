@@ -151,6 +151,54 @@ final class SidebarViewTests: XCTestCase {
         }
     }
 
+    func testStoppedRowsShowTheirStopDateInsteadOfTheProvider() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let locale = Locale(identifier: "en_US")
+        func date(_ text: String) throws -> Date {
+            try XCTUnwrap(ISO8601DateFormatter().date(from: text))
+        }
+        let now = try date("2026-10-07T15:00:00Z")
+        func detail(_ session: Session) -> String {
+            SessionRowPresentation.trailingDetail(
+                for: session, now: now, calendar: calendar, locale: locale)
+        }
+        var row = try rowSession(state: "working")
+        row.finishedAt = try date("2026-10-07T13:10:00Z")
+        XCTAssertEqual(detail(row), "codex", "Live rows keep the provider")
+        row.effectiveStatus = .completed
+        XCTAssertEqual(detail(row), "codex", "Completed rows stay in Sessions")
+        XCTAssertFalse(SessionRowPresentation.help(for: row).contains(
+            L10n.format("Stopped %@", try XCTUnwrap(row.finishedAt)
+                .formatted(date: .abbreviated, time: .shortened))))
+
+        row.effectiveStatus = .stopped
+        let today = detail(row)
+        XCTAssertTrue(today.contains("1:10"), today)
+        XCTAssertFalse(today.contains("Oct"), today)
+        XCTAssertTrue(SessionRowPresentation.help(for: row).contains(
+            L10n.format("Stopped %@", try XCTUnwrap(row.finishedAt)
+                .formatted(date: .abbreviated, time: .shortened))),
+            "The provider and full stop time stay in the row help")
+        XCTAssertTrue(SessionRowPresentation.help(for: row).contains("codex"))
+        row.finishedAt = try date("2026-10-06T23:30:00Z")
+        XCTAssertEqual(detail(row), L10n.format("yesterday, %@",
+            try date("2026-10-06T23:30:00Z").formatted(Date.FormatStyle(
+                date: .omitted, time: .shortened, locale: locale,
+                calendar: calendar, timeZone: calendar.timeZone))))
+        XCTAssertTrue(detail(row).contains("11:30"), detail(row))
+        row.effectiveStatus = .interrupted
+        row.finishedAt = try date("2026-09-23T13:36:00Z")
+        let thisYear = detail(row)
+        XCTAssertTrue(thisYear.contains("Sep") && thisYear.contains("23"), thisYear)
+        XCTAssertFalse(thisYear.contains("2026"), thisYear)
+        row.finishedAt = try date("2025-12-31T10:00:00Z")
+        let lastYear = detail(row)
+        XCTAssertTrue(lastYear.contains("Dec") && lastYear.contains("2025"), lastYear)
+        row.finishedAt = nil
+        XCTAssertEqual(detail(row), "codex", "Without a stop time the provider stays")
+    }
+
     private func assertSymbol(_ session: Session) throws {
         let name = SessionRowPresentation.symbol(for: session)
         XCTAssertFalse(name.contains("questionmark"))

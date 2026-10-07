@@ -502,3 +502,7 @@
 "status unavailable" = "status unavailable";
 
 "new session" = "new session";
+
+"yesterday, %@" = "yesterday, %@";
+
+"Stopped %@" = "Stopped %@";

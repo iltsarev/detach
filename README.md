@@ -164,15 +164,17 @@ The sidebar keeps stopped and interrupted sessions in a collapsible Stopped
 section at the bottom. Other sessions stay in Sessions as their status changes.
 User groups keep their order. Within each group, numbered sessions follow
 `Cmd-1` through `Cmd-9`; unnumbered sessions follow by newest launch time.
-Rows outside groups use the same order. Stopped rows use newest launch time.
+Rows outside groups use the same order. Stopped rows show when each session
+stopped, newest first.
 
 Green means an answer is ready or the session completed. Yellow means the
 provider explicitly requests your input. Red means an error. Working sessions
 have a small rotating indicator and no yellow background. Stopped sessions
 are gray. Unknown waiting reasons stay neutral. A new session shows
 **new session** until the provider records its first prompt. The provider and
-status appear below the name; launch time and exit details appear in the row
-help.
+status appear below the name. A stopped session shows its stop time there
+instead of the provider. Launch time, provider, and exit details appear in the
+row help.
 
 Detach shows each assigned shortcut beside the session name. The number stays
 with the session while it works or waits. Detach reuses the number when the

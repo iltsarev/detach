@@ -149,14 +149,20 @@ struct SidebarSectionLayout: Equatable {
             return slots[session.id] ?? Int.max
         }
         return SidebarSection.allCases.compactMap { section in
+            // Stopped rows show and sort by their stop time; live rows by launch.
+            func sortDate(_ session: Session) -> Date {
+                let date = section == .stopped
+                    ? session.finishedAt ?? session.createdAt : session.createdAt
+                return date ?? .distantPast
+            }
             let items = sessions.enumerated().filter {
                 SidebarSection.containing($0.element) == section
             }.sorted { lhs, rhs in
                 if section == .sessions, slot(lhs.element) != slot(rhs.element) {
                     return slot(lhs.element) < slot(rhs.element)
                 }
-                let leftDate = lhs.element.createdAt ?? .distantPast
-                let rightDate = rhs.element.createdAt ?? .distantPast
+                let leftDate = sortDate(lhs.element)
+                let rightDate = sortDate(rhs.element)
                 if leftDate != rightDate { return leftDate > rightDate }
                 return lhs.offset < rhs.offset
             }.map(\.element)
