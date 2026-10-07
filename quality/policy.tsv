@@ -170,6 +170,8 @@ route	880	app/Sources/DetachApp/Onboarding*.swift	onboarding-source	install	docs
 route	880	app/Sources/DetachApp/RootView.swift	root-view-source	safe	docs/specs/app.md
 route	880	app/Sources/DetachApp/SetupGuidance.swift	onboarding-source	install	docs/specs/app-setup.md
 route	880	app/Sources/DetachApp/Settings*.swift	settings-source	install	docs/specs/app-setup.md
+route	880	app/Sources/DetachApp/AppAppearance.swift	settings-source	safe	docs/specs/app-setup.md
+route	880	app/Sources/DetachApp/TerminalAppearance.swift	settings-source	safe	docs/specs/app-setup.md
 route	880	app/Sources/DetachApp/UpdaterService.swift	update-source	install	docs/specs/app-setup.md
 route	880	app/Sources/DetachKit/DetachCLI.swift	runtime-source	safe	docs/specs/runtime.md
 route	880	app/Sources/DetachKit/DoctorReport.swift	diagnostics-source	install	docs/specs/app-setup.md
@@ -182,7 +184,7 @@ route	870	app/Sources/DetachApp/NewSessionSheet.swift	session-ui-source	safe	doc
 route	870	app/Sources/DetachApp/QuickChat.swift	session-ui-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/TerminalPreferencePicker.swift	session-ui-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/Session*.swift	session-ui-source	safe	docs/specs/app.md
-route	870	app/Sources/DetachApp/SidebarView.swift	session-ui-source	safe	docs/specs/app.md
+route	870	app/Sources/DetachApp/Sidebar*.swift	session-ui-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/TextSize.swift	swift-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/Theme.swift	swift-source	safe	docs/specs/app.md
 route	870	app/Sources/DetachApp/TipsBar.swift	swift-source	safe	docs/specs/app.md
@@ -445,6 +447,7 @@ scenario-test	SC-POWER-HANDOFF	DetachAppTests.PowerHelperServiceTests/testFailed
 scenario-test	SC-POWER-HANDOFF	DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed	app/Tests/DetachAppTests/WatchdogServiceTests.swift
 route	920	app/Sources/DetachApp/PowerHelperService.swift	power	both	docs/specs/power-handoff.md
 route	920	app/Sources/DetachApp/WatchdogService.swift	power	both	docs/specs/power-handoff.md
+route	920	app/Sources/DetachApp/ServiceManagementMutationAdmission.swift	power	both	docs/specs/power-handoff.md
 route	1100	tools/quality_contract_change.py	quality-core	safe	docs/specs/quality.md
 route	1200	docs/specs/quality.md	docs	safe	docs/specs/quality.md
 route	1200	docs/specs/recovery.md	docs	safe	docs/specs/recovery.md

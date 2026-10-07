@@ -86,6 +86,17 @@ expect_route scripts/release-version release-tool safe false
 expect_route scripts/quality-metrics policy safe false
 expect_route scripts/quality-mutation policy safe false
 
+# A wildcard fallback keeps a new product path fail-safe until it is
+# classified. A tracked file must get an explicit route in the change that adds
+# it; otherwise every later release that touches it selects the closed-lid gate.
+unclassified="$(git -C "$ROOT" ls-files -z | while IFS= read -r -d '' path; do
+  result="$("$ROOT/scripts/quality-policy" classify "$path")"
+  [ "$(field "$result" 7)" = true ] && [[ "$(field "$result" 8)" == *'*'* ]] && \
+    printf '%s\n' "$path"
+done)" || true
+[ -z "$unclassified" ] || \
+  fail "tracked product files use an unknown wildcard route: $(printf '%s' "$unclassified" | paste -sd, -)"
+
 onboarding="$("$ROOT/scripts/quality-policy" classify app/Sources/DetachApp/OnboardingView.swift)"
 [ "$(field "$onboarding" 10)" = onboarding ] || fail 'onboarding capability impact is missing'
 [[ "$(field "$onboarding" 11)" = *J-ONBOARD-FIRST-RUN* ]] || \

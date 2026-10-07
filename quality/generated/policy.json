@@ -1665,6 +1665,20 @@
       "test_domain": "settings-source"
     },
     {
+      "pattern": "app/Sources/DetachApp/AppAppearance.swift",
+      "priority": 880,
+      "release_domain": "safe",
+      "spec": "docs/specs/app-setup.md",
+      "test_domain": "settings-source"
+    },
+    {
+      "pattern": "app/Sources/DetachApp/TerminalAppearance.swift",
+      "priority": 880,
+      "release_domain": "safe",
+      "spec": "docs/specs/app-setup.md",
+      "test_domain": "settings-source"
+    },
+    {
       "pattern": "app/Sources/DetachApp/UpdaterService.swift",
       "priority": 880,
       "release_domain": "install",
@@ -1749,7 +1763,7 @@
       "test_domain": "session-ui-source"
     },
     {
-      "pattern": "app/Sources/DetachApp/SidebarView.swift",
+      "pattern": "app/Sources/DetachApp/Sidebar*.swift",
       "priority": 870,
       "release_domain": "safe",
       "spec": "docs/specs/app.md",
@@ -2282,6 +2296,13 @@
     },
     {
       "pattern": "app/Sources/DetachApp/WatchdogService.swift",
+      "priority": 920,
+      "release_domain": "both",
+      "spec": "docs/specs/power-handoff.md",
+      "test_domain": "power"
+    },
+    {
+      "pattern": "app/Sources/DetachApp/ServiceManagementMutationAdmission.swift",
       "priority": 920,
       "release_domain": "both",
       "spec": "docs/specs/power-handoff.md",
@@ -3172,7 +3193,7 @@
         "app/Sources/DetachApp/QuickChat.swift",
         "app/Sources/DetachApp/RootView.swift",
         "app/Sources/DetachApp/Session*.swift",
-        "app/Sources/DetachApp/SidebarView.swift",
+        "app/Sources/DetachApp/Sidebar*.swift",
         "app/Sources/DetachApp/TerminalPreferencePicker.swift",
         "app/Sources/DetachApp/TextSize.swift",
         "app/Sources/DetachApp/Theme.swift",
@@ -3305,9 +3326,11 @@
         "J-DOCTOR-REPORT"
       ],
       "owned_patterns": [
+        "app/Sources/DetachApp/AppAppearance.swift",
         "app/Sources/DetachApp/Onboarding*.swift",
         "app/Sources/DetachApp/Settings*.swift",
         "app/Sources/DetachApp/SetupGuidance.swift",
+        "app/Sources/DetachApp/TerminalAppearance.swift",
         "app/Sources/DetachApp/UpdaterService.swift",
         "app/Sources/DetachKit/DoctorReport.swift",
         "app/Sources/DetachKit/Localization.swift",
@@ -3774,6 +3797,7 @@
       ],
       "owned_patterns": [
         "app/Sources/DetachApp/PowerHelperService.swift",
+        "app/Sources/DetachApp/ServiceManagementMutationAdmission.swift",
         "app/Sources/DetachApp/WatchdogService.swift",
         "docs/specs/power-handoff.md"
       ],

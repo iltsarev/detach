@@ -1291,6 +1291,30 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
     }
 
+    func testMetadataSnapshotsSkipASessionRemovedDuringEnumeration() throws {
+        let root = temporaryDirectory.appendingPathComponent(
+            "vanishing-sessions", isDirectory: true)
+        for name in ["detach-codex-first", "detach-codex-second"] {
+            let session = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: session, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: [
+                "schema": 1, "session_name": name,
+                "project_dir": "/tmp/project", "status": "running",
+            ]).write(to: session.appendingPathComponent("meta.json"))
+        }
+        var visited: [String] = []
+        // A concurrent Delete can remove a session after its name was read.
+        // The enumeration skips it instead of failing the whole list.
+        try DetachStateCommand.forEachMetadataSnapshot(at: root.path) { name, values, _, _ in
+            visited.append(name)
+            XCTAssertNotNil(values)
+            try FileManager.default.removeItem(
+                at: root.appendingPathComponent("detach-codex-second"))
+        }
+        XCTAssertEqual(visited, ["detach-codex-first"])
+    }
+
     func testMetaSnapshotsFailClosedForNonFileTranscripts() throws {
         let root = temporaryDirectory.appendingPathComponent(
             "invalid-summary-sessions", isDirectory: true)
