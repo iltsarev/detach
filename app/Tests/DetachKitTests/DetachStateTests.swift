@@ -750,6 +750,119 @@ final class DetachStateTests: XCTestCase {
             .waiting)
     }
 
+    func testClaudeBackgroundReplayPreservesFailedLaunches() {
+        let history = Data("""
+        {"type":"assistant","uuid":"launch","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_job","name":"Bash","input":{"run_in_background":true}}]}}
+        {"type":"user","uuid":"result","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_job","is_error":true,"content":"Permission denied"}]}}
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Could not start."}]}}
+        """.utf8)
+        let summary = TranscriptDocument.summary(ofTail: history, provider: .claude)
+        XCTAssertEqual(summary.agentTurnState, .waiting)
+        XCTAssertEqual(summary.pendingBackground, [])
+        XCTAssertEqual(TranscriptDocument.resolvingBackgroundWork(
+            summary, provider: .claude, deepTail: { history }), summary)
+    }
+
+    func testClaudeBackgroundStopRequiresSuccessfulMatchingResult() {
+        for (tool, argument) in [("TaskStop", "task_id"), ("KillShell", "shell_id")] {
+            let launch = """
+            {"type":"assistant","uuid":"launch","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_job","name":"Bash","input":{"run_in_background":true}}]}}
+            {"type":"user","uuid":"launched","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_job","content":"Command running in background with ID: bjob."}]}}
+            {"type":"assistant","uuid":"stop","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_stop","name":"\(tool)","input":{"\(argument)":"bjob"}}]}}
+
+            """
+            let stopping = TranscriptDocument.summary(ofTail: Data(launch.utf8), provider: .claude)
+            XCTAssertEqual(stopping.pendingBackground.count, 1, tool)
+            for (id, error) in [("toolu_stop", true), ("other", false)] {
+                let failed = """
+                {"type":"user","uuid":"result","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"\(id)","is_error":\(error),"content":"Not stopped."}]}}
+                {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Still running."}]}}
+                """
+                let running = TranscriptDocument.summary(
+                    ofTail: Data(failed.utf8), provider: .claude, startingFrom: stopping)
+                XCTAssertEqual(running.agentTurnState, .working, tool)
+                XCTAssertEqual(running.pendingBackground.count, 1, tool)
+                var cold = TranscriptSummary(agentTurnState: .waiting)
+                cold = TranscriptDocument.resolvingBackgroundWork(
+                    cold, provider: .claude, deepTail: { Data((launch + failed).utf8) })
+                XCTAssertEqual(cold.agentTurnState, .working, tool)
+                XCTAssertEqual(cold.pendingBackground, running.pendingBackground, tool)
+            }
+            let success = Data("""
+            {"type":"user","uuid":"result","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_stop","content":"Stopped."}]}}
+            {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Stopped."}]}}
+            """.utf8)
+            let finished = TranscriptDocument.summary(
+                ofTail: success, provider: .claude, startingFrom: stopping)
+            XCTAssertEqual(finished.agentTurnState, .waiting, tool)
+            XCTAssertEqual(finished.pendingBackground, [], tool)
+        }
+    }
+
+    func testClaudeBackgroundCompletionRequiresTaskNotification() throws {
+        var running = TranscriptSummary(agentTurnState: .working)
+        running.pendingBackground = [PendingBackgroundTask(toolUseID: "toolu_job")]
+        let tag = "<tool-use-id>toolu_job</tool-use-id>"
+        let notice = "<task-notification>\(tag)<status>completed</status></task-notification>"
+        let ignored: [[String: Any]] = [
+            ["type": "queue-operation", "operation": "enqueue", "content": "Find \(tag)"],
+            ["type": "queue-operation", "operation": "enqueue", "content": notice,
+             "isSidechain": true],
+            ["type": "queue-operation", "operation": "enqueue", "content": notice,
+             "isMeta": true],
+            ["type": "queue-operation", "operation": "enqueue",
+             "content": "<task-notification>\(tag)<status>running</status></task-notification>"],
+            ["type": "attachment", "attachment": ["type": "file", "content": notice]],
+            ["type": "queue-operation", "operation": "enqueue", "content": "other",
+             "description": notice],
+        ]
+        for record in ignored {
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: record),
+                provider: .claude, startingFrom: running).pendingBackground,
+                running.pendingBackground)
+        }
+        for status in ["completed", "failed", "killed"] {
+            let record = ["type": "queue-operation", "operation": "enqueue",
+                          "content": notice.replacingOccurrences(of: "completed", with: status)]
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: record),
+                provider: .claude, startingFrom: running).pendingBackground, [])
+        }
+    }
+
+    func testClaudeTaskEventsIgnoreNonConversationRecords() throws {
+        let waiting = TranscriptSummary(
+            agentTurnState: .waiting, agentTurnID: "answer", agentWaitingReason: .answerReady)
+        for name in ["Bash", "AskUserQuestion"] {
+            let message: [String: Any] = [
+                "role": "assistant", "model": "claude", "stop_reason": "tool_use",
+                "content": [["type": "tool_use", "name": name, "id": "toolu_job",
+                             "input": ["run_in_background": true]]],
+            ]
+            for excluded: [String: Any] in [
+                ["isMeta": true], ["isSidechain": true], ["uuid": ""],
+                ["message": message.merging(["model": "<synthetic>"]) { _, new in new }],
+                ["message": message.merging(["role": "user"]) { _, new in new }],
+            ] {
+                var record: [String: Any] = [
+                    "type": "assistant", "uuid": "launch", "message": message,
+                ]
+                record.merge(excluded) { _, new in new }
+                let data = try JSONSerialization.data(withJSONObject: record)
+                XCTAssertEqual(TranscriptDocument.summary(
+                    ofTail: data, provider: .claude, startingFrom: waiting).agentTurnState,
+                    waiting.agentTurnState)
+                XCTAssertEqual(TranscriptDocument.summary(
+                    ofTail: data, provider: .claude, startingFrom: waiting).pendingBackground, [])
+                XCTAssertEqual(TranscriptDocument.summary(
+                    ofTail: data, provider: .claude, startingFrom: waiting).pendingToolUseID, nil)
+                XCTAssertEqual(TranscriptDocument.resolvingBackgroundWork(
+                    waiting, provider: .claude, deepTail: { data }), waiting)
+            }
+        }
+    }
+
     func testClaudeSummaryStopsTrackingABackgroundTaskStoppedByTheAgent() {
         let transcript = Data("""
         {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
@@ -778,6 +891,7 @@ final class DetachStateTests: XCTestCase {
 
         let stop = Data("""
         {"type":"assistant","uuid":"stop","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_stop","name":"TaskStop","input":{"task_id":"bblock"}}]}}
+        {"type":"user","uuid":"stopped","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_stop","content":"Stopped."}]}}
         """.utf8)
         XCTAssertEqual(
             TranscriptDocument.summary(

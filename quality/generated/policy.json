@@ -784,7 +784,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 61,
+  "policy": 62,
   "release_domains": [
     {
       "gates": "-",
@@ -2738,7 +2738,13 @@
         "DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer",
         "DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains",
         "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt",
-        "DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript"
+        "DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript",
+        "DetachKitTests.DetachStateTests/testClaudeBackgroundReplayPreservesFailedLaunches",
+        "DetachKitTests.DetachStateTests/testClaudeBackgroundStopRequiresSuccessfulMatchingResult",
+        "DetachKitTests.DetachStateTests/testClaudeBackgroundCompletionRequiresTaskNotification",
+        "DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords",
+        "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult",
+        "DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch"
       ]
     }
   ],
@@ -4163,11 +4169,17 @@
     "DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateTests/testClaudeBackgroundCompletionRequiresTaskNotification": "app/Tests/DetachKitTests/DetachStateTests.swift",
+    "DetachKitTests.DetachStateTests/testClaudeBackgroundReplayPreservesFailedLaunches": "app/Tests/DetachKitTests/DetachStateTests.swift",
+    "DetachKitTests.DetachStateTests/testClaudeBackgroundStopRequiresSuccessfulMatchingResult": "app/Tests/DetachKitTests/DetachStateTests.swift",
     "DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains": "app/Tests/DetachKitTests/DetachStateTests.swift",
     "DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer": "app/Tests/DetachKitTests/DetachStateTests.swift",
+    "DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords": "app/Tests/DetachKitTests/DetachStateTests.swift",
     "DetachKitTests.PowerAssertionControllerTests/testAcquireCreatesOneAssertionAndBecomesActive": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
     "DetachKitTests.PowerAssertionControllerTests/testFailedReleaseStaysActiveAndCanRetry": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
     "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsAnotherLocalUserAfterFastUserSwitching": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",

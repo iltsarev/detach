@@ -1,5 +1,5 @@
 schema	1
-policy	61
+policy	62
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -480,3 +480,9 @@ scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaude
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains	app/Tests/DetachKitTests/DetachStateTests.swift
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt	app/Tests/DetachKitTests/DetachStateCommandTests.swift
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript	app/Tests/DetachKitTests/DetachStateCommandTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeBackgroundReplayPreservesFailedLaunches	app/Tests/DetachKitTests/DetachStateTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeBackgroundStopRequiresSuccessfulMatchingResult	app/Tests/DetachKitTests/DetachStateTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeBackgroundCompletionRequiresTaskNotification	app/Tests/DetachKitTests/DetachStateTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords	app/Tests/DetachKitTests/DetachStateTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult	app/Tests/DetachKitTests/DetachStateCommandTests.swift
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch	app/Tests/DetachKitTests/DetachStateCommandTests.swift

@@ -1243,7 +1243,7 @@ public enum DetachStateCommand {
     }
 
     private struct TranscriptSummaryReceipt: Codable {
-        static let currentSchema = 10
+        static let currentSchema = 11
         static let coldTailByteCount: UInt64 = 262_144
         /// One provider record can exceed the cold tail, for example a Codex
         /// compaction. A continuation reads the complete append up to here.

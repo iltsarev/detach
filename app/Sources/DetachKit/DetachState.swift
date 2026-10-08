@@ -357,6 +357,7 @@ struct PendingBackgroundTask: Codable, Equatable, Sendable {
     static let limit = 32
     var toolUseID: String
     var taskID: String?
+    var pendingStopToolUseID: String?
 }
 
 public struct TranscriptSummary: Equatable, Sendable {
@@ -765,14 +766,9 @@ public enum TranscriptDocument {
         let type = record["type"] as? String
         let message = record["message"] as? [String: Any]
 
-        // Completion notifications for background work arrive as queued
-        // commands, not as user messages, and carry the launching tool use.
+        reduceBackgroundTasks(in: record, into: &result)
         if type == "queue-operation" || type == "attachment" {
-            completeBackgroundTasks(in: record, into: &result)
             return
-        }
-        if !isJSONTrue(record["isSidechain"]) {
-            trackBackgroundTasks(type: type, message: message, into: &result)
         }
 
         // Sidechain records belong to subagents and describe another
@@ -792,6 +788,7 @@ public enum TranscriptDocument {
         }
 
         guard !isJSONTrue(record["isSidechain"]),
+              !isJSONTrue(record["isMeta"]),
               let turnID = record["uuid"] as? String,
               !turnID.isEmpty else {
             return
@@ -799,6 +796,7 @@ public enum TranscriptDocument {
 
         if type == "assistant",
            message?["role"] as? String == "assistant",
+           message?["model"] as? String != "<synthetic>",
            message?["stop_reason"] as? String == "tool_use",
            let toolUseID = toolUseID(
             message?["content"], named: "AskUserQuestion") {
@@ -928,23 +926,12 @@ public enum TranscriptDocument {
               summary.pendingBackground.isEmpty,
               let data = deepTail() else { return summary }
         var scan = TranscriptSummary()
-        let markers = [
-            "run_in_background", "\"Workflow\"", "<tool-use-id>",
-            "TaskStop", "KillShell", "running in background with ID",
-        ].map { Data($0.utf8) }
         for line in data.split(separator: 0x0A) {
-            guard markers.contains(where: { line.range(of: $0) != nil }),
-                  let record = try? JSONSerialization.jsonObject(with: line)
+            guard let record = try? JSONSerialization.jsonObject(with: line)
                     as? [String: Any] else { continue }
-            let type = record["type"] as? String
-            if type == "queue-operation" || type == "attachment" {
-                completeBackgroundTasks(in: record, into: &scan)
-            } else if !isJSONTrue(record["isSidechain"]) {
-                trackBackgroundTasks(
-                    type: type,
-                    message: record["message"] as? [String: Any],
-                    into: &scan)
-            }
+            // A result can contain only an error or a stop acknowledgement.
+            // Text-marker filtering would lose it and resurrect a task.
+            reduceBackgroundTasks(in: record, into: &scan)
         }
         guard !scan.pendingBackground.isEmpty else { return summary }
         var result = summary
@@ -972,13 +959,28 @@ public enum TranscriptDocument {
         pattern: "running in background with ID: ([A-Za-z0-9_-]+)")
     private static let notifiedToolUseID = try! NSRegularExpression(
         pattern: "<tool-use-id>([A-Za-z0-9_-]+)</tool-use-id>")
+    private static let taskNotification = try! NSRegularExpression(
+        pattern: "<task-notification>[\\s\\S]*?</task-notification>")
+    private static let terminalTaskStatus = try! NSRegularExpression(
+        pattern: "<status>\\s*(?:completed|failed|killed)\\s*</status>")
 
-    private static func trackBackgroundTasks(
-        type: String?,
-        message: [String: Any]?,
+    private static func reduceBackgroundTasks(
+        in record: [String: Any],
         into result: inout TranscriptSummary
     ) {
-        guard let content = message?["content"] as? [Any] else { return }
+        guard !isJSONTrue(record["isSidechain"]),
+              !isJSONTrue(record["isMeta"]) else { return }
+        let type = record["type"] as? String
+        if type == "queue-operation" || type == "attachment" {
+            completeBackgroundTasks(in: record, into: &result)
+            return
+        }
+        guard type == "assistant" || type == "user",
+              let uuid = record["uuid"] as? String, !uuid.isEmpty,
+              let message = record["message"] as? [String: Any],
+              message["role"] as? String == type,
+              message["model"] as? String != "<synthetic>",
+              let content = message["content"] as? [Any] else { return }
         for case let block as [String: Any] in content {
             switch (type, block["type"] as? String) {
             case ("assistant", "tool_use"):
@@ -987,8 +989,10 @@ public enum TranscriptDocument {
                 let input = block["input"] as? [String: Any]
                 if name == "TaskStop" || name == "KillShell" {
                     let stopped = (input?["task_id"] ?? input?["shell_id"]) as? String
-                    result.pendingBackground.removeAll {
-                        $0.taskID != nil && $0.taskID == stopped
+                    for index in result.pendingBackground.indices
+                    where result.pendingBackground[index].taskID != nil
+                        && result.pendingBackground[index].taskID == stopped {
+                        result.pendingBackground[index].pendingStopToolUseID = id
                     }
                     continue
                 }
@@ -1006,8 +1010,16 @@ public enum TranscriptDocument {
                         result.pendingBackground.count - PendingBackgroundTask.limit)
                 }
             case ("user", "tool_result"):
-                guard let id = block["tool_use_id"] as? String,
-                      let index = result.pendingBackground.firstIndex(
+                guard let id = block["tool_use_id"] as? String else { continue }
+                for index in result.pendingBackground.indices.reversed()
+                where result.pendingBackground[index].pendingStopToolUseID == id {
+                    if isJSONTrue(block["is_error"]) {
+                        result.pendingBackground[index].pendingStopToolUseID = nil
+                    } else {
+                        result.pendingBackground.remove(at: index)
+                    }
+                }
+                guard let index = result.pendingBackground.firstIndex(
                         where: { $0.toolUseID == id }) else { continue }
                 if isJSONTrue(block["is_error"]) {
                     result.pendingBackground.remove(at: index)
@@ -1032,15 +1044,29 @@ public enum TranscriptDocument {
         in record: [String: Any],
         into result: inout TranscriptSummary
     ) {
-        guard !result.pendingBackground.isEmpty,
-              let data = try? JSONSerialization.data(withJSONObject: record),
-              let text = String(data: data, encoding: .utf8)?
-                .replacingOccurrences(of: "\\/", with: "/") else { return }
+        guard !result.pendingBackground.isEmpty else { return }
+        let text: String
+        if record["type"] as? String == "queue-operation",
+           record["operation"] as? String == "enqueue",
+           let content = record["content"] as? String {
+            text = content
+        } else if record["type"] as? String == "attachment",
+                  let attachment = record["attachment"] as? [String: Any],
+                  attachment["type"] as? String == "queued_command",
+                  let prompt = attachment["prompt"] as? String {
+            text = prompt
+        } else {
+            return
+        }
         let range = NSRange(text.startIndex..., in: text)
-        for match in notifiedToolUseID.matches(in: text, range: range) {
-            guard let idRange = Range(match.range(at: 1), in: text) else { continue }
-            let id = String(text[idRange])
-            result.pendingBackground.removeAll { $0.toolUseID == id }
+        for notice in taskNotification.matches(in: text, range: range) {
+            guard terminalTaskStatus.firstMatch(in: text, range: notice.range) != nil
+            else { continue }
+            for match in notifiedToolUseID.matches(in: text, range: notice.range) {
+                guard let idRange = Range(match.range(at: 1), in: text) else { continue }
+                let id = String(text[idRange])
+                result.pendingBackground.removeAll { $0.toolUseID == id }
+            }
         }
     }
 

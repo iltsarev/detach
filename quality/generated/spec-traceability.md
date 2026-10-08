@@ -116,6 +116,12 @@ Direct acceptance evidence for `QC-RUNTIME-STATE`: `SC-SESSION-PERSIST-CODEX`, `
 - `DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains`
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt`
 - `DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundReplayPreservesFailedLaunches`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundStopRequiresSuccessfulMatchingResult`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundCompletionRequiresTaskNotification`
+- `DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch`
 
 
 Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`, `SC-TRANSCRIPT-TURN-UNIT`.
@@ -127,6 +133,12 @@ Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `S
 - `DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains`
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt`
 - `DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundReplayPreservesFailedLaunches`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundStopRequiresSuccessfulMatchingResult`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundCompletionRequiresTaskNotification`
+- `DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch`
 
 
 ## `power`
@@ -508,6 +520,12 @@ Direct acceptance evidence for `QC-RUNTIME-TRANSITION`: `SC-SESSION-RECOVER-CODE
 - `DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains`
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt`
 - `DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundReplayPreservesFailedLaunches`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundStopRequiresSuccessfulMatchingResult`
+- `DetachKitTests.DetachStateTests/testClaudeBackgroundCompletionRequiresTaskNotification`
+- `DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch`
 
 
 ## `power-handoff`

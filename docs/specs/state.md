@@ -123,7 +123,7 @@ private activity file in `power.md`. Bounded append caching retains typed turns;
 an unseen append larger than 8 MiB clears waiting to prevent stale Answer ready. A
 main-chain Claude `AskUserQuestion` with `stop_reason: tool_use` and a tool ID
 means waiting with `input_required`; only its matching user tool result
-restores working. Reducer
+restores working. Metadata and synthetic records cannot request input. Reducer
 changes invalidate old receipts so unchanged prompts are reclassified.
 A main-chain Claude assistant record with `stop_reason: end_turn` and nonempty
 text also means waiting with `answer_ready`. Thinking-only, metadata, and tool-use blocks do not
@@ -135,10 +135,22 @@ content, sidechains, and synthetic notices cannot start that transition.
 A pending `AskUserQuestion` still requires its matching
 result. A finished Claude turn stays working while a main-chain
 `run_in_background` shell or a workflow it started has no matching
-`task-notification` (by tool use ID) and no `TaskStop`; background agents do
-not count, because they record no notification. At most 32 such tasks are
-tracked. A cold tail that ends in a finished turn also replays these records
-from the last 4 MiB, because large records can push a launch above the tail.
+`task-notification` (by tool use ID) and no successful `TaskStop` or `KillShell`
+result. A stop request alone cannot prove completion. A failed launch is not
+pending work. A failed stop keeps the task pending. Background agents do not
+count, because they record no notification. At most 32 such tasks are tracked.
+Each task can retain its latest stop tool ID until the matching result arrives.
+Launch and tool-result events require a main-chain conversation record with a
+nonempty UUID and a matching message role. Metadata and synthetic records
+cannot change tasks.
+Completion notifications use the content of a queued `enqueue` record or the
+prompt of a `queued_command` attachment. The `task-notification` envelope must
+contain the tool use ID and a `completed`, `failed`, or `killed` status.
+Other text and sidechain notifications cannot complete tasks.
+A cold tail that ends in a finished turn also replays task records from the
+last 4 MiB, because large records can push a launch above the tail. This replay
+includes failed launches and stop results, even when their text has no task
+marker. Cold reads and appended records use the same task rules.
 A Codex tail without a turn event treats a `token_usage_record` or
 `turn_context` with a turn ID as a working turn. `item_completed` does not
 count, because a command completion can arrive after its turn.
@@ -150,10 +162,10 @@ unknown waiting reasons cannot claim a ready answer or an input request.
 Model and context come only from fields that a record contains. Claude
 sidechain records and `<synthetic>` assistant notices do not change them. A
 Codex `token_count` without `info` or usage keeps the last values.
-Schema-10 summary receipts carry the reason and pending tool IDs for both
-providers. They retain pending background tasks and invalidate earlier cached
-turn states and model fields. A receipt records the end of the last complete
-record and a digest of up to 4 KiB before it. The next read continues at that
+Schema-11 summary receipts carry the reason and pending tool IDs for both
+providers. They retain pending background tasks and stop tool IDs. They
+invalidate earlier cached turn states and model fields. A receipt records the
+end of the last complete record and a digest of up to 4 KiB before it. The next read continues at that
 boundary only when the digest still matches, so a record that was partial at
 the last read is reduced once complete, and a rewrite falls back to a cold
 tail. Resume and Recover record `transcript_boundary_path` and
