@@ -273,8 +273,9 @@ own explicit text colors.
 Sessions that wait for your reply move into **Answer ready**, before agents
 that are still working. Detach reads structured provider lifecycle records for
 this signal. A completed Claude text answer enters **Answer ready** even when
-Claude omits its turn-duration record. Detach does not guess from terminal
-text. Mid-turn permission prompts are not currently part of the signal.
+Claude omits its turn-duration record. The session stays **Working** while a
+background command or subagent is still running. Detach does not guess from
+terminal text. Mid-turn permission prompts are not currently part of the signal.
 
 The optional menu bar companion shows:
 

@@ -1335,6 +1335,49 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try fixture.fields(), ["waiting", "done", "answer_ready"])
     }
 
+    func testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents() throws {
+        let launch = """
+        {"type":"user","uuid":"result","toolUseResult":{"status":"async_launched","agentId":"agent_one"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent","content":"Launched."}]}}
+
+        """
+        let padding = "{\"type\":\"progress\",\"padding\":\""
+            + String(repeating: "x", count: 300 * 1_024) + "\"}\n"
+        let answer = """
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Waiting for the agent."}]}}
+
+        """
+        let teammate = """
+        {"type":"user","uuid":"team","toolUseResult":{"status":"teammate_spawned","teammate_id":"builder@team","name":"builder"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_team","content":"Spawned."}]}}
+
+        """
+        let fixture = try summarySession(
+            "detach-claude-background-agent", transcript: Data((launch + teammate + padding + answer).utf8))
+        // The launch is above the ordinary cold tail.
+        XCTAssertEqual(try fixture.fields(), ["working", "answer", ""])
+        let receipt = fixture.root.appendingPathComponent(
+            "detach-claude-background-agent/.transcript-summary-cache.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: receipt)) as? [String: Any])
+        legacy["schema"] = 11
+        legacy["agentTurnState"] = "waiting"
+        legacy["agentWaitingReason"] = "answer_ready"
+        legacy.removeValue(forKey: "pendingBackground")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: receipt)
+        // No append is needed to replace the old Answer ready receipt.
+        XCTAssertEqual(try fixture.fields(), ["working", "answer", ""])
+        try append(answer, to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["working", "answer", ""])
+        XCTAssertEqual(try fixture.fields(), ["working", "answer", ""])
+        try append("""
+        {"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>agent_one</task-id><status>completed</status></task-notification>"}
+        {"type":"attachment","attachment":{"type":"teammate_mailbox","messages":[{"from":"builder","text":"{\\"type\\":\\"idle_notification\\",\\"from\\":\\"builder\\"}"}]}}
+        {"type":"assistant","uuid":"done","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"All done."}]}}
+
+        """, to: fixture.transcript)
+        XCTAssertEqual(try fixture.fields(), ["waiting", "done", "answer_ready"])
+        XCTAssertEqual(try fixture.fields(), ["waiting", "done", "answer_ready"])
+    }
+
     func testMetaSnapshotsTreatAnUnfinishedTurnBeforeTheRunBoundaryAsHistory() throws {
         let transcript = """
         {"payload":{"model":"gpt-boundary"}}
@@ -1442,7 +1485,7 @@ final class DetachStateCommandTests: XCTestCase {
         let migratedReceipt = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
                 as? [String: Any])
-        XCTAssertEqual(migratedReceipt["schema"] as? Int, 11)
+        XCTAssertEqual(migratedReceipt["schema"] as? Int, 12)
 
         let unrelatedToolResult = Data("""
 
@@ -1536,7 +1579,7 @@ final class DetachStateCommandTests: XCTestCase {
         XCTAssertEqual(try turnFields(), ["waiting", "answer"])
         let updated = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
-        XCTAssertEqual(updated["schema"] as? Int, 11)
+        XCTAssertEqual(updated["schema"] as? Int, 12)
 
         let handle = try FileHandle(forWritingTo: transcript)
         try handle.seekToEnd()

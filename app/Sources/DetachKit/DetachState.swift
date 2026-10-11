@@ -357,6 +357,7 @@ struct PendingBackgroundTask: Codable, Equatable, Sendable {
     static let limit = 32
     var toolUseID: String
     var taskID: String?
+    var teammateName: String?
     var pendingStopToolUseID: String?
 }
 
@@ -369,7 +370,7 @@ public struct TranscriptSummary: Equatable, Sendable {
     public var agentTurnID: String?
     var pendingToolUseID: String?
     /// Background work the agent started and still waits for (Claude:
-    /// `run_in_background` shells and workflows without a completion
+    /// `run_in_background` shells, async agents, and workflows without a completion
     /// notification yet). A finished turn with pending work is not waiting.
     var pendingBackground: [PendingBackgroundTask] = []
 
@@ -959,6 +960,8 @@ public enum TranscriptDocument {
         pattern: "running in background with ID: ([A-Za-z0-9_-]+)")
     private static let notifiedToolUseID = try! NSRegularExpression(
         pattern: "<tool-use-id>([A-Za-z0-9_-]+)</tool-use-id>")
+    private static let notifiedTaskID = try! NSRegularExpression(
+        pattern: "<task-id>([A-Za-z0-9_-]+)</task-id>")
     private static let taskNotification = try! NSRegularExpression(
         pattern: "<task-notification>[\\s\\S]*?</task-notification>")
     private static let terminalTaskStatus = try! NSRegularExpression(
@@ -996,8 +999,8 @@ public enum TranscriptDocument {
                     }
                     continue
                 }
-                // Background agents record no completion notification, so
-                // only shells and workflows can hold a finished turn open.
+                // Agent calls can finish synchronously or background implicitly.
+                // Their typed result below establishes the actual launch.
                 let background = (input?["run_in_background"] as? Bool == true
                     && name != "Agent" && name != "Task")
                     || name == "Workflow"
@@ -1005,12 +1008,24 @@ public enum TranscriptDocument {
                       !result.pendingBackground.contains(where: { $0.toolUseID == id })
                 else { continue }
                 result.pendingBackground.append(PendingBackgroundTask(toolUseID: id))
-                if result.pendingBackground.count > PendingBackgroundTask.limit {
-                    result.pendingBackground.removeFirst(
-                        result.pendingBackground.count - PendingBackgroundTask.limit)
-                }
+                boundBackgroundTasks(in: &result)
             case ("user", "tool_result"):
-                guard let id = block["tool_use_id"] as? String else { continue }
+                guard let id = block["tool_use_id"] as? String, !id.isEmpty else { continue }
+                // This provider result also covers implicit background launches
+                // and launches whose assistant record is above the cold tail.
+                if !isJSONTrue(block["is_error"]),
+                   let launch = record["toolUseResult"] as? [String: Any],
+                   let task = backgroundAgentTask(from: launch, toolUseID: id) {
+                    if !result.pendingBackground.contains(where: { $0.toolUseID == id }) {
+                        result.pendingBackground.append(task)
+                        boundBackgroundTasks(in: &result)
+                    }
+                    if result.pendingToolUseID == nil {
+                        result.agentTurnState = .working
+                        result.agentWaitingReason = nil
+                        result.agentTurnID = uuid
+                    }
+                }
                 for index in result.pendingBackground.indices.reversed()
                 where result.pendingBackground[index].pendingStopToolUseID == id {
                     if isJSONTrue(block["is_error"]) {
@@ -1040,11 +1055,63 @@ public enum TranscriptDocument {
         }
     }
 
+    private static func backgroundAgentTask(
+        from result: [String: Any], toolUseID: String
+    ) -> PendingBackgroundTask? {
+        if result["status"] as? String == "async_launched",
+           let id = result["agentId"] as? String, !id.isEmpty {
+            return PendingBackgroundTask(toolUseID: toolUseID, taskID: id)
+        }
+        if result["status"] as? String == "teammate_spawned",
+           let id = result["teammate_id"] as? String, !id.isEmpty,
+           let name = result["name"] as? String, !name.isEmpty {
+            return PendingBackgroundTask(toolUseID: toolUseID, taskID: id, teammateName: name)
+        }
+        // A successful inbox delivery wakes an idle teammate. Protocol requests
+        // and failed sends have no successful inbox routing receipt.
+        if isJSONTrue(result["success"]),
+           let messageID = result["msg_id"] as? String, !messageID.isEmpty,
+           let routing = result["routing"] as? [String: Any],
+           let target = routing["target"] as? String,
+           target.hasPrefix("@"), target.count > 1 {
+            return PendingBackgroundTask(toolUseID: toolUseID, teammateName: String(target.dropFirst()))
+        }
+        return nil
+    }
+
+    private static func completeTeammateWork(
+        in attachment: [String: Any], into result: inout TranscriptSummary
+    ) {
+        guard attachment["type"] as? String == "teammate_mailbox",
+              let messages = attachment["messages"] as? [[String: Any]] else { return }
+        for message in messages {
+            guard message["provenance"] as? String != "forged",
+                  let sender = message["from"] as? String, !sender.isEmpty,
+                  let text = message["text"] as? String,
+                  let notice = try? JSONSerialization.jsonObject(with: Data(text.utf8))
+                    as? [String: Any],
+                  notice["type"] as? String == "idle_notification",
+                  notice["from"] as? String == sender else { continue }
+            result.pendingBackground.removeAll { $0.teammateName == sender }
+        }
+    }
+
+    private static func boundBackgroundTasks(in result: inout TranscriptSummary) {
+        if result.pendingBackground.count > PendingBackgroundTask.limit {
+            result.pendingBackground.removeFirst(
+                result.pendingBackground.count - PendingBackgroundTask.limit)
+        }
+    }
+
     private static func completeBackgroundTasks(
         in record: [String: Any],
         into result: inout TranscriptSummary
     ) {
         guard !result.pendingBackground.isEmpty else { return }
+        if record["type"] as? String == "attachment",
+           let attachment = record["attachment"] as? [String: Any] {
+            completeTeammateWork(in: attachment, into: &result)
+        }
         let text: String
         if record["type"] as? String == "queue-operation",
            record["operation"] as? String == "enqueue",
@@ -1062,10 +1129,18 @@ public enum TranscriptDocument {
         for notice in taskNotification.matches(in: text, range: range) {
             guard terminalTaskStatus.firstMatch(in: text, range: notice.range) != nil
             else { continue }
-            for match in notifiedToolUseID.matches(in: text, range: notice.range) {
+            let toolIDs = notifiedToolUseID.matches(in: text, range: notice.range)
+            // Older agent notifications contain only the task ID. If a tool
+            // ID is present, require it; a stale invocation must not complete
+            // another invocation of the same agent.
+            let identifiers = toolIDs.isEmpty
+                ? notifiedTaskID.matches(in: text, range: notice.range) : toolIDs
+            for match in identifiers {
                 guard let idRange = Range(match.range(at: 1), in: text) else { continue }
                 let id = String(text[idRange])
-                result.pendingBackground.removeAll { $0.toolUseID == id }
+                result.pendingBackground.removeAll {
+                    toolIDs.isEmpty ? $0.taskID == id : $0.toolUseID == id
+                }
             }
         }
     }

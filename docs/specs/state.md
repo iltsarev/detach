@@ -137,15 +137,27 @@ result. A finished Claude turn stays working while a main-chain
 `run_in_background` shell or a workflow it started has no matching
 `task-notification` (by tool use ID) and no successful `TaskStop` or `KillShell`
 result. A stop request alone cannot prove completion. A failed launch is not
-pending work. A failed stop keeps the task pending. Background agents do not
-count, because they record no notification. At most 32 such tasks are tracked.
+pending work. A failed stop keeps the task pending. A successful main-chain
+tool result with `toolUseResult.status: async_launched`
+also starts pending work. Its `agentId` identifies the background agent. This
+rule applies even when the launch has no `run_in_background` argument. Failed
+launches and synchronous agent results do not start pending work. An explicit
+input request keeps priority over pending work. A `teammate_spawned` result
+starts work for its `teammate_id` and `name`. A successful inbox delivery with
+`msg_id` and `routing.target` starts work for that teammate again. A matching
+`idle_notification` in a `teammate_mailbox` attachment ends this work. Its
+`from` field must match the message sender and the recorded teammate name.
+Ordinary messages, unrelated senders, and messages marked `provenance: forged`
+cannot end teammate work. At most 32 tasks are tracked.
 Each task can retain its latest stop tool ID until the matching result arrives.
 Launch and tool-result events require a main-chain conversation record with a
 nonempty UUID and a matching message role. Metadata and synthetic records
 cannot change tasks.
 Completion notifications use the content of a queued `enqueue` record or the
 prompt of a `queued_command` attachment. The `task-notification` envelope must
-contain the tool use ID and a `completed`, `failed`, or `killed` status.
+contain a `completed`, `failed`, or `killed` status. The tool use ID must match.
+When the envelope has no tool use ID, its task ID must match the recorded task
+or agent ID. An unrelated completion cannot finish pending work.
 Other text and sidechain notifications cannot complete tasks.
 A cold tail that ends in a finished turn also replays task records from the
 last 4 MiB, because large records can push a launch above the tail. This replay
@@ -162,7 +174,7 @@ unknown waiting reasons cannot claim a ready answer or an input request.
 Model and context come only from fields that a record contains. Claude
 sidechain records and `<synthetic>` assistant notices do not change them. A
 Codex `token_count` without `info` or usage keeps the last values.
-Schema-11 summary receipts carry the reason and pending tool IDs for both
+Schema-12 summary receipts carry the reason and pending tool IDs for both
 providers. They retain pending background tasks and stop tool IDs. They
 invalidate earlier cached turn states and model fields. A receipt records the
 end of the last complete record and a digest of up to 4 KiB before it. The next read continues at that
