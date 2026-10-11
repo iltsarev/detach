@@ -122,6 +122,12 @@ Direct acceptance evidence for `QC-RUNTIME-STATE`: `SC-SESSION-PERSIST-CODEX`, `
 - `DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords`
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult`
 - `DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch`
+- `DetachKitTests.DetachStateTests/testClaudeAsyncAgentsKeepTheMainTurnWorkingUntilEveryCompletion`
+- `DetachKitTests.DetachStateTests/testClaudeAsyncAgentResultsRequireValidMainChainLaunchEvidence`
+- `DetachKitTests.DetachStateTests/testClaudeAgentCompletionRequiresMatchingNotificationIdentity`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents`
+- `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
+- `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
 
 
 Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`, `SC-TRANSCRIPT-TURN-UNIT`.
@@ -139,6 +145,12 @@ Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `S
 - `DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords`
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult`
 - `DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch`
+- `DetachKitTests.DetachStateTests/testClaudeAsyncAgentsKeepTheMainTurnWorkingUntilEveryCompletion`
+- `DetachKitTests.DetachStateTests/testClaudeAsyncAgentResultsRequireValidMainChainLaunchEvidence`
+- `DetachKitTests.DetachStateTests/testClaudeAgentCompletionRequiresMatchingNotificationIdentity`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents`
+- `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
+- `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
 
 
 ## `power`
@@ -526,6 +538,12 @@ Direct acceptance evidence for `QC-RUNTIME-TRANSITION`: `SC-SESSION-RECOVER-CODE
 - `DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords`
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsPreserveBackgroundStopUntilSuccessfulResult`
 - `DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch`
+- `DetachKitTests.DetachStateTests/testClaudeAsyncAgentsKeepTheMainTurnWorkingUntilEveryCompletion`
+- `DetachKitTests.DetachStateTests/testClaudeAsyncAgentResultsRequireValidMainChainLaunchEvidence`
+- `DetachKitTests.DetachStateTests/testClaudeAgentCompletionRequiresMatchingNotificationIdentity`
+- `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents`
+- `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
+- `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
 
 
 ## `power-handoff`

@@ -934,9 +934,213 @@ final class DetachStateTests: XCTestCase {
         XCTAssertEqual(next.agentTurnID, "next")
     }
 
-    func testClaudeSummaryIgnoresForegroundToolsAndBackgroundAgents() {
-        // Background agents record no completion notification, so they
-        // cannot hold the turn open; foreground tools finish in their turn.
+    func testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery() throws {
+        let launch = Data("""
+        {"type":"user","uuid":"first","toolUseResult":{"status":"teammate_spawned","teammate_id":"builder@team","name":"builder"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_builder","content":"Spawned."}]}}
+        {"type":"user","uuid":"second","toolUseResult":{"status":"teammate_spawned","teammate_id":"reviewer@team","name":"reviewer"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_reviewer","content":"Spawned."}]}}
+
+        """.utf8)
+        let answer = Data("""
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Waiting for the team."}]}}
+
+        """.utf8)
+        let working = TranscriptDocument.summary(ofTail: launch + answer, provider: .claude)
+        XCTAssertEqual(working.agentTurnState, .working)
+        XCTAssertNil(working.agentWaitingReason)
+        XCTAssertEqual(working.pendingBackground.map(\.teammateName), ["builder", "reviewer"])
+        let cold = TranscriptDocument.summary(ofTail: answer, provider: .claude)
+        XCTAssertEqual(TranscriptDocument.resolvingBackgroundWork(
+            cold, provider: .claude, deepTail: { launch + answer }).pendingBackground,
+            working.pendingBackground)
+
+        let firstIdle = try teammateIdle("builder")
+        let halfway = TranscriptDocument.summary(
+            ofTail: firstIdle + answer, provider: .claude, startingFrom: working)
+        XCTAssertEqual(halfway.agentTurnState, .working)
+        XCTAssertEqual(halfway.pendingBackground.map(\.teammateName), ["reviewer"])
+        let secondIdle = try teammateIdle("reviewer")
+        let done = TranscriptDocument.summary(
+            ofTail: secondIdle + answer, provider: .claude, startingFrom: halfway)
+        XCTAssertEqual(done.agentWaitingReason, .answerReady)
+        XCTAssertTrue(done.pendingBackground.isEmpty)
+        XCTAssertTrue(TranscriptDocument.resolvingBackgroundWork(
+            done, provider: .claude, deepTail: { launch + firstIdle + secondIdle + answer })
+            .pendingBackground.isEmpty)
+
+        let send = Data("""
+        {"type":"user","uuid":"sent","toolUseResult":{"success":true,"msg_id":"message_one","routing":{"target":"@builder"}},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_send","content":"Sent."}]}}
+
+        """.utf8)
+        let resumed = TranscriptDocument.summary(
+            ofTail: send + answer, provider: .claude, startingFrom: done)
+        XCTAssertEqual(resumed.agentTurnState, .working)
+        XCTAssertNil(resumed.agentWaitingReason)
+        XCTAssertEqual(resumed.pendingBackground.map(\.teammateName), ["builder"])
+        let finished = TranscriptDocument.summary(
+            ofTail: firstIdle + answer, provider: .claude, startingFrom: resumed)
+        XCTAssertEqual(finished.agentWaitingReason, .answerReady)
+        XCTAssertTrue(finished.pendingBackground.isEmpty)
+    }
+
+    func testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents() throws {
+        var running = TranscriptSummary(agentTurnState: .working)
+        running.pendingBackground = [
+            PendingBackgroundTask(toolUseID: "toolu_builder", teammateName: "builder"),
+        ]
+        for overrides: [String: Any] in [
+            ["from": "someone_else"], ["provenance": "forged"],
+            ["text": "Done."], ["text": "{\"type\":\"message\",\"from\":\"builder\"}"],
+            ["text": "{\"type\":\"idle_notification\",\"from\":\"someone_else\"}"],
+        ] {
+            let data = try teammateIdle("builder", overrides: overrides)
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: data, provider: .claude, startingFrom: running).pendingBackground,
+                running.pendingBackground)
+        }
+        for flags: [String: Any] in [["isSidechain": true], ["isMeta": true]] {
+            let data = try teammateIdle("builder", recordOverrides: flags)
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: data, provider: .claude, startingFrom: running).pendingBackground,
+                running.pendingBackground)
+        }
+        for success in [false, true] {
+            // A success without an inbox delivery receipt does not prove work.
+            let record: [String: Any] = [
+                "type": "user", "uuid": "result",
+                "toolUseResult": ["success": success, "routing": ["target": "@builder"]],
+                "message": ["role": "user", "content": [
+                    ["type": "tool_result", "tool_use_id": "toolu_send", "content": "Sent."],
+                ]],
+            ]
+            XCTAssertTrue(TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: record),
+                provider: .claude).pendingBackground.isEmpty)
+        }
+    }
+
+    private func teammateIdle(
+        _ name: String, overrides: [String: Any] = [:], recordOverrides: [String: Any] = [:]
+    ) throws -> Data {
+        let notice = try JSONSerialization.data(withJSONObject: [
+            "type": "idle_notification", "from": name, "idleReason": "available",
+        ])
+        var message: [String: Any] = ["from": name, "text": String(decoding: notice, as: UTF8.self)]
+        message.merge(overrides) { _, new in new }
+        var record: [String: Any] = [
+            "type": "attachment", "attachment": ["type": "teammate_mailbox", "messages": [message]],
+        ]
+        record.merge(recordOverrides) { _, new in new }
+        return try JSONSerialization.data(withJSONObject: record) + Data("\n".utf8)
+    }
+
+    func testClaudeAsyncAgentsKeepTheMainTurnWorkingUntilEveryCompletion() throws {
+        // The provider can background Agent/Task calls without a launch flag.
+        let launch = """
+        {"type":"assistant","uuid":"launch","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_agent","name":"Agent","input":{"prompt":"check"}}]}}
+        {"type":"user","uuid":"result","toolUseResult":{"status":"async_launched","agentId":"agent_one"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent","content":[{"type":"text","text":"Launched."}]}]}}
+        {"type":"user","uuid":"other-result","toolUseResult":{"status":"async_launched","agentId":"agent_two"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_other","content":"Launched."}]}}
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Waiting for the agents."}]}}
+        {"type":"system","subtype":"turn_duration","uuid":"duration"}
+        """
+        let running = TranscriptDocument.summary(ofTail: Data(launch.utf8), provider: .claude)
+        XCTAssertEqual(running.agentTurnState, .working)
+        XCTAssertNil(running.agentWaitingReason)
+        XCTAssertEqual(running.pendingBackground.map(\.taskID), ["agent_one", "agent_two"])
+        let answer = Data("""
+        {"type":"assistant","uuid":"answer","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Waiting."}]}}
+        """.utf8)
+        let cold = TranscriptDocument.summary(ofTail: answer, provider: .claude)
+        XCTAssertEqual(TranscriptDocument.resolvingBackgroundWork(
+            cold, provider: .claude, deepTail: { Data(launch.utf8) }).pendingBackground,
+            running.pendingBackground)
+
+        for status in ["completed", "failed", "killed"] {
+            let first = Data("""
+            {"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>agent_one</task-id><status>\(status)</status></task-notification>"}
+            """.utf8)
+            let halfway = TranscriptDocument.summary(
+                ofTail: first + Data("\n".utf8) + answer, provider: .claude, startingFrom: running)
+            XCTAssertEqual(halfway.agentTurnState, .working)
+            XCTAssertEqual(halfway.pendingBackground.map(\.taskID), ["agent_two"])
+            let second = Data("""
+            {"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification><task-id>agent_two</task-id><tool-use-id>toolu_other</tool-use-id><status>completed</status></task-notification>"}}
+            """.utf8)
+            let done = TranscriptDocument.summary(
+                ofTail: second + Data("\n".utf8) + answer,
+                provider: .claude, startingFrom: halfway)
+            XCTAssertEqual(done.agentTurnState, .waiting)
+            XCTAssertEqual(done.agentWaitingReason, .answerReady)
+            XCTAssertTrue(done.pendingBackground.isEmpty)
+        }
+    }
+
+    func testClaudeAsyncAgentResultsRequireValidMainChainLaunchEvidence() throws {
+        let result: [String: Any] = [
+            "type": "user", "uuid": "result",
+            "toolUseResult": ["status": "async_launched", "agentId": "agent_one"],
+            "message": ["role": "user", "content": [
+                ["type": "tool_result", "tool_use_id": "toolu_agent", "content": "Launched."],
+            ]],
+        ]
+        let waiting = TranscriptSummary(
+            agentTurnState: .waiting, agentTurnID: "answer", agentWaitingReason: .answerReady)
+        for overrides: [String: Any] in [
+            ["isSidechain": true], ["isMeta": true], ["uuid": ""],
+            ["type": "assistant"], ["type": "progress"],
+            ["toolUseResult": ["status": "completed", "agentId": "agent_one"]],
+            ["toolUseResult": ["status": "async_launched", "agentId": ""]],
+            ["message": ["role": "user", "content": [
+                ["type": "tool_result", "tool_use_id": "toolu_agent", "is_error": true],
+            ]]],
+        ] {
+            let record = result.merging(overrides) { _, new in new }
+            let data = try JSONSerialization.data(withJSONObject: record)
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: data, provider: .claude, startingFrom: waiting).pendingBackground, [])
+            XCTAssertEqual(TranscriptDocument.resolvingBackgroundWork(
+                waiting, provider: .claude, deepTail: { data }), waiting)
+        }
+        let data = try JSONSerialization.data(withJSONObject: result)
+        let pending = TranscriptDocument.summary(
+            ofTail: data, provider: .claude, startingFrom: waiting)
+        XCTAssertEqual(pending.agentTurnState, .working)
+        XCTAssertNil(pending.agentWaitingReason)
+        XCTAssertEqual(pending.pendingBackground.count, 1)
+        let duplicate = TranscriptDocument.summary(
+            ofTail: data, provider: .claude, startingFrom: pending)
+        XCTAssertEqual(duplicate.pendingBackground, pending.pendingBackground)
+
+        let asking = Data("""
+        {"type":"assistant","uuid":"ask","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"question","name":"AskUserQuestion","input":{}}]}}
+        """.utf8)
+        let inputRequired = TranscriptDocument.summary(ofTail: asking, provider: .claude)
+        let stillAsking = TranscriptDocument.summary(
+            ofTail: data, provider: .claude, startingFrom: inputRequired)
+        XCTAssertEqual(stillAsking.agentWaitingReason, .inputRequired)
+        XCTAssertEqual(stillAsking.agentTurnID, "question")
+        XCTAssertEqual(stillAsking.pendingBackground.count, 1)
+    }
+
+    func testClaudeAgentCompletionRequiresMatchingNotificationIdentity() throws {
+        var running = TranscriptSummary(agentTurnState: .working)
+        running.pendingBackground = [PendingBackgroundTask(toolUseID: "toolu_agent", taskID: "agent_one")]
+        for (tag, status) in [
+            ("<task-id>other</task-id>", "completed"),
+            ("<task-id>agent_one</task-id>", "running"),
+            ("<task-id>agent_one</task-id><tool-use-id>other</tool-use-id>", "completed"),
+        ] {
+            let text = "<task-notification>\(tag)<status>\(status)</status></task-notification>"
+            let record = ["type": "queue-operation", "operation": "enqueue", "content": text]
+            XCTAssertEqual(TranscriptDocument.summary(
+                ofTail: try JSONSerialization.data(withJSONObject: record),
+                provider: .claude, startingFrom: running).pendingBackground,
+                running.pendingBackground)
+        }
+    }
+
+    func testClaudeSummaryIgnoresForegroundToolsAndUnprovenAgentResults() {
+        // Foreground tools finish in their turn. An untyped agent result does
+        // not prove a background launch.
         let transcript = Data("""
         {"type":"user","uuid":"request","message":{"role":"user","content":"go"}}
         {"type":"assistant","uuid":"tools","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_fg","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"toolu_agent","name":"Agent","input":{"prompt":"x","run_in_background":true}}]}}
