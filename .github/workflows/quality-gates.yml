@@ -69,7 +69,7 @@ jobs:
           scripts/quality-shard run --base "$BASE_SHA" --shard static --result-root app/build/quality-shards/static
       - name: Upload level-zero evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: quality-shard-${{ github.run_id }}-${{ github.run_attempt }}-static
           path: app/build/quality-shards/static
@@ -159,7 +159,7 @@ jobs:
           scripts/quality-shard run --base "$BASE_SHA" --shard "${{ matrix.id }}" --result-root "app/build/quality-shards/${{ matrix.id }}"
       - name: Upload shard evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: quality-shard-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
           path: app/build/quality-shards/${{ matrix.id }}
@@ -201,7 +201,7 @@ jobs:
           printf 'DETACH_QUALITY_WORKFLOW_STARTED_AT=%s\n' "$started_at" >>"$GITHUB_ENV"
       - name: Download exact pull-request shard evidence
         if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: quality-shard-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: ${{ runner.temp }}/quality-shards
@@ -362,7 +362,7 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
       - name: Upload gate evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: quality-gate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: app/build/quality-gates
@@ -385,7 +385,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download exact main quality evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: quality-gate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: app/build/quality-gates
