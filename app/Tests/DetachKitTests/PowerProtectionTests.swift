@@ -346,13 +346,25 @@ final class PowerProtectionTests: XCTestCase {
         XCTAssertTrue(status.thermalSafetyActive)
     }
 
-    func testLegacyPowerStatusDecodesUnknownThermalDetail() throws {
-        let json = #"{"state":"allowed","lease_count":0,"assertion_active":false,"closed_lid_protection_active":false,"helper_reachable":true,"transition_in_progress":false,"low_battery":false}"#
+    func testLegacyPowerStatusDecodesUnknownThermalStateWhenLatchIsPresent() throws {
+        let json = #"{"state":"allowed","lease_count":0,"assertion_active":false,"closed_lid_protection_active":false,"helper_reachable":true,"transition_in_progress":false,"low_battery":false,"thermal_safety_active":false}"#
         let status = try JSONDecoder().decode(
             PowerProtectionStatus.self, from: Data(json.utf8))
 
         XCTAssertEqual(status.thermalState, .unknown)
         XCTAssertFalse(status.thermalSafetyActive)
+    }
+
+    func testMissingThermalSafetyActiveDoesNotDecodeAsInactive() {
+        let json = #"{"state":"allowed","lease_count":0,"assertion_active":false,"closed_lid_protection_active":false,"helper_reachable":true,"transition_in_progress":false,"low_battery":false}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            PowerProtectionStatus.self, from: Data(json.utf8)))
+    }
+
+    func testLegacyPowerStatusDecodesUnknownThermalDetail() {
+        let json = #"{"state":"allowed","lease_count":0,"assertion_active":false,"closed_lid_protection_active":false,"helper_reachable":true,"transition_in_progress":false,"low_battery":false}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            PowerProtectionStatus.self, from: Data(json.utf8)))
     }
 
     func testCoordinatorOwnsAndRestoresClosedLidProtection() {

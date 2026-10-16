@@ -125,8 +125,8 @@ public struct PowerProtectionStatus: Equatable, Codable, Sendable {
         lowBattery = try container.decode(Bool.self, forKey: .lowBattery)
         thermalState = try container.decodeIfPresent(
             PowerThermalState.self, forKey: .thermalState) ?? .unknown
-        thermalSafetyActive = try container.decodeIfPresent(
-            Bool.self, forKey: .thermalSafetyActive) ?? false
+        thermalSafetyActive = try container.decode(
+            Bool.self, forKey: .thermalSafetyActive)
     }
 
     private enum CodingKeys: String, CodingKey {
