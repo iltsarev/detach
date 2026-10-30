@@ -2474,6 +2474,10 @@ resume_barrier_lockf="$TMP_ROOT/resume-barrier-lockf"
 resume_barrier_output="$TMP_ROOT/resume-barrier.out"
 rm -rf "$resume_barrier_dir"
 cp -Rp "$codex_session_dir" "$resume_barrier_dir"
+# This fixture tests checkpoint locking, not duplicate UUID admission. Keep
+# only its copied slot visible while the fixture owns the provider identity.
+resume_barrier_source="$TMP_ROOT/resume-barrier-source"
+mv "$codex_session_dir" "$resume_barrier_source"
 "$STATE_HELPER" meta patch "$resume_barrier_dir/meta.json" \
   --string session_name "$resume_barrier_session" \
   --string display_name "$resume_barrier_name"
@@ -2515,6 +2519,7 @@ wait_for_tmux_option "$resume_barrier_session" @detach_status running
 "$STATE_HELPER" jsonl validate codex "$expected_rollout" "$expected_id"
 run_codex stop "$resume_barrier_name"
 run_codex delete --force "$resume_barrier_name"
+mv "$resume_barrier_source" "$codex_session_dir"
 
 # Project occupancy is checked before Recover can restore shared provider
 # state. A live session under another name must keep both its process identity
@@ -2967,6 +2972,9 @@ ready_meta="$ready_dir/meta.json"
 ready_checkpoint="$ready_dir/checkpoint"
 rm -rf "$ready_dir"
 cp -Rp "$codex_session_dir" "$ready_dir"
+# Isolate the copied recovery generation from its source managed slot.
+ready_source="$TMP_ROOT/ready-source"
+mv "$codex_session_dir" "$ready_source"
 "$STATE_HELPER" meta patch "$ready_checkpoint/meta.json" \
   --string session_name "$ready_session" \
   --string display_name "$ready_name" \
@@ -3043,6 +3051,7 @@ for ready_typed_case in preserve ready shutdown; do
     run_codex recover --detach "$ready_name"
   expect_cli_refusal "mistyped $ready_typed_case delete" \
     run_codex delete --force "$ready_name"
+mv "$ready_source" "$codex_session_dir"
   diff -qr "$ready_typed_checkpoint_copy" "$ready_checkpoint" >/dev/null
   cp -p "$ready_typed_meta_copy" "$ready_meta"
 done

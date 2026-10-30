@@ -93,8 +93,9 @@ stage's success as separate proof for each scenario.
   them does not replace it. Runs with deleted or expired evidence are skipped.
   Duplicate or malformed evidence fails closed. If no retained metrics remain,
   CI reports the missing baseline and does not skip coverage comparison.
-  Each main dashboard keeps a compressed archive of the measured baseline in
-  GitHub Pages. It retains the original manifest, inventory, promotion, and
+  Each main dashboard keeps compressed archives of the latest measured Swift
+  and combined baselines in GitHub Pages. A later dashboard deployment retains
+  the newest archive for each profile. It retains the original manifest, inventory, promotion, and
   metric bytes. Restore checks their digests and the original successful main
   workflow identity. An explicit owner-dispatched care run can restore retained
   CI evidence when the first archive is missing. It does not measure a new

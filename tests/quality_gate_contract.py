@@ -373,14 +373,14 @@ class QualityGateContract(unittest.TestCase):
                 json.loads(line)
                 for line in events.read_text(encoding="utf-8").splitlines()
             ]
-            self.assertEqual(len(records), 10)
+            self.assertEqual(len(records), 12)
             self.assertEqual(
                 {(record["kind"], record["id"]) for record in records},
                 {
                     (kind, f"SC-SESSION-{scenario}-CODEX")
                     for kind in ("begin", "pass")
                     for scenario in ("CREATE", "PERSIST", "STOP", "RECOVER", "DELETE")
-                },
+                } | {(kind, "SC-SESSION-RESUME-IDENTITY") for kind in ("begin", "pass")},
             )
             with patch("quality_gate.os.cpu_count", return_value=10):
                 self.assertEqual(

@@ -148,6 +148,7 @@ PROVIDER_PART_SCENARIOS = {
             "SC-SESSION-STOP-CODEX",
         ),
         "recovery": ("SC-SESSION-RECOVER-CODEX",),
+        "resume": ("SC-SESSION-RESUME-IDENTITY",),
         "delete": ("SC-SESSION-DELETE-CODEX",),
         "lifecycle-recovery": (
             "SC-SESSION-CREATE-CODEX",
@@ -156,6 +157,7 @@ PROVIDER_PART_SCENARIOS = {
             "SC-SESSION-RECOVER-CODEX",
         ),
         "resume-identity": (
+            "SC-SESSION-RESUME-IDENTITY",
             "SC-SESSION-DELETE-CODEX",
         ),
     },

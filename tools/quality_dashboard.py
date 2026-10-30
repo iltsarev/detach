@@ -12,8 +12,6 @@ import os
 from pathlib import Path
 import re
 import statistics
-import shutil
-import tempfile
 import subprocess
 import sys
 import threading
@@ -903,24 +901,12 @@ def generate(arguments: argparse.Namespace) -> int:
     rendered_html = render_html(data).encode("utf-8")
     atomic_write(output / "data.json", rendered_data)
     atomic_write(output / "index.html", rendered_html)
-    # Every hosted main dashboard carries the measured baseline independently
-    # of the short-lived Actions logs. Other dashboard deploys retain it too.
+    # Keep independently measured profiles across every dashboard deployment.
     match = re.fullmatch(r"https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/runs/([0-9]+)", arguments.run_url)
-    if match and data["run"]["authority"] == "ci-main" and data["run"]["result"] == "passed":
-        from quality_baseline_archive import ARCHIVE_NAME, pack
-        if metrics_baseline:
-            payload = pack(metrics_baseline, match[1], int(metrics_baseline.name))
-        else:
-            from quality_baseline_archive import FILES
-            with tempfile.TemporaryDirectory(prefix="detach-dashboard-baseline-") as raw:
-                staging = Path(raw)
-                (staging / "run").mkdir()
-                for name in FILES:
-                    source = run_dir / name
-                    if source.exists():
-                        shutil.copyfile(source, staging / "run" / name)
-                payload = pack(staging, match[1], int(match[2]))
-        atomic_write(output / ARCHIVE_NAME, payload)
+    if (match and match[1] == os.environ.get("GITHUB_REPOSITORY")
+            and data["run"]["authority"] == "ci-main" and data["run"]["result"] == "passed"):
+        from quality_baseline_archive import dashboard_archives
+        dashboard_archives(output, run_dir, metrics_baseline, match[1], int(match[2]))
     print(f"quality-dashboard: generated {output / 'index.html'}")
     return 0
 

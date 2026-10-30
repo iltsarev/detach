@@ -405,6 +405,7 @@
         "QC-QUALITY-SUPPLY-CHAIN"
       ],
       "scenarios": [
+        "SC-BASELINE-CONTRACT",
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
         "SC-MERGE-CONTRACT",
@@ -1070,6 +1071,7 @@
       "spec": "docs/specs/quality.md",
       "summary": "One current policy owns quality selection and traceability.",
       "verification": [
+        "SC-BASELINE-CONTRACT",
         "SC-CONTRACT-CHANGE",
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
@@ -2795,6 +2797,13 @@
       "stage": "codex",
       "status": "instrumented",
       "tests": []
+    },
+    {
+      "command": "tests/quality-baseline.sh",
+      "id": "SC-BASELINE-CONTRACT",
+      "stage": "gate-contract",
+      "status": "instrumented",
+      "tests": []
     }
   ],
   "schema": 1,
@@ -3771,6 +3780,12 @@
           ],
           "scenarios": [
             {
+              "command": "tests/quality-baseline.sh",
+              "id": "SC-BASELINE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
               "command": "tests/quality-policy.sh",
               "id": "SC-POLICY-CONTRACT",
               "stage": "gate-contract",
@@ -3803,6 +3818,7 @@
           ],
           "summary": "One current policy owns quality selection and traceability.",
           "verification": [
+            "SC-BASELINE-CONTRACT",
             "SC-CONTRACT-CHANGE",
             "SC-POLICY-CONTRACT",
             "SC-PROMOTION-CONTRACT",
@@ -3817,6 +3833,12 @@
             "J-QUALITY-CHANGE"
           ],
           "scenarios": [
+            {
+              "command": "tests/quality-baseline.sh",
+              "id": "SC-BASELINE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
             {
               "command": "tests/quality-policy.sh",
               "id": "SC-POLICY-CONTRACT",

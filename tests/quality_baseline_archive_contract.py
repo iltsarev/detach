@@ -43,7 +43,9 @@ def main():
             restored = archive.unpack(payload, "owner/repository", root / "restored")
             assert (restored / "run/quality-metrics.json").read_bytes() == source.read_bytes()
             assert load_baseline(restored, "swift")[2] == BASE_COMMIT
-            rejects(lambda: archive.unpack(payload, "owner/repository", root / "restored"), "an existing destination")
+            assert archive.unpack(payload, "owner/repository", root / "restored") == restored
+            (root / "occupied/123").mkdir(parents=True)
+            rejects(lambda: archive.unpack(payload, "owner/repository", root / "occupied"), "a different existing destination")
             rejects(lambda: archive.unpack(payload, "other/repository", root / "foreign"), "a foreign repository")
             rejects(lambda: archive.unpack(payload[:-2], "owner/repository", root / "truncated"), "a truncated archive")
             value = json.loads(lzma.decompress(payload))
@@ -62,6 +64,39 @@ def main():
             with patch.object(archive, "gh", return_value=json.dumps({**metadata, field: wrong})):
                 rejects(lambda: archive.unpack(payload, "owner/repository", root / field), field)
                 assert not (root / field / "123").exists()
+        def profile_root(name, commit, profile):
+            path = root / (name + ".json")
+            write_json(path, {**metrics, "source_commit": commit, "coverage_profile": profile})
+            directory = root / name
+            create_baseline(directory, path, source_commit=commit)
+            return directory
+
+        combined_root = profile_root("combined", BASE_COMMIT, "combined")
+        newer_swift = profile_root("newer-swift", "c" * 40, "swift")
+        current = profile_root("current", "b" * 40, "swift")
+        saved = {
+            "combined": archive.pack(combined_root, "owner/repository", 100),
+            "swift": archive.pack(newer_swift, "owner/repository", 300),
+        }
+        identities = {100: BASE_COMMIT, 200: "b" * 40, 300: "c" * 40, 400: "b" * 40}
+        def hosted_run(executable, arguments):
+            identity = int(arguments[-1].rsplit("/", 1)[1])
+            return json.dumps({**metadata, "head_sha": identities[identity]})
+        with patch.object(archive, "gh", side_effect=hosted_run), \
+             patch.object(archive, "public_payload", side_effect=lambda repository, profile: saved[profile]):
+            output = root / "dashboard"
+            output.mkdir()
+            archive.dashboard_archives(output, current / "run", None, "owner/repository", 200)
+            for profile, expected in (("combined", 100), ("swift", 300)):
+                restored = archive.unpack((output / archive.public_name(profile)).read_bytes(),
+                                          "owner/repository", root / ("first-" + profile))
+                assert int(restored.name) == expected
+                load_baseline(restored, profile)
+            archive.dashboard_archives(output, current / "run", None, "owner/repository", 400)
+            restored = archive.unpack((output / archive.public_name("swift")).read_bytes(),
+                                      "owner/repository", root / "advanced")
+            assert restored.name == "400"
+
         with patch.object(archive, "MAX_BYTES", 32):
             rejects(lambda: archive.unpack(payload, "owner/repository", root / "huge"), "an oversized archive")
     print("Durable quality baseline archive contracts passed")

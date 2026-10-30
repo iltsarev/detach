@@ -183,7 +183,7 @@ def restore(
             return destination
     if not test_mode:
         from quality_baseline_archive import restore as restore_archive
-        archived = restore_archive(repository, output_root, executable)
+        archived = restore_archive(repository, output_root, executable, coverage_profile)
         if archived is not None:
             manifests = list(archived.glob("*/manifest.tsv"))
             if len(manifests) != 1 or matching_metrics(manifests[0].parent, coverage_profile) is None:

@@ -28,6 +28,8 @@ FILES = {
 
 def validate_root(root: Path) -> str:
     run, manifest, commit = load_baseline_run(root)
+    if run.is_symlink() or run.resolve().parent != root.resolve():
+        raise BaselineError("archive run directory is unsafe")
     found = False
     for profile, name in (("combined", "quality-metrics.json"), ("swift", "quality-metrics-swift.json")):
         if (run / name).exists():
@@ -107,8 +109,16 @@ def unpack(payload: bytes, repository: str, output: Path, executable: str = "gh"
             raise BaselineError("archive does not name a successful main quality run")
         destination = output / str(value["run_id"])
         if destination.exists() or destination.is_symlink():
-            # Never replace a prior root implicitly, even with another valid archive.
-            raise BaselineError("archive destination already exists")
+            # Reuse identical cached evidence. Never replace another root.
+            if destination.is_symlink() or not destination.is_dir():
+                raise BaselineError("archive destination is unsafe")
+            existing_run, _, _ = load_baseline_run(destination)
+            for name, content in value["files"].items():
+                existing = existing_run / name
+                if existing.is_symlink() or not existing.is_file() or existing.read_bytes() != content.encode("utf-8"):
+                    raise BaselineError("archive destination contains different evidence")
+            validate_root(destination)
+            return destination
         stage.rename(destination)
         return destination
     finally:
@@ -116,17 +126,32 @@ def unpack(payload: bytes, repository: str, output: Path, executable: str = "gh"
             shutil.rmtree(stage)
 
 
-def restore(repository: str, output: Path, executable: str) -> Path | None:
+def public_name(profile: str) -> str:
+    if profile not in {"swift", "combined"}:
+        raise BaselineError("baseline archive profile is invalid")
+    return f"quality-baseline-{profile}.json.xz"
+
+
+def public_payload(repository: str, profile: str) -> bytes | None:
     owner, name = repository.split("/")
-    url = f"https://{owner}.github.io/{name}/{ARCHIVE_NAME}"
+    url = f"https://{owner}.github.io/{name}/{public_name(profile)}"
     try:
         with urlopen(url, timeout=10) as response:
             payload = response.read(MAX_BYTES + 1)
     except HTTPError as error:
-        if error.code != 404:
-            raise BaselineError(f"baseline archive request failed: {error.code}") from error
-    else:
+        if error.code == 404:
+            return None
+        raise BaselineError(f"baseline archive request failed: {error.code}") from error
+    if len(payload) > MAX_BYTES:
+        raise BaselineError("baseline archive is too large")
+    return payload
+
+
+def restore(repository: str, output: Path, executable: str, profile: str) -> Path | None:
+    payload = public_payload(repository, profile)
+    if payload is not None:
         return unpack(payload, repository, output, executable)
+    owner = repository.split("/")[0]
 
     # Bootstrap recovery is explicit: only the repository owner's manual care
     # run can supply the saved artifact. The original main run is checked above.
@@ -156,6 +181,42 @@ def restore(repository: str, output: Path, executable: str) -> Path | None:
                 raise BaselineError("baseline recovery archive is missing or unsafe")
             return unpack(path.read_bytes(), repository, output, executable)
     return None
+
+
+def dashboard_archives(output: Path, current_run: Path, prior: Path | None,
+                       repository: str, run_id: int) -> None:
+    from quality_baseline import matching_metrics
+    candidates: dict[str, tuple[int, bytes]] = {}
+    with tempfile.TemporaryDirectory(prefix="detach-dashboard-baseline-") as raw:
+        stage = Path(raw)
+        (stage / "run").mkdir()
+        for name in FILES:
+            source = current_run / name
+            if source.exists():
+                shutil.copyfile(source, stage / "run" / name)
+        for root, identity in ((prior, int(prior.name) if prior else 0), (stage, run_id)):
+            if root is None:
+                continue
+            manifests = list(root.glob("*/manifest.tsv"))
+            if len(manifests) != 1:
+                raise BaselineError("dashboard baseline has no unique manifest")
+            payload = None
+            for profile in ("swift", "combined"):
+                if matching_metrics(manifests[0].parent, profile) is not None:
+                    payload = payload or pack(root, repository, identity)
+                    if identity >= candidates.get(profile, (0, b""))[0]:
+                        candidates[profile] = (identity, payload)
+        for profile in ("swift", "combined"):
+            payload = public_payload(repository, profile)
+            if payload is not None:
+                with tempfile.TemporaryDirectory(prefix="detach-prior-baseline-") as previous:
+                    restored = unpack(payload, repository, Path(previous))
+                    load_baseline(restored, profile)
+                    identity = int(restored.name)
+                if identity > candidates.get(profile, (0, b""))[0]:
+                    candidates[profile] = (identity, payload)
+            if profile in candidates:
+                (output / public_name(profile)).write_bytes(candidates[profile][1])
 
 
 def main() -> None:
