@@ -532,10 +532,10 @@ Direct acceptance evidence for `QC-RELEASE-PUBLISH`: `SC-PUBLISH-CONTRACT`, `SC-
 
 | Requirement | Journeys | Scenarios | Outcome |
 | --- | --- | --- | --- |
-| [`QC-QUALITY-POLICY`](../../docs/specs/quality.md#qc-quality-policy) | `J-QUALITY-CHANGE` | `SC-BASELINE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-POLICY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-PROMOTION-CONTRACT` (instrumented, `gate-contract`)<br>`SC-MERGE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-SECURITY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-CONTRACT-CHANGE` (instrumented, `gate-contract`) | One current policy owns quality selection and traceability. |
-| [`QC-QUALITY-SUPPLY-CHAIN`](../../docs/specs/quality.md#qc-quality-supply-chain) | `J-QUALITY-CHANGE` | `SC-BASELINE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-POLICY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-PROMOTION-CONTRACT` (instrumented, `gate-contract`)<br>`SC-MERGE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-SECURITY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-CONTRACT-CHANGE` (instrumented, `gate-contract`) | Bounded automation scans code and keeps dependency pins current. |
+| [`QC-QUALITY-POLICY`](../../docs/specs/quality.md#qc-quality-policy) | `J-QUALITY-CHANGE` | `SC-RUNTIME-PRODUCT-CONTRACT` (instrumented, `gate-contract`)<br>`SC-BASELINE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-POLICY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-PROMOTION-CONTRACT` (instrumented, `gate-contract`)<br>`SC-MERGE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-SECURITY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-CONTRACT-CHANGE` (instrumented, `gate-contract`) | One current policy owns quality selection and traceability. |
+| [`QC-QUALITY-SUPPLY-CHAIN`](../../docs/specs/quality.md#qc-quality-supply-chain) | `J-QUALITY-CHANGE` | `SC-RUNTIME-PRODUCT-CONTRACT` (instrumented, `gate-contract`)<br>`SC-BASELINE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-POLICY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-PROMOTION-CONTRACT` (instrumented, `gate-contract`)<br>`SC-MERGE-CONTRACT` (instrumented, `gate-contract`)<br>`SC-SECURITY-CONTRACT` (instrumented, `gate-contract`)<br>`SC-CONTRACT-CHANGE` (instrumented, `gate-contract`) | Bounded automation scans code and keeps dependency pins current. |
 
-Direct acceptance evidence for `QC-QUALITY-POLICY`: `SC-BASELINE-CONTRACT`, `SC-CONTRACT-CHANGE`, `SC-POLICY-CONTRACT`, `SC-PROMOTION-CONTRACT`, `SC-MERGE-CONTRACT`, `SC-SECURITY-CONTRACT`.
+Direct acceptance evidence for `QC-QUALITY-POLICY`: `SC-RUNTIME-PRODUCT-CONTRACT`, `SC-BASELINE-CONTRACT`, `SC-CONTRACT-CHANGE`, `SC-POLICY-CONTRACT`, `SC-PROMOTION-CONTRACT`, `SC-MERGE-CONTRACT`, `SC-SECURITY-CONTRACT`.
 
 
 

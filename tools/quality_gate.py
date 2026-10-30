@@ -1409,6 +1409,7 @@ class QualityGate:
         environment = os.environ.copy()
         exact_app = environment.pop("DETACH_QUALITY_EXACT_APP", "")
         exact_products = environment.pop("DETACH_QUALITY_EXACT_PRODUCTS", "")
+        exact_runtime = environment.pop("DETACH_QUALITY_EXACT_RUNTIME", "")
         for name in (
             "DETACH_CONFIRM_RELEASE",
             "DETACH_VERSION",
@@ -1455,6 +1456,8 @@ class QualityGate:
             "swift", "app", "ui-e2e", "quality-contracts", "codex", "claude"
         ) and exact_products:
             environment["DETACH_QUALITY_EXACT_PRODUCTS"] = exact_products
+        if stage in ("codex", "claude") and exact_runtime:
+            environment["DETACH_QUALITY_EXACT_RUNTIME"] = exact_runtime
         if not self.test_direct:
             environment["DETACH_RELEASE_TESTS_DETACHED"] = "1"
         return environment
@@ -2012,10 +2015,23 @@ RUNTIME_PRODUCT_ROOT = Path("app/.build/quality-runtime")
 def provider_runtime_payload(root: Path) -> Path:
     """Return the directory that holds tmux and detach-state for provider suites.
 
-    Hosted shards that bind exact products from the last green main use the
-    published runtime products. Everything else uses the freshly verified app.
+    Hosted shards use verified cached products or a fresh minimal build.
+    Other callers use the freshly verified app.
     """
     if exact_products_enabled():
+        return root / RUNTIME_PRODUCT_ROOT
+    runtime = os.environ.get("DETACH_QUALITY_EXACT_RUNTIME", "")
+    if runtime not in ("", "1"):
+        raise GateError("DETACH_QUALITY_EXACT_RUNTIME must be 1")
+    if runtime:
+        if (os.environ.get("GITHUB_ACTIONS") != "true"
+                or os.environ.get("DETACH_QUALITY_GATE_AUTHORITY") != "ci-shard"):
+            raise GateError("exact runtime reuse requires hosted shard authority")
+        from quality_products import ProductError, verify
+        try:
+            verify(root, runtime_only=True)
+        except ProductError as error:
+            raise GateError(str(error)) from error
         return root / RUNTIME_PRODUCT_ROOT
     return root / "app/build/Detach.app/Contents/Resources/DetachCLI"
 

@@ -88,7 +88,10 @@ stage's success as separate proof for each scenario.
 - Exact keys bind inputs and toolchain. `main` warms missing products. CI
   verifies hits and misses, then reuses a fresh app. Warming emits no
   evidence. On a miss, a shard with the app stage builds inside that stage.
-  Other shards prepare the app before their checks.
+  App consumers prepare the app before their checks. Provider-only shards
+  build just arm64 tmux and detach-state on a miss. A separate manifest binds
+  their bytes to the current source and toolchain. Each provider stage verifies
+  it before use. This preparation supplies no acceptance evidence.
 - CI uses the newest green `main` artifact with metrics; a later run without
   them does not replace it. Runs with deleted or expired evidence are skipped.
   Duplicate or malformed evidence fails closed. If no retained metrics remain,

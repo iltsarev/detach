@@ -45,6 +45,29 @@ from quality_policy import POLICY_FILE, Policy  # noqa: E402
 
 
 class QualityGateContract(unittest.TestCase):
+    def test_runtime_binding_is_hosted_and_verified_before_use(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
+            "DETACH_QUALITY_EXACT_PRODUCTS": "",
+            "DETACH_QUALITY_EXACT_RUNTIME": "1",
+            "GITHUB_ACTIONS": "false",
+            "DETACH_QUALITY_GATE_AUTHORITY": "local-diagnostic",
+        }, clear=False):
+            root = Path(temporary)
+            with self.assertRaisesRegex(GateError, "hosted shard authority"):
+                provider_runtime_payload(root)
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "DETACH_QUALITY_GATE_AUTHORITY": "ci-shard"}), patch(
+                "quality_products.verify", return_value=0
+            ) as verify:
+                self.assertEqual(provider_runtime_payload(root), root / "app/.build/quality-runtime")
+                verify.assert_called_once_with(root, runtime_only=True)
+            from quality_products import ProductError
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "DETACH_QUALITY_GATE_AUTHORITY": "ci-shard"}), patch(
+                "quality_products.verify", side_effect=ProductError("changed runtime")
+            ):
+                with self.assertRaisesRegex(GateError, "changed runtime"):
+                    provider_runtime_payload(root)
+
+
     def test_provider_payload_follows_exact_product_binding(self) -> None:
         root = Path("/repo")
         with patch.dict("os.environ", {}, clear=False):
@@ -312,6 +335,7 @@ class QualityGateContract(unittest.TestCase):
             "DETACH_QUALITY_GATE_TEST_MODE": "1",
             "DETACH_QUALITY_EXACT_PRODUCTS": "1",
             "DETACH_QUALITY_EXACT_APP": "1",
+            "DETACH_QUALITY_EXACT_RUNTIME": "1",
         }
         with patch.dict("os.environ", environment, clear=False):
             gate = QualityGate(parse_options([]))
@@ -325,6 +349,10 @@ class QualityGateContract(unittest.TestCase):
                     "DETACH_QUALITY_EXACT_PRODUCTS", gate.stage_environment(stage), stage
                 )
             self.assertNotIn("DETACH_QUALITY_EXACT_APP", gate.stage_environment("codex"))
+            for stage in ("codex", "claude"):
+                self.assertEqual(gate.stage_environment(stage).get("DETACH_QUALITY_EXACT_RUNTIME"), "1")
+            for stage in ("static", "swift", "app", "ui-e2e", "quality-contracts", "distribution"):
+                self.assertNotIn("DETACH_QUALITY_EXACT_RUNTIME", gate.stage_environment(stage))
 
     def test_codex_parts_get_private_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

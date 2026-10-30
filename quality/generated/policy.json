@@ -405,6 +405,7 @@
         "QC-QUALITY-SUPPLY-CHAIN"
       ],
       "scenarios": [
+        "SC-RUNTIME-PRODUCT-CONTRACT",
         "SC-BASELINE-CONTRACT",
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
@@ -1071,6 +1072,7 @@
       "spec": "docs/specs/quality.md",
       "summary": "One current policy owns quality selection and traceability.",
       "verification": [
+        "SC-RUNTIME-PRODUCT-CONTRACT",
         "SC-BASELINE-CONTRACT",
         "SC-CONTRACT-CHANGE",
         "SC-POLICY-CONTRACT",
@@ -2810,6 +2812,13 @@
       "stage": "gate-contract",
       "status": "instrumented",
       "tests": []
+    },
+    {
+      "command": "python3 tests/quality_products_contract.py",
+      "id": "SC-RUNTIME-PRODUCT-CONTRACT",
+      "stage": "gate-contract",
+      "status": "instrumented",
+      "tests": []
     }
   ],
   "schema": 1,
@@ -3786,6 +3795,12 @@
           ],
           "scenarios": [
             {
+              "command": "python3 tests/quality_products_contract.py",
+              "id": "SC-RUNTIME-PRODUCT-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
               "command": "tests/quality-baseline.sh",
               "id": "SC-BASELINE-CONTRACT",
               "stage": "gate-contract",
@@ -3824,6 +3839,7 @@
           ],
           "summary": "One current policy owns quality selection and traceability.",
           "verification": [
+            "SC-RUNTIME-PRODUCT-CONTRACT",
             "SC-BASELINE-CONTRACT",
             "SC-CONTRACT-CHANGE",
             "SC-POLICY-CONTRACT",
@@ -3839,6 +3855,12 @@
             "J-QUALITY-CHANGE"
           ],
           "scenarios": [
+            {
+              "command": "python3 tests/quality_products_contract.py",
+              "id": "SC-RUNTIME-PRODUCT-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
             {
               "command": "tests/quality-baseline.sh",
               "id": "SC-BASELINE-CONTRACT",

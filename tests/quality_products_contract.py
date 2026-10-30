@@ -116,6 +116,49 @@ class QualityProductsContract(unittest.TestCase):
             ):
                 quality_products.stage_runtime_products(root)
 
+    def test_runtime_manifest_requires_exact_source_toolchain_and_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / quality_products.RUNTIME_PRODUCT_ROOT
+            runtime.mkdir(parents=True)
+            for name in quality_products.RUNTIME_PRODUCTS:
+                (runtime / name).write_text(name)
+                (runtime / name).chmod(0o755)
+            with patch("quality_products.command_text", return_value="arm64"), patch(
+                "quality_products.source_fingerprint", return_value="a" * 64
+            ), patch("quality_products.toolchain_document", return_value={"compiler": "A"}):
+                quality_products.publish(root, runtime_only=True)
+                quality_products.verify(root, runtime_only=True)
+                self.assertFalse((root / quality_products.RUNTIME_SOURCE).exists())
+                with patch("quality_products.source_fingerprint", return_value="b" * 64):
+                    with self.assertRaisesRegex(quality_products.ProductError, "source content"):
+                        quality_products.verify(root, runtime_only=True)
+                with patch("quality_products.toolchain_document", return_value={"compiler": "B"}):
+                    with self.assertRaisesRegex(quality_products.ProductError, "toolchain"):
+                        quality_products.verify(root, runtime_only=True)
+                (runtime / "detach-state").write_text("modified")
+                with self.assertRaisesRegex(quality_products.ProductError, "inventory"):
+                    quality_products.verify(root, runtime_only=True)
+
+    def test_runtime_only_manifest_cannot_authorize_the_full_products(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / quality_products.RUNTIME_PRODUCT_ROOT
+            runtime.mkdir(parents=True)
+            for name in quality_products.RUNTIME_PRODUCTS:
+                (runtime / name).write_text(name)
+                (runtime / name).chmod(0o755)
+            with patch("quality_products.command_text", return_value="arm64"), patch(
+                "quality_products.source_fingerprint", return_value="a" * 64
+            ), patch("quality_products.toolchain_document", return_value={}):
+                quality_products.publish(root, runtime_only=True)
+                with self.assertRaisesRegex(quality_products.ProductError, "manifest is missing"):
+                    quality_products.verify(root)
+                (runtime / "tmux").unlink()
+                (runtime / "tmux").symlink_to("detach-state")
+                with self.assertRaisesRegex(quality_products.ProductError, "unsafe"):
+                    quality_products.publish(root, runtime_only=True)
+
     def test_exact_coverage_inputs_fail_closed(self) -> None:
         environment = os.environ.copy()
         environment.pop("DETACH_SWIFT_TEST_BINARY", None)

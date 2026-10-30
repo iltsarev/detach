@@ -146,8 +146,14 @@ jobs:
         run: |
           app/scripts/verify-app.sh
           printf 'DETACH_QUALITY_EXACT_APP=1\n' >>"$GITHUB_ENV"
+      - name: Build and bind exact provider runtime
+        if: matrix.needs_runtime && !matrix.needs_app && steps.product-cache.outputs.cache-hit != 'true' && steps.app-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 tools/quality_products.py build-runtime
+          python3 tools/quality_products.py verify-runtime
+          printf 'DETACH_QUALITY_EXACT_RUNTIME=1\n' >>"$GITHUB_ENV"
       - name: Build and bind exact packaged test app
-        if: (!matrix.builds_app && (matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true'))) && steps.app-cache.outputs.cache-hit != 'true'
+        if: (!matrix.builds_app && matrix.needs_app) && steps.app-cache.outputs.cache-hit != 'true'
         env:
           DETACH_QUALITY_APP_SCRATCH: 1
         run: |
