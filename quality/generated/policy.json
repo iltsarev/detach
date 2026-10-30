@@ -2520,6 +2520,7 @@
         "DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased",
         "DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation",
         "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailurePreservesThermalLatchAndChosenFloor",
         "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails"
       ]
     },
@@ -4285,6 +4286,7 @@
     "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireRejectsAnExpiredRequestBeforePersisting": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireVerifiesBothProtectionsAndPersistsOwnershipBeforeMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailurePreservesThermalLatchAndChosenFloor": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testReleaseRestoresNormalSleepOnlyWhenDetachOwnedTheMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",

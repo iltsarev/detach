@@ -346,6 +346,34 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertFalse(cached.helperReachable)
     }
 
+    func testBatteryReadFailurePreservesThermalLatchAndChosenFloor() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let thermal = MutableThermalReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            thermalReader: thermal,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now })
+        _ = try service.setLowBatteryThreshold(.percent20)
+        _ = try service.acquireLease(identity, assertionActive: true)
+        thermal.state = .serious
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertEqual(backend.writes, [true, false])
+        XCTAssertEqual(store.state?.thermalSafety.isActive, true)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertFalse(cached.closedLidProtectionActive)
+        XCTAssertTrue(cached.thermalSafetyActive)
+        XCTAssertEqual(cached.lowBatteryThreshold, .percent20)
+    }
+
     func testAcquireRejectsAnExpiredRequestBeforePersisting() throws {
         let store = FakeStore()
         let backend = FakeBackend(enabled: false)

@@ -261,6 +261,7 @@ Direct acceptance evidence for `QC-POWER-PROTECTION`: `SC-POWER-LOW-BATTERY`, `S
 - `DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased`
 - `DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation`
 - `DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive`
+- `DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailurePreservesThermalLatchAndChosenFloor`
 - `DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails`
 
 

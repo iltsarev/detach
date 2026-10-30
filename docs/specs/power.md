@@ -185,7 +185,8 @@ provider is allowed to finish only while the Mac remains awake. Initial
 acquisition fails closed at low battery. If the battery reader fails after
 Detach owns closed-lid protection, the helper restores that owned setting
 before it returns the failure. Cached status must not report that closed-lid
-protection is inactive while Detach still owns the setting. A borrowed
+protection is inactive while Detach still owns the setting. Failure status
+keeps the stored thermal-safety latch and low-battery threshold. A borrowed
 external setting cannot be turned off, so status must never falsely report
 the low-battery safe state while that setting remains active.
 

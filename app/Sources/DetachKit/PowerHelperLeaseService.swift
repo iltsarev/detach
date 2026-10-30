@@ -668,21 +668,18 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
     /// Failure snapshots must not claim closed-lid protection is inactive
     /// while Detach still owns the machine setting.
     private func publishFailureStatusLocked() {
-        guard state.ownsClosedLidProtection else {
-            updateCachedStatus(Self.unavailableStatus)
-            return
-        }
         updateCachedStatus(
             PowerProtectionStatus(
                 state: .unavailable,
                 leaseCount: 0,
                 assertionActive: false,
-                closedLidProtectionActive: true,
+                closedLidProtectionActive: state.ownsClosedLidProtection,
                 helperReachable: false,
                 transitionInProgress: false,
                 lowBattery: false,
                 thermalState: .unknown,
-                thermalSafetyActive: false))
+                thermalSafetyActive: state.thermalSafety.isActive,
+                lowBatteryThreshold: state.lowBatteryThreshold))
     }
 
     /// Called only while the mutation lock is held. `status()` takes only this
