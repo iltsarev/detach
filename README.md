@@ -416,7 +416,9 @@ and later checkpoints then refer to the conversation that is in use.
 - **Claude Code:** Detach saves the preassigned session UUID, transcript,
   project companion data, file history, session environment, tasks, and
   matching team data in one atomic archive. Explicit recovery restores a valid,
-  matching checkpoint and its companion artifacts before resume.
+  matching checkpoint and its companion artifacts before resume. An empty or
+  absent live transcript does not block a valid checkpoint. After an interrupted
+  restore, the next Resume or Recover restores one complete generation first.
 - **Both:** Detach rejects unsafe paths, ambiguous or mismatched UUIDs,
   malformed JSONL, and invalid checkpoint contents.
 
@@ -465,7 +467,8 @@ available. A new turn acquires both layers again. The Mac can sleep only when
 every live session waits. Missing or invalid lifecycle state keeps protection
 active.
 
-The app, menu bar, CLI, and tmux status bar use the same state:
+The app, menu bar, CLI, and tmux status bar use the same state. Session Mac
+Power, Settings, and the menu bar read the fresh watchdog heartbeat:
 
 - **Mac stays awake**
 - **Mac can sleep**
@@ -474,7 +477,8 @@ The app, menu bar, CLI, and tmux status bar use the same state:
 - an honest unknown state when the helper or health report cannot be trusted
 
 At 10% battery or lower while on battery power, Detach releases its sleep
-assertions. At a public macOS thermal state of `serious` or `critical`, it
+assertions. Settings → System can raise this floor to 15% or 20%. The default
+and minimum are 10%. The helper stores and applies the selected floor. At a public macOS thermal state of `serious` or `critical`, it
 immediately releases both layers that it owns and refuses new protected runs.
 The provider can continue only while macOS keeps the machine awake. Protection
 can return after the state is `nominal` or `fair` for 30 seconds. Detach sends

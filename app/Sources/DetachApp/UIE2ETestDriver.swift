@@ -484,7 +484,7 @@ enum UIE2ETestDriver {
                 encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
             guard let terminal = find(identifier: "session-preview-terminal")
                 as? LocalProcessTerminalView,
-                initialSize.split(separator: "x").first.flatMap({ Int($0) }) == terminal.terminal.cols
+                initialSize.split(separator: "x").first.flatMap({ Int($0) }) == terminal.terminalDimensions.cols
             else {
                 throw Failure(message: "Resume must pass the visible terminal width before startup")
             }
@@ -541,8 +541,8 @@ enum UIE2ETestDriver {
             guard liveClientPID > 1 else {
                 throw Failure(message: "live terminal client PID is missing")
             }
-            liveTerminal.terminal.setCursorStyle(.blinkUnderline)
-            guard liveTerminal.terminal.options.cursorStyle.tagName
+            liveTerminal.setCursorStyle(.blinkUnderline)
+            guard liveTerminal.terminalStateSnapshot().cursorStyle.tagName
                     == CursorStyle.steadyUnderline.tagName,
                   SessionAttachRendering.hasEnergyEfficientRenderer(
                     in: liveTerminal) else {
@@ -561,7 +561,7 @@ enum UIE2ETestDriver {
             checks.append("live-terminal-routes-control-v")
 
             try await waitUntil("running terminal frame") {
-                String(decoding: liveTerminal.terminal.getBufferAsData(), as: UTF8.self)
+                String(decoding: liveTerminal.getBufferAsData(), as: UTF8.self)
                     .contains(runningID)
             }
             let invocationsURL = configuration.root
@@ -588,7 +588,7 @@ enum UIE2ETestDriver {
                     as? LocalProcessTerminalView,
                   terminalDuringSwitch === liveTerminal,
                   terminalDuringSwitch.process.shellPid == liveClientPID,
-                  String(decoding: terminalDuringSwitch.terminal.getBufferAsData(), as: UTF8.self)
+                  String(decoding: terminalDuringSwitch.getBufferAsData(), as: UTF8.self)
                     .contains(runningID) else {
                 throw Failure(message:
                     "live switch replaced the terminal or cleared its complete frame")
@@ -601,7 +601,7 @@ enum UIE2ETestDriver {
                     .contains(Substring(toCompleted)) == true
             }
             try await waitUntil("synchronized completed redraw", attempts: 40) {
-                String(decoding: liveTerminal.terminal.getBufferAsData(), as: UTF8.self)
+                String(decoding: liveTerminal.getBufferAsData(), as: UTF8.self)
                     .contains(completedID)
             }
 
@@ -618,7 +618,7 @@ enum UIE2ETestDriver {
                     encoding: .utf8)
                 return invocations?.split(separator: "\n")
                     .contains(Substring(toRunning)) == true
-                    && String(decoding: terminal.terminal.getBufferAsData(), as: UTF8.self)
+                    && String(decoding: terminal.getBufferAsData(), as: UTF8.self)
                         .contains(runningID)
             }
             let attachCountAfter = try String(

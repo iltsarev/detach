@@ -1,5 +1,5 @@
 schema	1
-policy	62
+policy	63
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -401,7 +401,7 @@ enforcement	test_identity	advisory
 enforcement	changed_line_coverage	advisory
 enforcement	contract_evidence	blocking
 verification	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE,SC-TRANSCRIPT-TURN-UNIT
-verification	QC-RUNTIME-OWNERSHIP	SC-SESSION-OWNERSHIP-UNIT,SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
+verification	QC-RUNTIME-OWNERSHIP	SC-SESSION-RECOVER-CODEX,SC-SESSION-OWNERSHIP-UNIT,SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
 verification	QC-RUNTIME-STORAGE	SC-STATE-RESTORE-UNIT,SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-TRANSCRIPT-TURN-UNIT
 verification	QC-POWER-ASSERTION	SC-POWER-UNIT
 verification	QC-POWER-AUTH	SC-POWER-HELPER
@@ -492,3 +492,19 @@ scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaude
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents	app/Tests/DetachKitTests/DetachStateCommandTests.swift
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery	app/Tests/DetachKitTests/DetachStateTests.swift
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents	app/Tests/DetachKitTests/DetachStateTests.swift
+route	900	app/Sources/DetachKit/WatchdogCLI.swift	power	both	docs/specs/power.md
+scenario-test	SC-POWER-HELPER	DetachKitTests.PowerHelperLeaseServiceTests/testAcquireClampsAFarFutureClientDeadlineToTheServerBudget	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-POWER-LOW-BATTERY	DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-POWER-LOW-BATTERY	DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails	app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerProtectionTests/testMissingThermalSafetyActiveDoesNotDecodeAsInactive	app/Tests/DetachKitTests/PowerProtectionTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.WatchdogCLITests/testResolvesInstalledPayloadAndStripsInheritedOverrides	app/Tests/DetachKitTests/WatchdogCLITests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreRejectsFIFOWithoutWaitingForAWriter	app/Tests/DetachKitTests/PowerHelperPlatformTests.swift
+scenario-test	SC-POWER-UNIT	DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreLoadsStateWrittenByThePreviousFormat	app/Tests/DetachKitTests/PowerHelperPlatformTests.swift
+scenario-test	SC-POWER-HANDOFF	DetachAppTests.PowerHelperServiceTests/testMissingLifetimeLockStillPreparesAReachableHelperWithActiveLeases	app/Tests/DetachAppTests/PowerHelperServiceTests.swift
+scenario-test	SC-POWER-HANDOFF	DetachAppTests.PowerHelperServiceTests/testFailedPrepareCannotBypassANewLifetimeHolder	app/Tests/DetachAppTests/PowerHelperServiceTests.swift
+scenario-test	SC-POWER-HANDOFF	DetachAppTests.PowerHelperServiceTests/testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister	app/Tests/DetachAppTests/PowerHelperServiceTests.swift
+route	1000	tools/quality_baseline_archive.py	policy	safe	docs/specs/quality.md
+route	1000	tests/claude_restore_transaction_contract.py	claude-test	safe	docs/specs/recovery.md
+scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat	app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift
+scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor	app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift
+scenario-test	SC-STATE-RESTORE-UNIT	DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities	app/Tests/DetachKitTests/DetachStateTests.swift

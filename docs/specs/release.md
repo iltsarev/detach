@@ -29,9 +29,10 @@ change real power state, upload assets, or claim publication.
   cache product passes the normal architecture and linkage validation.
 - The tmux build links with `-no_weak_imports`, and validation rejects any
   weak `libSystem` import. A newer SDK cannot add a symbol that macOS 26 lacks.
-- Builds with Xcode 26 and Xcode 27 are valid. The bundled SwiftTerm resource
-  holds either the pinned `Shaders.metal` source or a `default.metallib` that
-  exports every renderer shader function.
+- Builds with Xcode 26 and Xcode 27 are valid. SwiftTerm embeds its pinned
+  shader source in the executable. The app ships the same `Shaders.metal`
+  under `ThirdParty/SwiftTerm`. Verification checks the source hash and proves
+  that its bytes, without the final newline, occur in the app executable.
 - <a id="qc-release-install"></a>
   The immutable payload order is `detach`, `detach-core`,
   `detach-install`, `detach-state`, `detach-power`, `tmux`.

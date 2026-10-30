@@ -90,7 +90,16 @@ stage's success as separate proof for each scenario.
   evidence. On a miss, a shard with the app stage builds inside that stage.
   Other shards prepare the app before their checks.
 - CI uses the newest green `main` artifact with metrics; a later run without
-  them does not replace it. Coverage enforcement follows the policy-generated
+  them does not replace it. Runs with deleted or expired evidence are skipped.
+  Duplicate or malformed evidence fails closed. If no retained metrics remain,
+  CI reports the missing baseline and does not skip coverage comparison.
+  Each main dashboard keeps a compressed archive of the measured baseline in
+  GitHub Pages. It retains the original manifest, inventory, promotion, and
+  metric bytes. Restore checks their digests and the original successful main
+  workflow identity. An explicit owner-dispatched care run can restore retained
+  CI evidence when the first archive is missing. It does not measure a new
+  baseline or change the coverage rules.
+  Coverage enforcement follows the policy-generated
   [enforcement table](../../quality/generated/spec-traceability.md#enforcement).
   Critical-source regression blocks merge. Aggregate coverage, test identity,
   and changed-line coverage remain advisory. Policy exclusions need

@@ -135,6 +135,7 @@ Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `S
 - `DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories`
 - `DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments`
 - `DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink`
+- `DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities`
 - `DetachKitTests.DetachStateTests/testClaudeSummaryResumesAfterFinalAnswer`
 - `DetachKitTests.DetachStateTests/testClaudeStreamedActivityDoesNotReplaceExplicitInputOrUseSidechains`
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyStreamedClaudeWorkFromOldReceipt`
@@ -169,6 +170,7 @@ Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `S
 - `app/Sources/DetachKit/ClamshellLockRunner.swift`
 - `app/Sources/DetachKit/DetachPower*.swift`
 - `app/Sources/DetachKit/Power*.swift`
+- `app/Sources/DetachKit/WatchdogCLI.swift`
 - `app/Sources/DetachPower/*.swift`
 - `app/Sources/DetachPowerHelper/*.swift`
 - `app/Sources/DetachWatchdog/*.swift`
@@ -197,6 +199,10 @@ Direct acceptance evidence for `QC-POWER-ASSERTION`: `SC-POWER-UNIT`.
 - `DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract`
 - `DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup`
 - `DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting`
+- `DetachKitTests.PowerProtectionTests/testMissingThermalSafetyActiveDoesNotDecodeAsInactive`
+- `DetachKitTests.WatchdogCLITests/testResolvesInstalledPayloadAndStripsInheritedOverrides`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreRejectsFIFOWithoutWaitingForAWriter`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreLoadsStateWrittenByThePreviousFormat`
 
 
 Direct acceptance evidence for `QC-POWER-AUTH`: `SC-POWER-HELPER`.
@@ -208,6 +214,7 @@ Direct acceptance evidence for `QC-POWER-AUTH`: `SC-POWER-HELPER`.
 - `DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot`
 - `DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation`
 - `DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly`
+- `DetachKitTests.PowerHelperLeaseServiceTests/testAcquireClampsAFarFutureClientDeadlineToTheServerBudget`
 
 
 Direct acceptance evidence for `QC-POWER-LEASE`: `SC-POWER-UNIT`, `SC-POWER-HELPER`.
@@ -221,6 +228,10 @@ Direct acceptance evidence for `QC-POWER-LEASE`: `SC-POWER-UNIT`, `SC-POWER-HELP
 - `DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract`
 - `DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup`
 - `DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting`
+- `DetachKitTests.PowerProtectionTests/testMissingThermalSafetyActiveDoesNotDecodeAsInactive`
+- `DetachKitTests.WatchdogCLITests/testResolvesInstalledPayloadAndStripsInheritedOverrides`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreRejectsFIFOWithoutWaitingForAWriter`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreLoadsStateWrittenByThePreviousFormat`
 - `DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsRootEvenWhileARegularConsoleUserIsActive`
 - `DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsAnotherLocalUserAfterFastUserSwitching`
 - `DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsLoginWindowAndLogoutWithoutAnActiveConsoleUser`
@@ -228,6 +239,7 @@ Direct acceptance evidence for `QC-POWER-LEASE`: `SC-POWER-UNIT`, `SC-POWER-HELP
 - `DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot`
 - `DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation`
 - `DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly`
+- `DetachKitTests.PowerHelperLeaseServiceTests/testAcquireClampsAFarFutureClientDeadlineToTheServerBudget`
 
 
 Direct acceptance evidence for `QC-POWER-XPC`: `SC-POWER-HELPER`.
@@ -239,12 +251,15 @@ Direct acceptance evidence for `QC-POWER-XPC`: `SC-POWER-HELPER`.
 - `DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot`
 - `DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation`
 - `DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly`
+- `DetachKitTests.PowerHelperLeaseServiceTests/testAcquireClampsAFarFutureClientDeadlineToTheServerBudget`
 
 
 Direct acceptance evidence for `QC-POWER-PROTECTION`: `SC-POWER-LOW-BATTERY`, `SC-POWER-CLOSED-LID`.
 
 - `DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased`
 - `DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation`
+- `DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive`
+- `DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails`
 
 
 Direct acceptance evidence for `QC-POWER-CLI`: `SC-POWER-UNIT`.
@@ -258,6 +273,10 @@ Direct acceptance evidence for `QC-POWER-CLI`: `SC-POWER-UNIT`.
 - `DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract`
 - `DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup`
 - `DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting`
+- `DetachKitTests.PowerProtectionTests/testMissingThermalSafetyActiveDoesNotDecodeAsInactive`
+- `DetachKitTests.WatchdogCLITests/testResolvesInstalledPayloadAndStripsInheritedOverrides`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreRejectsFIFOWithoutWaitingForAWriter`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreLoadsStateWrittenByThePreviousFormat`
 
 
 Direct acceptance evidence for `QC-POWER-PLATFORM`: `SC-POWER-UNIT`.
@@ -271,6 +290,10 @@ Direct acceptance evidence for `QC-POWER-PLATFORM`: `SC-POWER-UNIT`.
 - `DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract`
 - `DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup`
 - `DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting`
+- `DetachKitTests.PowerProtectionTests/testMissingThermalSafetyActiveDoesNotDecodeAsInactive`
+- `DetachKitTests.WatchdogCLITests/testResolvesInstalledPayloadAndStripsInheritedOverrides`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreRejectsFIFOWithoutWaitingForAWriter`
+- `DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreLoadsStateWrittenByThePreviousFormat`
 
 
 ## `app`
@@ -375,6 +398,8 @@ Direct acceptance evidence for `QC-APP-SETTINGS`: `SC-APP-SETTINGS-UNIT`, `SC-UI
 
 - `DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue`
 - `DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue`
+- `DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat`
+- `DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor`
 
 
 Direct acceptance evidence for `QC-APP-UPDATE`: `SC-UPDATE-CHECK`, `SC-UPDATE-APPLY`, `SC-RELEASE-WORKFLOW`.
@@ -477,6 +502,7 @@ Direct acceptance evidence for `QC-RELEASE-PUBLISH`: `SC-PUBLISH-CONTRACT`, `SC-
 - `tests/source-rules*`
 - `tests/test-suite-contract.sh`
 - `tools/quality_baseline.py`
+- `tools/quality_baseline_archive.py`
 - `tools/quality_cache_warm.py`
 - `tools/quality_care.py`
 - `tools/quality_contract_change.py`
@@ -519,6 +545,7 @@ Direct acceptance evidence for `QC-QUALITY-SUPPLY-CHAIN`: `SC-POLICY-CONTRACT`, 
 ### Owned path patterns
 
 - `docs/specs/recovery.md`
+- `tests/claude_restore_transaction_contract.py`
 
 ### Requirement verification
 
@@ -569,3 +596,6 @@ Direct acceptance evidence for `QC-POWER-HANDOFF`: `SC-POWER-HANDOFF`.
 
 - `DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase`
 - `DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed`
+- `DetachAppTests.PowerHelperServiceTests/testMissingLifetimeLockStillPreparesAReachableHelperWithActiveLeases`
+- `DetachAppTests.PowerHelperServiceTests/testFailedPrepareCannotBypassANewLifetimeHolder`
+- `DetachAppTests.PowerHelperServiceTests/testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister`

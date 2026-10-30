@@ -14,11 +14,10 @@ EXPECTED_MINIMUM_SYSTEM_VERSION="26.0"
 SPARKLE_VERSION="${DETACH_SPARKLE_VERSION:-2.10.0}"
 SPARKLE_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/Sparkle/LICENSE.txt"
 SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
-SWIFTTERM_VERSION="${DETACH_SWIFTTERM_VERSION:-1.19.0}"
+SWIFTTERM_VERSION="${DETACH_SWIFTTERM_VERSION:-1.99.0}"
 SWIFTTERM_LICENSE_SOURCE="$APP_ROOT/Resources/ThirdParty/SwiftTerm/LICENSE.txt"
 SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424aeb951df6856"
 SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
-SWIFTTERM_SHADER_FUNCTIONS="terminal_text_vertex terminal_cell_text_vertex terminal_text_fragment terminal_text_fragment_gray terminal_color_vertex terminal_cell_color_vertex terminal_color_fragment"
 REQUIRE_SPARKLE_CONFIG="${DETACH_REQUIRE_SPARKLE_CONFIG:-0}"
 VERIFY_PRODUCTION="${DETACH_VERIFY_PRODUCTION:-0}"
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
@@ -257,36 +256,22 @@ cmp -s "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE" || {
   printf 'Bundled SwiftTerm license notice must have mode 0644\n' >&2
   exit 1
 }
-SWIFTTERM_BUNDLE="$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
-SWIFTTERM_SHADER="$SWIFTTERM_BUNDLE/Shaders.metal"
-SWIFTTERM_LIBRARY="$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib"
-[ -d "$SWIFTTERM_BUNDLE" ] && [ ! -L "$SWIFTTERM_BUNDLE" ] || {
-  printf 'Missing bundled SwiftTerm resource bundle\n' >&2
-  exit 1
-}
-# Xcode 26 bundles the pinned shader source; Xcode 27 bundles the compiled
-# library. Either form must carry every function the renderer requires.
-if [ -f "$SWIFTTERM_SHADER" ] && [ ! -L "$SWIFTTERM_SHADER" ]; then
+SWIFTTERM_SHADER="$APP/Contents/Resources/ThirdParty/SwiftTerm/Shaders.metal"
+[ -f "$SWIFTTERM_SHADER" ] && [ ! -L "$SWIFTTERM_SHADER" ] && \
   [ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
     "$SWIFTTERM_SHADER_SHA256" ] || {
-    printf 'Bundled SwiftTerm Metal shader does not match SwiftTerm %s\n' \
-      "$SWIFTTERM_VERSION" >&2
-    exit 1
-  }
-elif [ -f "$SWIFTTERM_LIBRARY" ] && [ ! -L "$SWIFTTERM_LIBRARY" ] && \
-     [ -s "$SWIFTTERM_LIBRARY" ]; then
-  for swiftterm_function in $SWIFTTERM_SHADER_FUNCTIONS; do
-    /usr/bin/strings -a "$SWIFTTERM_LIBRARY" | \
-      /usr/bin/grep -Fqx "$swiftterm_function" || {
-      printf 'Bundled SwiftTerm Metal library lacks %s\n' \
-        "$swiftterm_function" >&2
-      exit 1
-    }
-  done
-else
-  printf 'Missing or unsafe SwiftTerm Metal shader\n' >&2
+  printf 'Bundled SwiftTerm shader source is missing or changed\n' >&2
   exit 1
-fi
+}
+# SwiftTerm 1.99 embeds the shader as a Swift multiline string. Swift removes
+# its final newline. Check the actual executable, not an unused resource bundle.
+python3 - "$SWIFTTERM_SHADER" "$APP/Contents/MacOS/Detach" <<'SWIFTTERM'
+from pathlib import Path
+import sys
+shader = Path(sys.argv[1]).read_bytes().rstrip(b"\n")
+if not shader or shader not in Path(sys.argv[2]).read_bytes():
+    raise SystemExit("SwiftTerm executable does not contain the pinned shader source")
+SWIFTTERM
 plutil -p "$TMUX_THIRD_PARTY/provenance.json" >/dev/null
 [ -x "$TMUX_BUILDER" ] || {
   printf 'Bundled tmux builder is unavailable for provenance verification\n' >&2

@@ -90,7 +90,7 @@ final class MenuBarPresentationTests: XCTestCase {
         let presentation = makePresentation(powerState: "low_battery")
 
         XCTAssertEqual(presentation.icon, .lowBattery)
-        XCTAssertEqual(presentation.power.reason, .lowBattery)
+        XCTAssertEqual(presentation.power.reason, .lowBattery(.percent10))
     }
 
     func testTemperatureIconAndReason() {
@@ -246,7 +246,8 @@ final class MenuBarPresentationTests: XCTestCase {
             (.noActiveSessions, "No active agent sessions"),
             (.waitingSessions(4), "Sessions waiting for replies: 4"),
             (.sessionsNotHolding(2), "Active sessions without sleep protection: 2"),
-            (.lowBattery, "Protection released until power is connected"),
+            (.lowBattery(.percent10), "Protection released at 10% until power is connected"),
+            (.lowBattery(.percent20), "Protection released at 20% until power is connected"),
             (.confirming, "Confirming sleep protection…"),
             (.helperUnreachable, "The native power helper is unreachable"),
             (.noFreshReport, "No fresh report from the background monitor"),

@@ -21,8 +21,7 @@ SPARKLE_LICENSE="$APP_RESOURCES/ThirdParty/Sparkle/LICENSE.txt"
 SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
 SWIFTTERM_LICENSE="$APP_RESOURCES/ThirdParty/SwiftTerm/LICENSE.txt"
 SWIFTTERM_LICENSE_SHA256="0dc6bdd99b652c675586854efcacd59de21e2679d64fcaa20424aeb951df6856"
-SWIFTTERM_BUNDLE="$ROOT/app/build/Detach.app/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
-SWIFTTERM_SHADER="$SWIFTTERM_BUNDLE/Shaders.metal"
+SWIFTTERM_SHADER="$ROOT/app/build/Detach.app/Contents/Resources/ThirdParty/SwiftTerm/Shaders.metal"
 SWIFTTERM_SHADER_SHA256="5f9f1d64f238821d11e4eda5f33c933d85d4e7f124a2c3bd8a930f8726b2fc12"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/detach-tmux-contract.XXXXXX")"
 
@@ -329,33 +328,22 @@ grep -F 'install -m 0644 "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE"' \
 grep -F 'cmp -s "$SWIFTTERM_LICENSE_SOURCE" "$SWIFTTERM_LICENSE"' \
   "$VERIFY_APP" >/dev/null
 
-# The pinned SwiftTerm shader is executable input. Xcode 26 bundles its exact
-# source bytes; Xcode 27 bundles the library compiled from that pinned source.
-[ -d "$SWIFTTERM_BUNDLE" ]
-[ ! -L "$SWIFTTERM_BUNDLE" ]
-if [ -f "$SWIFTTERM_SHADER" ]; then
-  [ ! -L "$SWIFTTERM_SHADER" ]
-  [ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
-    "$SWIFTTERM_SHADER_SHA256" ]
-else
-  [ -s "$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib" ]
-  [ ! -L "$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib" ]
-  /usr/bin/strings -a "$SWIFTTERM_BUNDLE/Contents/Resources/default.metallib" | \
-    /usr/bin/grep -Fqx terminal_color_fragment
-fi
+# SwiftTerm embeds the pinned source in the executable. The audit copy must
+# match those bytes; no SwiftPM resource bundle is needed.
+[ -f "$SWIFTTERM_SHADER" ] && [ ! -L "$SWIFTTERM_SHADER" ]
+[ "$(/usr/bin/shasum -a 256 "$SWIFTTERM_SHADER" | /usr/bin/awk '{print $1}')" = \
+  "$SWIFTTERM_SHADER_SHA256" ]
+python3 - "$SWIFTTERM_SHADER" "$ROOT/app/build/Detach.app/Contents/MacOS/Detach" <<'PYCODE'
+from pathlib import Path
+import sys
+assert Path(sys.argv[1]).read_bytes().rstrip(b"\n") in Path(sys.argv[2]).read_bytes()
+PYCODE
 for packaging_script in "$MAKE_APP" "$VERIFY_APP"; do
   grep -F "SWIFTTERM_SHADER_SHA256=\"$SWIFTTERM_SHADER_SHA256\"" \
     "$packaging_script" >/dev/null
 done
-grep -F 'SwiftPM did not produce SwiftTerm_SwiftTerm.bundle' "$MAKE_APP" >/dev/null
-grep -F 'ditto "$bundle" "$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"' \
-  "$MAKE_APP" >/dev/null
-! grep -F '$bin_path/SwiftTerm.bundle' "$MAKE_APP" >/dev/null
-grep -F 'SWIFTTERM_BUNDLE="$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"' \
-  "$VERIFY_APP" >/dev/null
-grep -F 'Missing bundled SwiftTerm resource bundle' "$VERIFY_APP" >/dev/null
-grep -F 'Bundled SwiftTerm Metal shader does not match SwiftTerm %s' \
-  "$VERIFY_APP" >/dev/null
+! grep -F 'SwiftTerm_SwiftTerm.bundle' "$MAKE_APP" "$VERIFY_APP" >/dev/null
+grep -F 'SwiftTerm executable does not contain the pinned shader source' "$VERIFY_APP" >/dev/null
 grep -F 'thin_sparkle_to_arm64 "$FRAMEWORKS/Sparkle.framework"' "$MAKE_APP" >/dev/null
 for sparkle_path in \
   '$version_root/Sparkle' \

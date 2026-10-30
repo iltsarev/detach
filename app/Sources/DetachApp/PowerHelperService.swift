@@ -29,6 +29,7 @@ protocol PowerHelperLifecycleRunning: AnyObject {
     func prepareForUnregistration() async throws
         -> PowerHelperUnregistrationPreparation
     func cancelUnregistration() async throws
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws
 }
 
 @MainActor
@@ -63,6 +64,18 @@ final class SystemPowerHelperLifecycleRunner:
     func cancelUnregistration() async throws {
         let result = try await cli.run(
             arguments: ["helper", "cancel-unregistration"], timeout: 35)
+        guard !result.timedOut, result.exitCode == 0 else {
+            throw PowerHelperServiceError.lifecycleCommandFailed(
+                Self.failureMessage(result))
+        }
+    }
+
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {
+        let result = try await cli.run(
+            arguments: [
+                "helper", "set-low-battery-threshold", "\(threshold.rawValue)",
+            ],
+            timeout: 35)
         guard !result.timedOut, result.exitCode == 0 else {
             throw PowerHelperServiceError.lifecycleCommandFailed(
                 Self.failureMessage(result))
@@ -319,6 +332,12 @@ final class PowerHelperService {
         SMAppService.openSystemSettingsLoginItems()
     }
 
+    func setLowBatteryThreshold(
+        _ threshold: PowerLowBatteryThreshold
+    ) async throws {
+        try await lifecycle.setLowBatteryThreshold(threshold)
+    }
+
     private func performExclusiveOperation(
         _ operation: () async throws -> Void
     ) async throws {
@@ -370,21 +389,22 @@ final class PowerHelperService {
                 switch status {
                 case .enabled:
                     let lifetimeStatus = try lifetimeBarrierStatus()
-                    if lifetimeStatus == .missing
-                        || lifetimeStatus == .released {
-                        // launchd/BTM can keep an enabled job after its helper
-                        // failed to spawn or exited. A missing or unlocked
-                        // lifetime barrier proves there is no live helper to
-                        // prepare over XPC, so replay unregister directly.
+                    let preparation: PowerHelperUnregistrationPreparation
+                    do {
+                        preparation = try await lifecycle.prepareForUnregistration()
+                    } catch {
+                        // A released snapshot alone is not enough: KeepAlive
+                        // can launch the helper. Try the bounded XPC path first
+                        // and recheck the lifetime barrier after its failure.
+                        let currentLifetimeStatus = try lifetimeBarrierStatus()
+                        guard lifetimeStatus != .busy,
+                              currentLifetimeStatus != .busy else { throw error }
                         transaction.phase = .unregisterSubmitted
-                        transaction.bootSessionIdentifier =
-                            try currentBootSession()
+                        transaction.bootSessionIdentifier = try currentBootSession()
                         transaction.lifetimeBarrierExpected = false
                         try handoffStore.save(transaction)
                         continue
                     }
-                    let preparation = try await lifecycle
-                        .prepareForUnregistration()
                     guard preparation == .prepared else {
                         try handoffStore.clear()
                         clearLegacyHandoffMarkers()

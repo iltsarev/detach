@@ -69,7 +69,7 @@ def successful_runs(value: dict[str, Any]) -> list[int]:
     return identifiers
 
 
-def evidence_artifact(value: dict[str, Any], run_id: int) -> str:
+def evidence_artifact(value: dict[str, Any], run_id: int) -> Optional[str]:
     artifacts = value.get("artifacts")
     if not isinstance(artifacts, list):
         raise BaselineError("quality artifact response is malformed")
@@ -83,9 +83,9 @@ def evidence_artifact(value: dict[str, Any], run_id: int) -> str:
             raise BaselineError("quality artifact record is malformed")
         if not expired and name.startswith("quality-gate-evidence-"):
             matches.append(name)
-    if len(matches) != 1:
+    if len(matches) > 1:
         raise BaselineError(f"main quality run {run_id} has no unique evidence artifact")
-    return matches[0]
+    return matches[0] if matches else None
 
 
 def metrics_profile(path: Path) -> str:
@@ -157,6 +157,8 @@ def restore(
                 ),
                 "artifact",
             ), run_id)
+            if artifact is None:
+                continue
             destination.mkdir()
             try:
                 gh(
@@ -179,6 +181,15 @@ def restore(
         if matching_metrics(run_dir, coverage_profile) is not None:
             print(destination)
             return destination
+    if not test_mode:
+        from quality_baseline_archive import restore as restore_archive
+        archived = restore_archive(repository, output_root, executable)
+        if archived is not None:
+            manifests = list(archived.glob("*/manifest.tsv"))
+            if len(manifests) != 1 or matching_metrics(manifests[0].parent, coverage_profile) is None:
+                raise BaselineError("archived baseline has no matching metrics profile")
+            print(archived)
+            return archived
     raise BaselineError(
         f"no successful main quality run has {coverage_profile} quality metrics"
     )
