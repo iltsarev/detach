@@ -128,6 +128,7 @@ Direct acceptance evidence for `QC-RUNTIME-STATE`: `SC-SESSION-PERSIST-CODEX`, `
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents`
 - `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
 - `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
+- `DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities`
 
 
 Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`, `SC-TRANSCRIPT-TURN-UNIT`.
@@ -152,6 +153,7 @@ Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `S
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents`
 - `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
 - `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
+- `DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities`
 
 
 ## `power`
@@ -571,6 +573,7 @@ Direct acceptance evidence for `QC-RUNTIME-TRANSITION`: `SC-SESSION-RECOVER-CODE
 - `DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents`
 - `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
 - `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
+- `DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities`
 
 
 ## `power-handoff`

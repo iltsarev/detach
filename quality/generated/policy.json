@@ -2788,7 +2788,8 @@
         "DetachKitTests.DetachStateTests/testClaudeAgentCompletionRequiresMatchingNotificationIdentity",
         "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents",
         "DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery",
-        "DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents"
+        "DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents",
+        "DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities"
       ]
     },
     {

@@ -510,3 +510,4 @@ scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.InstallationStorePowerStateTes
 scenario-test	SC-STATE-RESTORE-UNIT	DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities	app/Tests/DetachKitTests/DetachStateTests.swift
 scenario	SC-SESSION-RESUME-IDENTITY	codex	instrumented	tests/run.sh
 scenario	SC-BASELINE-CONTRACT	gate-contract	instrumented	tests/quality-baseline.sh
+scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities	app/Tests/DetachKitTests/DetachStateTests.swift

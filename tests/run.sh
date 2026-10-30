@@ -2336,7 +2336,11 @@ tmux -L "$SOCKET" set-option -q -t "=$initializing_live_session:" \
   @detach_run_token initializing-live-token
 tmux -L "$SOCKET" set-option -q -t "=$initializing_live_session:" \
   @detach_pane_id "$initializing_live_pane"
-run_codex list --json | grep -F "\"session_name\":\"$initializing_live_session\"" >/dev/null
+initializing_live_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$initializing_live_session\"")"
+[ "$(printf '%s' "$initializing_live_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = starting ]
+printf '%s' "$initializing_live_json" | grep -F '"health_actions":[]' >/dev/null
 tmux -L "$SOCKET" kill-session -t "=$initializing_live_session"
 rm -rf "$initializing_live_dir"
 
