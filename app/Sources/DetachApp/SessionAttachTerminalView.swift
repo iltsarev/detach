@@ -301,8 +301,21 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     override func paste(_ sender: Any) {
         guard let text = NSPasteboard.general.string(forType: .string),
               !text.isEmpty else { return }
+        pasteLiteralText(text)
+    }
+
+    func pasteLiteralText(_ text: String) {
+        guard !text.isEmpty else { return }
         unmarkText()
-        pasteText(text)
+        // The upstream paste API changes unbracketed LF to CR. Preserve the
+        // provider's original UTF-8 stream through the public byte input API.
+        let bracketed = terminalStateSnapshot().bracketedPasteMode
+        let payload = bracketed ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+        sendPasteBytes(Array(payload.utf8))
+    }
+
+    func sendPasteBytes(_ bytes: [UInt8]) {
+        send(data: bytes[...])
     }
 
     override func mouseDown(with event: NSEvent) {

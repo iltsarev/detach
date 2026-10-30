@@ -513,3 +513,4 @@ scenario	SC-SESSION-RESUME-IDENTITY	codex	instrumented	tests/run.sh
 scenario	SC-BASELINE-CONTRACT	gate-contract	instrumented	tests/quality-baseline.sh
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities	app/Tests/DetachKitTests/DetachStateTests.swift
 scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.InstallationStorePowerStateTests/testSuccessfulThresholdWriteAcceptsFreshHeartbeatAtPreviousFloor	app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift
+scenario-test	SC-TERMINAL-INPUT-UNIT	DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks	app/Tests/DetachAppTests/SessionAttachTerminalTests.swift

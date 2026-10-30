@@ -14,6 +14,12 @@ private final class MouseRecordingTerminalView: SessionAttachLocalProcessTermina
         sent.append(contentsOf: data)
     }
 
+    // LocalProcessTerminalView sends public byte input directly to its PTY.
+    // Capture this app boundary separately from parser delegate output.
+    override func sendPasteBytes(_ bytes: [UInt8]) {
+        sent.append(contentsOf: bytes)
+    }
+
     override func requestOpenLink(
         source: TerminalView, link: String, params: [String: String]
     ) {
@@ -1104,6 +1110,7 @@ final class SessionAttachTerminalTests: XCTestCase {
                     commandV, window: nil, firstResponder: terminal, in: terminal,
                     send: { _ in XCTFail("Command-V must use native paste") }))
                 let expected = bracketed ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+                try waitUntil(timeout: 1) { terminal.sent == Array(expected.utf8) }
                 XCTAssertEqual(terminal.sent, Array(expected.utf8))
             }
         }
@@ -1113,6 +1120,22 @@ final class SessionAttachTerminalTests: XCTestCase {
             terminal.sent.removeAll()
             terminal.paste(terminal)
             XCTAssertTrue(terminal.sent.isEmpty)
+        }
+    }
+
+    @MainActor
+    func testNativeTextPastePreservesUTF8AndLineBreaks() throws {
+        let terminal = MouseRecordingTerminalView(frame: .zero)
+        let text = "Привет, мир! Ёж 🦔\n第二行"
+        for enhancement in ["\u{1B}[>0u", "\u{1B}[>1u", "\u{1B}[>8u", "\u{1B}[>31u"] {
+            for bracketed in [false, true] {
+                terminal.feed(text: bracketed ? "\u{1B}[?2004h" : "\u{1B}[?2004l")
+                terminal.feed(text: enhancement)
+                terminal.sent.removeAll()
+                terminal.pasteLiteralText(text)
+                let expected = bracketed ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+                XCTAssertEqual(terminal.sent, Array(expected.utf8))
+            }
         }
     }
 
@@ -1154,8 +1177,16 @@ final class SessionAttachTerminalTests: XCTestCase {
                     terminal.mouseDown(with: try event(.leftMouseDown, modifiers: modifiers))
                     terminal.mouseDragged(with: try event(.leftMouseDragged, x: 30, modifiers: modifiers))
                     terminal.mouseDragged(with: try event(.leftMouseDragged, x: 60, modifiers: modifiers))
+                    // SwiftTerm queues terminal-to-view delegate delivery.
+                    // Drain earlier mouse events before isolating this release.
+                    var delivered = false
+                    DispatchQueue.main.async { delivered = true }
+                    try waitUntil(timeout: 1) { delivered }
                     terminal.sent.removeAll()
                     terminal.mouseUp(with: try event(.leftMouseUp, x: 60, modifiers: modifiers))
+                    if mouseReporting {
+                        try waitUntil(timeout: 1) { !terminal.sent.isEmpty }
+                    }
                     XCTAssertTrue(terminal.opened.isEmpty)
                     if mouseReporting {
                         let release = String(decoding: terminal.sent, as: UTF8.self)
@@ -1254,6 +1285,14 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertEqual(
             terminal.terminalStateSnapshot().cursorStyle.tagName,
             CursorStyle.steadyUnderline.tagName)
+        XCTAssertTrue(
+            SessionAttachRendering.hasEnergyEfficientRenderer(in: terminal))
+
+        terminal.setCursorStyle(.blinkBar)
+        try waitUntil(timeout: 1) {
+            terminal.terminalStateSnapshot().cursorStyle.tagName
+                == CursorStyle.steadyBar.tagName
+        }
         XCTAssertTrue(
             SessionAttachRendering.hasEnergyEfficientRenderer(in: terminal))
     }

@@ -214,9 +214,14 @@ require a new confirmation, even when the session name stays the same.
 Ordered detection never waits for delivery.
 
 SwiftTerm 1.99.0 is pinned. The pinned shader source is embedded in the app
-executable. The app also ships its exact source for audit. Terminal reads use copied view snapshots and dimensions. Native
-paste uses the public text-paste API. No caller retains the view's mutable
-terminal or selection service.
+executable. The app also ships its exact source for audit. Terminal reads use
+copied view snapshots and dimensions. Native paste reads bracketed mode from
+one snapshot and sends the complete UTF-8 payload through the public byte
+input API. This preserves line breaks when bracketed paste is disabled.
+No caller retains the view's mutable terminal or selection service.
+Cursor normalization runs after the parser callback releases its lock.
+Acceptance checks wait for queued input and cursor callbacks before they
+inspect delivered bytes or cursor style.
 
 Each readiness build puts one `detach-app-build:<UUID>` in its executable and
 signed marker. UI smoke uses a stripped private copy below

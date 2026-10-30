@@ -354,6 +354,7 @@ Direct acceptance evidence for `QC-HEALTH-FRESHNESS`: `SC-UI-DASHBOARD`.
 Direct acceptance evidence for `QC-HEALTH-PRESENTATION`: `SC-UI-DASHBOARD`, `SC-UI-SESSION-DETAIL`, `SC-UI-EMPTY`, `SC-UI-FAILURE`, `SC-UI-FOCUS`, `SC-UI-NEW-SESSION`, `SC-TERMINAL-INPUT-UNIT`.
 
 - `DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy`
+- `DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks`
 
 
 Direct acceptance evidence for `QC-APP-TIPS`: `SC-UI-EMPTY`.

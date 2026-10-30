@@ -2766,7 +2766,8 @@
       "stage": "swift",
       "status": "test-cases",
       "tests": [
-        "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy"
+        "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy",
+        "DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks"
       ]
     },
     {
@@ -4251,6 +4252,7 @@
     "DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
     "DetachAppTests.PowerHelperServiceTests/testMissingLifetimeLockStillPreparesAReachableHelperWithActiveLeases": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
     "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
+    "DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed": "app/Tests/DetachAppTests/WatchdogServiceTests.swift",

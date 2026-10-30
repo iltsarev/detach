@@ -542,11 +542,11 @@ enum UIE2ETestDriver {
                 throw Failure(message: "live terminal client PID is missing")
             }
             liveTerminal.setCursorStyle(.blinkUnderline)
-            guard liveTerminal.terminalStateSnapshot().cursorStyle.tagName
-                    == CursorStyle.steadyUnderline.tagName,
-                  SessionAttachRendering.hasEnergyEfficientRenderer(
-                    in: liveTerminal) else {
-                throw Failure(message: "live terminal retained a blinking cursor timer")
+            try await waitUntil("live terminal steady cursor", attempts: 20) {
+                liveTerminal.terminalStateSnapshot().cursorStyle.tagName
+                    == CursorStyle.steadyUnderline.tagName
+                    && SessionAttachRendering.hasEnergyEfficientRenderer(
+                        in: liveTerminal)
             }
             checks.append("live-terminal-renders-on-demand")
             try await waitUntil("live terminal input readiness", attempts: 80) {
