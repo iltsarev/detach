@@ -129,6 +129,8 @@ Direct acceptance evidence for `QC-RUNTIME-STATE`: `SC-SESSION-PERSIST-CODEX`, `
 - `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
 - `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
 - `DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput`
+- `DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails`
 
 
 Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `SC-SESSION-RECOVER-CODEX`, `SC-SESSION-RECOVER-CLAUDE`, `SC-TRANSCRIPT-TURN-UNIT`.
@@ -154,6 +156,8 @@ Direct acceptance evidence for `QC-RUNTIME-STORAGE`: `SC-STATE-RESTORE-UNIT`, `S
 - `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
 - `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
 - `DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput`
+- `DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails`
 
 
 ## `power`
@@ -579,6 +583,8 @@ Direct acceptance evidence for `QC-RUNTIME-TRANSITION`: `SC-SESSION-RECOVER-CODE
 - `DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery`
 - `DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents`
 - `DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities`
+- `DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput`
+- `DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails`
 
 
 ## `power-handoff`

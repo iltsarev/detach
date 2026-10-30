@@ -2796,7 +2796,9 @@
         "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents",
         "DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery",
         "DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents",
-        "DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities"
+        "DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities",
+        "DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput",
+        "DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails"
       ]
     },
     {
@@ -4285,8 +4287,10 @@
     "DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
     "DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
     "DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
