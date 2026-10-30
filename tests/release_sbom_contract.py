@@ -45,8 +45,10 @@ def main() -> None:
         names = {package["name"] for package in value["packages"]}
         assert names == {
             "Detach",
+            "h",
             "sparkle",
             "swift-argument-parser",
+            "swift-png",
             "swiftterm",
             "tmux",
             "libevent",

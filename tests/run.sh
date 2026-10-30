@@ -2305,8 +2305,13 @@ if [ "$CODEX_TEST_PART" = all ] || \
   bootstrap_codex_checkpoint
 fi
 
+# The consistency probe owns its own managed slot for this UUID. Keep the
+# stopped caller's checkpoint outside the managed namespace until it returns.
+consistency_source="$TMP_ROOT/state-consistency-source"
+mv "$(dirname "$meta")" "$consistency_source"
 python3 "$ROOT/tests/runtime-state-consistency.py" \
   "$SCRIPT" "$expected_id" "$SESSION" "$meta" "$STATE_HELPER" "$TMP_ROOT"
+mv "$consistency_source" "$(dirname "$meta")"
 
 # Explicit resume follows Codex semantics and accepts the exact thread UUID.
 export FAKE_CODEX_INIT_DELAY=0
@@ -3055,7 +3060,6 @@ for ready_typed_case in preserve ready shutdown; do
     run_codex recover --detach "$ready_name"
   expect_cli_refusal "mistyped $ready_typed_case delete" \
     run_codex delete --force "$ready_name"
-mv "$ready_source" "$codex_session_dir"
   diff -qr "$ready_typed_checkpoint_copy" "$ready_checkpoint" >/dev/null
   cp -p "$ready_typed_meta_copy" "$ready_meta"
 done
@@ -3167,6 +3171,7 @@ require_file_line "$FAKE_CODEX_ARGS_FILE" detach-ready-model
 "$STATE_HELPER" jsonl validate codex "$failed_resume_rollout" "$failed_resume_id"
 run_codex stop "$ready_name"
 run_codex delete --force "$ready_name"
+mv "$ready_source" "$codex_session_dir"
 
 uppercase_codex="$TMP_ROOT/fake-codex-uppercase-resume"
 uppercase_release="$TMP_ROOT/fake-codex-uppercase-resume-release"
