@@ -432,9 +432,10 @@
       ],
       "scenarios": [
         "SC-SESSION-CREATE-CODEX",
-        "SC-SESSION-CREATE-CLAUDE"
+        "SC-SESSION-CREATE-CLAUDE",
+        "SC-SESSION-RESUME-IDENTITY"
       ],
-      "summary": "A user creates a managed provider session."
+      "summary": "A user creates or resumes a managed provider session."
     },
     {
       "capability": "session-state",
@@ -856,6 +857,7 @@
       "spec": "docs/specs/runtime.md",
       "summary": "Session operations prove the exact run token and process ownership.",
       "verification": [
+        "SC-SESSION-RESUME-IDENTITY",
         "SC-SESSION-OWNERSHIP-UNIT",
         "SC-SESSION-CREATE-CODEX",
         "SC-SESSION-CREATE-CLAUDE",
@@ -2786,6 +2788,13 @@
         "DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery",
         "DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents"
       ]
+    },
+    {
+      "command": "tests/run.sh",
+      "id": "SC-SESSION-RESUME-IDENTITY",
+      "stage": "codex",
+      "status": "instrumented",
+      "tests": []
     }
   ],
   "schema": 1,
@@ -2895,6 +2904,12 @@
             },
             {
               "command": "tests/run.sh",
+              "id": "SC-SESSION-RESUME-IDENTITY",
+              "stage": "codex",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/run.sh",
               "id": "SC-SESSION-STOP-CODEX",
               "stage": "codex",
               "status": "instrumented"
@@ -2938,6 +2953,7 @@
           ],
           "summary": "Session operations prove the exact run token and process ownership.",
           "verification": [
+            "SC-SESSION-RESUME-IDENTITY",
             "SC-SESSION-OWNERSHIP-UNIT",
             "SC-SESSION-CREATE-CODEX",
             "SC-SESSION-CREATE-CLAUDE",

@@ -2298,6 +2298,7 @@ fi
 fi
 
 if codex_part_selected resume; then
+codex_scenario_event begin SC-SESSION-RESUME-IDENTITY
 if [ "$CODEX_TEST_PART" = all ] || \
    [ "$CODEX_TEST_PART" = resume ] || \
    [ "$CODEX_TEST_PART" = resume-identity ]; then
@@ -3257,6 +3258,7 @@ if [ "$CODEX_TEST_PART" = resume ]; then
   run_codex stop integration
   run_codex delete --force integration
 fi
+codex_scenario_event pass SC-SESSION-RESUME-IDENTITY
 fi
 
 # Codex /clear opens a successor thread inside the same provider process.

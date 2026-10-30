@@ -79,9 +79,9 @@ Direct acceptance evidence for `QC-DOC-CONSISTENCY`: `SC-DOCS-CONTRACT`.
 
 | Requirement | Journeys | Scenarios | Outcome |
 | --- | --- | --- | --- |
-| [`QC-RUNTIME-OWNERSHIP`](../../docs/specs/runtime.md#qc-runtime-ownership) | `J-SESSION-CREATE`<br>`J-SESSION-STOP`<br>`J-SESSION-DELETE` | `SC-SESSION-CREATE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-CREATE-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-STOP-CODEX` (instrumented, `codex`)<br>`SC-SESSION-STOP-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-STOP` (instrumented, `ui-e2e`)<br>`SC-SESSION-OWNERSHIP-UNIT` (test-cases, `swift`)<br>`SC-SESSION-DELETE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-DELETE-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-DELETE` (instrumented, `ui-e2e`) | Session operations prove the exact run token and process ownership. |
+| [`QC-RUNTIME-OWNERSHIP`](../../docs/specs/runtime.md#qc-runtime-ownership) | `J-SESSION-CREATE`<br>`J-SESSION-STOP`<br>`J-SESSION-DELETE` | `SC-SESSION-CREATE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-CREATE-CLAUDE` (instrumented, `claude`)<br>`SC-SESSION-RESUME-IDENTITY` (instrumented, `codex`)<br>`SC-SESSION-STOP-CODEX` (instrumented, `codex`)<br>`SC-SESSION-STOP-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-STOP` (instrumented, `ui-e2e`)<br>`SC-SESSION-OWNERSHIP-UNIT` (test-cases, `swift`)<br>`SC-SESSION-DELETE-CODEX` (instrumented, `codex`)<br>`SC-SESSION-DELETE-CLAUDE` (instrumented, `claude`)<br>`SC-UI-SESSION-DELETE` (instrumented, `ui-e2e`) | Session operations prove the exact run token and process ownership. |
 
-Direct acceptance evidence for `QC-RUNTIME-OWNERSHIP`: `SC-SESSION-OWNERSHIP-UNIT`, `SC-SESSION-CREATE-CODEX`, `SC-SESSION-CREATE-CLAUDE`, `SC-SESSION-STOP-CODEX`, `SC-SESSION-STOP-CLAUDE`, `SC-UI-SESSION-STOP`, `SC-SESSION-DELETE-CODEX`, `SC-SESSION-DELETE-CLAUDE`, `SC-UI-SESSION-DELETE`.
+Direct acceptance evidence for `QC-RUNTIME-OWNERSHIP`: `SC-SESSION-RESUME-IDENTITY`, `SC-SESSION-OWNERSHIP-UNIT`, `SC-SESSION-CREATE-CODEX`, `SC-SESSION-CREATE-CLAUDE`, `SC-SESSION-STOP-CODEX`, `SC-SESSION-STOP-CLAUDE`, `SC-UI-SESSION-STOP`, `SC-SESSION-DELETE-CODEX`, `SC-SESSION-DELETE-CLAUDE`, `SC-UI-SESSION-DELETE`.
 
 - `DetachKitTests.SessionHealthTests/testForeignTmuxCollisionNeverOffersAnAction`
 - `DetachKitTests.SessionHealthTests/testForeignProviderPIDIsNeverTreatedAsOwned`

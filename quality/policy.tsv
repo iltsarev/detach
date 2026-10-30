@@ -273,7 +273,7 @@ capability	installation	docs/specs/release.md	QC-RELEASE-INSTALL	J-INSTALL-CLEAN
 capability	publication	docs/specs/release.md	QC-RELEASE-PUBLISH	J-PUBLISH-ARTIFACTS
 journey	J-QUALITY-CHANGE	quality-system	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT,SC-CONTRACT-CHANGE	A policy change keeps local feedback focused and hosted evidence complete.
 journey	J-DOCS-CONSISTENCY	documentation	QC-DOC-CONSISTENCY	SC-DOCS-CONTRACT	Documentation and executable contracts stay synchronized.
-journey	J-SESSION-CREATE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE	A user creates a managed provider session.
+journey	J-SESSION-CREATE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-RESUME-IDENTITY	A user creates or resumes a managed provider session.
 journey	J-SESSION-PERSIST	session-state	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-TRANSCRIPT-TURN-UNIT	A live session remains available after the app exits.
 journey	J-STATE-CLEANUP	session-state	QC-RUNTIME-STATE	SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE	A user removes only typed state that a complete scan marks eligible.
 journey	J-STATE-RECOVER	session-state	QC-RUNTIME-STORAGE	SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-STATE-RESTORE-UNIT,SC-TRANSCRIPT-TURN-UNIT	A user restores recovery state only after complete validation.
@@ -401,7 +401,7 @@ enforcement	test_identity	advisory
 enforcement	changed_line_coverage	advisory
 enforcement	contract_evidence	blocking
 verification	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE,SC-TRANSCRIPT-TURN-UNIT
-verification	QC-RUNTIME-OWNERSHIP	SC-SESSION-RECOVER-CODEX,SC-SESSION-OWNERSHIP-UNIT,SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
+verification	QC-RUNTIME-OWNERSHIP	SC-SESSION-RESUME-IDENTITY,SC-SESSION-OWNERSHIP-UNIT,SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-STOP-CODEX,SC-SESSION-STOP-CLAUDE,SC-UI-SESSION-STOP,SC-SESSION-DELETE-CODEX,SC-SESSION-DELETE-CLAUDE,SC-UI-SESSION-DELETE
 verification	QC-RUNTIME-STORAGE	SC-STATE-RESTORE-UNIT,SC-SESSION-RECOVER-CODEX,SC-SESSION-RECOVER-CLAUDE,SC-TRANSCRIPT-TURN-UNIT
 verification	QC-POWER-ASSERTION	SC-POWER-UNIT
 verification	QC-POWER-AUTH	SC-POWER-HELPER
@@ -508,3 +508,4 @@ route	1000	tests/claude_restore_transaction_contract.py	claude-test	safe	docs/sp
 scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat	app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift
 scenario-test	SC-APP-SETTINGS-UNIT	DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor	app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift
 scenario-test	SC-STATE-RESTORE-UNIT	DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities	app/Tests/DetachKitTests/DetachStateTests.swift
+scenario	SC-SESSION-RESUME-IDENTITY	codex	instrumented	tests/run.sh

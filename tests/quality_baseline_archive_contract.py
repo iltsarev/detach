@@ -32,6 +32,7 @@ def main():
                                    changed_override={}, allow_incomplete_sources=True)
         source = root / "metrics.json"
         write_json(source, metrics)
+        source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
         prior = root / "prior"
         create_baseline(prior, source)
         payload = archive.pack(prior, "owner/repository", 123)

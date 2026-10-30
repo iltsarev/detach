@@ -1280,7 +1280,6 @@ grep -Fx -- "$TMP_ROOT/extra-b" "$FAKE_CLAUDE_ARGS_FILE" >/dev/null
 [ -s "$CLAUDE_CONFIG_DIR/tasks/$session_id/task.json" ]
 [ -s "$CLAUDE_CONFIG_DIR/tasks/session-${session_id:0:8}/task.json" ]
 [ -s "$CLAUDE_CONFIG_DIR/teams/session-${session_id:0:8}/config.json" ]
-claude_scenario_event pass SC-SESSION-RECOVER-CLAUDE
 
 # The byte-preservation check below needs an up-to-date A generation. Resume
 # may legitimately materialize newer A data before it starts replacement B.
@@ -1741,6 +1740,7 @@ grep -Fx 'outside sentinel' "$outside" >/dev/null
 [ ! -d "$DETACH_CLAUDE_STATE_ROOT/sessions/$session" ]
 ! tmux -L "$SOCKET" has-session -t "=$session" 2>/dev/null
 fi
+claude_scenario_event pass SC-SESSION-RECOVER-CLAUDE
 fi
 
 if claude_part_selected history; then

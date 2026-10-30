@@ -56,7 +56,7 @@ def pack(root: Path, repository: str, run_id: int) -> bytes:
         raise BaselineError("baseline archive source identity is invalid")
     validate_root(root)
     run = next(root.glob("*/manifest.tsv")).parent
-    files = {p.name: p.read_text(encoding="utf-8") for p in sorted(run.iterdir()) if p.name in FILES}
+    files = {p.name: p.read_bytes().decode("utf-8") for p in sorted(run.iterdir()) if p.name in FILES}
     raw = json.dumps({"schema": 1, "repository": repository, "run_id": run_id, "files": files},
                      sort_keys=True, separators=(",", ":")).encode()
     if len(raw) > MAX_BYTES:
