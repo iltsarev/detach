@@ -335,8 +335,15 @@ final class InstallationStore {
         guard let barrier = pendingLowBatteryBarrier else {
             return false
         }
-        // A later helper floor in a new presented document wins. A
-        // timestamp-only rewrite of the same presented state does not.
+        // The helper can return to the previous floor before the first
+        // confirming heartbeat. A later document must still release pending.
+        if let checkedAt = snapshot.checkedAt {
+            if let previous = barrier.checkedAt {
+                if checkedAt > previous { return true }
+            } else {
+                return true
+            }
+        }
         return !snapshot.hasSamePresentedState(as: barrier)
             && snapshot.lowBatteryThreshold != barrier.lowBatteryThreshold
     }

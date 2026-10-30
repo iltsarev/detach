@@ -57,7 +57,8 @@ Settings → System sets the helper-owned battery floor to 10%, 15%, or 20%.
 The app calls the bundled `detach-power helper set-low-battery-threshold`.
 It does not store this value in UserDefaults or `detach config`. Late replies
 cannot replace a newer picker request. A later healthy helper floor replaces
-pending presentation. If a write reply fails, the app clears pending state and
+pending presentation, including a return to the prior floor before the first
+confirmation. If a write reply fails, the app clears pending state and
 shows the heartbeat value. The next heartbeat can report a write that the
 helper applied before the reply failed.
 

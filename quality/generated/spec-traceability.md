@@ -402,6 +402,7 @@ Direct acceptance evidence for `QC-APP-SETTINGS`: `SC-APP-SETTINGS-UNIT`, `SC-UI
 - `DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue`
 - `DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat`
 - `DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor`
+- `DetachAppTests.InstallationStorePowerStateTests/testSuccessfulThresholdWriteAcceptsFreshHeartbeatAtPreviousFloor`
 
 
 Direct acceptance evidence for `QC-APP-UPDATE`: `SC-UPDATE-CHECK`, `SC-UPDATE-APPLY`, `SC-RELEASE-WORKFLOW`.

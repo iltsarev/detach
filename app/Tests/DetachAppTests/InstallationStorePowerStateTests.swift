@@ -512,6 +512,27 @@ final class InstallationStorePowerStateTests: XCTestCase {
         XCTAssertEqual(store.lowBatteryThreshold, .percent10)
     }
 
+    func testSuccessfulThresholdWriteAcceptsFreshHeartbeatAtPreviousFloor() async throws {
+        let root = try makeStateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp(offset: -30))","low_battery_threshold":10}"#,
+            to: root)
+        let powerHelper = InstallationPowerHelperProbe(status: .enabled)
+        let store = InstallationStore(
+            detachPath: "/tmp/detach-test", powerStateRoot: root,
+            powerHelper: powerHelper)
+        await store.setLowBatteryThreshold(.percent20)
+        XCTAssertEqual(store.lowBatteryThreshold, .percent20)
+        // Another authorized client returns the helper to the prior floor
+        // before the watchdog observes the intermediate write.
+        try writeHeartbeat(
+            #"{"state":"ok","power_state":"allowed","checked_at":"\#(stamp())","low_battery_threshold":10}"#,
+            to: root)
+        store.refreshPowerProtectionState()
+        XCTAssertEqual(store.lowBatteryThreshold, .percent10)
+    }
+
     func testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat() async throws {
         let root = try makeStateRoot()
         defer { try? FileManager.default.removeItem(at: root) }

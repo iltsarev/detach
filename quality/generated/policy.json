@@ -2565,7 +2565,8 @@
         "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue",
         "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue",
         "DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat",
-        "DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor"
+        "DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor",
+        "DetachAppTests.InstallationStorePowerStateTests/testSuccessfulThresholdWriteAcceptsFreshHeartbeatAtPreviousFloor"
       ]
     },
     {
@@ -4241,6 +4242,7 @@
   "test_sources": {
     "DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat": "app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift",
     "DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor": "app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift",
+    "DetachAppTests.InstallationStorePowerStateTests/testSuccessfulThresholdWriteAcceptsFreshHeartbeatAtPreviousFloor": "app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift",
     "DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick": "app/Tests/DetachAppTests/OnboardingLivePollerTests.swift",
     "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding": "app/Tests/DetachAppTests/SetupGuidanceTests.swift",
     "DetachAppTests.PowerHelperServiceTests/testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
