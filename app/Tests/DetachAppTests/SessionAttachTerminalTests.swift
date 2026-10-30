@@ -256,6 +256,27 @@ final class SessionAttachTerminalTests: XCTestCase {
             "codex attach --terminal-features sync detach-codex-proj-abcd1234")
     }
 
+    func testRealPTYOutputReleasesRetainedFrameAndReportsReadiness() throws {
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        terminal.retainScreen(Data("previous session".utf8), fontPointSize: 13)
+        var readyCount = 0
+        terminal.onFirstVisibleFrame = { readyCount += 1 }
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: ["-c", "printf 'first real PTY frame'; exec /bin/sleep 5"],
+            environment: ["PATH=/bin:/usr/bin"])
+        defer { SessionAttachController.terminate(process: terminal.process) }
+
+        try waitUntil {
+            String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+                .contains("first real PTY frame")
+        }
+        try waitUntil(timeout: 1) { terminal.hasFirstVisibleFrame }
+        XCTAssertFalse(terminal.isRetainingScreen)
+        XCTAssertEqual(readyCount, 1)
+    }
+
     func testTerminationEscalatesWhenTheClientIgnoresTerm() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -288,7 +309,8 @@ final class SessionAttachTerminalTests: XCTestCase {
 
         try waitUntil {
             errno = 0
-            return Darwin.kill(childPID, 0) == -1 && errno == ESRCH
+            let reaped = Darwin.kill(childPID, 0) == -1 && errno == ESRCH
+            return reaped && !terminal.process.running
         }
         XCTAssertFalse(terminal.process.running)
     }
@@ -1331,6 +1353,20 @@ final class SessionAttachTerminalTests: XCTestCase {
         terminal.dataReceived(slice: Array("more output".utf8)[...])
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
         XCTAssertEqual(visibleFrameCount, 1)
+    }
+
+    @MainActor
+    func testStoppedFrameObservationCannotRestartFromLateOutput() {
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        terminal.retainScreen(Data("previous session".utf8), fontPointSize: 13)
+        terminal.onFirstVisibleFrame = { XCTFail("retired view reported readiness") }
+        terminal.dataReceived(slice: Array("queued output".utf8)[...])
+        terminal.stopFrameObservation()
+        terminal.dataReceived(slice: Array("late output".utf8)[...])
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
+        XCTAssertFalse(terminal.hasFirstVisibleFrame)
+        XCTAssertTrue(terminal.isRetainingScreen)
     }
 
     @MainActor

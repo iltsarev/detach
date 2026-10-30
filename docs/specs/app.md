@@ -221,7 +221,10 @@ input API. This preserves line breaks when bracketed paste is disabled.
 No caller retains the view's mutable terminal or selection service.
 Cursor normalization runs after the parser callback releases its lock.
 Acceptance checks wait for queued input and cursor callbacks before they
-inspect delivered bytes or cursor style.
+inspect delivered bytes or cursor style. First-frame readiness observes the
+public process-output handler after parsing. A real PTY batch must release
+the retained screen and permit a queued session switch. The handler is
+removed after readiness or teardown.
 
 Each readiness build puts one `detach-app-build:<UUID>` in its executable and
 signed marker. UI smoke uses a stripped private copy below

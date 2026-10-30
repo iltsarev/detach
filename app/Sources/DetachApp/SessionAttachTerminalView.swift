@@ -280,15 +280,18 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     private var retainedScreenView: NSView?
     private var frameReadinessCheck: DispatchWorkItem?
     private var didReportFirstVisibleFrame = false
+    private var frameObservationStopped = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         registerForDraggedTypes([.fileURL])
+        observeProcessOutput()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         registerForDraggedTypes([.fileURL])
+        observeProcessOutput()
     }
 
     override func copy(_ sender: Any) {
@@ -415,15 +418,26 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: deadline)
     }
 
+    private func observeProcessOutput() {
+        setProcessOutputHandler { [weak self] in
+            Task { @MainActor [weak self] in self?.scheduleFrameReadinessCheck() }
+        }
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         super.dataReceived(slice: slice)
-        guard !didReportFirstVisibleFrame,
+        scheduleFrameReadinessCheck()
+    }
+
+    private func scheduleFrameReadinessCheck() {
+        guard !frameObservationStopped, !didReportFirstVisibleFrame,
               frameReadinessCheck == nil else { return }
         let check = DispatchWorkItem { [weak self] in
-            guard let self else { return }
+            guard let self, !self.frameObservationStopped else { return }
             self.frameReadinessCheck = nil
             guard Self.hasVisibleContent(in: self) else { return }
             self.didReportFirstVisibleFrame = true
+            self.setProcessOutputHandler(nil)
             self.removeRetainedScreen()
             self.onFirstVisibleFrame?()
         }
@@ -445,6 +459,8 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func stopFrameObservation() {
+        frameObservationStopped = true
+        setProcessOutputHandler(nil)
         pendingStart = nil
         retainedScreenDeadline?.cancel()
         retainedScreenDeadline = nil
