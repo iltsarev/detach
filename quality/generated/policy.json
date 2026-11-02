@@ -789,7 +789,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 66,
+  "policy": 67,
   "release_domains": [
     {
       "gates": "-",

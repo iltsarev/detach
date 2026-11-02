@@ -100,7 +100,9 @@ stage's success as separate proof for each scenario.
   and combined baselines in GitHub Pages. A later dashboard deployment retains
   the newest archive for each profile. It retains the original manifest, inventory, promotion, and
   metric bytes. Restore checks their digests and the original successful main
-  workflow identity. An explicit owner-dispatched care run can restore retained
+  workflow identity. Dashboard generation uses the workflow token with Actions
+  read access for these provenance checks. An explicit owner-dispatched care
+  run can restore retained
   CI evidence when the first archive is missing. It does not measure a new
   baseline or change the coverage rules.
   Coverage enforcement follows the policy-generated
