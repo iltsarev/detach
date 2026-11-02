@@ -148,8 +148,10 @@ stage's success as separate proof for each scenario.
   artifact. It includes both CodeQL job results, the analyzed commit, an
   identity fingerprint, and the exact workflow link. A later main, care, or
   mutation deploy restores the newest valid current-policy security and care
-  artifacts. Each restore checks at most five completed runs and has a
-  60-second deadline. Only deploy jobs have Pages write permission. A
+  artifacts. An incomplete care artifact can be ignored only when its
+  unique eval identifies an earlier policy. Incomplete current-policy care
+  evidence stops publication. Each restore checks at most five completed runs
+  and has a 60-second deadline. Only deploy jobs have Pages write permission. A
   main-branch Security run can deploy its passed or failed CodeQL result over
   the last green main evidence. A healthy care run closes the prior scoped
   attention issue.
