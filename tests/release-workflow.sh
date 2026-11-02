@@ -353,7 +353,7 @@ case " $* " in
       printf '%s\n' 'fake notary credential unavailable' >&2
       exit 69
     }
-    printf '%s\n' '{}'
+    printf '%s\n' '{"history":["fixture-private-notary-history"]}'
     ;;
   *) exit 64 ;;
 esac
@@ -532,6 +532,17 @@ run_resume_case() {
     expect_failure "resume-$stage" "injected safe failure after $stage" \
       run_workflow "$stage"
   done
+  local notary_evidence="$REPO/app/build/release-workflow/$TARGET_VERSION/notary-preflight.json"
+  grep -F 'fixture-private-notary-history' "$notary_evidence" >/dev/null || {
+    printf 'successful notary preflight lost its private response\n' >&2
+    exit 1
+  }
+  [ "$(stat -f '%Lp' "$notary_evidence")" = 600 ]
+  if grep -F 'fixture-private-notary-history' \
+      "$FIXTURE/resume-preflight.stdout" "$FIXTURE/resume-preflight.stderr" >/dev/null; then
+    printf 'notary history leaked into terminal output\n' >&2
+    exit 1
+  fi
   release_ci_source="$(git -C "$REPO" rev-parse HEAD^)"
 
   git -C "$REPO" push -q origin \
@@ -607,6 +618,18 @@ run_invalid_resume_artifact_credentials_case() {
   export FAKE_NOTARY_UNAVAILABLE=1
   expect_failure invalid-resume-artifact-credentials \
     'notary credential preflight failed' run_workflow
+  local notary_evidence="$REPO/app/build/release-workflow/$TARGET_VERSION/notary-preflight.json"
+  grep -F 'fake notary credential unavailable' "$notary_evidence" >/dev/null || {
+    printf 'failed notary preflight lost its private response\n' >&2
+    exit 1
+  }
+  [ "$(stat -f '%Lp' "$notary_evidence")" = 600 ]
+  if grep -F 'fake notary credential unavailable' \
+      "$FIXTURE/invalid-resume-artifact-credentials.stdout" \
+      "$FIXTURE/invalid-resume-artifact-credentials.stderr" >/dev/null; then
+    printf 'notary failure response leaked into terminal output\n' >&2
+    exit 1
+  fi
   unset FAKE_NOTARY_UNAVAILABLE
   [ ! -f "$RELEASE_EXISTS" ]
 }

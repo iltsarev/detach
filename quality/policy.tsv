@@ -1,5 +1,5 @@
 schema	1
-policy	65
+policy	66
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -300,7 +300,7 @@ journey	J-DOCTOR-REPORT	diagnostics	QC-APP-DOCTOR	SC-DOCTOR-REPORT	A user receiv
 journey	J-INSTALL-CLEAN	installation	QC-RELEASE-INSTALL	SC-INSTALL-CLEAN,SC-RUNTIME-PACKAGE	A user installs one immutable self-contained payload.
 journey	J-INSTALL-REPAIR	installation	QC-RELEASE-INSTALL	SC-INSTALL-REPAIR	Repair restores the exact immutable payload.
 journey	J-INSTALL-UNINSTALL	installation	QC-RELEASE-INSTALL	SC-INSTALL-UNINSTALL	Uninstall removes only Detach-owned data selected by the user.
-journey	J-PUBLISH-ARTIFACTS	publication	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR	Publication exposes only verified allowlisted artifacts.
+journey	J-PUBLISH-ARTIFACTS	publication	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR,SC-RELEASE-WORKFLOW	Publication exposes only verified allowlisted artifacts.
 scenario	SC-POLICY-CONTRACT	gate-contract	instrumented	tests/quality-policy.sh
 scenario	SC-PROMOTION-CONTRACT	gate-contract	instrumented	tests/quality-promote.sh
 scenario	SC-MERGE-CONTRACT	gate-contract	instrumented	tests/quality-merge.sh
@@ -420,7 +420,7 @@ verification	QC-APP-ONBOARDING	SC-APP-ONBOARDING-UNIT,SC-UI-ONBOARD-FIRST-RUN,SC
 verification	QC-APP-SETTINGS	SC-APP-SETTINGS-UNIT,SC-UI-SETTINGS
 verification	QC-APP-UPDATE	SC-UPDATE-CHECK,SC-UPDATE-APPLY,SC-RELEASE-WORKFLOW
 verification	QC-RELEASE-INSTALL	SC-INSTALL-CLEAN,SC-RUNTIME-PACKAGE,SC-INSTALL-REPAIR,SC-INSTALL-UNINSTALL
-verification	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR
+verification	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR,SC-RELEASE-WORKFLOW
 verification	QC-QUALITY-POLICY	SC-RUNTIME-PRODUCT-CONTRACT,SC-BASELINE-CONTRACT,SC-CONTRACT-CHANGE,SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT,SC-CARE-CONTRACT
 verification	QC-QUALITY-SUPPLY-CHAIN	SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT
 verification	QC-DOC-CONSISTENCY	SC-DOCS-CONTRACT
