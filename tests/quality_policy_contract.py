@@ -46,6 +46,18 @@ def main() -> None:
     require(condition == expected,
             "main publication must require a passed gate and stop on cancellation, "
             "without inheriting skipped PR ancestors")
+    for workflow, step in (
+        ("quality-gates.yml", "Generate quality dashboard"),
+        ("quality-care.yml", "Generate dashboard with care evidence"),
+        ("quality-mutations.yml", "Generate dashboard with mutation score"),
+        ("security.yml", "Generate dashboard with security result"),
+    ):
+        content = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        marker = f"      - name: {step}\n"
+        require(content.count(marker) == 1, f"missing unique dashboard step: {workflow}")
+        body = content.split(marker, 1)[1].split("\n      - ", 1)[0]
+        require("\n          GH_TOKEN: ${{ github.token }}\n" in "\n" + body,
+                f"dashboard provenance checks need a step-scoped workflow token: {workflow}")
     specs = policy.specification_document()
 
     require(len(specs) == 10, "expected ten current specifications")

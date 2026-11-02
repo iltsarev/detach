@@ -161,6 +161,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
       - name: Generate dashboard with care evidence
         env:
+          GH_TOKEN: ${{ github.token }}
           MUTATION_SUMMARY: ${{ steps.mutation-evidence.outputs.summary }}
           SECURITY_SUMMARY: ${{ steps.security-evidence.outputs.summary }}
           MAIN_EVIDENCE_ROOT: ${{ steps.main-evidence.outputs.root }}
