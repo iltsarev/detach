@@ -36,6 +36,16 @@ def expect_error(source: str, expected: str) -> None:
 def main() -> None:
     source = POLICY.read_text(encoding="utf-8")
     policy = Policy(POLICY)
+    dashboard = (ROOT / ".github/workflows/quality-gates.yml").read_text(
+        encoding="utf-8").split("\n  quality-dashboard:\n", 1)[1]
+    condition = next(line.strip() for line in dashboard.splitlines()
+                     if line.startswith("    if:"))
+    expected = ("if: ${{ !cancelled() && github.event_name == 'push' "
+                "&& github.ref == 'refs/heads/main' "
+                "&& needs.quality-gates.result == 'success' }}")
+    require(condition == expected,
+            "main publication must require a passed gate and stop on cancellation, "
+            "without inheriting skipped PR ancestors")
     specs = policy.specification_document()
 
     require(len(specs) == 10, "expected ten current specifications")

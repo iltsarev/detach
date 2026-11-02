@@ -376,7 +376,7 @@ jobs:
           retention-days: 14
 
   quality-dashboard:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.quality-gates.result == 'success' }}
     needs: quality-gates
     runs-on: ubuntu-latest
     timeout-minutes: 3
