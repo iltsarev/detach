@@ -588,6 +588,8 @@ grep -F 'requires an explicit start, resume, or recover command' "$TMP_ROOT/inva
     "$STATE_HELPER" meta get /dev/stdin effective_status)" = stopped ]
   [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
     "$STATE_HELPER" meta get /dev/stdin health_reason)" = finished ]
+  [ "$(printf '%s\n' "$public_list_output" | sed -n '1p' | \
+    "$STATE_HELPER" meta get /dev/stdin power_protection_state)" = unknown ]
   [ -z "$(find "$public_list_tmp" -mindepth 1 -print -quit)" ]
 
   # A caller can terminate the public frontend by PID (for example during app
@@ -2296,14 +2298,20 @@ fi
 fi
 
 if codex_part_selected resume; then
+codex_scenario_event begin SC-SESSION-RESUME-IDENTITY
 if [ "$CODEX_TEST_PART" = all ] || \
    [ "$CODEX_TEST_PART" = resume ] || \
    [ "$CODEX_TEST_PART" = resume-identity ]; then
   bootstrap_codex_checkpoint
 fi
 
+# The consistency probe owns its own managed slot for this UUID. Keep the
+# stopped caller's checkpoint outside the managed namespace until it returns.
+consistency_source="$TMP_ROOT/state-consistency-source"
+mv "$(dirname "$meta")" "$consistency_source"
 python3 "$ROOT/tests/runtime-state-consistency.py" \
   "$SCRIPT" "$expected_id" "$SESSION" "$meta" "$STATE_HELPER" "$TMP_ROOT"
+mv "$consistency_source" "$(dirname "$meta")"
 
 # Explicit resume follows Codex semantics and accepts the exact thread UUID.
 export FAKE_CODEX_INIT_DELAY=0
@@ -2311,6 +2319,59 @@ export FAKE_CODEX_SLEEP=1
 expected_rollout="$("$STATE_HELPER" meta get "$meta" transcript_path)"
 [ -n "$expected_rollout" ]
 [ -f "$expected_rollout" ]
+
+# A crashed start can leave initializing metadata in front of a live pane.
+# List must keep that row so the owner can Attach or Stop.
+initializing_live_session=detach-codex-initializing-live
+initializing_live_dir="$DETACH_CODEX_STATE_ROOT/sessions/$initializing_live_session"
+mkdir -p "$initializing_live_dir"
+"$STATE_HELPER" meta create "$initializing_live_dir/meta.json" \
+  --integer schema 1 \
+  --string session_name "$initializing_live_session" \
+  --string project_dir "$ROOT" \
+  --string status starting \
+  --string lifecycle_phase initializing \
+  --string run_token initializing-live-token \
+  --integer health_schema 1
+initializing_live_pane="$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' \
+  -s "$initializing_live_session" -n initializing '/bin/sleep 30')"
+tmux -L "$SOCKET" set-option -q -t "=$initializing_live_session:" @detach 1
+tmux -L "$SOCKET" set-option -q -t "=$initializing_live_session:" @detach_provider codex
+tmux -L "$SOCKET" set-option -q -t "=$initializing_live_session:" \
+  @detach_run_token initializing-live-token
+tmux -L "$SOCKET" set-option -q -t "=$initializing_live_session:" \
+  @detach_pane_id "$initializing_live_pane"
+initializing_live_json="$(run_codex list --json | \
+  grep -F "\"session_name\":\"$initializing_live_session\"")"
+[ "$(printf '%s' "$initializing_live_json" | \
+  "$STATE_HELPER" meta get /dev/stdin effective_status)" = starting ]
+printf '%s' "$initializing_live_json" | grep -F '"health_actions":[]' >/dev/null
+tmux -L "$SOCKET" kill-session -t "=$initializing_live_session"
+rm -rf "$initializing_live_dir"
+
+# Public resume --name must not bind one UUID into a second session slot.
+foreign_resume_name=OTHER
+foreign_resume_session=detach-codex-OTHER
+foreign_resume_output="$TMP_ROOT/foreign-resume-name.out"
+if "$SCRIPT" resume --name "$foreign_resume_name" --detach "$expected_id" \
+     >"$foreign_resume_output" 2>&1; then
+  printf 'public resume --name rebound a bound session UUID\n' >&2
+  exit 1
+fi
+grep -F 'already belongs to a different session name' \
+  "$foreign_resume_output" >/dev/null
+! tmux -L "$SOCKET" has-session -t "=$foreign_resume_session" 2>/dev/null
+[ ! -e "$DETACH_CODEX_STATE_ROOT/sessions/$foreign_resume_session" ]
+[ "$("$STATE_HELPER" meta get "$meta" codex_session_id)" = "$expected_id" ]
+
+if run_codex resume --name "$foreign_resume_name" --detach "$expected_id" \
+     >"$foreign_resume_output" 2>&1; then
+  printf 'provider resume --name rebound a bound session UUID\n' >&2
+  exit 1
+fi
+grep -F 'already belongs to a different session name' \
+  "$foreign_resume_output" >/dev/null
+[ ! -e "$DETACH_CODEX_STATE_ROOT/sessions/$foreign_resume_session" ]
 
 # Resume can reuse a harness name for a different provider UUID. Until that
 # replacement passes both readiness proofs, the complete checkpoint for the
@@ -2422,6 +2483,10 @@ resume_barrier_lockf="$TMP_ROOT/resume-barrier-lockf"
 resume_barrier_output="$TMP_ROOT/resume-barrier.out"
 rm -rf "$resume_barrier_dir"
 cp -Rp "$codex_session_dir" "$resume_barrier_dir"
+# This fixture tests checkpoint locking, not duplicate UUID admission. Keep
+# only its copied slot visible while the fixture owns the provider identity.
+resume_barrier_source="$TMP_ROOT/resume-barrier-source"
+mv "$codex_session_dir" "$resume_barrier_source"
 "$STATE_HELPER" meta patch "$resume_barrier_dir/meta.json" \
   --string session_name "$resume_barrier_session" \
   --string display_name "$resume_barrier_name"
@@ -2463,6 +2528,7 @@ wait_for_tmux_option "$resume_barrier_session" @detach_status running
 "$STATE_HELPER" jsonl validate codex "$expected_rollout" "$expected_id"
 run_codex stop "$resume_barrier_name"
 run_codex delete --force "$resume_barrier_name"
+mv "$resume_barrier_source" "$codex_session_dir"
 
 # Project occupancy is checked before Recover can restore shared provider
 # state. A live session under another name must keep both its process identity
@@ -2915,6 +2981,9 @@ ready_meta="$ready_dir/meta.json"
 ready_checkpoint="$ready_dir/checkpoint"
 rm -rf "$ready_dir"
 cp -Rp "$codex_session_dir" "$ready_dir"
+# Isolate the copied recovery generation from its source managed slot.
+ready_source="$TMP_ROOT/ready-source"
+mv "$codex_session_dir" "$ready_source"
 "$STATE_HELPER" meta patch "$ready_checkpoint/meta.json" \
   --string session_name "$ready_session" \
   --string display_name "$ready_name" \
@@ -3102,6 +3171,7 @@ require_file_line "$FAKE_CODEX_ARGS_FILE" detach-ready-model
 "$STATE_HELPER" jsonl validate codex "$failed_resume_rollout" "$failed_resume_id"
 run_codex stop "$ready_name"
 run_codex delete --force "$ready_name"
+mv "$ready_source" "$codex_session_dir"
 
 uppercase_codex="$TMP_ROOT/fake-codex-uppercase-resume"
 uppercase_release="$TMP_ROOT/fake-codex-uppercase-resume-release"
@@ -3206,6 +3276,7 @@ if [ "$CODEX_TEST_PART" = resume ]; then
   run_codex stop integration
   run_codex delete --force integration
 fi
+codex_scenario_event pass SC-SESSION-RESUME-IDENTITY
 fi
 
 # Codex /clear opens a successor thread inside the same provider process.

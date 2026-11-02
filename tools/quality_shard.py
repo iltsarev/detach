@@ -128,8 +128,8 @@ def shard_plan(plan: dict[str, object]) -> list[dict[str, object]]:
         owned.update(stages)
         remaining.difference_update(stages)
         # Provider suites need only tmux and detach-state. They bind the exact
-        # runtime products from the last green main when the cache has them
-        # and fall back to the packaged app otherwise.
+        # runtime products from the last green main on a hit. A cold shard
+        # builds only those two products, unless it also needs the full app.
         needs_runtime = bool({"codex", "claude"} & set(stages))
         needs_app = bool({"app", "tmux-runtime"} & set(stages))
         needs_cache = bool({"swift", "app", "ui-e2e"} & set(stages)) or needs_runtime

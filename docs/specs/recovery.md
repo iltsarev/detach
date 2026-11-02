@@ -8,7 +8,9 @@ Claude gets a wrapper-owned UUID via `--session-id`. Resume uses `--resume` with
 a valid transcript or matching checkpoint. It uses `--session-id` only if both
 are absent. A present invalid transcript fails closed. Startup companions such
 as `session-env/<uuid>` or `tasks/session-<short>` are not transcript evidence
-and do not block that path. Claude can continue a conversation under a new
+and do not block that path. An empty or absent live transcript permits restore
+from a matching valid checkpoint. A non-empty invalid live transcript still
+blocks Resume. Claude can continue a conversation under a new
 UUID in the same process. The bound transcript then has a `continued-in`
 record that names the successor. Discovery follows at most 8 such records,
 within one heartbeat or checkpoint tick, and rebinds identity and transcript.
@@ -65,6 +67,15 @@ match the UUID. Archived and existing team configs name that UUID as lead, so a
 checkpoint cannot replace another session's team. A valid selected live
 generation replaces an older checkpoint only after complete staging. Tests can
 disable durability syncs.
+
+Claude restore stages every bundle member before it records a durable publish
+intent. It keeps the previous files until the commit is durable. Before the
+provider starts, the next Resume or Recover heals an interrupted publish to
+one complete generation. Mixed live files cannot become a checkpoint. A failed
+rollback keeps the intent and every remaining previous file. A later attempt
+retries that rollback before staging another generation. Without an intent,
+a reachable Detach-owned temporary tree can be removed even if its contents
+are unsafe. A symlink at the temporary path is refused.
 
 Resume and Recover keep the last valid checkpoint and saved provider options
 until replacement B passes power and provider readiness. A failed handshake

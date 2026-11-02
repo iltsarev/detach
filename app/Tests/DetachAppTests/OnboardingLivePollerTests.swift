@@ -337,6 +337,7 @@ private final class PollerPowerHelperStub: InstallationPowerHelperServicing {
     func enable() async throws {}
     func disable() async throws {}
     func openApprovalSettings() {}
+    func setLowBatteryThreshold(_ threshold: PowerLowBatteryThreshold) async throws {}
 }
 
 final class OnboardingProviderLocatorTests: XCTestCase {

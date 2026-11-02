@@ -81,14 +81,14 @@ final class TerminalAppearanceTests: XCTestCase {
         terminal.retainScreen(Data("cached output".utf8), fontPointSize: 13)
         let overlay = try XCTUnwrap(terminal.subviews.compactMap { $0 as? RetainedTerminalScreenView }.first)
         let cached = try XCTUnwrap(overlay.subviews.compactMap { $0 as? TerminalView }.first)
-        let liveContent = terminal.terminal.getBufferAsData()
-        let cachedContent = cached.terminal.getBufferAsData()
+        let liveContent = terminal.getBufferAsData()
+        let cachedContent = cached.getBufferAsData()
         let process = terminal.process
         for palette in [TerminalPalette.light, .dark] {
             controller.applyPalette(palette)
             XCTAssertTrue(terminal.process === process)
-            XCTAssertEqual(terminal.terminal.getBufferAsData(), liveContent)
-            XCTAssertEqual(cached.terminal.getBufferAsData(), cachedContent)
+            XCTAssertEqual(terminal.getBufferAsData(), liveContent)
+            XCTAssertEqual(cached.getBufferAsData(), cachedContent)
             for view in [terminal, cached] {
                 XCTAssertEqual(view.nativeBackgroundColor, palette.background)
                 XCTAssertEqual(view.nativeForegroundColor, palette.foreground)

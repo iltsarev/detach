@@ -48,6 +48,9 @@ checkpoints, and protection survive its last window. ⌘Q and Quit end the app.
 After a transcript file is replaced, registration of its new file observer
 emits a refresh hint. Writes before registration must not leave the UI stale.
 
+An omitted, null, or empty `health_actions` array grants no actions. The app
+never adds Attach, Stop, or Delete because this field is absent.
+
 An active session operation can report `operation_in_progress` while it sets
 up its runtime identity. This is a starting state with no mutation actions.
 It is not a Problems row. A failed or completed operation restores the normal
@@ -210,8 +213,18 @@ lifetime confirms its own transitions. Status and session lifecycle changes
 require a new confirmation, even when the session name stays the same.
 Ordered detection never waits for delivery.
 
-SwiftTerm 1.19.0 is pinned. The exact SwiftTerm shader bundle is shipped and
-verified.
+SwiftTerm 1.99.0 is pinned. The pinned shader source is embedded in the app
+executable. The app also ships its exact source for audit. Terminal reads use
+copied view snapshots and dimensions. Native paste reads bracketed mode from
+one snapshot and sends the complete UTF-8 payload through the public byte
+input API. This preserves line breaks when bracketed paste is disabled.
+No caller retains the view's mutable terminal or selection service.
+Cursor normalization runs after the parser callback releases its lock.
+Acceptance checks wait for queued input and cursor callbacks before they
+inspect delivered bytes or cursor style. First-frame readiness observes the
+public process-output handler after parsing. A real PTY batch must release
+the retained screen and permit a queued session switch. The handler is
+removed after readiness or teardown.
 
 Each readiness build puts one `detach-app-build:<UUID>` in its executable and
 signed marker. UI smoke uses a stripped private copy below

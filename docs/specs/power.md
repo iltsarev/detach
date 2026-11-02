@@ -71,7 +71,8 @@ connection's audit-token-derived effective UID matches the non-root owner of
 `/dev/console`. Root, loginwindow/no-console, and other local UIDs are rejected;
 do not replace either audit-token check with PID-based validation. Its XPC
 surface is limited to status, acquire, renew, release, and the typed
-prepare/cancel unregistration lifecycle; it must never execute arbitrary paths,
+prepare/cancel unregistration lifecycle, and a typed battery-floor setter;
+it must never execute arbitrary paths,
 shell strings, or provider commands as root.
 
 Service replacement follows the [handoff specification](power-handoff.md).
@@ -95,7 +96,11 @@ rejected. Detach does not promise session survival across logout.
 
 Helper state is durable at `/var/db/dev.tsarev.detach/power-state.json`, with a
 private `0700` directory, `0600` regular file, symlink rejection, atomic writes,
-and file/directory fsync. Ownership intent is persisted before changing power
+and file/directory fsync. Load opens and validates the parent directory before
+it opens the file. The parent must be root-owned with mode `0700`. The file
+must be root-owned, regular, single-link, and mode `0600`. The nonblocking open
+rejects a FIFO without a writer. Valid files from earlier builds still load.
+Ownership intent is persisted before changing power
 state. A pre-existing enabled setting is borrowed and never disabled. A setting
 Detach enabled is restored after the last live lease, a stale lease, low
 battery, or orderly SIGTERM/SIGINT handling. After shutdown begins, the helper
@@ -130,8 +135,9 @@ The app observes atomic watchdog heartbeat replacements from the nearest
 existing parent directory. It moves the watch closer as missing state
 directories appear. Each document replaces one freshness deadline; the
 deadline publishes `unknown` if the watchdog stops. Menu bar, Settings, and
-temperature notifications share this state and run no repeating heartbeat
-reader.
+temperature notifications, and the session Mac Power chip share this state.
+They run no repeating heartbeat reader. The last List row does not authorize
+a session power claim.
 
 <a id="qc-power-cli"></a>
 
@@ -142,14 +148,21 @@ transition, including when borrowed external protection makes the effective
 power state unavailable; repeated documents never duplicate the warning.
 
 The watchdog is a signed per-user LaunchAgent with an embedded
-`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` at runtime, calls
-`detach power status --json` through the same process-group runner with a
+`__TEXT,__info_plist`. It resolves `~/.local/bin/detach` to a regular installed
+payload command under `versions/<semver>-<12-hex-hash>/` with a regular
+executable sibling `detach-core`. It rejects other paths as `cli_invalid`;
+an absent command is `cli_missing`. The child inherits no `DETACH_*` or
+`DYLD_*` entries. The watchdog then sets its resolved `DETACH_POWER_STATE_ROOT`.
+It calls `detach power status --json` through the same process-group runner with a
 five-second deadline, and writes private health state. The privileged
 daemon is a distinct demand-launched LaunchDaemon. Neither plist may contain a
 user-specific path. Native power protection requires no Apple Events or
 Automation entitlement.
 
 The default initial acquire carries an eight-second absolute server deadline.
+The helper measures that deadline on its clock. It clamps every acquire
+deadline to at most eight seconds from now and rejects a past deadline. A
+client Unix timestamp is not the server budget.
 If protection is not confirmed before it, root rolls back only that request's
 persisted lease, restores a previous matching lease when applicable, and
 reconciles the owned setting before returning failure. This prevents a timed-out
@@ -162,12 +175,20 @@ status request every two seconds per session.
 
 <a id="qc-power-protection"></a>
 
-The low-battery threshold is 10% while on battery power. The helper releases
+The low-battery threshold is 10%, 15%, or 20% while on battery power. The
+default and minimum are 10%. The helper stores the floor in its durable state.
+A missing, unknown, or mistyped stored value becomes 10%. Other setter values
+are rejected. The typed XPC setter applies the floor at once. Status JSON and
+the watchdog heartbeat carry `low_battery_threshold`. The helper releases
 closed-lid protection it owns, the wrapper releases its IOKit assertion, and the
 provider is allowed to finish only while the Mac remains awake. Initial
-acquisition fails closed at low battery. A borrowed external setting cannot be
-turned off, so status must never falsely report the low-battery safe state while
-that setting remains active.
+acquisition fails closed at low battery. If the battery reader fails after
+Detach owns closed-lid protection, the helper restores that owned setting
+before it returns the failure. Cached status must not report that closed-lid
+protection is inactive while Detach still owns the setting. Failure status
+keeps the stored thermal-safety latch and low-battery threshold. A borrowed
+external setting cannot be turned off, so status must never falsely report
+the low-battery safe state while that setting remains active.
 
 Thermal safety uses only public `ProcessInfo.thermalState`. `serious` and
 `critical` latch safety immediately: the helper restores Detach-owned
@@ -181,7 +202,9 @@ retained failure; a release that still fails stays surfaced. `nominal` and
 helper persists this cooldown across restart, and an unknown reading cannot
 clear it. The raw
 `nominal|fair|serious|critical|unknown` value and latch cross helper status, CLI
-JSON, watchdog, tmux, and app. Low battery wins the combined reason when both
+JSON, watchdog, tmux, and app. Typed status JSON requires
+`thermal_safety_active`. A missing field does not mean that thermal safety
+is inactive. Low battery wins the combined reason when both
 guards are active, while the thermal fields remain visible. Borrowed external
 `disablesleep` is never disabled, so neither safety state may falsely claim the
 Mac can sleep while it remains active.

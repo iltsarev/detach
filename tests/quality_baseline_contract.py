@@ -69,6 +69,8 @@ mode = os.environ.get("FAKE_GH_MODE", "success")
 if arguments[0] == "api" and "workflows/quality-gates.yml/runs" in arguments[1]:
     if mode == "malformed": print("{")
     elif mode == "no-runs": print(json.dumps({"workflow_runs": []}))
+    elif mode in ("expired-latest", "missing-latest"):
+        print(json.dumps({"workflow_runs": [{"id": 124}, {"id": 123}]}))
     elif mode == "partial-latest": print(json.dumps({"workflow_runs": [{"id": 124}, {"id": 123}]}))
     elif mode == "profile-selection": print(json.dumps({"workflow_runs": [{"id": 125}, {"id": 124}]}))
     elif mode == "dual-profile": print(json.dumps({"workflow_runs": [{"id": 126}]}))
@@ -76,6 +78,12 @@ if arguments[0] == "api" and "workflows/quality-gates.yml/runs" in arguments[1]:
 elif arguments[0] == "api" and "/artifacts" in arguments[1]:
     run_id = arguments[1].split("/actions/runs/")[1].split("/")[0]
     values = [{"expired": False, "name": f"quality-gate-evidence-{run_id}-1"}]
+    if mode == "expired-latest" and run_id == "124":
+        values[0]["expired"] = True
+    if mode == "missing-latest" and run_id == "124":
+        values = []
+    if mode == "all-expired":
+        values[0]["expired"] = True
     if mode == "duplicate":
         values.append({"expired": False, "name": "quality-gate-evidence-123-2"})
     print(json.dumps({"artifacts": values}))
@@ -120,6 +128,16 @@ else:
         if not (partial_root / "124/run/manifest.tsv").is_file():
             raise AssertionError("partial main evidence was not inspected")
 
+        for mode in ("expired-latest", "missing-latest"):
+            fallback_root = root / mode
+            fallback = invoke(fake_gh, fallback_root, mode=mode)
+            if Path(fallback.stdout.strip()) != fallback_root / "123":
+                raise AssertionError("baseline did not skip unavailable evidence")
+            if (fallback_root / "124").exists():
+                raise AssertionError("missing evidence left a cache entry")
+        expired = invoke(fake_gh, root / "all-expired", mode="all-expired", expected=2)
+        require(expired, "no successful main quality run has combined quality metrics")
+
         profile_root = root / "profile-selection"
         combined = invoke(
             fake_gh, profile_root, mode="profile-selection", profile="combined")
@@ -163,6 +181,8 @@ else:
             fake_gh, root / "production-override", expected=2, test_mode=False)
         require(override, "baseline output must use")
 
+    from quality_baseline_archive_contract import main as archive_contracts
+    archive_contracts()
     print("Quality baseline contracts passed")
     return 0
 

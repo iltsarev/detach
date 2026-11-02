@@ -280,34 +280,45 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     private var retainedScreenView: NSView?
     private var frameReadinessCheck: DispatchWorkItem?
     private var didReportFirstVisibleFrame = false
+    private var frameObservationStopped = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         registerForDraggedTypes([.fileURL])
+        observeProcessOutput()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         registerForDraggedTypes([.fileURL])
+        observeProcessOutput()
     }
 
     override func copy(_ sender: Any) {
         // tmux copies its own mouse selection on release. It is not a
         // SwiftTerm selection, so an empty native copy must preserve it.
         SessionAttachClipboard.write(
-            selection.getSelectedText(), to: .general)
+            getSelection() ?? "", to: .general)
     }
 
     override func paste(_ sender: Any) {
         guard let text = NSPasteboard.general.string(forType: .string),
               !text.isEmpty else { return }
-        // Paste is a byte stream, even when the child requests Kitty key
-        // events. SwiftTerm otherwise encodes the whole text as one key and
-        // can discard line breaks when bracketed paste is disabled.
+        pasteLiteralText(text)
+    }
+
+    func pasteLiteralText(_ text: String) {
+        guard !text.isEmpty else { return }
         unmarkText()
-        if terminal.bracketedPasteMode { send(txt: "\u{1B}[200~") }
-        send(txt: text)
-        if terminal.bracketedPasteMode { send(txt: "\u{1B}[201~") }
+        // The upstream paste API changes unbracketed LF to CR. Preserve the
+        // provider's original UTF-8 stream through the public byte input API.
+        let bracketed = terminalStateSnapshot().bracketedPasteMode
+        let payload = bracketed ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+        sendPasteBytes(Array(payload.utf8))
+    }
+
+    func sendPasteBytes(_ bytes: [UInt8]) {
+        send(data: bytes[...])
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -407,15 +418,26 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: deadline)
     }
 
+    private func observeProcessOutput() {
+        setProcessOutputHandler { [weak self] in
+            Task { @MainActor [weak self] in self?.scheduleFrameReadinessCheck() }
+        }
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         super.dataReceived(slice: slice)
-        guard !didReportFirstVisibleFrame,
+        scheduleFrameReadinessCheck()
+    }
+
+    private func scheduleFrameReadinessCheck() {
+        guard !frameObservationStopped, !didReportFirstVisibleFrame,
               frameReadinessCheck == nil else { return }
         let check = DispatchWorkItem { [weak self] in
-            guard let self else { return }
+            guard let self, !self.frameObservationStopped else { return }
             self.frameReadinessCheck = nil
-            guard Self.hasVisibleContent(in: self.terminal) else { return }
+            guard Self.hasVisibleContent(in: self) else { return }
             self.didReportFirstVisibleFrame = true
+            self.setProcessOutputHandler(nil)
             self.removeRetainedScreen()
             self.onFirstVisibleFrame?()
         }
@@ -437,6 +459,8 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func stopFrameObservation() {
+        frameObservationStopped = true
+        setProcessOutputHandler(nil)
         pendingStart = nil
         retainedScreenDeadline?.cancel()
         retainedScreenDeadline = nil
@@ -448,11 +472,9 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
     var isRetainingScreen: Bool { retainedScreenView != nil }
     var hasFirstVisibleFrame: Bool { didReportFirstVisibleFrame }
 
-    static func hasVisibleContent(in terminal: Terminal) -> Bool {
-        (0..<terminal.rows).contains { row in
-            guard let line = terminal.getLine(row: row) else { return false }
-            return line.translateToString(trimRight: true)
-                .contains(where: { !$0.isWhitespace })
+    static func hasVisibleContent(in view: TerminalView) -> Bool {
+        view.visibleRowsText(0..<view.terminalDimensions.rows).contains { line in
+            line.contains(where: { !$0.isWhitespace })
         }
     }
 
@@ -464,20 +486,23 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         // macOS 26. Keep its event-driven CoreGraphics renderer until the
         // upstream idle-pausing frame driver reaches a stable release.
         try? setUseMetal(false)
-        terminal.setCursorStyle(SessionAttachRendering.steadyCursorStyle(
-            for: terminal.options.cursorStyle))
+        setCursorStyle(SessionAttachRendering.steadyCursorStyle(
+            for: terminalStateSnapshot().cursorStyle))
     }
 
-    override func cursorStyleChanged(
+    nonisolated override func cursorStyleChanged(
         source: Terminal,
         newStyle: CursorStyle
     ) {
-        let steadyStyle = SessionAttachRendering.steadyCursorStyle(for: newStyle)
-        if steadyStyle.tagName != newStyle.tagName {
-            source.setCursorStyle(steadyStyle)
-            return
+        super.cursorStyleChanged(source: source, newStyle: newStyle)
+        // The parser calls this delegate while it holds a non-recursive lock.
+        // Apply the command after that callback and use the latest style.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let current = self.terminalStateSnapshot().cursorStyle
+            let steady = SessionAttachRendering.steadyCursorStyle(for: current)
+            if current.tagName != steady.tagName { self.setCursorStyle(steady) }
         }
-        super.cursorStyleChanged(source: source, newStyle: steadyStyle)
     }
 // quality-coverage:end swiftterm-renderer
 
@@ -522,7 +547,7 @@ final class RetainedTerminalScreenView: NSView {
                 pointSize: fontPointSize))
         super.init(frame: frame)
         palette.apply(to: terminal)
-        terminal.terminal.setCursorStyle(.steadyBlock)
+        terminal.setCursorStyle(.steadyBlock)
         try? terminal.setUseMetal(false)
         terminal.feed(byteArray: Array(screen)[...])
         terminal.autoresizingMask = [.width, .height]
@@ -553,7 +578,7 @@ enum SessionAttachRendering {
         in terminalView: LocalProcessTerminalView
     ) -> Bool {
         guard !terminalView.isUsingMetalRenderer else { return false }
-        let style = terminalView.terminal.options.cursorStyle
+        let style = terminalView.terminalStateSnapshot().cursorStyle
         return steadyCursorStyle(for: style).tagName == style.tagName
     }
 // quality-coverage:end swiftterm-renderer
@@ -695,7 +720,7 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
 
     func copySelection(to pasteboard: NSPasteboard = .general) -> String {
         SessionAttachClipboard.write(
-            terminalView?.selection.getSelectedText() ?? "",
+            terminalView?.getSelection() ?? "",
             to: pasteboard)
     }
 
@@ -727,7 +752,7 @@ final class SessionAttachController: NSObject, LocalProcessTerminalViewDelegate 
         guard surfaceSize.width > 0, surfaceSize.height > 0 else { return nil }
         let view = LocalProcessTerminalView(frame: CGRect(origin: .zero, size: surfaceSize))
         view.font = terminalFont(pointSize: fontPointSize)
-        return SessionTerminalSize(columns: view.terminal.cols, rows: view.terminal.rows)
+        return SessionTerminalSize(columns: view.terminalDimensions.cols, rows: view.terminalDimensions.rows)
     }
 
     static func terminate(process: LocalProcess, timeout: TimeInterval = 1) {
@@ -993,7 +1018,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         }
 
         func captureScreen(from view: LocalProcessTerminalView) {
-            let data = view.terminal.getBufferAsData()
+            let data = view.getBufferAsData()
             MainActor.assumeIsolated {
                 guard let screen = SessionTerminalScreenCache.normalized(data) else {
                     return

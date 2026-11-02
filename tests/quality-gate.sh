@@ -81,6 +81,17 @@ printf '%s\n' "$app_cache_hit_step" | \
   grep -F 'app/scripts/verify-app.sh' >/dev/null
 printf '%s\n' "$app_cache_hit_step" | \
   grep -F 'DETACH_QUALITY_EXACT_APP=1' >/dev/null
+runtime_build_step="$(printf '%s\n' "$quality_shards_job" | sed -n \
+  '/name: Build and bind exact provider runtime/,/name: Build and bind exact packaged test app/p')"
+printf '%s\n' "$runtime_build_step" | grep -F 'matrix.needs_runtime && !matrix.needs_app' >/dev/null
+printf '%s\n' "$runtime_build_step" | grep -F 'tools/quality_products.py build-runtime' >/dev/null
+printf '%s\n' "$runtime_build_step" | grep -F 'tools/quality_products.py verify-runtime' >/dev/null
+runtime_verify_line="$(printf '%s\n' "$runtime_build_step" | grep -nF 'verify-runtime' | cut -d: -f1)"
+runtime_bind_line="$(printf '%s\n' "$runtime_build_step" | grep -nF 'DETACH_QUALITY_EXACT_RUNTIME=1' | cut -d: -f1)"
+[ "$runtime_bind_line" -gt "$runtime_verify_line" ] || {
+  printf 'quality workflow bound runtime before verification\n' >&2
+  exit 1
+}
 app_cache_miss_step="$(printf '%s\n' "$quality_shards_job" | sed -n \
   '/name: Build and bind exact packaged test app/,/name: Run exact quality shard/p')"
 printf '%s\n' "$app_cache_miss_step" | \

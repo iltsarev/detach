@@ -14,6 +14,12 @@ private final class MouseRecordingTerminalView: SessionAttachLocalProcessTermina
         sent.append(contentsOf: data)
     }
 
+    // LocalProcessTerminalView sends public byte input directly to its PTY.
+    // Capture this app boundary separately from parser delegate output.
+    override func sendPasteBytes(_ bytes: [UInt8]) {
+        sent.append(contentsOf: bytes)
+    }
+
     override func requestOpenLink(
         source: TerminalView, link: String, params: [String: String]
     ) {
@@ -166,6 +172,7 @@ private final class RecordingTerminalView: LocalProcessTerminalView {
     }
 }
 
+@MainActor
 final class SessionAttachTerminalTests: XCTestCase {
     func testPublicAttachRoundTripResizeCopyAndTermination() throws {
         let root = FileManager.default.temporaryDirectory
@@ -201,7 +208,7 @@ final class SessionAttachTerminalTests: XCTestCase {
             ])
 
         var exitCode: Int32?
-        let terminal = HeadlessTerminal { exitCode = $0 }
+        let terminal = HeadlessTerminal(queue: .main) { exitCode = $0 }
         terminal.process.startProcess(
             executable: invocation.executable,
             args: invocation.arguments,
@@ -249,6 +256,27 @@ final class SessionAttachTerminalTests: XCTestCase {
             "codex attach --terminal-features sync detach-codex-proj-abcd1234")
     }
 
+    func testRealPTYOutputReleasesRetainedFrameAndReportsReadiness() throws {
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        terminal.retainScreen(Data("previous session".utf8), fontPointSize: 13)
+        var readyCount = 0
+        terminal.onFirstVisibleFrame = { readyCount += 1 }
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: ["-c", "printf 'first real PTY frame'; exec /bin/sleep 5"],
+            environment: ["PATH=/bin:/usr/bin"])
+        defer { SessionAttachController.terminate(process: terminal.process) }
+
+        try waitUntil {
+            String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+                .contains("first real PTY frame")
+        }
+        try waitUntil(timeout: 1) { terminal.hasFirstVisibleFrame }
+        XCTAssertFalse(terminal.isRetainingScreen)
+        XCTAssertEqual(readyCount, 1)
+    }
+
     func testTerminationEscalatesWhenTheClientIgnoresTerm() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -258,7 +286,7 @@ final class SessionAttachTerminalTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let ready = root.appendingPathComponent("ready")
-        let terminal = HeadlessTerminal { _ in }
+        let terminal = HeadlessTerminal(queue: .main) { _ in }
         terminal.process.startProcess(
             executable: "/bin/sh",
             args: [
@@ -281,7 +309,8 @@ final class SessionAttachTerminalTests: XCTestCase {
 
         try waitUntil {
             errno = 0
-            return Darwin.kill(childPID, 0) == -1 && errno == ESRCH
+            let reaped = Darwin.kill(childPID, 0) == -1 && errno == ESRCH
+            return reaped && !terminal.process.running
         }
         XCTAssertFalse(terminal.process.running)
     }
@@ -1074,14 +1103,14 @@ final class SessionAttachTerminalTests: XCTestCase {
         terminal.feed(text: "\u{1B}[?1000h\u{1B}[?1006houtput")
         pasteboard.clearContents()
         pasteboard.setString("tmux selection", forType: .string)
-        XCTAssertEqual(terminal.selection.getSelectedText(), "")
+        XCTAssertEqual(terminal.getSelection() ?? "", "")
         let changeCount = pasteboard.changeCount
         copy()
         XCTAssertEqual(pasteboard.string(forType: .string), "tmux selection")
         XCTAssertEqual(pasteboard.changeCount, changeCount)
 
         terminal.selectAll(nil)
-        let selected = terminal.selection.getSelectedText()
+        let selected = terminal.getSelection() ?? ""
         XCTAssertTrue(selected.contains("output"))
         copy()
         XCTAssertEqual(pasteboard.string(forType: .string), selected)
@@ -1103,6 +1132,7 @@ final class SessionAttachTerminalTests: XCTestCase {
                     commandV, window: nil, firstResponder: terminal, in: terminal,
                     send: { _ in XCTFail("Command-V must use native paste") }))
                 let expected = bracketed ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+                try waitUntil(timeout: 1) { terminal.sent == Array(expected.utf8) }
                 XCTAssertEqual(terminal.sent, Array(expected.utf8))
             }
         }
@@ -1112,6 +1142,22 @@ final class SessionAttachTerminalTests: XCTestCase {
             terminal.sent.removeAll()
             terminal.paste(terminal)
             XCTAssertTrue(terminal.sent.isEmpty)
+        }
+    }
+
+    @MainActor
+    func testNativeTextPastePreservesUTF8AndLineBreaks() throws {
+        let terminal = MouseRecordingTerminalView(frame: .zero)
+        let text = "Привет, мир! Ёж 🦔\n第二行"
+        for enhancement in ["\u{1B}[>0u", "\u{1B}[>1u", "\u{1B}[>8u", "\u{1B}[>31u"] {
+            for bracketed in [false, true] {
+                terminal.feed(text: bracketed ? "\u{1B}[?2004h" : "\u{1B}[?2004l")
+                terminal.feed(text: enhancement)
+                terminal.sent.removeAll()
+                terminal.pasteLiteralText(text)
+                let expected = bracketed ? "\u{1B}[200~" + text + "\u{1B}[201~" : text
+                XCTAssertEqual(terminal.sent, Array(expected.utf8))
+            }
         }
     }
 
@@ -1153,8 +1199,16 @@ final class SessionAttachTerminalTests: XCTestCase {
                     terminal.mouseDown(with: try event(.leftMouseDown, modifiers: modifiers))
                     terminal.mouseDragged(with: try event(.leftMouseDragged, x: 30, modifiers: modifiers))
                     terminal.mouseDragged(with: try event(.leftMouseDragged, x: 60, modifiers: modifiers))
+                    // SwiftTerm queues terminal-to-view delegate delivery.
+                    // Drain earlier mouse events before isolating this release.
+                    var delivered = false
+                    DispatchQueue.main.async { delivered = true }
+                    try waitUntil(timeout: 1) { delivered }
                     terminal.sent.removeAll()
                     terminal.mouseUp(with: try event(.leftMouseUp, x: 60, modifiers: modifiers))
+                    if mouseReporting {
+                        try waitUntil(timeout: 1) { !terminal.sent.isEmpty }
+                    }
                     XCTAssertTrue(terminal.opened.isEmpty)
                     if mouseReporting {
                         let release = String(decoding: terminal.sent, as: UTF8.self)
@@ -1239,18 +1293,28 @@ final class SessionAttachTerminalTests: XCTestCase {
     }
 
     @MainActor
-    func testRealtimeRendererUsesEventDrivenCoreGraphics() {
+    func testRealtimeRendererUsesEventDrivenCoreGraphics() throws {
         let terminal = SessionAttachLocalProcessTerminalView(frame: .zero)
 
         terminal.configureRealtimeRendererIfNeeded()
-        terminal.cursorStyleChanged(
-            source: terminal.terminal,
-            newStyle: .blinkUnderline)
+        terminal.feed(text: "\u{1B}[3 q")
+        try waitUntil {
+            terminal.terminalStateSnapshot().cursorStyle.tagName
+                == CursorStyle.steadyUnderline.tagName
+        }
 
         XCTAssertFalse(terminal.isUsingMetalRenderer)
         XCTAssertEqual(
-            terminal.terminal.options.cursorStyle.tagName,
+            terminal.terminalStateSnapshot().cursorStyle.tagName,
             CursorStyle.steadyUnderline.tagName)
+        XCTAssertTrue(
+            SessionAttachRendering.hasEnergyEfficientRenderer(in: terminal))
+
+        terminal.setCursorStyle(.blinkBar)
+        try waitUntil(timeout: 1) {
+            terminal.terminalStateSnapshot().cursorStyle.tagName
+                == CursorStyle.steadyBar.tagName
+        }
         XCTAssertTrue(
             SessionAttachRendering.hasEnergyEfficientRenderer(in: terminal))
     }
@@ -1269,13 +1333,13 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertTrue(terminal.isRetainingScreen)
         XCTAssertFalse(
             SessionAttachLocalProcessTerminalView.hasVisibleContent(
-                in: terminal.terminal))
+                in: terminal))
         terminal.dataReceived(slice: Array("\u{001B}[2J\u{001B}[H".utf8)[...])
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
 
         XCTAssertFalse(
             SessionAttachLocalProcessTerminalView.hasVisibleContent(
-                in: terminal.terminal))
+                in: terminal))
         XCTAssertTrue(terminal.isRetainingScreen)
         XCTAssertEqual(visibleFrameCount, 0)
 
@@ -1283,12 +1347,26 @@ final class SessionAttachTerminalTests: XCTestCase {
         try waitUntil(timeout: 0.5) { !terminal.isRetainingScreen }
         XCTAssertTrue(
             SessionAttachLocalProcessTerminalView.hasVisibleContent(
-                in: terminal.terminal))
+                in: terminal))
         XCTAssertEqual(visibleFrameCount, 1)
 
         terminal.dataReceived(slice: Array("more output".utf8)[...])
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
         XCTAssertEqual(visibleFrameCount, 1)
+    }
+
+    @MainActor
+    func testStoppedFrameObservationCannotRestartFromLateOutput() {
+        let terminal = SessionAttachLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        terminal.retainScreen(Data("previous session".utf8), fontPointSize: 13)
+        terminal.onFirstVisibleFrame = { XCTFail("retired view reported readiness") }
+        terminal.dataReceived(slice: Array("queued output".utf8)[...])
+        terminal.stopFrameObservation()
+        terminal.dataReceived(slice: Array("late output".utf8)[...])
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
+        XCTAssertFalse(terminal.hasFirstVisibleFrame)
+        XCTAssertTrue(terminal.isRetainingScreen)
     }
 
     @MainActor
@@ -1322,17 +1400,17 @@ final class SessionAttachTerminalTests: XCTestCase {
         try waitUntil { FileManager.default.fileExists(atPath: record.path) }
         let actual = try String(contentsOf: record, encoding: .utf8)
             .split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
-        XCTAssertEqual(actual, [terminal.terminal.rows, terminal.terminal.cols])
-        XCTAssertGreaterThan(terminal.terminal.rows, 24)
+        XCTAssertEqual(actual, [terminal.terminalDimensions.rows, terminal.terminalDimensions.cols])
+        XCTAssertGreaterThan(terminal.terminalDimensions.rows, 24)
         let initialSize = SessionAttachController.initialSize(
             surfaceSize: terminal.bounds.size, fontPointSize: 13)
-        XCTAssertEqual(initialSize?.columns, terminal.terminal.cols)
-        XCTAssertEqual(initialSize?.rows, terminal.terminal.rows)
+        XCTAssertEqual(initialSize?.columns, terminal.terminalDimensions.cols)
+        XCTAssertEqual(initialSize?.rows, terminal.terminalDimensions.rows)
         XCTAssertNil(SessionAttachController.initialSize(
             surfaceSize: .zero, fontPointSize: 13))
         let largerFontSize = SessionAttachController.initialSize(
             surfaceSize: terminal.bounds.size, fontPointSize: 18)
-        XCTAssertLessThan(try XCTUnwrap(largerFontSize?.columns), terminal.terminal.cols)
+        XCTAssertLessThan(try XCTUnwrap(largerFontSize?.columns), terminal.terminalDimensions.cols)
 
         let cancelled = SessionAttachLocalProcessTerminalView(frame: .zero)
         var starts = 0
@@ -1350,7 +1428,7 @@ final class SessionAttachTerminalTests: XCTestCase {
             frame: NSRect(x: 0, y: 0, width: 640, height: 360))
         terminal.retainScreen(Data("stale snapshot".utf8), fontPointSize: 13)
         try waitUntil(timeout: 1.3) { !terminal.isRetainingScreen }
-        XCTAssertNil(terminal.terminal.getBufferAsData().range(of: Data("stale snapshot".utf8)))
+        XCTAssertNil(terminal.getBufferAsData().range(of: Data("stale snapshot".utf8)))
     }
 
     func testDroppedPathNeverInsertsAControlCharacter() {
@@ -1620,8 +1698,19 @@ final class SessionAttachTerminalTests: XCTestCase {
         let created = createdAt.map { "\"\($0)\"" } ?? "null"
         let lifecycle = lifecycleID.map { "\"\($0)\"" } ?? "null"
         return SessionListParser.parse("""
-        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":\(created),"lifecycle_id":\(lifecycle),"last_checkpoint_at":null,"exit_status":null,"finished_at":null}
+        {"schema":1,"provider":"codex","session_name":"\(name)","name":"proj-abcd1234","effective_status":"\(status)","meta_status":null,"agent_session_id":"1111-2222","project_dir":"/tmp/p","created_at":\(created),"lifecycle_id":\(lifecycle),"last_checkpoint_at":null,"exit_status":null,"finished_at":null,"health_actions":\(healthActionsJSON(for: status))}
         """).sessions.first
+    }
+
+    private static func healthActionsJSON(for status: String) -> String {
+        switch status {
+        case "starting", "running", "recovering", "hung":
+            return #"["attach","stop"]"#
+        case "recoverable":
+            return #"["recover","delete"]"#
+        default:
+            return #"["resume","delete"]"#
+        }
     }
 
     private static func invocation() -> SessionAttachInvocation {

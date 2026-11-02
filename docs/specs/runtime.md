@@ -57,6 +57,9 @@ causes no mutation. Attach can hold a frame until the target redraws.
 
 <a id="qc-runtime-ownership"></a>
 
+Every Resume entry point rejects a UUID bound to a different managed name.
+The check holds the install and project locks before startup changes.
+
 Core self-reinvokes critical mutations under `lockf`. Start, Resume, Stop,
 Recover, and Delete hold a session lock before install, project, and checkpoint
 locks. Each lock covers the child; the install lock covers readiness and the
@@ -136,8 +139,11 @@ detach-power run --session <name> --run-token <token>
 
 Metadata has a typed phase machine: `initializing`, `starting`, `running`,
 `stopping`, `finalizing`, `terminal`. Invalid transitions fail; `status` stores
-outcomes. List hides `initializing`. The worker emits `starting` only after its
-metadata and tmux identity match; only then can provider PID be absent. The
+outcomes. List shows an `initializing` row when its managed pane remains or
+recovery must be preserved until readiness. Other private initialization rows
+stay hidden. Starting rows grant no mutation actions. The worker emits
+`starting` only after its metadata and tmux identity match; only then can
+provider PID be absent. The
 power wrapper confirms both layers and publishes readiness and exact provider
 PID. The starter proves ancestry before `running` and prints `Started` last.
 HUP/INT/TERM forward while the wrapper releases its lease and assertion;

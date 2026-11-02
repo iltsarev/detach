@@ -6,6 +6,9 @@
 
 `detach-state` is the JSON boundary. Never edit JSON in shell. It owns typed
 metadata, JSONL, health, reconcile, storage, emit, and event operations.
+Codex record 0 must name the expected session. Later `session_meta` records
+must name that same session. Message, reasoning, and tool item IDs do not
+identify a session. Claude checks every present `sessionId` field.
 `meta snapshots` enumerates one owned sessions root through anchored directory
 descriptors. It rejects unsafe directories and opens only owned regular files
 of at most 1 MiB with `O_NOFOLLOW`. Storage metadata, checkpoint fallback

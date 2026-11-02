@@ -2369,6 +2369,48 @@ final class DetachStateCommandTests: XCTestCase {
             .appendingPathComponent(".detach-jsonl-validation.json").path))
     }
 
+    func testJSONLSummaryBoundsTheRealStandardInput() throws {
+        let input = temporaryDirectory.appendingPathComponent("stdin-tail.jsonl")
+        var transcript = Data(#"{"payload":{"model":"outside-the-window"}}"#.utf8)
+        transcript.append(Data(repeating: 0x20, count: 300_000))
+        transcript.append(Data("\n".utf8))
+        transcript.append(Data(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"tail-turn"}}"#.utf8))
+        try transcript.write(to: input)
+        let handle = try FileHandle(forReadingFrom: input)
+        defer { try? handle.close() }
+        let original = dup(STDIN_FILENO)
+        guard original >= 0 else { return XCTFail("could not preserve stdin") }
+        defer { _ = dup2(original, STDIN_FILENO); close(original) }
+        guard dup2(handle.fileDescriptor, STDIN_FILENO) == STDIN_FILENO else {
+            return XCTFail("could not supply stdin")
+        }
+
+        let result = try DetachStateCommand.run(arguments: [
+            "jsonl", "summary", "codex", "-",
+        ])
+        let summary = try XCTUnwrap(JSONSerialization.jsonObject(with: result) as? [String: Any])
+        XCTAssertTrue(summary["model"] is NSNull)
+        XCTAssertEqual(summary["agent_turn_state"] as? String, "working")
+        XCTAssertEqual(summary["agent_turn_id"] as? String, "tail-turn")
+    }
+
+    func testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails() throws {
+        let transcript = temporaryDirectory.appendingPathComponent("receipt-rollout.jsonl")
+        try Data(#"{"payload":{"id":"session-1"}}"#.utf8).write(to: transcript)
+        let receipt = temporaryDirectory.appendingPathComponent(".detach-jsonl-validation.json")
+        try FileManager.default.createDirectory(at: receipt, withIntermediateDirectories: true)
+        let sentinel = receipt.appendingPathComponent("sentinel")
+        try Data("preserve".utf8).write(to: sentinel)
+
+        XCTAssertNoThrow(try DetachStateCommand.run(arguments: [
+            "jsonl", "validate-cached", "codex", transcript.path, "session-1",
+        ]))
+
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data("preserve".utf8))
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path)
+        XCTAssertFalse(remaining.contains { $0.hasSuffix(".tmp") })
+    }
+
     func testReadOnlyCommandsHandleEOFOnTheRealStandardInput() throws {
         XCTAssertThrowsError(try DetachStateCommand.run(arguments: [
             "meta", "get", "-", "state",

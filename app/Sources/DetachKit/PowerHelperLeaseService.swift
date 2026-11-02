@@ -9,6 +9,7 @@ public struct PowerHelperPersistentState: Codable, Equatable, Sendable {
     public var bootSessionIdentifier: String?
     public var unregistrationPending: Bool
     public var thermalSafety: PowerThermalSafetyLatch
+    public var lowBatteryThreshold: PowerLowBatteryThreshold
 
     public init(
         schema: Int = 1,
@@ -16,7 +17,8 @@ public struct PowerHelperPersistentState: Codable, Equatable, Sendable {
         leases: [PowerLease] = [],
         bootSessionIdentifier: String? = nil,
         unregistrationPending: Bool = false,
-        thermalSafety: PowerThermalSafetyLatch = PowerThermalSafetyLatch()
+        thermalSafety: PowerThermalSafetyLatch = PowerThermalSafetyLatch(),
+        lowBatteryThreshold: PowerLowBatteryThreshold = .default
     ) {
         self.schema = schema
         self.ownsClosedLidProtection = ownsClosedLidProtection
@@ -24,6 +26,7 @@ public struct PowerHelperPersistentState: Codable, Equatable, Sendable {
         self.bootSessionIdentifier = bootSessionIdentifier
         self.unregistrationPending = unregistrationPending
         self.thermalSafety = thermalSafety
+        self.lowBatteryThreshold = lowBatteryThreshold
     }
 
     public init(from decoder: Decoder) throws {
@@ -43,6 +46,19 @@ public struct PowerHelperPersistentState: Codable, Equatable, Sendable {
         thermalSafety = try container.decodeIfPresent(
             PowerThermalSafetyLatch.self, forKey: .thermalSafety)
             ?? PowerThermalSafetyLatch()
+        lowBatteryThreshold = Self.decodeLowBatteryThreshold(from: container)
+    }
+
+    /// A missing, unsupported, or wrong-type floor becomes 10%. Other valid
+    /// fields must still load so a damaged threshold cannot drop leases.
+    private static func decodeLowBatteryThreshold(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) -> PowerLowBatteryThreshold {
+        guard container.contains(.lowBatteryThreshold) else { return .default }
+        if let value = try? container.decode(Int.self, forKey: .lowBatteryThreshold) {
+            return PowerLowBatteryThreshold.parse(value)
+        }
+        return .default
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -52,6 +68,7 @@ public struct PowerHelperPersistentState: Codable, Equatable, Sendable {
         case bootSessionIdentifier = "boot_session_identifier"
         case unregistrationPending = "unregistration_pending"
         case thermalSafety = "thermal_safety"
+        case lowBatteryThreshold = "low_battery_threshold"
     }
 }
 
@@ -68,7 +85,7 @@ extension PowerHelperStateStoring {
 }
 
 public protocol PowerBatterySafetyReading {
-    func isLowBattery() throws -> Bool
+    func isLowBattery(thresholdPercent: Int) throws -> Bool
 }
 
 public protocol PowerBootSessionReading: Sendable {
@@ -84,6 +101,7 @@ public enum PowerHelperLeaseServiceError: Error, Equatable, Sendable {
     case serviceQuiescing
     case invalidBootSessionIdentifier
     case requestExpired
+    case invalidLowBatteryThreshold
 }
 
 extension PowerHelperLeaseServiceError: LocalizedError {
@@ -105,6 +123,8 @@ extension PowerHelperLeaseServiceError: LocalizedError {
             return "power helper could not identify the current boot session"
         case .requestExpired:
             return "power lease request expired before protection was confirmed"
+        case .invalidLowBatteryThreshold:
+            return "low-battery threshold must be 10, 15, or 20"
         }
     }
 }
@@ -118,6 +138,9 @@ extension PowerHelperLeaseServiceError: LocalizedError {
 public final class PowerHelperLeaseService: @unchecked Sendable {
     public static let defaultLeaseTimeout: TimeInterval = 120
     public static let maximumLeaseCount = 256
+    /// Absolute server budget for an initial acquire. A client Unix
+    /// timestamp is never trusted as this budget.
+    public static let maximumAcquireDeadline: TimeInterval = 8
 
     private let store: any PowerHelperStateStoring
     private let backend: any ClosedLidProtectionControlling
@@ -251,6 +274,24 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
         }
     }
 
+    public func setLowBatteryThreshold(
+        _ threshold: PowerLowBatteryThreshold
+    ) throws -> PowerProtectionStatus {
+        try synchronized {
+            try recordingFailureLocked {
+                guard !isTerminating, !state.unregistrationPending else {
+                    throw PowerHelperLeaseServiceError.serviceQuiescing
+                }
+                if state.lowBatteryThreshold != threshold {
+                    var candidate = state
+                    candidate.lowBatteryThreshold = threshold
+                    try replaceState(candidate)
+                }
+                return try reconcileAndCacheLocked()
+            }
+        }
+    }
+
     public func acquireLease(
         _ identity: PowerLeaseIdentity,
         assertionActive: Bool,
@@ -260,9 +301,8 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
             try recordingFailureLocked {
                 try Self.validate(identity)
                 let instant = now()
-                if let requestDeadline, instant >= requestDeadline {
-                    throw PowerHelperLeaseServiceError.requestExpired
-                }
+                let requestDeadline = try Self.serverAcquireDeadline(
+                    requestDeadline, now: instant)
                 guard !isTerminating, !state.unregistrationPending else {
                     throw PowerHelperLeaseServiceError.serviceQuiescing
                 }
@@ -319,7 +359,9 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
                         lowBattery: rollbackStatus.lowBattery,
                         thermalState: rollbackStatus.thermalState,
                         thermalSafetyActive:
-                            rollbackStatus.thermalSafetyActive)
+                            rollbackStatus.thermalSafetyActive,
+                        lowBatteryThreshold:
+                            rollbackStatus.lowBatteryThreshold)
                 }
                 return confirmation
             }
@@ -402,7 +444,17 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
             candidate.thermalSafety = thermalSafety
             try replaceState(candidate)
         }
-        let lowBattery = try batteryReader.isLowBattery()
+        let lowBattery: Bool
+        do {
+            lowBattery = try batteryReader.isLowBattery(
+                thresholdPercent: state.lowBatteryThreshold.rawValue)
+        } catch {
+            // A battery-read failure must not leave Detach-owned closed-lid
+            // protection active. Restore first so the catch path cannot
+            // publish an inactive lid claim while ownership remains.
+            try restoreOwnedProtectionLocked()
+            throw error
+        }
         let liveLeases = PowerLeaseRegistry.liveLeases(
             state.leases, now: instant, timeout: leaseTimeout)
 
@@ -438,6 +490,7 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
             lowBattery: lowBattery,
             thermalState: thermalState,
             thermalSafetyActive: thermalSafety.isActive,
+            lowBatteryThreshold: state.lowBatteryThreshold,
             backend: backend,
             allowEnablingProtection: { [now] in
                 requestDeadline.map { now() < $0 } ?? true
@@ -460,7 +513,8 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
             transitionInProgress: true,
             lowBattery: status.lowBattery,
             thermalState: status.thermalState,
-            thermalSafetyActive: status.thermalSafetyActive)
+            thermalSafetyActive: status.thermalSafetyActive,
+            lowBatteryThreshold: status.lowBatteryThreshold)
     }
 
     private func reconcileBootSessionLocked() throws {
@@ -582,7 +636,8 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
             transitionInProgress: status.transitionInProgress,
             lowBattery: status.lowBattery,
             thermalState: status.thermalState,
-            thermalSafetyActive: status.thermalSafetyActive)
+            thermalSafetyActive: status.thermalSafetyActive,
+            lowBatteryThreshold: status.lowBatteryThreshold)
     }
 
     private func reconcileAndCacheLocked(
@@ -594,7 +649,7 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
             updateCachedStatus(status)
             return status
         } catch {
-            updateCachedStatus(Self.unavailableStatus)
+            publishFailureStatusLocked()
             throw error
         }
     }
@@ -605,9 +660,26 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
         do {
             return try operation()
         } catch {
-            updateCachedStatus(Self.unavailableStatus)
+            publishFailureStatusLocked()
             throw error
         }
+    }
+
+    /// Failure snapshots must not claim closed-lid protection is inactive
+    /// while Detach still owns the machine setting.
+    private func publishFailureStatusLocked() {
+        updateCachedStatus(
+            PowerProtectionStatus(
+                state: .unavailable,
+                leaseCount: 0,
+                assertionActive: false,
+                closedLidProtectionActive: state.ownsClosedLidProtection,
+                helperReachable: false,
+                transitionInProgress: false,
+                lowBattery: false,
+                thermalState: .unknown,
+                thermalSafetyActive: state.thermalSafety.isActive,
+                lowBatteryThreshold: state.lowBatteryThreshold))
     }
 
     /// Called only while the mutation lock is held. `status()` takes only this
@@ -641,6 +713,24 @@ public final class PowerHelperLeaseService: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return try operation()
+    }
+
+    /// Rejects a past or non-finite client deadline and caps a far-future
+    /// instant at `now + maximumAcquireDeadline`.
+    private static func serverAcquireDeadline(
+        _ requestDeadline: Date?,
+        now instant: Date
+    ) throws -> Date? {
+        guard let requestDeadline else { return nil }
+        let raw = requestDeadline.timeIntervalSince1970
+        guard raw.isFinite else {
+            throw PowerHelperLeaseServiceError.requestExpired
+        }
+        if instant >= requestDeadline {
+            throw PowerHelperLeaseServiceError.requestExpired
+        }
+        let serverBudget = instant.addingTimeInterval(maximumAcquireDeadline)
+        return min(requestDeadline, serverBudget)
     }
 
     private static func validate(_ identity: PowerLeaseIdentity) throws {

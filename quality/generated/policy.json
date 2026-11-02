@@ -405,6 +405,8 @@
         "QC-QUALITY-SUPPLY-CHAIN"
       ],
       "scenarios": [
+        "SC-RUNTIME-PRODUCT-CONTRACT",
+        "SC-BASELINE-CONTRACT",
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
         "SC-MERGE-CONTRACT",
@@ -432,9 +434,10 @@
       ],
       "scenarios": [
         "SC-SESSION-CREATE-CODEX",
-        "SC-SESSION-CREATE-CLAUDE"
+        "SC-SESSION-CREATE-CLAUDE",
+        "SC-SESSION-RESUME-IDENTITY"
       ],
-      "summary": "A user creates a managed provider session."
+      "summary": "A user creates or resumes a managed provider session."
     },
     {
       "capability": "session-state",
@@ -784,7 +787,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 62,
+  "policy": 63,
   "release_domains": [
     {
       "gates": "-",
@@ -856,6 +859,7 @@
       "spec": "docs/specs/runtime.md",
       "summary": "Session operations prove the exact run token and process ownership.",
       "verification": [
+        "SC-SESSION-RESUME-IDENTITY",
         "SC-SESSION-OWNERSHIP-UNIT",
         "SC-SESSION-CREATE-CODEX",
         "SC-SESSION-CREATE-CLAUDE",
@@ -1068,6 +1072,8 @@
       "spec": "docs/specs/quality.md",
       "summary": "One current policy owns quality selection and traceability.",
       "verification": [
+        "SC-RUNTIME-PRODUCT-CONTRACT",
+        "SC-BASELINE-CONTRACT",
         "SC-CONTRACT-CHANGE",
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
@@ -2343,6 +2349,27 @@
       "release_domain": "safe",
       "spec": "docs/specs/power-handoff.md",
       "test_domain": "docs"
+    },
+    {
+      "pattern": "app/Sources/DetachKit/WatchdogCLI.swift",
+      "priority": 900,
+      "release_domain": "both",
+      "spec": "docs/specs/power.md",
+      "test_domain": "power"
+    },
+    {
+      "pattern": "tools/quality_baseline_archive.py",
+      "priority": 1000,
+      "release_domain": "safe",
+      "spec": "docs/specs/quality.md",
+      "test_domain": "policy"
+    },
+    {
+      "pattern": "tests/claude_restore_transaction_contract.py",
+      "priority": 1000,
+      "release_domain": "safe",
+      "spec": "docs/specs/recovery.md",
+      "test_domain": "claude-test"
     }
   ],
   "scenarios": [
@@ -2479,7 +2506,11 @@
         "DetachKitTests.PowerHelperLeaseServiceTests/testStartupReconcileExpiresStaleLeaseAndRestoresOwnedState",
         "DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract",
         "DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup",
-        "DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting"
+        "DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting",
+        "DetachKitTests.PowerProtectionTests/testMissingThermalSafetyActiveDoesNotDecodeAsInactive",
+        "DetachKitTests.WatchdogCLITests/testResolvesInstalledPayloadAndStripsInheritedOverrides",
+        "DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreRejectsFIFOWithoutWaitingForAWriter",
+        "DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreLoadsStateWrittenByThePreviousFormat"
       ]
     },
     {
@@ -2489,7 +2520,10 @@
       "status": "test-cases",
       "tests": [
         "DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased",
-        "DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation"
+        "DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailurePreservesThermalLatchAndChosenFloor",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails"
       ]
     },
     {
@@ -2504,7 +2538,8 @@
         "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireRejectsAnExpiredRequestBeforePersisting",
         "DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot",
         "DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation",
-        "DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly"
+        "DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly",
+        "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireClampsAFarFutureClientDeadlineToTheServerBudget"
       ]
     },
     {
@@ -2531,7 +2566,10 @@
       "status": "test-cases",
       "tests": [
         "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue",
-        "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue"
+        "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue",
+        "DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat",
+        "DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor",
+        "DetachAppTests.InstallationStorePowerStateTests/testSuccessfulThresholdWriteAcceptsFreshHeartbeatAtPreviousFloor"
       ]
     },
     {
@@ -2688,7 +2726,10 @@
       "status": "test-cases",
       "tests": [
         "DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase",
-        "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed"
+        "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed",
+        "DetachAppTests.PowerHelperServiceTests/testMissingLifetimeLockStillPreparesAReachableHelperWithActiveLeases",
+        "DetachAppTests.PowerHelperServiceTests/testFailedPrepareCannotBypassANewLifetimeHolder",
+        "DetachAppTests.PowerHelperServiceTests/testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister"
       ]
     },
     {
@@ -2710,7 +2751,8 @@
       "tests": [
         "DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories",
         "DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments",
-        "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink"
+        "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink",
+        "DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities"
       ]
     },
     {
@@ -2726,7 +2768,10 @@
       "stage": "swift",
       "status": "test-cases",
       "tests": [
-        "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy"
+        "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy",
+        "DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks",
+        "DetachAppTests.SessionAttachTerminalTests/testRealPTYOutputReleasesRetainedFrameAndReportsReadiness",
+        "DetachAppTests.SessionAttachTerminalTests/testStoppedFrameObservationCannotRestartFromLateOutput"
       ]
     },
     {
@@ -2750,8 +2795,32 @@
         "DetachKitTests.DetachStateTests/testClaudeAgentCompletionRequiresMatchingNotificationIdentity",
         "DetachKitTests.DetachStateCommandTests/testMetaSnapshotsReclassifyAndRetainPendingClaudeAgents",
         "DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery",
-        "DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents"
+        "DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents",
+        "DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities",
+        "DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput",
+        "DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails"
       ]
+    },
+    {
+      "command": "tests/run.sh",
+      "id": "SC-SESSION-RESUME-IDENTITY",
+      "stage": "codex",
+      "status": "instrumented",
+      "tests": []
+    },
+    {
+      "command": "tests/quality-baseline.sh",
+      "id": "SC-BASELINE-CONTRACT",
+      "stage": "gate-contract",
+      "status": "instrumented",
+      "tests": []
+    },
+    {
+      "command": "python3 tests/quality_products_contract.py",
+      "id": "SC-RUNTIME-PRODUCT-CONTRACT",
+      "stage": "gate-contract",
+      "status": "instrumented",
+      "tests": []
     }
   ],
   "schema": 1,
@@ -2861,6 +2930,12 @@
             },
             {
               "command": "tests/run.sh",
+              "id": "SC-SESSION-RESUME-IDENTITY",
+              "stage": "codex",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/run.sh",
               "id": "SC-SESSION-STOP-CODEX",
               "stage": "codex",
               "status": "instrumented"
@@ -2904,6 +2979,7 @@
           ],
           "summary": "Session operations prove the exact run token and process ownership.",
           "verification": [
+            "SC-SESSION-RESUME-IDENTITY",
             "SC-SESSION-OWNERSHIP-UNIT",
             "SC-SESSION-CREATE-CODEX",
             "SC-SESSION-CREATE-CLAUDE",
@@ -3056,6 +3132,7 @@
         "app/Sources/DetachKit/ClamshellLockRunner.swift",
         "app/Sources/DetachKit/DetachPower*.swift",
         "app/Sources/DetachKit/Power*.swift",
+        "app/Sources/DetachKit/WatchdogCLI.swift",
         "app/Sources/DetachPower/*.swift",
         "app/Sources/DetachPowerHelper/*.swift",
         "app/Sources/DetachWatchdog/*.swift",
@@ -3691,6 +3768,7 @@
         "tests/source-rules*",
         "tests/test-suite-contract.sh",
         "tools/quality_baseline.py",
+        "tools/quality_baseline_archive.py",
         "tools/quality_cache_warm.py",
         "tools/quality_care.py",
         "tools/quality_contract_change.py",
@@ -3718,6 +3796,18 @@
             "J-QUALITY-CHANGE"
           ],
           "scenarios": [
+            {
+              "command": "python3 tests/quality_products_contract.py",
+              "id": "SC-RUNTIME-PRODUCT-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-baseline.sh",
+              "id": "SC-BASELINE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
             {
               "command": "tests/quality-policy.sh",
               "id": "SC-POLICY-CONTRACT",
@@ -3751,6 +3841,8 @@
           ],
           "summary": "One current policy owns quality selection and traceability.",
           "verification": [
+            "SC-RUNTIME-PRODUCT-CONTRACT",
+            "SC-BASELINE-CONTRACT",
             "SC-CONTRACT-CHANGE",
             "SC-POLICY-CONTRACT",
             "SC-PROMOTION-CONTRACT",
@@ -3765,6 +3857,18 @@
             "J-QUALITY-CHANGE"
           ],
           "scenarios": [
+            {
+              "command": "python3 tests/quality_products_contract.py",
+              "id": "SC-RUNTIME-PRODUCT-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-baseline.sh",
+              "id": "SC-BASELINE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
             {
               "command": "tests/quality-policy.sh",
               "id": "SC-POLICY-CONTRACT",
@@ -3816,7 +3920,8 @@
         "J-SESSION-RECOVER"
       ],
       "owned_patterns": [
-        "docs/specs/recovery.md"
+        "docs/specs/recovery.md",
+        "tests/claude_restore_transaction_contract.py"
       ],
       "path": "docs/specs/recovery.md",
       "requirements": [
@@ -4163,18 +4268,29 @@
     }
   ],
   "test_sources": {
+    "DetachAppTests.InstallationStorePowerStateTests/testAppliedThresholdWithFailedReplyYieldsToFreshHelperHeartbeat": "app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift",
+    "DetachAppTests.InstallationStorePowerStateTests/testReorderedThresholdCompletionsFollowTheLatestHelperFloor": "app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift",
+    "DetachAppTests.InstallationStorePowerStateTests/testSuccessfulThresholdWriteAcceptsFreshHeartbeatAtPreviousFloor": "app/Tests/DetachAppTests/InstallationStorePowerStateTests.swift",
     "DetachAppTests.OnboardingLivePollerTests/testRejectedPermissionReconcileIsRetriedOnNextTick": "app/Tests/DetachAppTests/OnboardingLivePollerTests.swift",
     "DetachAppTests.OnboardingStepTests/testMissingProviderBlocksOnlyFirstOnboarding": "app/Tests/DetachAppTests/SetupGuidanceTests.swift",
+    "DetachAppTests.PowerHelperServiceTests/testEnabledZombieRegistrationWithoutLifetimeBarrierCanReregister": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
+    "DetachAppTests.PowerHelperServiceTests/testFailedPrepareCannotBypassANewLifetimeHolder": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
     "DetachAppTests.PowerHelperServiceTests/testFailedUnregisterKeepsRootGateClosedAndSubmittedPhase": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
+    "DetachAppTests.PowerHelperServiceTests/testMissingLifetimeLockStillPreparesAReachableHelperWithActiveLeases": "app/Tests/DetachAppTests/PowerHelperServiceTests.swift",
     "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
+    "DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
+    "DetachAppTests.SessionAttachTerminalTests/testRealPTYOutputReleasesRetainedFrameAndReportsReadiness": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
+    "DetachAppTests.SessionAttachTerminalTests/testStoppedFrameObservationCannotRestartFromLateOutput": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed": "app/Tests/DetachAppTests/WatchdogServiceTests.swift",
     "DetachKitTests.DetachPowerCommandTests/testHelperLifecycleCommandsUseNarrowXPCMethodsOnly": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
     "DetachKitTests.DetachPowerCommandTests/testStatusJSONAddsSchemaAndUsesSnakeCaseContract": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
     "DetachKitTests.DetachPowerCommandTests/testUnconfirmedHelperLeaseRefusesChildAndAttemptsFullCleanup": "app/Tests/DetachKitTests/DetachPowerCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testCheckpointExchangeRejectsUnsafeNamesAndSymlinkedDirectories": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLSuccessorPrintsAClaudeContinuationFromAnOwnedTranscript": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
+    "DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLSummaryDoesNotResurrectFailedBackgroundLaunch": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidateRejectsFinalComponentSymlink": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
     "DetachKitTests.DetachStateCommandTests/testJSONLValidationRejectsWrongIdentityAndMalformedArguments": "app/Tests/DetachKitTests/DetachStateCommandTests.swift",
@@ -4192,23 +4308,32 @@
     "DetachKitTests.DetachStateTests/testClaudeTaskEventsIgnoreNonConversationRecords": "app/Tests/DetachKitTests/DetachStateTests.swift",
     "DetachKitTests.DetachStateTests/testClaudeTeammateWorkRejectsUnrelatedOrForgedMailboxEvents": "app/Tests/DetachKitTests/DetachStateTests.swift",
     "DetachKitTests.DetachStateTests/testClaudeTeammatesStayWorkingUntilIdleAndWakeOnInboxDelivery": "app/Tests/DetachKitTests/DetachStateTests.swift",
+    "DetachKitTests.DetachStateTests/testCodexItemIDsAreNotSessionIdentities": "app/Tests/DetachKitTests/DetachStateTests.swift",
     "DetachKitTests.PowerAssertionControllerTests/testAcquireCreatesOneAssertionAndBecomesActive": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
     "DetachKitTests.PowerAssertionControllerTests/testFailedReleaseStaysActiveAndCanRetry": "app/Tests/DetachKitTests/PowerAssertionControllerTests.swift",
     "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsAnotherLocalUserAfterFastUserSwitching": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",
     "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsLoginWindowAndLogoutWithoutAnActiveConsoleUser": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",
     "DetachKitTests.PowerHelperClientAuthorizationPolicyTests/testRejectsRootEvenWhileARegularConsoleUserIsActive": "app/Tests/DetachKitTests/PowerHelperClientAuthorizationTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireClampsAFarFutureClientDeadlineToTheServerBudget": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireRejectsAnExpiredRequestBeforePersisting": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testAcquireVerifiesBothProtectionsAndPersistsOwnershipBeforeMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailurePreservesThermalLatchAndChosenFloor": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
+    "DetachKitTests.PowerHelperLeaseServiceTests/testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testLowBatteryRefusesProtectionAndDropsOwnedMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testReleaseRestoresNormalSleepOnlyWhenDetachOwnedTheMutation": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperLeaseServiceTests/testStartupReconcileExpiresStaleLeaseAndRestoresOwnedState": "app/Tests/DetachKitTests/PowerHelperLeaseServiceTests.swift",
     "DetachKitTests.PowerHelperPlatformTests/testPMSetBackendReadsAndMutatesOnlyDisableSleepSetting": "app/Tests/DetachKitTests/PowerHelperPlatformTests.swift",
+    "DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreLoadsStateWrittenByThePreviousFormat": "app/Tests/DetachKitTests/PowerHelperPlatformTests.swift",
+    "DetachKitTests.PowerHelperPlatformTests/testSecureFileStoreRejectsFIFOWithoutWaitingForAWriter": "app/Tests/DetachKitTests/PowerHelperPlatformTests.swift",
     "DetachKitTests.PowerHelperXPCServiceTests/testNonFiniteAcquireDeadlineIsRejectedBeforeLeaseMutation": "app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift",
     "DetachKitTests.PowerHelperXPCServiceTests/testStatusReturnsVersionedTypedSnapshot": "app/Tests/DetachKitTests/PowerHelperXPCServiceTests.swift",
     "DetachKitTests.PowerProtectionTests/testLowBatteryDoesNotClaimSleepUntilIdleAssertionIsReleased": "app/Tests/DetachKitTests/PowerProtectionTests.swift",
+    "DetachKitTests.PowerProtectionTests/testMissingThermalSafetyActiveDoesNotDecodeAsInactive": "app/Tests/DetachKitTests/PowerProtectionTests.swift",
     "DetachKitTests.PowerProtectionTests/testProtectedRequiresBothAssertionAndClosedLidProtection": "app/Tests/DetachKitTests/PowerProtectionTests.swift",
     "DetachKitTests.SessionHealthTests/testForeignProviderPIDIsNeverTreatedAsOwned": "app/Tests/DetachKitTests/SessionHealthTests.swift",
     "DetachKitTests.SessionHealthTests/testForeignTmuxCollisionNeverOffersAnAction": "app/Tests/DetachKitTests/SessionHealthTests.swift",
-    "DetachKitTests.SessionHealthTests/testProcessInspectorRejectsWrongPaneAndForeignOwnership": "app/Tests/DetachKitTests/SessionHealthTests.swift"
+    "DetachKitTests.SessionHealthTests/testProcessInspectorRejectsWrongPaneAndForeignOwnership": "app/Tests/DetachKitTests/SessionHealthTests.swift",
+    "DetachKitTests.WatchdogCLITests/testResolvesInstalledPayloadAndStripsInheritedOverrides": "app/Tests/DetachKitTests/WatchdogCLITests.swift"
   }
 }

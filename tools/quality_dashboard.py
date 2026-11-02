@@ -901,6 +901,12 @@ def generate(arguments: argparse.Namespace) -> int:
     rendered_html = render_html(data).encode("utf-8")
     atomic_write(output / "data.json", rendered_data)
     atomic_write(output / "index.html", rendered_html)
+    # Keep independently measured profiles across every dashboard deployment.
+    match = re.fullmatch(r"https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/runs/([0-9]+)", arguments.run_url)
+    if (match and match[1] == os.environ.get("GITHUB_REPOSITORY")
+            and data["run"]["authority"] == "ci-main" and data["run"]["result"] == "passed"):
+        from quality_baseline_archive import dashboard_archives
+        dashboard_archives(output, run_dir, metrics_baseline, match[1], int(match[2]))
     print(f"quality-dashboard: generated {output / 'index.html'}")
     return 0
 

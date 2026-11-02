@@ -92,6 +92,7 @@ struct WatchdogHeartbeat: Codable {
     let powerState: String?
     let thermalState: String?
     let thermalSafetyActive: Bool?
+    let lowBatteryThreshold: Int?
     let exitStatus: Int32
 
     enum CodingKeys: String, CodingKey {
@@ -101,6 +102,7 @@ struct WatchdogHeartbeat: Codable {
         case powerState = "power_state"
         case thermalState = "thermal_state"
         case thermalSafetyActive = "thermal_safety_active"
+        case lowBatteryThreshold = "low_battery_threshold"
         case exitStatus = "exit_status"
     }
 }
@@ -110,6 +112,7 @@ func recordHeartbeat(
     powerState: String? = nil,
     thermalState: String? = nil,
     thermalSafetyActive: Bool? = nil,
+    lowBatteryThreshold: Int? = nil,
     exitStatus: Int32
 ) {
     let heartbeat = WatchdogHeartbeat(
@@ -119,6 +122,7 @@ func recordHeartbeat(
         powerState: powerState,
         thermalState: thermalState,
         thermalSafetyActive: thermalSafetyActive,
+        lowBatteryThreshold: lowBatteryThreshold,
         exitStatus: exitStatus)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -142,21 +146,30 @@ do {
     let log = try FileHandle(forWritingTo: logURL)
     try log.seekToEnd()
 
-    guard fileManager.isExecutableFile(atPath: detachURL.path) else {
+    let command: URL
+    let childEnvironment: [String: String]
+    switch WatchdogCLI.resolve(
+        home: URL(fileURLWithPath: home, isDirectory: true),
+        environment: environment,
+        powerStateRoot: stateRoot
+    ) {
+    case .success(let resolution):
+        command = resolution.executableURL
+        childEnvironment = resolution.environment
+    case .failure(.notRegularPayload):
+        let message = "DetachWatchdog: CLI is not a regular installed payload at \(detachURL.path)\n"
+        try log.write(contentsOf: Data(message.utf8))
+        recordHeartbeat(state: "cli_invalid", exitStatus: 1)
+        exit(1)
+    case .failure(.missing):
         let message = "DetachWatchdog: CLI is not installed at \(detachURL.path)\n"
         try log.write(contentsOf: Data(message.utf8))
         recordHeartbeat(state: "cli_missing", exitStatus: 0)
         exit(0)
     }
 
-    var childEnvironment = environment
-    let commonPath = [
-        "\(home)/.local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
-    ].joined(separator: ":")
-    childEnvironment["PATH"] = commonPath
-    childEnvironment["DETACH_POWER_STATE_ROOT"] = stateRoot
     let statusResult = try BoundedProcessRunner().run(BoundedProcessRequest(
-        executableURL: detachURL,
+        executableURL: command,
         arguments: ["power", "status", "--json"],
         environment: childEnvironment,
         timeout: 5,
@@ -185,11 +198,13 @@ do {
         let state: String
         let thermalState: String
         let thermalSafetyActive: Bool
+        let lowBatteryThreshold: Int?
 
         enum CodingKeys: String, CodingKey {
             case state
             case thermalState = "thermal_state"
             case thermalSafetyActive = "thermal_safety_active"
+            case lowBatteryThreshold = "low_battery_threshold"
         }
     }
     let knownStates: Set<String> = [
@@ -213,6 +228,8 @@ do {
         powerState: powerStatus.state,
         thermalState: powerStatus.thermalState,
         thermalSafetyActive: powerStatus.thermalSafetyActive,
+        lowBatteryThreshold: PowerLowBatteryThreshold.parse(
+            powerStatus.lowBatteryThreshold).rawValue,
         exitStatus: 0)
     exit(0)
 } catch {

@@ -5,6 +5,7 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
     private enum ExpectedFailure: Error {
         case store
         case battery
+        case restore
     }
 
     private final class EventLog {
@@ -120,7 +121,7 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         let lowBattery: Bool
         var failure: Error?
 
-        func isLowBattery() throws -> Bool {
+        func isLowBattery(thresholdPercent: Int) throws -> Bool {
             if let failure { throw failure }
             return lowBattery
         }
@@ -134,7 +135,7 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
 
     private final class ProbeBatteryReader: PowerBatterySafetyReading {
         private(set) var callCount = 0
-        func isLowBattery() throws -> Bool {
+        func isLowBattery(thresholdPercent: Int) throws -> Bool {
             callCount += 1
             return false
         }
@@ -143,7 +144,7 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
     private final class SequenceBatteryReader: PowerBatterySafetyReading {
         private var values: [Bool]
         init(_ values: [Bool]) { self.values = values }
-        func isLowBattery() throws -> Bool {
+        func isLowBattery(thresholdPercent: Int) throws -> Bool {
             guard values.count > 1 else { return values.first ?? false }
             return values.removeFirst()
         }
@@ -152,9 +153,21 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
     private final class MutableBatteryReader: PowerBatterySafetyReading {
         var lowBattery = false
         var failure: Error?
-        func isLowBattery() throws -> Bool {
+        func isLowBattery(thresholdPercent: Int) throws -> Bool {
             if let failure { throw failure }
             return lowBattery
+        }
+    }
+
+    private final class PercentBatteryReader: PowerBatterySafetyReading {
+        var percent: Int
+        private(set) var lastThreshold: Int?
+
+        init(percent: Int) { self.percent = percent }
+
+        func isLowBattery(thresholdPercent: Int) throws -> Bool {
+            lastThreshold = thresholdPercent
+            return percent <= thresholdPercent
         }
     }
 
@@ -276,6 +289,91 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertFalse(cached.helperReachable)
     }
 
+    func testBatteryReadFailureRestoresOwnedProtectionAndDoesNotClaimLidInactive() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertEqual(backend.writes, [true, false])
+        XCTAssertFalse(backend.enabled)
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertFalse(cached.helperReachable)
+        // After restore, an inactive lid claim is honest. The failure
+        // snapshot must not have been published while ownership remained.
+        XCTAssertFalse(cached.closedLidProtectionActive)
+        XCTAssertNotEqual(store.state?.ownsClosedLidProtection, true)
+    }
+
+    func testBatteryReadFailureDoesNotClaimLidInactiveWhenOwnedRestoreFails() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        XCTAssertEqual(
+            try service.acquireLease(identity, assertionActive: true).state,
+            .protected)
+        backend.disablingFailure = ExpectedFailure.restore
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertTrue(backend.enabled)
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, true)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertTrue(cached.closedLidProtectionActive)
+        XCTAssertFalse(cached.helperReachable)
+    }
+
+    func testBatteryReadFailurePreservesThermalLatchAndChosenFloor() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let thermal = MutableThermalReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            thermalReader: thermal,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now })
+        _ = try service.setLowBatteryThreshold(.percent20)
+        _ = try service.acquireLease(identity, assertionActive: true)
+        thermal.state = .serious
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertEqual(backend.writes, [true, false])
+        XCTAssertEqual(store.state?.thermalSafety.isActive, true)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertFalse(cached.closedLidProtectionActive)
+        XCTAssertTrue(cached.thermalSafetyActive)
+        XCTAssertEqual(cached.lowBatteryThreshold, .percent20)
+    }
+
     func testAcquireRejectsAnExpiredRequestBeforePersisting() throws {
         let store = FakeStore()
         let backend = FakeBackend(enabled: false)
@@ -293,6 +391,49 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertNil(store.state)
         XCTAssertFalse(backend.enabled)
         XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testAcquireRejectsANonFiniteRequestDeadlineBeforePersisting() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend)
+
+        for raw in [TimeInterval.nan, .infinity, -.infinity] {
+            XCTAssertThrowsError(try service.acquireLease(
+                identity,
+                assertionActive: true,
+                requestDeadline: Date(timeIntervalSince1970: raw)
+            )) { error in
+                XCTAssertEqual(
+                    error as? PowerHelperLeaseServiceError,
+                    .requestExpired)
+            }
+        }
+        XCTAssertNil(store.state)
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testBatteryReadFailureRestoresNothingWhenClosedLidIsNotOwned() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = MutableBatteryReader()
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        XCTAssertEqual(try service.reconcile().state, .allowed)
+        battery.failure = ExpectedFailure.battery
+
+        XCTAssertThrowsError(try service.reconcile())
+
+        XCTAssertTrue(backend.writes.isEmpty)
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
+        let cached = try service.status()
+        XCTAssertEqual(cached.state, .unavailable)
+        XCTAssertFalse(cached.closedLidProtectionActive)
     }
 
     func testAcquireRollsBackProtectionWhenDeadlineExpiresDuringMutation() throws {
@@ -358,11 +499,44 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
     }
 
+    func testAcquireClampsAFarFutureClientDeadlineToTheServerBudget() throws {
+        let clock = TestClock(now)
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        backend.onSet = { enabled in
+            if enabled {
+                clock.date = self.now.addingTimeInterval(
+                    PowerHelperLeaseService.maximumAcquireDeadline + 1)
+            }
+        }
+        let service = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: FakeBatteryReader(lowBattery: false),
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { clock.date },
+            leaseTimeout: 120)
+
+        XCTAssertThrowsError(try service.acquireLease(
+            identity,
+            assertionActive: true,
+            requestDeadline: now.addingTimeInterval(10_000)
+        )) { error in
+            XCTAssertEqual(
+                error as? PowerHelperLeaseServiceError,
+                .requestExpired)
+        }
+        XCTAssertEqual(backend.writes, [true, false])
+        XCTAssertFalse(backend.enabled)
+        XCTAssertEqual(store.state?.leases, [])
+        XCTAssertEqual(store.state?.ownsClosedLidProtection, false)
+    }
+
     func testAcquireReportsRestorationFailureInsteadOfExpiredAfterFailedRollback() throws {
         let clock = TestClock(now)
         let store = FakeStore()
         let backend = FakeBackend(enabled: false)
-        backend.disablingFailure = ExpectedFailure.battery
+        backend.disablingFailure = ExpectedFailure.restore
         backend.onSet = { enabled in
             if enabled {
                 clock.date = self.now.addingTimeInterval(6)
@@ -691,6 +865,117 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
 
         XCTAssertFalse(state.unregistrationPending)
         XCTAssertFalse(state.thermalSafety.isActive)
+        XCTAssertEqual(state.lowBatteryThreshold, .default)
+    }
+
+    func testUnknownStoredLowBatteryThresholdBecomesTheDefaultFloor() throws {
+        let data = Data(
+            #"{"schema":1,"owns_closed_lid_protection":false,"leases":[],"low_battery_threshold":7}"#.utf8)
+
+        let state = try JSONDecoder().decode(
+            PowerHelperPersistentState.self, from: data)
+
+        XCTAssertEqual(state.lowBatteryThreshold, .percent10)
+    }
+
+    func testWrongTypeStoredLowBatteryThresholdKeepsValidOwnership() throws {
+        let original = PowerHelperPersistentState(
+            ownsClosedLidProtection: true,
+            leases: [
+                PowerLease(
+                    id: "lease-1",
+                    sessionName: "codex-job",
+                    runToken: "tok-1",
+                    renewedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                    assertionActive: true)
+            ],
+            bootSessionIdentifier: "boot-1",
+            lowBatteryThreshold: .percent20)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: try encoder.encode(original)) as? [String: Any])
+        object["low_battery_threshold"] = "15"
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let state = try decoder.decode(
+            PowerHelperPersistentState.self,
+            from: try JSONSerialization.data(withJSONObject: object))
+
+        XCTAssertEqual(state.lowBatteryThreshold, .percent10)
+        XCTAssertEqual(state.leases, original.leases)
+        XCTAssertTrue(state.ownsClosedLidProtection)
+        XCTAssertEqual(state.bootSessionIdentifier, "boot-1")
+    }
+
+    func testLowBatteryThresholdPersistsAcrossReloadAndDrivesReconcile() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let battery = PercentBatteryReader(percent: 12)
+        let first = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        _ = try first.acquireLease(identity, assertionActive: true)
+        XCTAssertEqual(try first.status().state, .protected)
+        XCTAssertEqual(try first.status().lowBatteryThreshold, .percent10)
+        XCTAssertEqual(battery.lastThreshold, 10)
+
+        let raised = try first.setLowBatteryThreshold(.percent15)
+        // The helper restores the owned closed-lid layer, but the wrapper
+        // still holds its assertion. Status must not claim sleep is safe.
+        XCTAssertEqual(raised.state, .unavailable)
+        XCTAssertTrue(raised.lowBattery)
+        XCTAssertEqual(raised.lowBatteryThreshold, .percent15)
+        XCTAssertEqual(store.state?.lowBatteryThreshold, .percent15)
+        XCTAssertEqual(battery.lastThreshold, 15)
+        XCTAssertEqual(backend.writes, [true, false])
+
+        let restarted = try PowerHelperLeaseService(
+            store: store,
+            backend: backend,
+            batteryReader: battery,
+            bootSessionReader: FakeBootSessionReader(identifier: "test-boot"),
+            now: { self.now },
+            leaseTimeout: 120)
+        let status = try restarted.reconcile()
+        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertTrue(status.lowBattery)
+        XCTAssertEqual(status.lowBatteryThreshold, .percent15)
+        XCTAssertEqual(store.state?.lowBatteryThreshold, .percent15)
+    }
+
+    func testSetLowBatteryThresholdIsRefusedWhileTheHelperIsQuiescing() throws {
+        let store = FakeStore()
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(store: store, backend: backend)
+        try service.prepareForUnregistration()
+
+        XCTAssertThrowsError(
+            try service.setLowBatteryThreshold(.percent20)
+        ) { error in
+            XCTAssertEqual(
+                error as? PowerHelperLeaseServiceError,
+                .serviceQuiescing)
+        }
+        XCTAssertEqual(store.state?.lowBatteryThreshold, .percent10)
+    }
+
+    func testBootSessionChangeKeepsTheChosenLowBatteryFloor() throws {
+        let store = FakeStore(state: PowerHelperPersistentState(
+            bootSessionIdentifier: "old-boot",
+            lowBatteryThreshold: .percent20))
+        let backend = FakeBackend(enabled: false)
+        let service = try makeService(
+            store: store, backend: backend, bootSessionIdentifier: "new-boot")
+
+        XCTAssertEqual(try service.reconcile().lowBatteryThreshold, .percent20)
+        XCTAssertEqual(store.state?.lowBatteryThreshold, .percent20)
+        XCTAssertEqual(store.state?.bootSessionIdentifier, "new-boot")
     }
 
     func testFailedReleaseNeverClaimsThatSleepWasRestored() throws {
@@ -1092,7 +1377,7 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         let stateURL = root.appendingPathComponent("state.json")
         let corrupt = Data("not-json".utf8)
         try corrupt.write(to: stateURL)
-        let store = SecureFilePowerHelperStateStore(fileURL: stateURL)
+        let store = SecureFilePowerHelperStateStore(fileURL: stateURL, expectedOwner: UInt32(geteuid()))
         let backend = FakeBackend(enabled: false)
 
         let service = try PowerHelperLeaseService(
@@ -1128,7 +1413,7 @@ final class PowerHelperLeaseServiceTests: XCTestCase {
         try Data(
             #"{"schema":2,"owns_closed_lid_protection":true,"leases":[]}"#.utf8
         ).write(to: stateURL)
-        let store = SecureFilePowerHelperStateStore(fileURL: stateURL)
+        let store = SecureFilePowerHelperStateStore(fileURL: stateURL, expectedOwner: UInt32(geteuid()))
         // The unreadable file claimed ownership of a setting that is still
         // enabled. A clean start must treat it as borrowed and never
         // disable it.

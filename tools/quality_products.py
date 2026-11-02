@@ -10,13 +10,15 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import tempfile
 from typing import NoReturn
 
-from quality_cache_warm import product_fingerprint, product_inputs
+from quality_cache_warm import module_environment, product_fingerprint, product_inputs
 
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_RELATIVE = Path("app/.build/quality-products-v1.json")
+RUNTIME_MANIFEST_RELATIVE = Path("app/.build/quality-runtime-v1.json")
 # The provider integrations need only the bundled tmux and detach-state. A
 # green main publishes both as exact runtime products so a pull request that
 # changes only the shell CLI does not rebuild the whole app in every shard.
@@ -166,15 +168,20 @@ def inventory(root: Path, relative: Path) -> list[dict[str, object]]:
     return records
 
 
-def product_document(root: Path) -> dict[str, list[dict[str, object]]]:
+def product_document(root: Path, runtime_only: bool = False) -> dict[str, list[dict[str, object]]]:
     return {
         identifier: inventory(root, relative)
-        for identifier, relative in PRODUCT_PATHS
+        for identifier, relative in (
+            (("runtime-tmux", RUNTIME_PRODUCT_ROOT / "tmux"),
+             ("runtime-state", RUNTIME_PRODUCT_ROOT / "detach-state"))
+            if runtime_only else PRODUCT_PATHS
+        )
     }
 
 
-def validate_executables(root: Path) -> None:
-    for relative in EXECUTABLE_PATHS:
+def validate_executables(root: Path, runtime_only: bool = False) -> None:
+    paths = tuple(RUNTIME_PRODUCT_ROOT / name for name in RUNTIME_PRODUCTS) if runtime_only else EXECUTABLE_PATHS
+    for relative in paths:
         binary = root / relative
         if not binary.is_file() or binary.is_symlink() or not os.access(binary, os.X_OK):
             raise ProductError(f"missing or unsafe executable product: {relative.as_posix()}")
@@ -182,8 +189,8 @@ def validate_executables(root: Path) -> None:
             raise ProductError(f"executable product is not arm64-only: {relative.as_posix()}")
 
 
-def manifest_path(root: Path) -> Path:
-    return root / MANIFEST_RELATIVE
+def manifest_path(root: Path, runtime_only: bool = False) -> Path:
+    return root / (RUNTIME_MANIFEST_RELATIVE if runtime_only else MANIFEST_RELATIVE)
 
 
 def stage_runtime_products(root: Path) -> None:
@@ -206,17 +213,18 @@ def stage_runtime_products(root: Path) -> None:
         os.replace(temporary, destination)
 
 
-def publish(root: Path) -> int:
+def publish(root: Path, runtime_only: bool = False) -> int:
     root = root.resolve()
-    stage_runtime_products(root)
-    validate_executables(root)
+    if not runtime_only:
+        stage_runtime_products(root)
+    validate_executables(root, runtime_only)
     document = {
         "schema": 1,
         "source_fingerprint": source_fingerprint(root),
         "toolchain": toolchain_document(),
-        "products": product_document(root),
+        "products": product_document(root, runtime_only),
     }
-    manifest = manifest_path(root)
+    manifest = manifest_path(root, runtime_only)
     if manifest.is_symlink():
         raise ProductError("product manifest is a symlink")
     manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -232,9 +240,9 @@ def publish(root: Path) -> int:
     return 0
 
 
-def verify(root: Path) -> int:
+def verify(root: Path, runtime_only: bool = False) -> int:
     root = root.resolve()
-    manifest = manifest_path(root)
+    manifest = manifest_path(root, runtime_only)
     if not manifest.is_file() or manifest.is_symlink():
         raise ProductError("product manifest is missing or unsafe")
     try:
@@ -254,11 +262,53 @@ def verify(root: Path) -> int:
         raise ProductError("product manifest does not match source content")
     if document["toolchain"] != toolchain_document():
         raise ProductError("product manifest does not match the toolchain")
-    if document["products"] != product_document(root):
+    if document["products"] != product_document(root, runtime_only):
         raise ProductError("executable product inventory does not match its manifest")
-    validate_executables(root)
+    validate_executables(root, runtime_only)
     print("quality-products: exact executable products verified")
     return 0
+
+
+def build_runtime(root: Path) -> int:
+    """Build only the two exact executables used by provider integrations."""
+    root = root.resolve()
+    destination = root / RUNTIME_PRODUCT_ROOT
+    if destination.is_symlink():
+        raise ProductError("runtime product root is a symlink")
+    try:
+        destination.resolve().relative_to(root)
+    except ValueError as error:
+        raise ProductError("runtime product root escapes repository") from error
+    destination.mkdir(parents=True, exist_ok=True)
+    build = [
+        "swift", "build", "--package-path", str(root / "app"),
+        "--scratch-path", str(root / "app/.build/quality-runtime-build"),
+        "--cache-path", str(root / "app/.build"), "--disable-sandbox",
+        "--disable-automatic-resolution", "-c", "release",
+        "--triple", "arm64-apple-macosx26.0", "--jobs", "3",
+        "--product", "detach-state",
+    ]
+    environment = module_environment(root, "runtime")
+    result = subprocess.run(build, cwd=root, env=environment, check=False)
+    if result.returncode:
+        raise ProductError("state runtime build failed")
+    binaries = Path(command_text([*build, "--show-bin-path"]))
+    try:
+        binaries.resolve().relative_to(root)
+    except ValueError as error:
+        raise ProductError("state runtime build escaped repository") from error
+    with tempfile.TemporaryDirectory(prefix="detach-quality-runtime.", dir="/private/tmp") as raw:
+        tmux = Path(raw) / "tmux"
+        command_text([str(root / "scripts/build-tmux.sh"), "build", "--arch", "arm64", "--output", str(tmux)])
+        for name, source in (("tmux", tmux), ("detach-state", binaries / "detach-state")):
+            target = destination / name
+            if source.is_symlink() or not source.is_file() or not os.access(source, os.X_OK) or target.is_symlink():
+                raise ProductError(f"runtime product is missing or unsafe: {name}")
+            temporary = destination / f".{name}.{os.getpid()}"
+            temporary.write_bytes(source.read_bytes())
+            temporary.chmod(0o755)
+            os.replace(temporary, target)
+    return publish(root, runtime_only=True)
 
 
 def main(arguments: list[str]) -> int:
@@ -266,7 +316,11 @@ def main(arguments: list[str]) -> int:
         return publish(ROOT)
     if arguments == ["verify"]:
         return verify(ROOT)
-    raise ProductError("usage: quality_products.py publish|verify")
+    if arguments == ["build-runtime"]:
+        return build_runtime(ROOT)
+    if arguments == ["verify-runtime"]:
+        return verify(ROOT, runtime_only=True)
+    raise ProductError("usage: quality_products.py publish|verify|build-runtime|verify-runtime")
 
 
 if __name__ == "__main__":

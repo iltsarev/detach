@@ -10,11 +10,13 @@ or watchdog. The app, helper, and watchdog must have their exact code
 identifiers and the same valid Team ID. An ad-hoc build or preview stays
 read-only at this boundary.
 
-An enabled registration needs a held root lifetime lock before the app calls
-the helper's prepare method. A missing or released lifetime lock proves that no
-helper process can answer. The app then skips XPC preparation and replays the
-submitted unregister phase under the system and per-user transaction locks.
-Only a busy lifetime lock permits the prepare call. A replacement is not
+An enabled registration first uses the bounded helper prepare request.
+A missing or released lifetime lock alone cannot skip prepare: KeepAlive can
+still start the helper. If prepare fails and the lifetime lock remains missing
+or released, the app can replay unregister under the system and per-user
+transaction locks. A busy lock before or after the failed request refuses this
+fallback. A successful prepare still needs a held lifetime lock. Active leases
+always defer replacement. A replacement is not
 registered until the old lifetime lock is released or an exact absent-job
 callback provides the required completion barrier. An absent-job callback is
 `kSMErrorJobNotFound` or the `SMAppServiceErrorDomain` `EPERM` reply that
@@ -53,8 +55,9 @@ acquire/renew without a wall-clock expiry, and restores and reads back only the
 setting Detach owns.
 
 The helper takes a root-owned lifetime `flock` before its listener answers and
-holds it until exit. An enabled job without this boot's lock is dead. The app
-writes `unregisterSubmitted` only after it observes that lock. Registration
+holds it until exit. A missing lock is a liveness observation, not prepare
+proof. The app writes `unregisterSubmitted` after successful prepare with a
+held lock, or after the bounded unreachable-helper path described above. Registration
 needs the fresh unregister callback, or exact `notRegistered` status plus the
 released lock or a changed boot UUID with no live lock holder; `unavailable`
 with a record is insufficient. Errors
