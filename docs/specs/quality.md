@@ -136,7 +136,9 @@ stage's success as separate proof for each scenario.
 - A deterministic static dashboard reads only validated gate evidence. The
   same artifact opens locally and deploys to GitHub Pages only after a green
   `main` run with direct or promoted evidence, or a green scheduled mutation
-  run. Bounded quality care can also deploy its validated result before it
+  run. Main publication must continue when PR-only ancestors are skipped.
+  It requires a passed main gate and stops if the workflow is canceled.
+  Bounded quality care can also deploy its validated result before it
   marks an attention run as failed. Care evidence binds the source commit and
   SHA-256 digests of its eval and history inputs. A digest-bound gate artifact
   supplies routed-spec sizes. The dashboard also shows measured coverage,
