@@ -460,13 +460,13 @@ Direct acceptance evidence for `QC-APP-UPDATE`: `SC-UPDATE-CHECK`, `SC-UPDATE-AP
 | Requirement | Journeys | Scenarios | Outcome |
 | --- | --- | --- | --- |
 | [`QC-RELEASE-INSTALL`](../../docs/specs/release.md#qc-release-install) | `J-INSTALL-CLEAN`<br>`J-INSTALL-REPAIR`<br>`J-INSTALL-UNINSTALL` | `SC-INSTALL-CLEAN` (instrumented, `distribution`)<br>`SC-RUNTIME-PACKAGE` (instrumented, `tmux-runtime`)<br>`SC-INSTALL-REPAIR` (instrumented, `distribution`)<br>`SC-INSTALL-UNINSTALL` (instrumented, `distribution`) | Install, repair, and uninstall mutate only Detach-owned payloads and selected state. |
-| [`QC-RELEASE-PUBLISH`](../../docs/specs/release.md#qc-release-publish) | `J-PUBLISH-ARTIFACTS` | `SC-PUBLISH-CONTRACT` (instrumented, `publish-preflight`)<br>`SC-RELEASE-SBOM` (instrumented, `gate-contract`)<br>`SC-RELEASE-PR` (instrumented, `gate-contract`) | Publication exposes only independently verified allowlisted artifacts. |
+| [`QC-RELEASE-PUBLISH`](../../docs/specs/release.md#qc-release-publish) | `J-PUBLISH-ARTIFACTS` | `SC-PUBLISH-CONTRACT` (instrumented, `publish-preflight`)<br>`SC-RELEASE-SBOM` (instrumented, `gate-contract`)<br>`SC-RELEASE-PR` (instrumented, `gate-contract`)<br>`SC-RELEASE-WORKFLOW` (instrumented, `release-workflow`) | Publication exposes only independently verified allowlisted artifacts. |
 
 Direct acceptance evidence for `QC-RELEASE-INSTALL`: `SC-INSTALL-CLEAN`, `SC-RUNTIME-PACKAGE`, `SC-INSTALL-REPAIR`, `SC-INSTALL-UNINSTALL`.
 
 
 
-Direct acceptance evidence for `QC-RELEASE-PUBLISH`: `SC-PUBLISH-CONTRACT`, `SC-RELEASE-SBOM`, `SC-RELEASE-PR`.
+Direct acceptance evidence for `QC-RELEASE-PUBLISH`: `SC-PUBLISH-CONTRACT`, `SC-RELEASE-SBOM`, `SC-RELEASE-PR`, `SC-RELEASE-WORKFLOW`.
 
 
 

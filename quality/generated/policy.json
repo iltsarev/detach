@@ -761,7 +761,8 @@
       "scenarios": [
         "SC-PUBLISH-CONTRACT",
         "SC-RELEASE-SBOM",
-        "SC-RELEASE-PR"
+        "SC-RELEASE-PR",
+        "SC-RELEASE-WORKFLOW"
       ],
       "summary": "Publication exposes only verified allowlisted artifacts."
     },
@@ -788,7 +789,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 65,
+  "policy": 66,
   "release_domains": [
     {
       "gates": "-",
@@ -1064,7 +1065,8 @@
       "verification": [
         "SC-PUBLISH-CONTRACT",
         "SC-RELEASE-SBOM",
-        "SC-RELEASE-PR"
+        "SC-RELEASE-PR",
+        "SC-RELEASE-WORKFLOW"
       ]
     },
     {
@@ -3721,13 +3723,20 @@
               "id": "SC-RELEASE-PR",
               "stage": "gate-contract",
               "status": "instrumented"
+            },
+            {
+              "command": "tests/release-workflow.sh",
+              "id": "SC-RELEASE-WORKFLOW",
+              "stage": "release-workflow",
+              "status": "instrumented"
             }
           ],
           "summary": "Publication exposes only independently verified allowlisted artifacts.",
           "verification": [
             "SC-PUBLISH-CONTRACT",
             "SC-RELEASE-SBOM",
-            "SC-RELEASE-PR"
+            "SC-RELEASE-PR",
+            "SC-RELEASE-WORKFLOW"
           ]
         }
       ],

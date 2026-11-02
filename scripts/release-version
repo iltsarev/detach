@@ -443,7 +443,7 @@ verify_notary_profile() {
        DETACH_NOTARY_PREFLIGHT_OUTPUT="$output" \
        /usr/bin/expect <<'EXPECT'
 log_user 0
-log_file -noappend $env(DETACH_NOTARY_PREFLIGHT_OUTPUT)
+log_file -a -noappend $env(DETACH_NOTARY_PREFLIGHT_OUTPUT)
 spawn xcrun notarytool history \
   --keychain-profile $env(DETACH_NOTARY_PREFLIGHT_PROFILE) \
   --output-format json --no-progress
