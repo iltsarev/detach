@@ -411,7 +411,8 @@
         "SC-PROMOTION-CONTRACT",
         "SC-MERGE-CONTRACT",
         "SC-SECURITY-CONTRACT",
-        "SC-CONTRACT-CHANGE"
+        "SC-CONTRACT-CHANGE",
+        "SC-CARE-CONTRACT"
       ],
       "summary": "A policy change keeps local feedback focused and hosted evidence complete."
     },
@@ -787,7 +788,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 64,
+  "policy": 65,
   "release_domains": [
     {
       "gates": "-",
@@ -1078,7 +1079,8 @@
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
         "SC-MERGE-CONTRACT",
-        "SC-SECURITY-CONTRACT"
+        "SC-SECURITY-CONTRACT",
+        "SC-CARE-CONTRACT"
       ]
     },
     {
@@ -2821,6 +2823,13 @@
       "stage": "gate-contract",
       "status": "instrumented",
       "tests": []
+    },
+    {
+      "command": "tests/quality-care.sh",
+      "id": "SC-CARE-CONTRACT",
+      "stage": "gate-contract",
+      "status": "instrumented",
+      "tests": []
     }
   ],
   "schema": 1,
@@ -3837,6 +3846,12 @@
               "id": "SC-CONTRACT-CHANGE",
               "stage": "gate-contract",
               "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-care.sh",
+              "id": "SC-CARE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
             }
           ],
           "summary": "One current policy owns quality selection and traceability.",
@@ -3847,7 +3862,8 @@
             "SC-POLICY-CONTRACT",
             "SC-PROMOTION-CONTRACT",
             "SC-MERGE-CONTRACT",
-            "SC-SECURITY-CONTRACT"
+            "SC-SECURITY-CONTRACT",
+            "SC-CARE-CONTRACT"
           ]
         },
         {
@@ -3896,6 +3912,12 @@
             {
               "command": "python3 tests/quality_contract_change_contract.py",
               "id": "SC-CONTRACT-CHANGE",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-care.sh",
+              "id": "SC-CARE-CONTRACT",
               "stage": "gate-contract",
               "status": "instrumented"
             }

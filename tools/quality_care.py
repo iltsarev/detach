@@ -581,6 +581,16 @@ def latest_summary(
             path for path in destination.rglob("summary.json")
             if path.is_file() and not path.is_symlink()
         ]
+        if not candidates:
+            evals = [
+                path for path in destination.rglob("evals.json")
+                if path.is_file() and not path.is_symlink()
+            ]
+            if len(evals) == 1:
+                evaluation = read_json(evals[0], "care eval")
+                version = evaluation.get("policy") if isinstance(evaluation, dict) else None
+                if type(version) is int and 0 < version < policy.version:
+                    continue
         if len(candidates) != 1:
             raise CareError("downloaded care evidence has no unique summary")
         document = read_json(candidates[0], "care summary")
