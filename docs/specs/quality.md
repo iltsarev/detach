@@ -100,7 +100,9 @@ stage's success as separate proof for each scenario.
   and combined baselines in GitHub Pages. A later dashboard deployment retains
   the newest archive for each profile. It retains the original manifest, inventory, promotion, and
   metric bytes. Restore checks their digests and the original successful main
-  workflow identity. An explicit owner-dispatched care run can restore retained
+  workflow identity. Dashboard generation uses the workflow token with Actions
+  read access for these provenance checks. An explicit owner-dispatched care
+  run can restore retained
   CI evidence when the first archive is missing. It does not measure a new
   baseline or change the coverage rules.
   Coverage enforcement follows the policy-generated
@@ -136,7 +138,9 @@ stage's success as separate proof for each scenario.
 - A deterministic static dashboard reads only validated gate evidence. The
   same artifact opens locally and deploys to GitHub Pages only after a green
   `main` run with direct or promoted evidence, or a green scheduled mutation
-  run. Bounded quality care can also deploy its validated result before it
+  run. Main publication must continue when PR-only ancestors are skipped.
+  It requires a passed main gate and stops if the workflow is canceled.
+  Bounded quality care can also deploy its validated result before it
   marks an attention run as failed. Care evidence binds the source commit and
   SHA-256 digests of its eval and history inputs. A digest-bound gate artifact
   supplies routed-spec sizes. The dashboard also shows measured coverage,
@@ -146,8 +150,10 @@ stage's success as separate proof for each scenario.
   artifact. It includes both CodeQL job results, the analyzed commit, an
   identity fingerprint, and the exact workflow link. A later main, care, or
   mutation deploy restores the newest valid current-policy security and care
-  artifacts. Each restore checks at most five completed runs and has a
-  60-second deadline. Only deploy jobs have Pages write permission. A
+  artifacts. An incomplete care artifact can be ignored only when its
+  unique eval identifies an earlier policy. Incomplete current-policy care
+  evidence stops publication. Each restore checks at most five completed runs
+  and has a 60-second deadline. Only deploy jobs have Pages write permission. A
   main-branch Security run can deploy its passed or failed CodeQL result over
   the last green main evidence. A healthy care run closes the prior scoped
   attention issue.

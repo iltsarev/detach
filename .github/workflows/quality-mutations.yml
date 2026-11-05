@@ -175,6 +175,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
       - name: Generate dashboard with mutation score
         env:
+          GH_TOKEN: ${{ github.token }}
           CARE_SUMMARY: ${{ steps.care-evidence.outputs.summary }}
           SECURITY_SUMMARY: ${{ steps.security-evidence.outputs.summary }}
           MAIN_EVIDENCE_ROOT: ${{ steps.main-evidence.outputs.root }}

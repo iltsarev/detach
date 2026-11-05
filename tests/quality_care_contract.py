@@ -270,7 +270,8 @@ elif args[0] == "api" and args[1].endswith("/runs/777/artifacts"):
 elif args[:2] == ["run", "download"]:
     destination=Path(args[args.index("--dir") + 1])
     destination.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(os.environ["CARE_FIXTURE"], destination / "summary.json")
+    if not os.environ.get("CARE_OMIT_SUMMARY"):
+        shutil.copyfile(os.environ["CARE_FIXTURE"], destination / "summary.json")
     shutil.copyfile(os.environ["CARE_EVAL_FIXTURE"], destination / "evals.json")
     shutil.copyfile(os.environ["CARE_HISTORY_FIXTURE"], destination / "history.json")
 else:
@@ -313,6 +314,34 @@ else:
             },
         )
         assert optional.stdout == ""
+
+        stale_eval = json.loads(eval_path.read_text(encoding="utf-8"))
+        stale_eval["policy"] -= 1
+        stale_eval_path = root / "stale-evals.json"
+        write_json(stale_eval_path, stale_eval)
+        for label, eval_fixture, expected in (
+            ("stale-incomplete", stale_eval_path, 0),
+            ("current-incomplete", eval_path, 2),
+        ):
+            incomplete = invoke(
+                [
+                    "latest", "--repository", "owner/repository",
+                    "--output-root", str(root / label), "--optional",
+                ],
+                expected=expected,
+                extra_environment={
+                    "DETACH_QUALITY_CARE_TEST_MODE": "1",
+                    "DETACH_QUALITY_CARE_GH": str(fake_gh),
+                    "CARE_FIXTURE": str(healthy_summary),
+                    "CARE_EVAL_FIXTURE": str(eval_fixture),
+                    "CARE_HISTORY_FIXTURE": str(healthy_history),
+                    "CARE_OMIT_SUMMARY": "1",
+                },
+            )
+            if expected:
+                assert "downloaded care evidence has no unique summary" in incomplete.stdout
+            else:
+                assert incomplete.stdout == ""
 
         false_pass_value = json.loads(healthy_summary.read_text(encoding="utf-8"))
         false_pass_value["latency"]["wall_p95_seconds"] = 481

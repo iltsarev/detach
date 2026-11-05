@@ -55,7 +55,9 @@ change real power state, upload assets, or claim publication.
   do not select it.
 - Notary credential preflight gives `notarytool` a private PTY and captures its
   output in private workflow evidence. This supports protected Keychain
-  profiles without exposing submission history in the release log.
+  profiles without exposing submission history in the release log. Preflight
+  retains the tool output after success or failure. It does not print this
+  output to the terminal.
 - The path classifier is the fail-safe default. An explicit private semantic
   review can omit a false-positive manual gate only when it is permission-safe,
   ignored by Git, bound to the exact base and head commits, and gives a reason

@@ -192,8 +192,7 @@ grep -F "steps.promoted-main.outputs.promoted != 'true'" \
   exit 1
 }
 grep -F 'quality-dashboard:' "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
-grep -F "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
-  "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
+# The scoped main publication condition is checked by quality_policy_contract.py.
 grep -F 'pages: write' "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 grep -F 'scripts/quality-dashboard generate' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null

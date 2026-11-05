@@ -1,5 +1,5 @@
 schema	1
-policy	63
+policy	67
 spec	documentation	docs/specs/documentation.md	Agent context, specifications, and quality automation stay synchronized.
 spec	runtime	docs/specs/runtime.md	Runtime and session operations preserve exact ownership.
 spec	state	docs/specs/state.md	Typed state, storage, and change events remain safe and coherent.
@@ -271,7 +271,7 @@ capability	update	docs/specs/app-setup.md	QC-APP-UPDATE	J-UPDATE-CHECK,J-UPDATE-
 capability	diagnostics	docs/specs/app-setup.md	QC-APP-DOCTOR	J-DOCTOR-REPORT
 capability	installation	docs/specs/release.md	QC-RELEASE-INSTALL	J-INSTALL-CLEAN,J-INSTALL-REPAIR,J-INSTALL-UNINSTALL
 capability	publication	docs/specs/release.md	QC-RELEASE-PUBLISH	J-PUBLISH-ARTIFACTS
-journey	J-QUALITY-CHANGE	quality-system	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	SC-RUNTIME-PRODUCT-CONTRACT,SC-BASELINE-CONTRACT,SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT,SC-CONTRACT-CHANGE	A policy change keeps local feedback focused and hosted evidence complete.
+journey	J-QUALITY-CHANGE	quality-system	QC-QUALITY-POLICY,QC-QUALITY-SUPPLY-CHAIN	SC-RUNTIME-PRODUCT-CONTRACT,SC-BASELINE-CONTRACT,SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT,SC-CONTRACT-CHANGE,SC-CARE-CONTRACT	A policy change keeps local feedback focused and hosted evidence complete.
 journey	J-DOCS-CONSISTENCY	documentation	QC-DOC-CONSISTENCY	SC-DOCS-CONTRACT	Documentation and executable contracts stay synchronized.
 journey	J-SESSION-CREATE	session-lifecycle	QC-RUNTIME-OWNERSHIP	SC-SESSION-CREATE-CODEX,SC-SESSION-CREATE-CLAUDE,SC-SESSION-RESUME-IDENTITY	A user creates or resumes a managed provider session.
 journey	J-SESSION-PERSIST	session-state	QC-RUNTIME-STATE	SC-SESSION-PERSIST-CODEX,SC-SESSION-PERSIST-CLAUDE,SC-TRANSCRIPT-TURN-UNIT	A live session remains available after the app exits.
@@ -300,7 +300,7 @@ journey	J-DOCTOR-REPORT	diagnostics	QC-APP-DOCTOR	SC-DOCTOR-REPORT	A user receiv
 journey	J-INSTALL-CLEAN	installation	QC-RELEASE-INSTALL	SC-INSTALL-CLEAN,SC-RUNTIME-PACKAGE	A user installs one immutable self-contained payload.
 journey	J-INSTALL-REPAIR	installation	QC-RELEASE-INSTALL	SC-INSTALL-REPAIR	Repair restores the exact immutable payload.
 journey	J-INSTALL-UNINSTALL	installation	QC-RELEASE-INSTALL	SC-INSTALL-UNINSTALL	Uninstall removes only Detach-owned data selected by the user.
-journey	J-PUBLISH-ARTIFACTS	publication	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR	Publication exposes only verified allowlisted artifacts.
+journey	J-PUBLISH-ARTIFACTS	publication	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR,SC-RELEASE-WORKFLOW	Publication exposes only verified allowlisted artifacts.
 scenario	SC-POLICY-CONTRACT	gate-contract	instrumented	tests/quality-policy.sh
 scenario	SC-PROMOTION-CONTRACT	gate-contract	instrumented	tests/quality-promote.sh
 scenario	SC-MERGE-CONTRACT	gate-contract	instrumented	tests/quality-merge.sh
@@ -420,8 +420,8 @@ verification	QC-APP-ONBOARDING	SC-APP-ONBOARDING-UNIT,SC-UI-ONBOARD-FIRST-RUN,SC
 verification	QC-APP-SETTINGS	SC-APP-SETTINGS-UNIT,SC-UI-SETTINGS
 verification	QC-APP-UPDATE	SC-UPDATE-CHECK,SC-UPDATE-APPLY,SC-RELEASE-WORKFLOW
 verification	QC-RELEASE-INSTALL	SC-INSTALL-CLEAN,SC-RUNTIME-PACKAGE,SC-INSTALL-REPAIR,SC-INSTALL-UNINSTALL
-verification	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR
-verification	QC-QUALITY-POLICY	SC-RUNTIME-PRODUCT-CONTRACT,SC-BASELINE-CONTRACT,SC-CONTRACT-CHANGE,SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT
+verification	QC-RELEASE-PUBLISH	SC-PUBLISH-CONTRACT,SC-RELEASE-SBOM,SC-RELEASE-PR,SC-RELEASE-WORKFLOW
+verification	QC-QUALITY-POLICY	SC-RUNTIME-PRODUCT-CONTRACT,SC-BASELINE-CONTRACT,SC-CONTRACT-CHANGE,SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT,SC-CARE-CONTRACT
 verification	QC-QUALITY-SUPPLY-CHAIN	SC-POLICY-CONTRACT,SC-PROMOTION-CONTRACT,SC-MERGE-CONTRACT,SC-SECURITY-CONTRACT
 verification	QC-DOC-CONSISTENCY	SC-DOCS-CONTRACT
 scenario-test	SC-POWER-UNIT	DetachKitTests.PowerProtectionTests/testProtectedRequiresBothAssertionAndClosedLidProtection	app/Tests/DetachKitTests/PowerProtectionTests.swift
@@ -519,3 +519,4 @@ scenario-test	SC-TERMINAL-INPUT-UNIT	DetachAppTests.SessionAttachTerminalTests/t
 scenario	SC-RUNTIME-PRODUCT-CONTRACT	gate-contract	instrumented	python3 tests/quality_products_contract.py
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testJSONLSummaryBoundsTheRealStandardInput	app/Tests/DetachKitTests/DetachStateCommandTests.swift
 scenario-test	SC-TRANSCRIPT-TURN-UNIT	DetachKitTests.DetachStateCommandTests/testCachedJSONLValidationPreservesDirectoryWhenReceiptPublicationFails	app/Tests/DetachKitTests/DetachStateCommandTests.swift
+scenario	SC-CARE-CONTRACT	gate-contract	instrumented	tests/quality-care.sh

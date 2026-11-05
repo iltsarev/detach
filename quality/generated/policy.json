@@ -411,7 +411,8 @@
         "SC-PROMOTION-CONTRACT",
         "SC-MERGE-CONTRACT",
         "SC-SECURITY-CONTRACT",
-        "SC-CONTRACT-CHANGE"
+        "SC-CONTRACT-CHANGE",
+        "SC-CARE-CONTRACT"
       ],
       "summary": "A policy change keeps local feedback focused and hosted evidence complete."
     },
@@ -760,7 +761,8 @@
       "scenarios": [
         "SC-PUBLISH-CONTRACT",
         "SC-RELEASE-SBOM",
-        "SC-RELEASE-PR"
+        "SC-RELEASE-PR",
+        "SC-RELEASE-WORKFLOW"
       ],
       "summary": "Publication exposes only verified allowlisted artifacts."
     },
@@ -787,7 +789,7 @@
     "routed_spec_limit_bytes": 16384,
     "routed_spec_warning_bytes": 12288
   },
-  "policy": 63,
+  "policy": 67,
   "release_domains": [
     {
       "gates": "-",
@@ -1063,7 +1065,8 @@
       "verification": [
         "SC-PUBLISH-CONTRACT",
         "SC-RELEASE-SBOM",
-        "SC-RELEASE-PR"
+        "SC-RELEASE-PR",
+        "SC-RELEASE-WORKFLOW"
       ]
     },
     {
@@ -1078,7 +1081,8 @@
         "SC-POLICY-CONTRACT",
         "SC-PROMOTION-CONTRACT",
         "SC-MERGE-CONTRACT",
-        "SC-SECURITY-CONTRACT"
+        "SC-SECURITY-CONTRACT",
+        "SC-CARE-CONTRACT"
       ]
     },
     {
@@ -2821,6 +2825,13 @@
       "stage": "gate-contract",
       "status": "instrumented",
       "tests": []
+    },
+    {
+      "command": "tests/quality-care.sh",
+      "id": "SC-CARE-CONTRACT",
+      "stage": "gate-contract",
+      "status": "instrumented",
+      "tests": []
     }
   ],
   "schema": 1,
@@ -3712,13 +3723,20 @@
               "id": "SC-RELEASE-PR",
               "stage": "gate-contract",
               "status": "instrumented"
+            },
+            {
+              "command": "tests/release-workflow.sh",
+              "id": "SC-RELEASE-WORKFLOW",
+              "stage": "release-workflow",
+              "status": "instrumented"
             }
           ],
           "summary": "Publication exposes only independently verified allowlisted artifacts.",
           "verification": [
             "SC-PUBLISH-CONTRACT",
             "SC-RELEASE-SBOM",
-            "SC-RELEASE-PR"
+            "SC-RELEASE-PR",
+            "SC-RELEASE-WORKFLOW"
           ]
         }
       ],
@@ -3837,6 +3855,12 @@
               "id": "SC-CONTRACT-CHANGE",
               "stage": "gate-contract",
               "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-care.sh",
+              "id": "SC-CARE-CONTRACT",
+              "stage": "gate-contract",
+              "status": "instrumented"
             }
           ],
           "summary": "One current policy owns quality selection and traceability.",
@@ -3847,7 +3871,8 @@
             "SC-POLICY-CONTRACT",
             "SC-PROMOTION-CONTRACT",
             "SC-MERGE-CONTRACT",
-            "SC-SECURITY-CONTRACT"
+            "SC-SECURITY-CONTRACT",
+            "SC-CARE-CONTRACT"
           ]
         },
         {
@@ -3896,6 +3921,12 @@
             {
               "command": "python3 tests/quality_contract_change_contract.py",
               "id": "SC-CONTRACT-CHANGE",
+              "stage": "gate-contract",
+              "status": "instrumented"
+            },
+            {
+              "command": "tests/quality-care.sh",
+              "id": "SC-CARE-CONTRACT",
               "stage": "gate-contract",
               "status": "instrumented"
             }
