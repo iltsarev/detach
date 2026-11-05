@@ -418,6 +418,35 @@ grep -F 'spctl|--assess --type open --context context:primary-signature --verbos
 "$ROOT/scripts/quality-scenarios" event pass SC-UPDATE-APPLY
 "$ROOT/scripts/quality-scenarios" event begin SC-PUBLISH-CONTRACT
 
+python3 - "$ROOT" <<'PINS'
+import json
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+pins = {pin["identity"]: pin["state"]["version"]
+        for pin in json.loads((root / "app/Package.resolved").read_text())["pins"]}
+package = (root / "app/Package.swift").read_text()
+for identity, name, variable in (
+    ("sparkle", "Sparkle", "SPARKLE"),
+    ("swiftterm", "SwiftTerm", "SWIFTTERM"),
+):
+    declared = re.search(
+        r'\.package\(url: "https://github.com/[^\"]+/' + name
+        + r'", exact: "([^\"]+)"\)', package)
+    if declared is None or declared.group(1) != pins[identity]:
+        raise SystemExit(f"{name} resolution must match its declared exact version")
+    for script_name in ("make-app.sh", "verify-app.sh"):
+        script = root / "app/scripts" / script_name
+        default = re.search(
+            r'^' + variable + r'_VERSION="\$\{DETACH_' + variable
+            + r'_VERSION:-([^}]+)\}"$', script.read_text(), re.MULTILINE)
+        if default is None or default.group(1) != pins[identity]:
+            raise SystemExit(
+                f"{script_name}: {name} default must match pinned version {pins[identity]}")
+PINS
+
 # The release orchestrator can continue from a clean tooling descendant while
 # the tag and manifest stay bound to the built release commit. Direct use keeps
 # the stricter HEAD equality check.

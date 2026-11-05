@@ -134,7 +134,8 @@ change real power state, upload assets, or claim publication.
   That flag is the only authorization to skip live-appcast monotonicity.
   The entry point gives the flag only to its artifact child. Ambient
   `DETACH_INITIAL_RELEASE` is not authorization.
-- Sparkle remains pinned and signed inside-out. Production builds never carry
+- Sparkle 2.10.1 is pinned and signed inside-out. Packaging and verification
+  use the declared Swift package versions. Production builds never carry
   the development library-validation exception. Appcasts contain exactly one
   arm64 hardware requirement.
 - Distribution bootstrap runs only from `/Applications`, never a DMG or
