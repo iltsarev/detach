@@ -29,6 +29,7 @@ Links identify evidence. Review must check the meaning of each assertion.
 - `AGENTS.md`
 - `CLAUDE.md`
 - `README.md`
+- `SECURITY.md`
 - `app/.gitignore`
 - `docs/assets/*`
 - `scripts/*`
