@@ -213,7 +213,7 @@ lifetime confirms its own transitions. Status and session lifecycle changes
 require a new confirmation, even when the session name stays the same.
 Ordered detection never waits for delivery.
 
-SwiftTerm 1.99.0 is pinned. The pinned shader source is embedded in the app
+SwiftTerm 1.99.2 is pinned. The pinned shader source is embedded in the app
 executable. The app also ships its exact source for audit. Terminal reads use
 copied view snapshots and dimensions. Native paste reads bracketed mode from
 one snapshot and sends the complete UTF-8 payload through the public byte
