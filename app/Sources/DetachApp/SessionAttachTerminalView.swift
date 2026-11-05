@@ -424,11 +424,6 @@ class SessionAttachLocalProcessTerminalView: LocalProcessTerminalView {
         }
     }
 
-    override func dataReceived(slice: ArraySlice<UInt8>) {
-        super.dataReceived(slice: slice)
-        scheduleFrameReadinessCheck()
-    }
-
     private func scheduleFrameReadinessCheck() {
         guard !frameObservationStopped, !didReportFirstVisibleFrame,
               frameReadinessCheck == nil else { return }

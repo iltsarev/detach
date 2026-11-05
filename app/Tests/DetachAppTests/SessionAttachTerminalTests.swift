@@ -456,8 +456,8 @@ final class SessionAttachTerminalTests: XCTestCase {
         controller.configure(terminal, fontPointSize: 13)
         // A running child is initially the attach wrapper, not a registered
         // tmux client. Let startup exceed the CLI's client lookup retry bound.
-        terminal.startProcess(executable: "/bin/sleep", args: ["5"])
         defer { controller.terminateClient() }
+        try startFramePTY(terminal)
         let cli = RecordingSessionSwitchCLI()
         let coordinator = SessionAttachTerminalView.Coordinator(
             controller: controller, session: source,
@@ -473,7 +473,7 @@ final class SessionAttachTerminalTests: XCTestCase {
         try await Task.sleep(nanoseconds: 600_000_000)
         let earlyCalls = await cli.recordedCalls()
         XCTAssertTrue(earlyCalls.isEmpty)
-        terminal.dataReceived(slice: Array("attached tmux frame".utf8)[...])
+        terminal.send(data: Array("attached tmux frame".utf8)[...])
         await waitUntilAsync { coordinator.session.id == target.id }
         let calls = await cli.recordedCalls()
         XCTAssertEqual(calls, [SessionClientSwitchInvocation.arguments(
@@ -1323,6 +1323,8 @@ final class SessionAttachTerminalTests: XCTestCase {
     func testRetainedScreenSurvivesAttachClearUntilAFrameIsReady() throws {
         let terminal = SessionAttachLocalProcessTerminalView(
             frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        defer { SessionAttachController.terminate(process: terminal.process) }
+        try startFramePTY(terminal)
         let retained = Data("retained session output".utf8)
         terminal.retainScreen(
             retained,
@@ -1334,7 +1336,10 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertFalse(
             SessionAttachLocalProcessTerminalView.hasVisibleContent(
                 in: terminal))
-        terminal.dataReceived(slice: Array("\u{001B}[2J\u{001B}[H".utf8)[...])
+        terminal.send(data: Array("\u{001B}[2J\u{001B}[3;5H".utf8)[...])
+        try waitUntil {
+            terminal.terminalContentSnapshot(region: .viewport)?.cursorColumn == 4
+        }
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
 
         XCTAssertFalse(
@@ -1343,27 +1348,40 @@ final class SessionAttachTerminalTests: XCTestCase {
         XCTAssertTrue(terminal.isRetainingScreen)
         XCTAssertEqual(visibleFrameCount, 0)
 
-        terminal.dataReceived(slice: Array("attached session output".utf8)[...])
+        terminal.send(data: Array("attached session output".utf8)[...])
         try waitUntil(timeout: 0.5) { !terminal.isRetainingScreen }
         XCTAssertTrue(
             SessionAttachLocalProcessTerminalView.hasVisibleContent(
                 in: terminal))
         XCTAssertEqual(visibleFrameCount, 1)
 
-        terminal.dataReceived(slice: Array("more output".utf8)[...])
+        terminal.send(data: Array("more output".utf8)[...])
+        try waitUntil {
+            String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+                .contains("more output")
+        }
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
         XCTAssertEqual(visibleFrameCount, 1)
     }
 
     @MainActor
-    func testStoppedFrameObservationCannotRestartFromLateOutput() {
+    func testStoppedFrameObservationCannotRestartFromLateOutput() throws {
         let terminal = SessionAttachLocalProcessTerminalView(
             frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        defer { SessionAttachController.terminate(process: terminal.process) }
+        try startFramePTY(terminal)
         terminal.retainScreen(Data("previous session".utf8), fontPointSize: 13)
         terminal.onFirstVisibleFrame = { XCTFail("retired view reported readiness") }
-        terminal.dataReceived(slice: Array("queued output".utf8)[...])
+        terminal.send(data: Array("queued output".utf8)[...])
+        // Keep the main actor occupied until the I/O thread has parsed the
+        // bytes. Teardown must suppress the queued readiness callback.
+        try waitForParsedOutput("queued output", from: terminal)
         terminal.stopFrameObservation()
-        terminal.dataReceived(slice: Array("late output".utf8)[...])
+        terminal.send(data: Array("late output".utf8)[...])
+        try waitUntil {
+            String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+                .contains("late output")
+        }
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12))
         XCTAssertFalse(terminal.hasFirstVisibleFrame)
         XCTAssertTrue(terminal.isRetainingScreen)
@@ -1654,6 +1672,33 @@ final class SessionAttachTerminalTests: XCTestCase {
             firstResponder: nil,
             in: terminal,
             send: { _ in }) === controlV)
+    }
+
+    private func startFramePTY(_ terminal: SessionAttachLocalProcessTerminalView) throws {
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: ["-c", "stty -echo -icanon min 1 time 0; exec /bin/cat"],
+            environment: ["PATH=/bin:/usr/bin"])
+        try waitUntil {
+            var settings = termios()
+            return terminal.process.childfd >= 0
+                && tcgetattr(terminal.process.childfd, &settings) == 0
+                && settings.c_lflag & tcflag_t(ECHO | ICANON) == 0
+        }
+    }
+
+    private func waitForParsedOutput(
+        _ text: String, from terminal: SessionAttachLocalProcessTerminalView
+    ) throws {
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if String(decoding: terminal.getBufferAsData(), as: UTF8.self).contains(text) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        struct Timeout: Error {}
+        throw Timeout()
     }
 
     private func bufferText(_ terminal: HeadlessTerminal) -> String {
