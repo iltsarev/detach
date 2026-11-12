@@ -163,6 +163,18 @@ def shard_for(plan: dict[str, object], identifier: str) -> dict[str, object]:
     return matches[0]
 
 
+def preparation_parts(plan: dict[str, object]) -> list[dict[str, str]]:
+    stages = set(plan_stages(plan))
+    parts = []
+    if "swift" in stages:
+        parts.append({"part": "swift"})
+    if any(shard["needs_app"] for shard in shard_plan(plan)):
+        parts.append({"part": "app"})
+    if {"quality-contracts", "ui-e2e"} <= stages:
+        parts.append({"part": "ui"})
+    return parts
+
+
 def clean_checkout() -> bool:
     return not git_bytes(["diff", "--binary", "HEAD"]) and not untracked_paths()
 
@@ -551,6 +563,7 @@ def main(arguments: list[str]) -> int:
             plan = authoritative_plan(options.base)
             value = dict(plan)
             value["shards"] = shard_plan(plan)
+            value["products"] = preparation_parts(plan)
             print(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
             return 0
         if options.command == "run":

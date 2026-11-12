@@ -188,7 +188,7 @@ def provider_test_parts(stage: str) -> tuple[str, ...] | None:
     parts = PROVIDER_TEST_PARTS.get(stage)
     if stage == "codex" and (os.cpu_count() or 0) < 6:
         return COMPACT_CODEX_TEST_PARTS
-    if stage == "claude" and (os.cpu_count() or 0) < 6:
+    if stage == "claude" and (os.cpu_count() or 0) < 3:
         return COMPACT_CLAUDE_TEST_PARTS
     return parts
 
@@ -1409,6 +1409,7 @@ class QualityGate:
         environment = os.environ.copy()
         exact_app = environment.pop("DETACH_QUALITY_EXACT_APP", "")
         exact_products = environment.pop("DETACH_QUALITY_EXACT_PRODUCTS", "")
+        exact_swift = environment.pop("DETACH_QUALITY_EXACT_SWIFT", "")
         exact_runtime = environment.pop("DETACH_QUALITY_EXACT_RUNTIME", "")
         for name in (
             "DETACH_CONFIRM_RELEASE",
@@ -1456,6 +1457,8 @@ class QualityGate:
             "swift", "app", "ui-e2e", "quality-contracts", "codex", "claude"
         ) and exact_products:
             environment["DETACH_QUALITY_EXACT_PRODUCTS"] = exact_products
+        if stage in ("swift", "quality-contracts") and exact_swift:
+            environment["DETACH_QUALITY_EXACT_SWIFT"] = exact_swift
         if stage in ("codex", "claude") and exact_runtime:
             environment["DETACH_QUALITY_EXACT_RUNTIME"] = exact_runtime
         if not self.test_direct:
@@ -2047,6 +2050,23 @@ def exact_products_enabled() -> bool:
     ):
         raise GateError("exact product reuse requires hosted CI authority")
     return value == "1"
+
+
+def exact_swift_enabled(root: Path = ROOT) -> bool:
+    value = os.environ.get("DETACH_QUALITY_EXACT_SWIFT", "")
+    if value not in ("", "1"):
+        raise GateError("DETACH_QUALITY_EXACT_SWIFT must be 1")
+    if not value:
+        return False
+    if (os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("DETACH_QUALITY_GATE_AUTHORITY") not in ("ci-shard", "ci-main")):
+        raise GateError("prepared Swift reuse requires hosted CI authority")
+    from quality_products import ProductError, verify_part
+    try:
+        verify_part(root, "swift")
+    except ProductError as error:
+        raise GateError(str(error)) from error
+    return True
 
 
 def exact_swift_profile(run_dir: Path) -> Path:
@@ -2891,7 +2911,7 @@ def run_stage_worker(stage: str) -> int:
             root, include_orchestrators=include_orchestrators
         )
     if stage == "swift":
-        if exact_products_enabled():
+        if exact_products_enabled() or exact_swift_enabled(root):
             return run_exact_swift_stage(root, run_dir)
         app = root / "app"
         scratch = app / ".build" / SWIFT_TEST_SCRATCH
@@ -2930,6 +2950,7 @@ def run_stage_worker(stage: str) -> int:
     if stage == "quality-contracts":
         selected = os.environ.get("DETACH_QUALITY_GATE_SELECTED_STAGES", "").split(",")
         exact_products = exact_products_enabled()
+        exact_swift = exact_products or exact_swift_enabled(root)
         environment = os.environ.copy()
         environment.update(
             {
@@ -2950,7 +2971,7 @@ def run_stage_worker(stage: str) -> int:
             )
             if baseline:
                 environment["DETACH_QUALITY_BASELINE_ROOT"] = baseline
-        if exact_products:
+        if exact_swift:
             environment.update(
                 {
                     "DETACH_SWIFT_TEST_BINARY": str(root / QUALITY_TEST_BINARY),

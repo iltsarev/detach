@@ -24,6 +24,7 @@ from quality_gate import (  # noqa: E402
     GateError,
     QualityGate,
     exact_products_enabled,
+    exact_swift_enabled,
     gate_contract_process_limit,
     gate_contract_definitions,
     gate_orchestrator_limit,
@@ -45,6 +46,24 @@ from quality_policy import POLICY_FILE, Policy  # noqa: E402
 
 
 class QualityGateContract(unittest.TestCase):
+    def test_prepared_swift_binding_is_hosted_and_verified_before_use(self):
+        environment = {"DETACH_QUALITY_EXACT_SWIFT": "1", "GITHUB_ACTIONS": "false"}
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(GateError, "hosted CI authority"):
+                exact_swift_enabled(ROOT)
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "DETACH_QUALITY_GATE_AUTHORITY": "ci-shard"}), patch(
+                "quality_products.verify_part"
+            ) as verify:
+                self.assertTrue(exact_swift_enabled(ROOT))
+                verify.assert_called_once_with(ROOT, "swift")
+            with patch.dict(os.environ, {"DETACH_QUALITY_EXACT_SWIFT": "invalid"}):
+                with self.assertRaisesRegex(GateError, "must be 1"):
+                    exact_swift_enabled(ROOT)
+        with patch("quality_gate.os.cpu_count", return_value=3):
+            self.assertEqual(provider_test_parts("claude"), ("lifecycle-guardrails", "recovery", "history"))
+        with patch("quality_gate.os.cpu_count", return_value=2):
+            self.assertEqual(provider_test_parts("claude"), ("session", "history"))
+
     def test_runtime_binding_is_hosted_and_verified_before_use(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
             "DETACH_QUALITY_EXACT_PRODUCTS": "",
@@ -638,7 +657,7 @@ class QualityGateContract(unittest.TestCase):
                     "DETACH_QUALITY_SCENARIO_STAGE": "claude",
                     "DETACH_QUALITY_SCENARIO_EVENTS": str(events),
                 },
-            ), patch("quality_gate.os.cpu_count", return_value=3):
+            ), patch("quality_gate.os.cpu_count", return_value=2):
                 self.assertEqual(
                     run_provider_parts(root, run_dir, "claude", environment),
                     0,

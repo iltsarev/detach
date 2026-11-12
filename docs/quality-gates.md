@@ -181,14 +181,21 @@ only. A failed matrix shard cancels its peers; missing evidence fails the final
 aggregate.
 
 Swift tests, the normal app, and the instrumented app use isolated scratch and
-module-cache paths. CI materializes their shared dependency cache once before
-parallel builds. A host with at least three CPUs splits workers and builds all
-three at the same time. Smaller hosts run Swift and app work in sequence.
-The normal bundle is verified. On a hosted app-cache miss, the shard that owns
-the app stage builds the app in that stage. Other shards build the app before
-their checks and bind the successful build as the exact app for that job.
-A cache hit requires verification before reuse. A failed build cannot create
-this binding. Only the private UI copy gets the instrumented executable.
+module-cache paths. Local diagnostics materialize their shared dependency
+cache before parallel builds. A local host with at least three CPUs splits
+workers across the three builds. Smaller hosts run Swift and app work in order.
+Hosted CI gives each selected product its own arm64 worker. A missing cache
+therefore does not put three cold Swift builds on one small host. The impact
+plan selects the required product parts. Main prepares all three parts.
+Current-attempt archives bind their commit, source content, toolchain, file
+hashes, modes, contained links, and executable architectures. A consumer checks
+the exact part set and extracts into private staging before installation.
+Unsafe paths, links, existing destinations, or changed bytes stop the job.
+The normal bundle is verified. The usual stages then run the tests and UI
+journeys and collect fresh profiles. Preparation supplies no gate evidence.
+Main verifies the prepared products before it saves exact caches. A failed
+build or verification cannot create a reuse binding. Only the private UI copy
+gets the instrumented executable.
 The short packaged UI lane runs after the verified app and before the
 CPU-intensive provider, runtime, and gate-contract lanes. This prevents
 WindowServer event delivery from competing with those workers. The UI smoke
@@ -218,16 +225,16 @@ compiler, package, sources, tests, build scripts, and version metadata. A
 promoted `main` run warms only a missing exact product and emits no gate
 evidence. The packaged UI test uses a
 stripped process-private app, fake CLI, and private state. Provider tests use
-private state and socket roots plus the bundled `tmux` and `detach-state`. A
-hosted provider shard binds the exact runtime products that the last green
-`main` published when the product cache has them, so a change that touches
-only the shell CLI does not rebuild the app in every shard. Without them the
-shard verifies or builds the packaged app first. Each provider part has
+private state and socket roots plus the bundled `tmux` and `detach-state`.
+When app preparation supplies these products, provider shards verify and use
+them. A provider-only plan can use exact cached runtime products or build only
+`tmux` and `detach-state`. Each provider part has
 private state, socket, log, and failure
 artifact roots. Parts run concurrently. The bounded large-host Codex lane
 starts the longest measured independent parts first, and still runs every
-part. Smaller hosts use five Codex parts with at most three active parts and
-two Claude parts. Resume and Delete run in separate parts on every host.
+part. Smaller hosts use five Codex parts with at most three active parts.
+Claude uses three parts on a host with at least three CPUs and two parts on
+a smaller host. Resume and Delete run in separate parts on every host.
 Larger hosts use finer parts. Compact layouts reuse checkpoints across
 recovery and restart or Claude lifecycle and recovery.
 The parent writes scenario events in one order and
