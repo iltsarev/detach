@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from quality_shard import (  # noqa: E402
     ShardError,
     plan_stages,
+    preparation_parts,
     safe_evidence_file,
     shard_for,
     shard_plan,
@@ -30,6 +31,32 @@ def digest(value: str) -> str:
 
 
 class QualityShardContract(unittest.TestCase):
+    def test_workflow_verifies_current_attempt_before_binding_or_restoring_caches(self):
+        workflow = (ROOT / ".github/workflows/quality-gates.yml").read_text()
+        preparation = workflow.split("\n  quality-products:\n", 1)[1].split("\n  quality-shards:\n", 1)[0]
+        self.assertIn("runs-on: macos-26", preparation)
+        self.assertIn("timeout-minutes: 10", preparation)
+        self.assertIn("!cancelled()", preparation)
+        self.assertIn("build-part '${{ matrix.part }}'", preparation)
+        self.assertIn("pack-part '${{ matrix.part }}'", preparation)
+        for consumer, end in [("quality-shards", "quality-gates"), ("quality-gates", "quality-dashboard")]:
+            job = workflow.split(f"\n  {consumer}:\n", 1)[1].split(f"\n  {end}:\n", 1)[0]
+            self.assertIn("quality-products", job.split("    steps:", 1)[0])
+            self.assertIn("quality-products-${{ github.run_id }}-${{ github.run_attempt }}-*", job)
+            self.assertLess(job.index("restore-parts"), job.index("name: Restore exact"))
+            self.assertIn("steps.prepared-products.outcome != 'success'", job)
+        shards = workflow.split("\n  quality-shards:\n", 1)[1].split("\n  quality-gates:\n", 1)[0]
+        upload = shards.split("- name: Upload shard evidence\n", 1)[1]
+        self.assertTrue(upload.startswith("        if: always()\n"))
+
+    def test_cold_preparation_matches_the_exact_selected_products(self):
+        self.assertEqual(preparation_parts({"stages": ["static"]}), [])
+        self.assertEqual(preparation_parts({"stages": ["static", "codex"]}), [])
+        self.assertEqual(preparation_parts({"stages": ["swift", "quality-contracts"]}), [{"part": "swift"}])
+        self.assertEqual(preparation_parts({"stages": ["app", "tmux-runtime"]}), [{"part": "app"}])
+        self.assertEqual(preparation_parts({"stages": ["swift", "app", "ui-e2e", "quality-contracts"]}),
+                         [{"part": "swift"}, {"part": "app"}, {"part": "ui"}])
+
     def test_narrow_plan_has_only_level_zero(self) -> None:
         plan = {"stages": ["static"]}
         self.assertEqual(

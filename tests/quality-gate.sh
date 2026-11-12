@@ -61,7 +61,7 @@ if printf '%s\n' "$fail_fast_step" | grep -F 'DETACH_QUALITY_AUTHORITY' >/dev/nu
 fi
 grep -F 'if: matrix.needs_metrics' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
-grep -F 'if: matrix.needs_cache' \
+grep -F "if: steps.prepared-products.outcome != 'success' && (matrix.needs_cache)" \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 grep -F 'key: detach-app-v2-' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
@@ -131,7 +131,7 @@ grep -F 'app/.build/quality-products-v1.json' \
 grep -F 'app/.build/quality-runtime/detach-state' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
 printf '%s\n' "$quality_shards_job" | grep -F \
-  "if: matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true')" \
+  "if: steps.prepared-products.outcome != 'success' && (matrix.needs_app || (matrix.needs_runtime && steps.product-cache.outputs.cache-hit != 'true'))" \
   >/dev/null
 grep -F 'python3 tools/quality_products.py verify' \
   "$ROOT/.github/workflows/quality-gates.yml" >/dev/null
