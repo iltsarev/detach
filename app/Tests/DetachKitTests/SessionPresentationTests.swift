@@ -234,6 +234,29 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertNil(make(.running).healthReasonLabel)
     }
 
+    func testCompletedRetainedPaneHasNoWarningAndKeepsTypedActions() {
+        var completed = make(.completed)
+        completed.healthReason = .paneExited
+        completed.exitStatus = 0
+        completed.agentTurnState = .waiting
+        completed.agentWaitingReason = .answerReady
+        completed.healthActions = [.resume, .delete]
+
+        XCTAssertNil(completed.healthReasonLabel)
+        XCTAssertEqual(completed.healthReason, .paneExited)
+        XCTAssertEqual(completed.statusSignal, .ready)
+        XCTAssertFalse(completed.isLive)
+        XCTAssertEqual(completed.availableActions, [.resume, .delete])
+
+        for status in [EffectiveStatus.failed, .running, .hung, .interrupted] {
+            var other = make(status)
+            other.healthReason = .paneExited
+            XCTAssertNotNil(other.healthReasonLabel, "Keep diagnostics for \(status)")
+        }
+        completed.healthReason = .runtimeProcessWithoutTmux
+        XCTAssertNotNil(completed.healthReasonLabel, "Other safety diagnostics remain visible")
+    }
+
     func testUnprovenRuntimeQuiescenceHasAnAccurateDiagnosticLabel() {
         var session = make(.hung)
         session.healthReason = .runtimeQuiescenceUnproven

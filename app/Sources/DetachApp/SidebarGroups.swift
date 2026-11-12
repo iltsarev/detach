@@ -14,7 +14,7 @@ enum SidebarSection: String, CaseIterable {
 
     static func containing(_ session: Session) -> Self {
         switch session.effectiveStatus {
-        case .stopped, .interrupted: .stopped
+        case .completed, .stopped, .interrupted: .stopped
         default: .sessions
         }
     }

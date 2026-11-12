@@ -294,6 +294,7 @@ struct SessionDetailView: View {
                         .padding(.vertical, 3)
                         .background(Capsule().fill(.orange.opacity(0.12)))
                         .help(reason)
+                        .accessibilityIdentifier("session-health-warning")
                 }
                 if let projectDir = session.projectDir {
                     metaChip(icon: "folder", abbreviatePath(projectDir), mono: true,

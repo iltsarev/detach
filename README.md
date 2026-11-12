@@ -28,7 +28,7 @@
 <p align="center">
   <img src="docs/assets/detach-app.png" width="920" alt="Detach dashboard with stable session order, ready and input indicators, stopped history, and a live terminal">
   <br>
-  <sub>Sessions stay in place as their status changes. Stopped sessions stay below.</sub>
+  <sub>Live sessions stay in place as they work or wait. Completed and stopped sessions stay below.</sub>
 </p>
 
 Detach is a native control center for agent work that must outlive a terminal
@@ -160,12 +160,14 @@ default, use the new default location. This keeps new chats outside macOS
 temporary-file cleanup. Existing sessions keep their saved paths and files;
 this change does not move them or restore missing files.
 
-The sidebar keeps stopped and interrupted sessions in a collapsible Stopped
-section at the bottom. Other sessions stay in Sessions as their status changes.
+The sidebar keeps completed, stopped, and interrupted sessions in a collapsible
+Stopped section at the bottom. Live sessions stay in Sessions as they work or
+wait. Failed sessions also stay in Sessions.
 User groups keep their order. Within each group, numbered sessions follow
 `Cmd-1` through `Cmd-9`; unnumbered sessions follow by newest launch time.
-Rows outside groups use the same order. Stopped rows show when each session
-stopped, newest first.
+Rows outside groups use the same order. Rows in Stopped show when each session
+finished, newest first. A completed session with a retained terminal pane has
+no health warning.
 
 Green means an answer is ready or the session completed. Yellow means the
 provider explicitly requests your input. Red means an error. Working sessions

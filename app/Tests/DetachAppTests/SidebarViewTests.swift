@@ -174,13 +174,20 @@ final class SidebarViewTests: XCTestCase {
         row.finishedAt = try date("2026-10-07T13:10:00Z")
         XCTAssertEqual(detail(row), "codex", "Live rows keep the provider")
         row.effectiveStatus = .completed
-        XCTAssertEqual(detail(row), "codex", "Completed rows stay in Sessions")
-        XCTAssertFalse(SessionRowPresentation.help(for: row).contains(
+        let completedTime = detail(row)
+        XCTAssertTrue(completedTime.contains("1:10"), completedTime)
+        XCTAssertTrue(SessionRowPresentation.help(for: row).contains(
             L10n.format("Stopped %@", try XCTUnwrap(row.finishedAt)
                 .formatted(date: .abbreviated, time: .shortened))))
+        XCTAssertEqual(SessionRowPresentation.status(for: row), L10n.string("completed"))
+        XCTAssertEqual(SessionRowPresentation.symbol(for: row), "checkmark.circle")
+        row.finishedAt = nil
+        XCTAssertEqual(detail(row), "codex", "Legacy completed rows keep the provider without a finish time")
+        row.finishedAt = try date("2026-10-07T13:10:00Z")
 
         row.effectiveStatus = .stopped
         let today = detail(row)
+        XCTAssertEqual(today, completedTime)
         XCTAssertTrue(today.contains("1:10"), today)
         XCTAssertFalse(today.contains("Oct"), today)
         XCTAssertTrue(SessionRowPresentation.help(for: row).contains(

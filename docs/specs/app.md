@@ -59,6 +59,8 @@ typed health rules. A failed coherent List read keeps the previous rows.
 The detail view separates identity, status, and Mac Power. Identity is a thin
 tmux-colored capsule. Power uses a neutral surface and semantic color. Clicking
 the UUID chip copies the full UUID and shows **Copied**.
+A completed session with `pane_exited` has no health warning. Its retained
+pane is normal history. Other health reasons keep their diagnostic labels.
 
 Sidebar rows show a status symbol, name, trailing shortcut, and a second line
 with status and provider. A row in Stopped shows its stop time instead of the
@@ -92,8 +94,8 @@ Motion is off. Core Animation turns it on one shared clock. List refreshes, row
 reuse, layout passes, and main-thread work cannot restart, move, or stall it. Cached or failed snapshots use neutral symbols, no animation,
 and a last-known-status label.
 
-The sidebar has Sessions and Stopped sections. Only stopped and interrupted
-lifecycles enter Stopped. Completed and failed sessions remain in Sessions.
+The sidebar has Sessions and Stopped sections. Completed, stopped, and
+interrupted lifecycles enter Stopped. Failed sessions remain in Sessions.
 Working, ready, and input transitions do not move a row. Groups come first in
 user order, then rows outside groups. Grouped rows start under the group name;
 rows outside groups stay at the section edge. Within each upper group or ungrouped
