@@ -18,6 +18,28 @@ final class SessionIdentityTests: XCTestCase {
         XCTAssertLessThan(SessionIdentity.emphasis(for: .interrupted), 1)
     }
 
+    func testCompletedRetainedPaneKeepsDiagnosticsWithoutAVisibleWarning() throws {
+        let line = #"{"schema":1,"provider":"codex","session_name":"completed","name":"completed","effective_status":"completed","health_reason":"pane_exited","exit_status":0,"agent_turn_state":"waiting","agent_waiting_reason":"answer_ready","health_actions":["resume","delete"]}"#
+        var session = try XCTUnwrap(SessionListParser.parse(line).sessions.first)
+
+        XCTAssertNil(SessionDetailSignalPresentation.healthWarning(for: session))
+        XCTAssertNotNil(session.healthReasonLabel, "Shared diagnostics retain the pane-exit reason")
+        XCTAssertEqual(session.healthReason, .paneExited)
+        XCTAssertEqual(session.statusSignal, .ready)
+        XCTAssertFalse(session.isLive)
+        XCTAssertEqual(session.availableActions, [.resume, .delete])
+
+        for status in [EffectiveStatus.failed, .running, .hung, .interrupted] {
+            session.effectiveStatus = status
+            XCTAssertNotNil(SessionDetailSignalPresentation.healthWarning(for: session),
+                            "Keep diagnostics visible for \(status)")
+        }
+        session.effectiveStatus = .completed
+        session.healthReason = .runtimeProcessWithoutTmux
+        XCTAssertNotNil(SessionDetailSignalPresentation.healthWarning(for: session),
+                        "Other safety diagnostics remain visible")
+    }
+
     func testDetailIdentityMarkerCannotReadAsAStatusDot() {
         XCTAssertLessThan(
             SessionDetailSignalPresentation.identityMarkerWidth,

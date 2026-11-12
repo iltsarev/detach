@@ -53,7 +53,7 @@ if [ "$#" -eq 2 ] && [ "$1" = list ] && [ "$2" = --json ]; then
     printf 'The session list is temporarily unavailable; retry from the dashboard.\n' >&2
     exit 75
   fi
-  completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","project_dir":"/tmp","effective_status":"completed","created_at":"2026-07-22T07:00:00Z","finished_at":"2026-07-22T07:30:00Z","exit_status":0,"agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"allowed","health_reason":"checkpoint_stale","health_actions":["resume","delete"]}'
+  completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","project_dir":"/tmp","effective_status":"completed","created_at":"2026-07-22T07:00:00Z","finished_at":"2026-07-22T07:30:00Z","exit_status":0,"agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"allowed","health_reason":"pane_exited","health_actions":["resume","delete"]}'
   if [ -f "$ROOT/fake/resumed" ]; then
     completed='{"schema":1,"provider":"claude","session_name":"detach-claude-ui-completed","name":"UI Completed","project_dir":"/tmp","effective_status":"starting","created_at":"2026-07-22T09:00:00Z","agent_session_id":"a9f58f1d-1234-5678-9abc-def012342ed9","session_color":"#A855F7","power_protection_state":"unknown","health_actions":["attach","stop"]}'
     if [ -f "$ROOT/fake/resume-completed" ]; then

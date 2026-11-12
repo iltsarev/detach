@@ -414,6 +414,14 @@ enum UIE2ETestDriver {
                 name: "completed session row",
                 resultIdentifier: "session-detail-\(completedID)")
             try requireGeometry(completedDetail, name: "completed session detail")
+            let stoppedHeaderFrame = try await measuredFrame(
+                identifier: "finished-section-header", name: "Stopped section header")
+            let completedRowFrame = try await measuredFrame(
+                identifier: "session-row-\(completedID)", name: "completed session row")
+            guard completedRowFrame.maxY <= stoppedHeaderFrame.minY + 1,
+                  find(identifier: "session-health-warning") == nil else {
+                throw Failure(message: "completed session is not retained history without a health warning")
+            }
             let completedLogSurface = try await measuredFrame(
                 identifier: "session-detail-log-surface",
                 name: "completed session log surface")
@@ -1155,7 +1163,7 @@ enum UIE2ETestDriver {
         }
 
         try await performContextMenu(
-            of: try header(.sessions, "Home"), in: mainWindow,
+            of: try header(.stopped, "Home"), in: mainWindow,
             path: [L10n.string("Delete Group")])
         try await waitUntil("deleting a group keeps its sessions") {
             group(named: "Home") == nil

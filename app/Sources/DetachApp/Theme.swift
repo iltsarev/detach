@@ -74,6 +74,13 @@ enum SessionDetailSignalPresentation {
     static let identityMarkerWidth: CGFloat = 4
     static let identityMarkerHeight: CGFloat = 24
 
+    static func healthWarning(for session: Session) -> String? {
+        if session.effectiveStatus == .completed && session.healthReason == .paneExited {
+            return nil
+        }
+        return session.healthReasonLabel
+    }
+
     /// These strengths match the dense, muted-edge, and faint tmux blends.
     static func identityTintPercent(for status: EffectiveStatus) -> UInt8 {
         switch status {

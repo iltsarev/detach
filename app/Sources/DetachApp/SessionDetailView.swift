@@ -285,7 +285,7 @@ struct SessionDetailView: View {
                 if session.contextSummary != nil {
                     ContextGauge(session: session)
                 }
-                if let reason = session.healthReasonLabel {
+                if let reason = SessionDetailSignalPresentation.healthWarning(for: session) {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
                         .appFont(.caption)
                         .lineLimit(1)
@@ -294,6 +294,7 @@ struct SessionDetailView: View {
                         .padding(.vertical, 3)
                         .background(Capsule().fill(.orange.opacity(0.12)))
                         .help(reason)
+                        .accessibilityIdentifier("session-health-warning")
                 }
                 if let projectDir = session.projectDir {
                     metaChip(icon: "folder", abbreviatePath(projectDir), mono: true,

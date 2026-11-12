@@ -192,11 +192,13 @@ final class SidebarGroupsTests: XCTestCase {
         let groupIDs = layout.flatMap { $0.groupBlocks.map(\.id) }
         XCTAssertEqual(groupIDs.count, Set(groupIDs).count,
                        "A group in two sections must have distinct List identities")
-        XCTAssertEqual(layout[0].groupBlocks.map(\.group), [personal, work])
-        XCTAssertEqual(layout[0].groupBlocks[1].sessions.map(\.id), ["first", "second"])
+        XCTAssertEqual(layout[0].groupBlocks.map(\.group), [work])
+        XCTAssertEqual(layout[0].groupBlocks[0].sessions.map(\.id), ["first", "second"])
         XCTAssertEqual(layout[0].ungrouped.map(\.id), ["error"])
-        XCTAssertEqual(layout[0].count, 4)
-        XCTAssertEqual(layout[1].groupBlocks[0].sessions.map(\.id), ["stopped"])
+        XCTAssertEqual(layout[0].count, 3)
+        XCTAssertEqual(layout[1].groupBlocks.map(\.group), [personal, work])
+        XCTAssertEqual(layout[1].groupBlocks[0].sessions.map(\.id), ["done"])
+        XCTAssertEqual(layout[1].groupBlocks.last?.sessions.map(\.id), ["stopped"])
         XCTAssertEqual(layout[1].ungrouped.map(\.id), ["interrupted"])
 
         var changed = sessions
@@ -205,6 +207,40 @@ final class SidebarGroupsTests: XCTestCase {
         XCTAssertEqual(SidebarSectionLayout.build(sessions: changed, document: document,
             shortcutAssignments: slots).map { $0.groupBlocks.map { $0.sessions.map(\.id) } },
             layout.map { $0.groupBlocks.map { $0.sessions.map(\.id) } })
+    }
+
+    func testCompletedSessionMovesToStoppedAndResumeKeepsItsGroup() throws {
+        let store = SidebarGroupStore(defaults: defaults)
+        let groupID = try store.createGroup(named: "Work").get()
+        var row = session(id: "work", status: "running", turnState: "working")
+        store.assign(row.id, to: groupID)
+        XCTAssertEqual(SidebarSection.containing(row), .sessions)
+        row.agentTurnState = .waiting
+        row.agentWaitingReason = .answerReady
+        XCTAssertEqual(SidebarSection.containing(row), .sessions,
+                       "A ready answer still belongs to a live session")
+
+        row.effectiveStatus = .completed
+        row.healthReason = .paneExited
+        row.exitStatus = 0
+        row.finishedAt = Date(timeIntervalSince1970: 900)
+        let stopped = SidebarSectionLayout.build(sessions: [row], document: store.document)
+        XCTAssertEqual(stopped.map(\.section), [.stopped])
+        XCTAssertEqual(stopped.first?.groupBlocks.first?.group.id, groupID)
+        XCTAssertEqual(stopped.first?.count, 1)
+        store.setStoppedCollapsed(true)
+        store.reveal(row)
+        XCTAssertFalse(store.stoppedCollapsed)
+
+        row.effectiveStatus = .running
+        row.agentTurnState = .working
+        row.healthReason = .healthy
+        row.exitStatus = nil
+        row.finishedAt = nil
+        let reloaded = SidebarGroupStore(defaults: defaults)
+        let resumed = SidebarSectionLayout.build(sessions: [row], document: reloaded.document)
+        XCTAssertEqual(resumed.map(\.section), [.sessions])
+        XCTAssertEqual(resumed.first?.groupBlocks.first?.group.id, groupID)
     }
 
     func testStoppedRowsSortByNewestStopTimeAndLiveRowsByLaunch() {
@@ -223,20 +259,23 @@ final class SidebarGroupsTests: XCTestCase {
         olderLive.finishedAt = at(2_000)
         var newerLive = session(id: "newer-live", status: "running")
         newerLive.createdAt = at(20)
+        var completed = session(id: "completed", status: "completed")
+        completed.createdAt = at(50)
+        completed.finishedAt = at(800)
         let layout = SidebarSectionLayout.build(
-            sessions: [earlyStop, olderLive, legacy, lateStop, newerLive],
+            sessions: [earlyStop, olderLive, legacy, lateStop, newerLive, completed],
             document: SidebarGroupsDocument())
         XCTAssertEqual(layout.map(\.section), [.sessions, .stopped])
         XCTAssertEqual(layout[0].ungrouped.map(\.id), ["newer-live", "older-live"],
                        "Live rows keep newest launch first")
-        XCTAssertEqual(layout[1].ungrouped.map(\.id), ["late-stop", "legacy", "early-stop"],
+        XCTAssertEqual(layout[1].ungrouped.map(\.id), ["late-stop", "completed", "legacy", "early-stop"],
                        "Stopped rows use the stop time, or the launch time without one")
     }
 
     func testUnnumberedRowsFollowShortcutsAndUseNewestLaunchFirst() {
         var older = session(id: "older", status: "running")
         older.createdAt = Date(timeIntervalSince1970: 10)
-        var newer = session(id: "newer", status: "completed")
+        var newer = session(id: "newer", status: "running", turnState: "waiting")
         newer.createdAt = Date(timeIntervalSince1970: 20)
         let numbered = session(id: "numbered", status: "running")
         let slots = [SessionShortcutAssignment(sessionID: "numbered", displayTitle: "N", slot: 8)]
