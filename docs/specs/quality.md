@@ -81,17 +81,28 @@ stage's success as separate proof for each scenario.
 - Codex uses at most three active test parts. Resume and Delete use separate
   parts on every host. Each suite section runs once in either layout.
 - Swift and release builds use separate caches and split at three CPUs;
-  smaller hosts run in order. UI waits for app; metrics require both.
+  smaller local hosts run in order. Hosted preparation gives the selected
+  Swift tests, normal app, and coverage app separate arm64 workers. Each worker
+  uses its CPU capacity. The current workflow attempt supplies the archives.
+  Their part set, commit, source fingerprint, toolchain, file hashes, modes,
+  links, and arm64 executables must pass verification before reuse. Archives
+  enter a private staging directory and cannot overwrite source files or
+  follow destination symlinks. Preparation supplies no acceptance evidence.
+  The normal app passes bundle verification. Swift tests and UI journeys run
+  after preparation; metrics use their fresh profiles. UI waits for app.
   Gate-contract excludes heavy peers and gates distribution. Release-workflow
   may overlap one provider and gates distribution. Other work uses two
   heavy and one integration lane.
 - Exact keys bind inputs and toolchain. `main` warms missing products. CI
   verifies hits and misses, then reuses a fresh app. Warming emits no
-  evidence. On a miss, a shard with the app stage builds inside that stage.
+  evidence. Hosted preparation builds each missing product on its own worker.
+  Main verifies the same prepared parts before it publishes exact caches.
   App consumers prepare the app before their checks. Provider-only shards
   build just arm64 tmux and detach-state on a miss. A separate manifest binds
   their bytes to the current source and toolchain. Each provider stage verifies
   it before use. This preparation supplies no acceptance evidence.
+- Claude uses its three existing independent test parts on hosts with at
+  least three CPUs. Smaller hosts use two parts. Each suite section runs once.
 - CI uses the newest green `main` artifact with metrics; a later run without
   them does not replace it. Runs with deleted or expired evidence are skipped.
   Duplicate or malformed evidence fails closed. If no retained metrics remain,
