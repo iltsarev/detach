@@ -151,8 +151,7 @@ public extension Session {
         case .tmuxServerMissing:
             L10n.string("The managed tmux session disappeared.")
         case .paneExited:
-            effectiveStatus == .completed ? nil
-                : L10n.string("The managed pane exited and was retained for inspection.")
+            L10n.string("The managed pane exited and was retained for inspection.")
         case .foreignTmux:
             L10n.string("Another tmux session uses this name; Detach will not touch it.")
         case .malformedMetadata:

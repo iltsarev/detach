@@ -285,7 +285,7 @@ struct SessionDetailView: View {
                 if session.contextSummary != nil {
                     ContextGauge(session: session)
                 }
-                if let reason = session.healthReasonLabel {
+                if let reason = SessionDetailSignalPresentation.healthWarning(for: session) {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
                         .appFont(.caption)
                         .lineLimit(1)
