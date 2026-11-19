@@ -2774,6 +2774,7 @@
       "tests": [
         "DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy",
         "DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks",
+        "DetachAppTests.SessionAttachTerminalTests/testWheelAndTrackpadDistanceReachTmuxThroughTheInputMonitor",
         "DetachAppTests.SessionAttachTerminalTests/testRealPTYOutputReleasesRetainedFrameAndReportsReadiness",
         "DetachAppTests.SessionAttachTerminalTests/testStoppedFrameObservationCannotRestartFromLateOutput"
       ]
@@ -4312,6 +4313,7 @@
     "DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
     "DetachAppTests.SessionAttachTerminalTests/testRealPTYOutputReleasesRetainedFrameAndReportsReadiness": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
     "DetachAppTests.SessionAttachTerminalTests/testStoppedFrameObservationCannotRestartFromLateOutput": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
+    "DetachAppTests.SessionAttachTerminalTests/testWheelAndTrackpadDistanceReachTmuxThroughTheInputMonitor": "app/Tests/DetachAppTests/SessionAttachTerminalTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveFailureRollsBackToPreviousValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.TmuxExtendedKeysSettingsControllerTests/testSaveSendsSetterAndKeepsValue": "app/Tests/DetachAppTests/TmuxExtendedKeysSettingsControllerTests.swift",
     "DetachAppTests.WatchdogServiceTests/testAbsentRecordRejectionWithLiveRecordRemainsFailClosed": "app/Tests/DetachAppTests/WatchdogServiceTests.swift",

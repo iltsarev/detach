@@ -27,6 +27,26 @@ private final class MouseRecordingTerminalView: SessionAttachLocalProcessTermina
     }
 }
 
+// AppKit can dispatch these events to an offscreen test window.
+private final class TerminalWheelEvent: NSEvent {
+    var target: NSWindow?
+    var point = NSPoint.zero
+    var distance: CGFloat = 0
+    var precise = false
+    var modifiers: NSEvent.ModifierFlags = []
+    var scrollPhase: NSEvent.Phase = []
+    var momentum: NSEvent.Phase = []
+
+    override var type: NSEvent.EventType { .scrollWheel }
+    override var window: NSWindow? { target }
+    override var locationInWindow: NSPoint { point }
+    override var scrollingDeltaY: CGFloat { distance }
+    override var hasPreciseScrollingDeltas: Bool { precise }
+    override var modifierFlags: NSEvent.ModifierFlags { modifiers }
+    override var phase: NSEvent.Phase { scrollPhase }
+    override var momentumPhase: NSEvent.Phase { momentum }
+}
+
 private final class SilentDetachCLI: DetachCLIRunning, @unchecked Sendable {
     func run(arguments: [String], timeout: TimeInterval) async throws -> CLIResult {
         CLIResult(exitCode: 0, stdout: "", stderr: "", timedOut: false)
@@ -1612,6 +1632,65 @@ final class SessionAttachTerminalTests: XCTestCase {
             .paste,
             .find(Int(NSFindPanelAction.showFindPanel.rawValue)),
         ])
+    }
+
+    func testWheelAndTrackpadDistanceReachTmuxThroughTheInputMonitor() throws {
+        let terminal = MouseRecordingTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let window = NSWindow(contentRect: terminal.frame, styleMask: .borderless,
+                              backing: .buffered, defer: false)
+        window.contentView = terminal
+        let coordinator = SessionAttachTerminalView.Coordinator(
+            controller: SessionAttachController(invocation: Self.invocation()),
+            session: try XCTUnwrap(Self.session()),
+            screenCache: SessionTerminalScreenCache(), onTerminated: { _ in })
+        coordinator.installInputMonitor(for: terminal)
+        defer { coordinator.removeInputMonitor() }
+
+        terminal.feed(text: "\u{1B}[?1000h\u{1B}[?1006h")
+        let size = terminal.getOptimalFrameSize().size
+        let grid = terminal.terminalDimensions
+        let cellHeight = size.height / CGFloat(grid.rows)
+        let wheel = TerminalWheelEvent()
+        wheel.target = window
+        wheel.point = NSPoint(x: size.width / CGFloat(grid.cols) * 2.5,
+                              y: terminal.bounds.maxY - cellHeight * 1.5)
+        func check(_ delta: CGFloat, reports: Int, file: StaticString = #filePath,
+                   line: UInt = #line) {
+            terminal.sent.removeAll()
+            wheel.distance = delta
+            NSApplication.shared.sendEvent(wheel)
+            let button = delta > 0 ? 64 : 65
+            let expected = String(repeating: "\u{1B}[<\(button);3;2M", count: reports)
+            XCTAssertEqual(String(decoding: terminal.sent, as: UTF8.self), expected,
+                           file: file, line: line)
+        }
+
+        check(1, reports: 1)
+        check(12, reports: 12)
+        check(-9, reports: 9)
+        check(500, reports: 128)
+        wheel.precise = true
+        check(cellHeight * 0.5, reports: 0)
+        check(cellHeight * 0.5, reports: 1)
+        check(cellHeight * 16, reports: 16)
+        wheel.momentum = .changed
+        check(-cellHeight * 8, reports: 8)
+        check(0, reports: 0)
+        wheel.momentum = []
+        check(cellHeight * 0.75, reports: 0)
+        wheel.scrollPhase = .began
+        check(cellHeight * 0.5, reports: 0)
+        wheel.scrollPhase = []
+        wheel.modifiers = .option
+        XCTAssertTrue(coordinator.routeScrollEvent(wheel, in: terminal) === wheel)
+        wheel.modifiers = []
+        check(cellHeight * 0.5, reports: 0)
+        wheel.target = nil
+        XCTAssertTrue(coordinator.routeScrollEvent(wheel, in: terminal) === wheel)
+        wheel.target = window
+        terminal.feed(text: "\u{1B}[?1000l")
+        XCTAssertTrue(coordinator.routeScrollEvent(wheel, in: terminal) === wheel)
     }
 
     @MainActor

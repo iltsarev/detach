@@ -359,6 +359,7 @@ Direct acceptance evidence for `QC-HEALTH-PRESENTATION`: `SC-UI-DASHBOARD`, `SC-
 
 - `DetachAppTests.SessionAttachTerminalTests/testCommandCCopiesNativeSelectionAndPreservesTmuxCopy`
 - `DetachAppTests.SessionAttachTerminalTests/testNativeTextPastePreservesUTF8AndLineBreaks`
+- `DetachAppTests.SessionAttachTerminalTests/testWheelAndTrackpadDistanceReachTmuxThroughTheInputMonitor`
 - `DetachAppTests.SessionAttachTerminalTests/testRealPTYOutputReleasesRetainedFrameAndReportsReadiness`
 - `DetachAppTests.SessionAttachTerminalTests/testStoppedFrameObservationCannotRestartFromLateOutput`
 

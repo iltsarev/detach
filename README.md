@@ -660,8 +660,9 @@ When the provider exits, including after `Ctrl-C`, the external terminal returns
 to its original shell. A `Ctrl-C` that only interrupts work keeps the connection
 while the provider remains running. Logs and checkpoints stay available.
 
-Inside managed tmux, the mouse wheel scrolls one line at a time. Mouse selection
-copies to the macOS clipboard and keeps the highlight and scroll position. When
+In the embedded terminal, roll the wheel or swipe the trackpad faster to move
+farther through tmux history. Small movements let you scroll one line at a time.
+Mouse selection copies to the macOS clipboard and keeps the highlight and scroll position. When
 managed mouse input is on, an ASCII or Cyrillic printable key, Space, Enter, or
 Backspace leaves copy mode and sends that key to the live prompt. Arrows, page
 navigation, Escape, and bound control chords keep their copy-mode behavior.

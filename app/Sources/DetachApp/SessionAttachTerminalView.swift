@@ -876,7 +876,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         context.coordinator.controller.onTerminated = context.coordinator.onTerminated
         context.coordinator.controller.configure(
             view, fontPointSize: fontPointSize, palette: palette)
-        context.coordinator.installKeyboardMonitor(for: view)
+        context.coordinator.installInputMonitor(for: view)
         if let screen = context.coordinator.screenCache.screen(
             for: context.coordinator.session) {
             view.retainScreen(
@@ -902,7 +902,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         _ view: LocalProcessTerminalView,
         coordinator: Coordinator
     ) {
-        coordinator.removeKeyboardMonitor()
+        coordinator.removeInputMonitor()
         coordinator.cancelSwitch()
         coordinator.captureScreen(from: view)
         if let view = view as? SessionAttachLocalProcessTerminalView {
@@ -923,7 +923,8 @@ struct SessionAttachTerminalView: NSViewRepresentable {
         var onFirstVisibleFrame: () -> Void
         var onSwitchFailed: (String) -> Void
         private let switchCLI: any DetachCLIRunning
-        private var keyboardMonitor: Any?
+        private var inputMonitor: Any?
+        private var scrollRemainder: CGFloat = 0
         private weak var attachedView: LocalProcessTerminalView?
         private var desiredSession: Session
         private var switchTask: Task<Void, Never>?
@@ -1008,6 +1009,7 @@ struct SessionAttachTerminalView: NSViewRepresentable {
                         : message)
                     return
                 }
+                scrollRemainder = 0
                 session = target
             }
         }
@@ -1028,11 +1030,14 @@ struct SessionAttachTerminalView: NSViewRepresentable {
             requestSession(desiredSession, in: view)
         }
 
-        func installKeyboardMonitor(for view: LocalProcessTerminalView) {
-            removeKeyboardMonitor()
-            keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+        func installInputMonitor(for view: LocalProcessTerminalView) {
+            removeInputMonitor()
+            inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) {
                 [weak self, weak view] event in
                 guard let self, let view else { return event }
+                if event.type == .scrollWheel {
+                    return self.routeScrollEvent(event, in: view)
+                }
                 return self.routeKeyboardEvent(
                     event,
                     window: event.window,
@@ -1040,6 +1045,64 @@ struct SessionAttachTerminalView: NSViewRepresentable {
                     in: view,
                     send: view.send)
             }
+        }
+
+        // SwiftTerm limits wheel reports to one per mouse event and throttles
+        // trackpad reports. Managed tmux copy mode moves one line per report.
+        func routeScrollEvent(
+            _ event: NSEvent, in view: LocalProcessTerminalView
+        ) -> NSEvent? {
+            guard let window = view.window, event.window === window,
+                  let content = window.contentView, let parent = content.superview,
+                  content.hitTest(parent.convert(event.locationInWindow, from: nil)) === view,
+                  view.allowMouseReporting, view.currentMouseMode != .off,
+                  event.modifierFlags.intersection([.shift, .option, .control, .command]).isEmpty
+            else {
+                scrollRemainder = 0
+                return event
+            }
+            let grid = view.terminalDimensions
+            let size = view.getOptimalFrameSize().size
+            guard grid.cols > 0, grid.rows > 0, size.width > 0, size.height > 0 else {
+                return event
+            }
+            let cellHeight = size.height / CGFloat(grid.rows)
+            let reports = wheelReportCount(for: event, cellHeight: cellHeight)
+            guard reports > 0 else { return nil }
+            let point = view.convert(event.locationInWindow, from: nil)
+            let x = max(0, min(point.x - view.bounds.minX, size.width))
+            let y = max(0, min(view.bounds.maxY - point.y, size.height))
+            let scale = window.backingScaleFactor
+            let col = min(grid.cols - 1, Int(x * CGFloat(grid.cols) / size.width))
+            let row = min(grid.rows - 1, Int(y / cellHeight))
+            let pixelX = min(Int(size.width * scale) - 1, Int(x * scale))
+            let pixelY = min(Int(size.height * scale) - 1, Int(y * scale))
+            for _ in 0..<reports {
+                view.sendMouseEvent(button: event.scrollingDeltaY > 0 ? 4 : 5, release: false,
+                                    col: col, row: row, pixelX: pixelX, pixelY: pixelY)
+            }
+            return nil
+        }
+
+        private func wheelReportCount(for event: NSEvent, cellHeight: CGFloat) -> Int {
+            let delta = event.scrollingDeltaY
+            if event.phase.contains(.began) || event.phase.contains(.cancelled) {
+                scrollRemainder = 0
+            }
+            guard delta.isFinite, delta != 0, !event.phase.contains(.cancelled) else { return 0 }
+            let lines: CGFloat
+            if event.hasPreciseScrollingDeltas {
+                if scrollRemainder.sign != delta.sign { scrollRemainder = 0 }
+                let distance = scrollRemainder + delta
+                lines = (distance / cellHeight).rounded(.towardZero)
+                scrollRemainder = distance.truncatingRemainder(dividingBy: cellHeight)
+            } else {
+                scrollRemainder = 0
+                lines = max(1, abs(delta).rounded())
+            }
+            // Limit work for a single unusually large event. Each subsequent
+            // event gets its full distance, including the momentum phase.
+            return Int(min(abs(lines), 128))
         }
 
         func routeKeyboardEvent(
@@ -1063,10 +1126,10 @@ struct SessionAttachTerminalView: NSViewRepresentable {
                 send: send) ? nil : event
         }
 
-        func removeKeyboardMonitor() {
-            guard let keyboardMonitor else { return }
-            NSEvent.removeMonitor(keyboardMonitor)
-            self.keyboardMonitor = nil
+        func removeInputMonitor() {
+            guard let inputMonitor else { return }
+            NSEvent.removeMonitor(inputMonitor)
+            self.inputMonitor = nil
         }
 
         private static func isFocused(
@@ -1096,8 +1159,8 @@ struct SessionAttachTerminalView: NSViewRepresentable {
 
         deinit {
             switchTask?.cancel()
-            if let keyboardMonitor {
-                NSEvent.removeMonitor(keyboardMonitor)
+            if let inputMonitor {
+                NSEvent.removeMonitor(inputMonitor)
             }
         }
     }

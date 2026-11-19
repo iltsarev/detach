@@ -153,6 +153,12 @@ does not open a link. A Finder drop sends shell-safe paths without
 reading files. Live views move Mac Power to metadata. An exited client offers
 Reconnect.
 
+With mouse reporting on, the embedded terminal uses the vertical distance from
+macOS for each wheel event. A fast wheel turn or trackpad swipe sends more
+steps to tmux. Small trackpad movements add up to a line at the current font
+size. Momentum follows the same rule. Each event sends at most 128 steps.
+Modified gestures use SwiftTerm routing.
+
 The embedded attach client always uses a UTF-8 character locale. A conflicting
 inherited locale cannot change how tmux encodes its output. Native paste sends
 Unicode text and line breaks with the provider's bracketed paste framing.
