@@ -23,7 +23,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm", exact: "1.99.2"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", exact: "1.99.3"),
     ],
     targets: [
         .target(name: "DetachKit"),
